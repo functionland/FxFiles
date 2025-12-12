@@ -1,0 +1,284 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:fula_files/core/models/sync_state.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/auth_service.dart';
+
+enum SyncDirection { upload, download, bidirectional }
+
+class SyncService {
+  SyncService._();
+  static final SyncService instance = SyncService._();
+
+  final List<SyncTask> _uploadQueue = [];
+  final List<SyncTask> _downloadQueue = [];
+  final Map<String, SyncProgress> _activeSync = {};
+
+  List<SyncTask> get uploadQueue => List.unmodifiable(_uploadQueue);
+  List<SyncTask> get downloadQueue => List.unmodifiable(_downloadQueue);
+  Map<String, SyncProgress> get activeSync => Map.unmodifiable(_activeSync);
+
+  Future<void> queueUpload({
+    required String localPath,
+    required String remoteBucket,
+    required String remoteKey,
+    bool encrypt = true,
+  }) async {
+    final task = SyncTask(
+      localPath: localPath,
+      remoteBucket: remoteBucket,
+      remoteKey: remoteKey,
+      direction: SyncDirection.upload,
+      encrypt: encrypt,
+    );
+
+    _uploadQueue.add(task);
+
+    final state = SyncState(
+      localPath: localPath,
+      remotePath: remoteKey,
+      bucket: remoteBucket,
+      status: SyncStatus.notSynced,
+    );
+    await LocalStorageService.instance.addSyncState(state);
+  }
+
+  Future<void> queueDownload({
+    required String remoteBucket,
+    required String remoteKey,
+    required String localPath,
+    bool decrypt = true,
+  }) async {
+    final task = SyncTask(
+      localPath: localPath,
+      remoteBucket: remoteBucket,
+      remoteKey: remoteKey,
+      direction: SyncDirection.download,
+      encrypt: decrypt,
+    );
+
+    _downloadQueue.add(task);
+  }
+
+  Future<void> processUploadQueue() async {
+    while (_uploadQueue.isNotEmpty) {
+      final task = _uploadQueue.removeAt(0);
+      await _executeUpload(task);
+    }
+  }
+
+  Future<void> processDownloadQueue() async {
+    while (_downloadQueue.isNotEmpty) {
+      final task = _downloadQueue.removeAt(0);
+      await _executeDownload(task);
+    }
+  }
+
+  Future<void> _executeUpload(SyncTask task) async {
+    try {
+      final state = LocalStorageService.instance.getSyncState(task.localPath);
+      if (state != null) {
+        await LocalStorageService.instance.addSyncState(
+          state.copyWith(status: SyncStatus.syncing),
+        );
+      }
+
+      _activeSync[task.localPath] = SyncProgress(
+        localPath: task.localPath,
+        remoteKey: task.remoteKey,
+        direction: SyncDirection.upload,
+        bytesTransferred: 0,
+        totalBytes: 0,
+      );
+
+      final file = File(task.localPath);
+      final data = await file.readAsBytes();
+      
+      _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
+        totalBytes: data.length,
+      );
+
+      String etag;
+      if (task.encrypt) {
+        final encryptionKey = await AuthService.instance.getEncryptionKey();
+        if (encryptionKey == null) {
+          throw SyncException('Encryption key not available');
+        }
+
+        etag = await FulaApiService.instance.encryptAndUploadLargeFile(
+          task.remoteBucket,
+          task.remoteKey,
+          data,
+          encryptionKey,
+          originalFilename: file.path.split('/').last,
+          onProgress: (UploadProgress progress) {
+            _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
+              bytesTransferred: progress.bytesUploaded,
+            );
+          },
+        );
+      } else {
+        etag = await FulaApiService.instance.uploadLargeFile(
+          task.remoteBucket,
+          task.remoteKey,
+          data,
+          onProgress: (UploadProgress progress) {
+            _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
+              bytesTransferred: progress.bytesUploaded,
+            );
+          },
+        );
+      }
+
+      if (state != null) {
+        await LocalStorageService.instance.addSyncState(
+          state.copyWith(
+            status: SyncStatus.synced,
+            lastSyncedAt: DateTime.now(),
+            etag: etag,
+            localSize: data.length,
+          ),
+        );
+      }
+
+      _activeSync.remove(task.localPath);
+    } catch (e) {
+      debugPrint('Upload failed: $e');
+      
+      final state = LocalStorageService.instance.getSyncState(task.localPath);
+      if (state != null) {
+        await LocalStorageService.instance.addSyncState(
+          state.copyWith(
+            status: SyncStatus.error,
+            errorMessage: e.toString(),
+          ),
+        );
+      }
+
+      _activeSync.remove(task.localPath);
+      rethrow;
+    }
+  }
+
+  Future<void> _executeDownload(SyncTask task) async {
+    try {
+      _activeSync[task.remoteKey] = SyncProgress(
+        localPath: task.localPath,
+        remoteKey: task.remoteKey,
+        direction: SyncDirection.download,
+        bytesTransferred: 0,
+        totalBytes: 0,
+      );
+
+      Uint8List data;
+      if (task.encrypt) {
+        final encryptionKey = await AuthService.instance.getEncryptionKey();
+        if (encryptionKey == null) {
+          throw SyncException('Encryption key not available');
+        }
+
+        data = await FulaApiService.instance.downloadAndDecrypt(
+          task.remoteBucket,
+          task.remoteKey,
+          encryptionKey,
+        );
+      } else {
+        data = await FulaApiService.instance.downloadObject(
+          task.remoteBucket,
+          task.remoteKey,
+        );
+      }
+
+      final file = File(task.localPath);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(data);
+
+      _activeSync.remove(task.remoteKey);
+    } catch (e) {
+      debugPrint('Download failed: $e');
+      _activeSync.remove(task.remoteKey);
+      rethrow;
+    }
+  }
+
+  Future<void> retryFailed() async {
+    final states = LocalStorageService.instance.getAllSyncStates();
+    final failedStates = states.where((s) => s.status == SyncStatus.error).toList();
+
+    for (final state in failedStates) {
+      if (state.bucket != null && state.remotePath != null) {
+        await queueUpload(
+          localPath: state.localPath,
+          remoteBucket: state.bucket!,
+          remoteKey: state.remotePath!,
+        );
+      }
+    }
+
+    await processUploadQueue();
+  }
+
+  Future<void> cancelAll() async {
+    _uploadQueue.clear();
+    _downloadQueue.clear();
+  }
+}
+
+class SyncTask {
+  final String localPath;
+  final String remoteBucket;
+  final String remoteKey;
+  final SyncDirection direction;
+  final bool encrypt;
+
+  SyncTask({
+    required this.localPath,
+    required this.remoteBucket,
+    required this.remoteKey,
+    required this.direction,
+    this.encrypt = true,
+  });
+}
+
+class SyncProgress {
+  final String localPath;
+  final String remoteKey;
+  final SyncDirection direction;
+  final int bytesTransferred;
+  final int totalBytes;
+
+  SyncProgress({
+    required this.localPath,
+    required this.remoteKey,
+    required this.direction,
+    required this.bytesTransferred,
+    required this.totalBytes,
+  });
+
+  double get percentage => totalBytes > 0 ? (bytesTransferred / totalBytes) * 100 : 0;
+
+  SyncProgress copyWith({
+    String? localPath,
+    String? remoteKey,
+    SyncDirection? direction,
+    int? bytesTransferred,
+    int? totalBytes,
+  }) {
+    return SyncProgress(
+      localPath: localPath ?? this.localPath,
+      remoteKey: remoteKey ?? this.remoteKey,
+      direction: direction ?? this.direction,
+      bytesTransferred: bytesTransferred ?? this.bytesTransferred,
+      totalBytes: totalBytes ?? this.totalBytes,
+    );
+  }
+}
+
+class SyncException implements Exception {
+  final String message;
+  SyncException(this.message);
+
+  @override
+  String toString() => 'SyncException: $message';
+}

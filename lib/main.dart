@@ -1,0 +1,39 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:fula_files/app/app.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/background_sync_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize services
+  await SecureStorageService.instance.init();
+  await LocalStorageService.instance.init();
+
+  // Initialize background sync
+  await BackgroundSyncService.instance.initialize();
+
+  // Check if Fula API is configured and schedule sync
+  final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
+  final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+  
+  if (apiUrl != null && jwtToken != null) {
+    FulaApiService.instance.configure(
+      endpoint: apiUrl,
+      accessKey: 'JWT:$jwtToken',
+      secretKey: 'not-used',
+    );
+    
+    // Schedule periodic background sync
+    await BackgroundSyncService.instance.schedulePeriodicSync();
+  }
+
+  runApp(
+    const ProviderScope(
+      child: FulaFilesApp(),
+    ),
+  );
+}

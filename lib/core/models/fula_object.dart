@@ -1,0 +1,105 @@
+
+class FulaObject {
+  final String key;
+  final int size;
+  final DateTime? lastModified;
+  final String? etag;
+  final bool isDirectory;
+  final Map<String, String>? metadata;
+
+  FulaObject({
+    required this.key,
+    required this.size,
+    this.lastModified,
+    this.etag,
+    this.isDirectory = false,
+    this.metadata,
+  });
+
+  String get name {
+    if (isDirectory) {
+      final parts = key.split('/');
+      return parts.where((p) => p.isNotEmpty).lastOrNull ?? key;
+    }
+    return key.split('/').last;
+  }
+
+  String get extension {
+    if (isDirectory) return '';
+    final dotIndex = name.lastIndexOf('.');
+    if (dotIndex == -1 || dotIndex == name.length - 1) return '';
+    return name.substring(dotIndex + 1).toLowerCase();
+  }
+
+  String get parentPath {
+    final parts = key.split('/');
+    if (parts.length <= 1) return '';
+    parts.removeLast();
+    return parts.join('/');
+  }
+
+  bool get isEncrypted => metadata?['x-fula-encrypted'] == 'true';
+  
+  String? get originalFilename => metadata?['x-fula-original-filename'];
+  
+  String? get originalContentType => metadata?['x-fula-original-content-type'];
+
+  bool get isImage {
+    final ext = extension;
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'svg'].contains(ext);
+  }
+
+  bool get isVideo {
+    final ext = extension;
+    return ['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'm4v', '3gp'].contains(ext);
+  }
+
+  bool get isAudio {
+    final ext = extension;
+    return ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma'].contains(ext);
+  }
+
+  bool get isDocument {
+    final ext = extension;
+    return ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'md'].contains(ext);
+  }
+
+  String get sizeFormatted {
+    if (size < 1024) return '$size B';
+    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
+    if (size < 1024 * 1024 * 1024) return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(size / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  }
+}
+
+class FulaObjectMetadata {
+  final int size;
+  final DateTime? lastModified;
+  final String? etag;
+  final String? contentType;
+  final Map<String, String> userMetadata;
+  final bool isEncrypted;
+  final String? originalFilename;
+
+  FulaObjectMetadata({
+    required this.size,
+    this.lastModified,
+    this.etag,
+    this.contentType,
+    this.userMetadata = const {},
+    this.isEncrypted = false,
+    this.originalFilename,
+  });
+
+  factory FulaObjectMetadata.fromMap(Map<String, dynamic> data) {
+    return FulaObjectMetadata(
+      size: data['size'] as int? ?? 0,
+      lastModified: data['lastModified'] as DateTime?,
+      etag: data['etag'] as String?,
+      contentType: data['contentType'] as String?,
+      userMetadata: (data['metadata'] as Map<String, String>?) ?? {},
+      isEncrypted: data['metadata']?['x-fula-encrypted'] == 'true',
+      originalFilename: data['metadata']?['x-fula-original-filename'],
+    );
+  }
+}

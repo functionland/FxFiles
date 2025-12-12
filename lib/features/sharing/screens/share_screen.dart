@@ -1,0 +1,585 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
+import 'package:fula_files/app/theme/app_colors.dart';
+
+class ShareScreen extends ConsumerStatefulWidget {
+  const ShareScreen({super.key});
+
+  @override
+  ConsumerState<ShareScreen> createState() => _ShareScreenState();
+}
+
+class _ShareScreenState extends ConsumerState<ShareScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Sharing'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'Shared by Me'),
+            Tab(text: 'Shared with Me'),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(LucideIcons.qrCode),
+            onPressed: _showMyPublicKey,
+            tooltip: 'My Share Key',
+          ),
+        ],
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: const [
+          _OutgoingSharesTab(),
+          _AcceptedSharesTab(),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _acceptShareFromLink,
+        icon: const Icon(LucideIcons.link),
+        label: const Text('Accept Share'),
+      ),
+    );
+  }
+
+  void _showMyPublicKey() async {
+    final publicKey = await ref.read(userPublicKeyProvider.future);
+    
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('My Share Key'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Share this key with others so they can share files with you:',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceLight,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                publicKey ?? 'Not available',
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (publicKey != null) {
+                Clipboard.setData(ClipboardData(text: publicKey));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Key copied to clipboard')),
+                );
+              }
+            },
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _acceptShareFromLink() {
+    final controller = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Accept Share'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Paste the share link or token:'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                hintText: 'fula://share/... or paste token',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final input = controller.text.trim();
+              if (input.isEmpty) return;
+              
+              Navigator.pop(context);
+              
+              final notifier = ref.read(sharesProvider.notifier);
+              AcceptedShare? accepted;
+              
+              if (input.startsWith('fula://') || input.contains('?token=')) {
+                accepted = await notifier.acceptShareFromUrl(input);
+              } else {
+                accepted = await notifier.acceptShare(input);
+              }
+              
+              if (!context.mounted) return;
+              
+              final messenger = ScaffoldMessenger.of(context);
+              if (accepted != null) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Share accepted: ${accepted.pathScope}'),
+                  ),
+                );
+                _tabController.animateTo(1);
+              } else {
+                final error = ref.read(sharesProvider).error;
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(error ?? 'Failed to accept share'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OutgoingSharesTab extends ConsumerWidget {
+  const _OutgoingSharesTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sharesState = ref.watch(sharesProvider);
+    
+    if (sharesState.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    
+    final shares = sharesState.outgoingShares;
+    
+    if (shares.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              LucideIcons.share2,
+              size: 64,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No shares yet',
+              style: TextStyle(
+                fontSize: 18,
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Share files from the file browser',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[500],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: shares.length,
+      itemBuilder: (context, index) {
+        final share = shares[index];
+        return _OutgoingShareCard(share: share);
+      },
+    );
+  }
+}
+
+class _OutgoingShareCard extends ConsumerWidget {
+  final OutgoingShare share;
+
+  const _OutgoingShareCard({required this.share});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isExpired = share.isExpired;
+    final isRevoked = share.isRevoked;
+    
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: isRevoked
+              ? Colors.red[100]
+              : isExpired
+                  ? Colors.orange[100]
+                  : Colors.green[100],
+          child: Icon(
+            isRevoked
+                ? LucideIcons.ban
+                : isExpired
+                    ? LucideIcons.clock
+                    : LucideIcons.share2,
+            color: isRevoked
+                ? Colors.red
+                : isExpired
+                    ? Colors.orange
+                    : Colors.green,
+          ),
+        ),
+        title: Text(share.recipientName),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(share.pathScope),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                _PermissionChip(permissions: share.permissions),
+                const SizedBox(width: 8),
+                if (isRevoked)
+                  const _StatusChip(label: 'Revoked', color: Colors.red)
+                else if (isExpired)
+                  const _StatusChip(label: 'Expired', color: Colors.orange)
+                else if (share.token.daysUntilExpiry != null)
+                  _StatusChip(
+                    label: '${share.token.daysUntilExpiry}d left',
+                    color: Colors.green,
+                  ),
+              ],
+            ),
+          ],
+        ),
+        trailing: PopupMenuButton<String>(
+          onSelected: (value) => _handleAction(context, ref, value),
+          itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'copy',
+              child: ListTile(
+                leading: Icon(LucideIcons.copy),
+                title: Text('Copy Link'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            if (!isRevoked)
+              const PopupMenuItem(
+                value: 'revoke',
+                child: ListTile(
+                  leading: Icon(LucideIcons.ban, color: Colors.red),
+                  title: Text('Revoke', style: TextStyle(color: Colors.red)),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _handleAction(BuildContext context, WidgetRef ref, String action) async {
+    switch (action) {
+      case 'copy':
+        final link = ref.read(sharesProvider.notifier).generateShareLink(share.token);
+        Clipboard.setData(ClipboardData(text: link));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Share link copied')),
+        );
+        break;
+      case 'revoke':
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Revoke Share?'),
+            content: Text(
+              'This will revoke ${share.recipientName}\'s access to ${share.pathScope}',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text('Revoke'),
+              ),
+            ],
+          ),
+        );
+        
+        if (confirmed == true) {
+          await ref.read(sharesProvider.notifier).revokeShare(share.id);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Share revoked')),
+            );
+          }
+        }
+        break;
+    }
+  }
+}
+
+class _AcceptedSharesTab extends ConsumerWidget {
+  const _AcceptedSharesTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sharesState = ref.watch(sharesProvider);
+    
+    if (sharesState.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    
+    final shares = sharesState.acceptedShares;
+    
+    if (shares.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              LucideIcons.folderInput,
+              size: 64,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No shared files',
+              style: TextStyle(
+                fontSize: 18,
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Accept shares using the button below',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[500],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: shares.length,
+      itemBuilder: (context, index) {
+        final share = shares[index];
+        return _AcceptedShareCard(share: share);
+      },
+    );
+  }
+}
+
+class _AcceptedShareCard extends ConsumerWidget {
+  final AcceptedShare share;
+
+  const _AcceptedShareCard({required this.share});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isExpired = share.isExpired;
+    
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: isExpired ? Colors.orange[100] : Colors.blue[100],
+          child: Icon(
+            isExpired ? LucideIcons.clock : LucideIcons.folderInput,
+            color: isExpired ? Colors.orange : Colors.blue,
+          ),
+        ),
+        title: Text(share.pathScope.split('/').where((s) => s.isNotEmpty).lastOrNull ?? share.pathScope),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${share.bucket}/${share.pathScope}'),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                _PermissionChip(permissions: share.permissions),
+                const SizedBox(width: 8),
+                if (isExpired)
+                  const _StatusChip(label: 'Expired', color: Colors.orange)
+                else if (share.token.daysUntilExpiry != null)
+                  _StatusChip(
+                    label: '${share.token.daysUntilExpiry}d left',
+                    color: Colors.blue,
+                  ),
+              ],
+            ),
+          ],
+        ),
+        trailing: PopupMenuButton<String>(
+          onSelected: (value) => _handleAction(context, ref, value),
+          itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'browse',
+              child: ListTile(
+                leading: Icon(LucideIcons.folderOpen),
+                title: Text('Browse'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'remove',
+              child: ListTile(
+                leading: Icon(LucideIcons.trash2, color: Colors.red),
+                title: Text('Remove', style: TextStyle(color: Colors.red)),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _handleAction(BuildContext context, WidgetRef ref, String action) async {
+    switch (action) {
+      case 'browse':
+        if (share.isExpired) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('This share has expired'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          return;
+        }
+        context.push(
+          '/fula?bucket=${Uri.encodeComponent(share.bucket)}&prefix=${Uri.encodeComponent(share.pathScope)}',
+        );
+        break;
+      case 'remove':
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Remove Share?'),
+            content: const Text(
+              'This will remove this share from your list. You can accept it again if you have the link.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text('Remove'),
+              ),
+            ],
+          ),
+        );
+        
+        if (confirmed == true) {
+          await ref.read(sharesProvider.notifier).removeAcceptedShare(share.token.id);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Share removed')),
+            );
+          }
+        }
+        break;
+    }
+  }
+}
+
+class _PermissionChip extends StatelessWidget {
+  final SharePermissions permissions;
+
+  const _PermissionChip({required this.permissions});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        permissions.displayName,
+        style: const TextStyle(fontSize: 12),
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _StatusChip({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 12, color: color),
+      ),
+    );
+  }
+}
