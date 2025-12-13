@@ -292,34 +292,41 @@ class FileService {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final trashPath = p.join(trashDir.path, '${timestamp}_$name');
 
-    final entity = FileSystemEntity.typeSync(path);
-    if (entity == FileSystemEntityType.file) {
-      final file = File(path);
-      if (!await file.exists()) {
-        throw FileServiceException('File no longer exists: $path');
-      }
+    final file = File(path);
+    final dir = Directory(path);
+    final isFile = await file.exists();
+    final isDir = !isFile && await dir.exists();
+    
+    if (!isFile && !isDir) {
+      throw FileServiceException('File no longer exists');
+    }
+    
+    if (isFile) {
       try {
-        // Try rename first (faster, same filesystem)
         await file.rename(trashPath);
       } catch (e) {
         // Cross-device: copy then delete
+        if (!await file.exists()) {
+          throw FileServiceException('File no longer exists');
+        }
         await file.copy(trashPath);
-        await file.delete();
+        if (await file.exists()) {
+          await file.delete();
+        }
       }
-    } else if (entity == FileSystemEntityType.directory) {
-      final dir = Directory(path);
-      if (!await dir.exists()) {
-        throw FileServiceException('Directory no longer exists: $path');
-      }
+    } else {
       try {
         await dir.rename(trashPath);
       } catch (e) {
         // Cross-device: copy recursively then delete
+        if (!await dir.exists()) {
+          throw FileServiceException('Folder no longer exists');
+        }
         await _copyDirectory(dir, Directory(trashPath));
-        await dir.delete(recursive: true);
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
       }
-    } else {
-      throw FileServiceException('Path does not exist: $path');
     }
   }
 
@@ -371,24 +378,39 @@ class FileService {
   Future<List<LocalFile>> searchFiles(String query, {String? rootPath}) async {
     final results = <LocalFile>[];
     final roots = rootPath != null ? [Directory(rootPath)] : await getStorageRoots();
+    final queryLower = query.toLowerCase();
     
     for (final root in roots) {
-      try {
-        await for (final entity in root.list(recursive: true, followLinks: false)) {
-          final name = entity.path.split(Platform.pathSeparator).last;
-          if (name.toLowerCase().contains(query.toLowerCase())) {
-            final stat = await entity.stat();
-            results.add(LocalFile.fromFileSystemEntity(entity, stat));
-            if (results.length >= 100) break;
-          }
-        }
-      } catch (e) {
-        debugPrint('Search error in ${root.path}: $e');
-      }
+      await _searchDirectory(root, queryLower, results);
       if (results.length >= 100) break;
     }
     
     return results;
+  }
+  
+  Future<void> _searchDirectory(Directory dir, String query, List<LocalFile> results) async {
+    if (results.length >= 100) return;
+    if (_shouldSkipDirectory(dir.path)) return;
+    
+    try {
+      await for (final entity in dir.list(followLinks: false)) {
+        if (results.length >= 100) return;
+        
+        final name = p.basename(entity.path);
+        
+        if (entity is Directory) {
+          // Search subdirectory
+          await _searchDirectory(entity, query, results);
+        } else if (name.toLowerCase().contains(query)) {
+          try {
+            final stat = await entity.stat();
+            results.add(LocalFile.fromFileSystemEntity(entity, stat));
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      // Skip directories we can't access
+    }
   }
 
   Future<Directory> getCategoryDirectory(FileCategory category) async {

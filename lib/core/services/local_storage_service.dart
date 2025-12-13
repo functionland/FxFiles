@@ -67,17 +67,17 @@ class LocalStorageService {
     // Add new
     await _recentFilesBox.add(file);
     
-    // Keep only last 50
-    if (_recentFilesBox.length > 50) {
+    // Keep only last 30
+    if (_recentFilesBox.length > 30) {
       final toDelete = _recentFilesBox.values.toList()
         ..sort((a, b) => a.accessedAt.compareTo(b.accessedAt));
-      for (var i = 0; i < _recentFilesBox.length - 50; i++) {
+      for (var i = 0; i < _recentFilesBox.length - 30; i++) {
         await toDelete[i].delete();
       }
     }
   }
 
-  List<RecentFile> getRecentFiles({int limit = 20}) {
+  List<RecentFile> getRecentFiles({int limit = 30}) {
     final files = _recentFilesBox.values.toList()
       ..sort((a, b) => b.accessedAt.compareTo(a.accessedAt));
     return files.take(limit).toList();

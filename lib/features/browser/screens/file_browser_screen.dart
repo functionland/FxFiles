@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:open_filex/open_filex.dart';
 
 class FileBrowserScreen extends ConsumerStatefulWidget {
   final String? initialPath;
@@ -456,6 +457,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   AppBar _buildSelectionAppBar() {
+    final isLoggedIn = AuthService.instance.isAuthenticated;
     return AppBar(
       leading: IconButton(
         icon: const Icon(LucideIcons.x),
@@ -463,13 +465,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       ),
       title: Text('${_selectedFiles.length} selected'),
       actions: [
-        IconButton(
+        if (isLoggedIn) IconButton(
           icon: const Icon(LucideIcons.upload),
           tooltip: 'Upload to cloud',
           onPressed: _uploadSelected,
         ),
         IconButton(
-          icon: const Icon(LucideIcons.share),
+          icon: const Icon(LucideIcons.share2),
           tooltip: 'Share',
           onPressed: _shareSelected,
         ),
@@ -547,6 +549,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             ),
             const Divider(height: 1),
             // Local actions
+            if (!file.isDirectory) ListTile(
+              leading: const Icon(LucideIcons.externalLink),
+              title: const Text('Open with...'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openWithExternalApp(file);
+              },
+            ),
             ListTile(
               leading: const Icon(LucideIcons.share),
               title: const Text('Share'),
@@ -653,11 +663,33 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     );
 
     if (confirmed == true) {
-      for (final path in _selectedFiles) {
-        await FileService.instance.moveToTrash(path);
+      int deleted = 0;
+      int failed = 0;
+      for (final path in _selectedFiles.toList()) {
+        try {
+          await FileService.instance.moveToTrash(path);
+          deleted++;
+        } catch (e) {
+          failed++;
+        }
       }
       _clearSelection();
-      _loadFiles();
+      if (_isCategoryMode) {
+        _loadCategoryFiles();
+      } else {
+        _loadFiles();
+      }
+      if (mounted) {
+        if (failed > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Deleted $deleted, $failed not found')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Moved $deleted items to trash')),
+          );
+        }
+      }
     }
   }
 
@@ -702,6 +734,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           );
         }
       }
+    }
+  }
+
+  Future<void> _openWithExternalApp(LocalFile file) async {
+    final result = await OpenFilex.open(file.path);
+    if (result.type != ResultType.done && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open file: ${result.message}')),
+      );
     }
   }
 
@@ -772,8 +813,26 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     );
 
     if (confirmed == true) {
-      await FileService.instance.moveToTrash(file.path);
-      _loadFiles();
+      try {
+        await FileService.instance.moveToTrash(file.path);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Moved to trash')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('$e'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+      // Always refresh the list
+      if (_isCategoryMode) {
+        _loadCategoryFiles();
+      } else {
+        _loadFiles();
+      }
     }
   }
 }
