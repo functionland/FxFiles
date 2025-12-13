@@ -1,4 +1,4 @@
-package com.fula.files.fula_files
+package land.fx.files
 
 import io.flutter.embedding.android.FlutterActivity
 

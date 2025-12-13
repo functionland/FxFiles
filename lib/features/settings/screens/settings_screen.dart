@@ -499,9 +499,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   void _showSignInDialog() {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Sign In'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -510,18 +511,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               leading: const Icon(LucideIcons.chrome),
               title: const Text('Google'),
               onTap: () async {
-                Navigator.pop(context);
-                await AuthService.instance.signInWithGoogle();
-                setState(() {});
+                Navigator.pop(dialogContext);
+                try {
+                  final user = await AuthService.instance.signInWithGoogle();
+                  if (user != null) {
+                    messenger.showSnackBar(
+                      SnackBar(content: Text('Signed in as ${user.email}')),
+                    );
+                  }
+                } catch (e) {
+                  messenger.showSnackBar(
+                    SnackBar(content: Text('Sign-in failed: $e'), backgroundColor: Colors.red),
+                  );
+                }
+                if (mounted) setState(() {});
               },
             ),
             ListTile(
               leading: const Icon(LucideIcons.apple),
               title: const Text('Apple'),
               onTap: () async {
-                Navigator.pop(context);
-                await AuthService.instance.signInWithApple();
-                setState(() {});
+                Navigator.pop(dialogContext);
+                try {
+                  final user = await AuthService.instance.signInWithApple();
+                  if (user != null) {
+                    messenger.showSnackBar(
+                      SnackBar(content: Text('Signed in as ${user.email}')),
+                    );
+                  }
+                } catch (e) {
+                  messenger.showSnackBar(
+                    SnackBar(content: Text('Sign-in failed: $e'), backgroundColor: Colors.red),
+                  );
+                }
+                if (mounted) setState(() {});
               },
             ),
           ],

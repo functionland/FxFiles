@@ -8,17 +8,17 @@ import 'package:fula_files/core/services/encryption_service.dart';
 
 enum AuthProvider { google, apple, microsoft }
 
-// TODO: Replace with your actual Google OAuth Client IDs from Google Cloud Console
+// Google OAuth Configuration
 // See: https://console.cloud.google.com/apis/credentials
 // 
-// IMPORTANT: For Android, you need BOTH:
-// 1. Android OAuth Client ID (with your app's SHA-1 fingerprint)
-// 2. Web Client ID (used as serverClientId for backend auth)
+// Required setup in Google Cloud Console:
+// 1. Create an Android OAuth client with package: land.fx.files and your SHA-1
+// 2. Create a Web OAuth client (for serverClientId to get idToken)
+// 3. Configure OAuth consent screen
 //
-// Create a Web application OAuth client in Google Cloud Console and use its Client ID below
-const String _googleClientIdAndroid = '407708964452-v2fepq08ndrrl9m567r9qug4tgentknh.apps.googleusercontent.com'; // Android OAuth Client ID
+// Note: For Android, clientId is auto-detected from the signing config
 const String _googleClientIdIOS = ''; // iOS OAuth Client ID  
-const String _googleServerClientId = '407708964452-v2fepq08ndrrl9m567r9qug4tgentknh.apps.googleusercontent.com'; // Web Client ID (serverClientId) - Using Android ID as fallback
+const String _googleServerClientId = '407708964452-9gh602vsccdvkq6bmsj5pgf4pj94510v.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
 
 class AuthUser {
   final String id;
@@ -75,8 +75,7 @@ class AuthService {
     String? serverClientId;
     
     if (Platform.isAndroid) {
-      // Android requires serverClientId (Web client ID from Google Cloud Console)
-      clientId = _googleClientIdAndroid.isNotEmpty ? _googleClientIdAndroid : null;
+      // Android: clientId is auto-detected, only serverClientId needed for idToken
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     } else if (Platform.isIOS) {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
@@ -135,7 +134,7 @@ class AuthService {
       
       if (!_googleSignIn.supportsAuthenticate()) {
         debugPrint('Google Sign-In: authenticate not supported on this platform');
-        return null;
+        throw Exception('Google Sign-In not supported on this device');
       }
       
       final account = await _googleSignIn.authenticate();
@@ -143,12 +142,17 @@ class AuthService {
       return _currentUser;
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
-        return null;
+        return null; // User cancelled, not an error
       }
       debugPrint('Google Sign-In error: ${e.code} - ${e.description}');
-      rethrow;
+      throw Exception('Google Sign-In failed: ${e.description ?? e.code.name}');
     } catch (e) {
       debugPrint('Google Sign-In error: $e');
+      // Check for common Credential Manager errors
+      final errorStr = e.toString();
+      if (errorStr.contains('GetCredentialResponse') || errorStr.contains('CredMan')) {
+        throw Exception('Google Sign-In configuration error. Please check SHA-1 fingerprint and OAuth client IDs in Google Cloud Console.');
+      }
       rethrow;
     }
   }
