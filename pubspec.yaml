@@ -53,7 +53,7 @@ dependencies:
   
   # Utils
   intl: ^0.20.2
-  path: ^1.9.1
+  path: ^1.9.0
   uuid: ^4.5.1
   collection: ^1.19.0
   equatable: ^2.0.7
@@ -75,7 +75,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
 
 flutter_launcher_icons:
