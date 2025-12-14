@@ -9,10 +9,12 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
+import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 import 'package:open_filex/open_filex.dart';
 
@@ -435,6 +437,16 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     _loadFiles();
   }
 
+  // Determines if system back gesture should pop the route or be handled internally
+  bool _canPopNavigation() {
+    if (_isCategoryMode) {
+      // In category mode, allow system pop
+      return true;
+    }
+    // In folder mode, only allow pop if at root
+    return _currentPath == _rootPath || Directory(_currentPath).parent.path == _currentPath;
+  }
+
   void _toggleSelection(LocalFile file) {
     setState(() {
       if (_selectedFiles.contains(file.path)) {
@@ -460,11 +472,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ? _categoryTitle(widget.category!)
         : _currentPath.split(Platform.pathSeparator).last;
 
-    return Scaffold(
-      appBar: _selectionMode ? _buildSelectionAppBar() : AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _navigateUp,
+    return PopScope(
+      canPop: _canPopNavigation(),
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _navigateUp();
+        }
+      },
+      child: Scaffold(
+        appBar: _selectionMode ? _buildSelectionAppBar() : AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _navigateUp,
         ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -478,6 +497,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           ],
         ),
         actions: [
+          // Sync icon for categories
+          if (_isCategoryMode && AuthService.instance.isAuthenticated)
+            _buildCategorySyncIcon(),
           IconButton(
             icon: const Icon(LucideIcons.arrowUpDown),
             tooltip: 'Sort',
@@ -546,6 +568,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                     },
                   ),
                 ),
+      ),
     );
   }
 
@@ -633,6 +656,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                 _uploadFile(file);
               } : null,
             ),
+            // Folder sync option - only for directories
+            if (file.isDirectory && isLoggedIn)
+              ListTile(
+                leading: Icon(
+                  _isFolderSyncEnabled(file.path) ? LucideIcons.checkCircle : LucideIcons.folderSync,
+                  color: _isFolderSyncEnabled(file.path) ? Colors.green : Colors.blue,
+                ),
+                title: Text(_isFolderSyncEnabled(file.path) ? 'Auto-Sync Enabled' : 'Enable Auto-Sync'),
+                subtitle: Text(_isFolderSyncEnabled(file.path) ? 'Tap to manage' : 'Auto-upload new files'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showFolderSyncOptions(file);
+                },
+              ),
             ListTile(
               leading: Icon(LucideIcons.share2, color: isLoggedIn ? null : Colors.grey),
               title: Text('Create Share Link', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
@@ -695,19 +732,24 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _uploadFile(LocalFile file) async {
     try {
-      // Determine bucket based on file category
-      final category = FileCategory.fromPath(file.path);
-      final bucket = category.bucketName;
-      
-      await SyncService.instance.queueUpload(
-        localPath: file.path,
-        remoteBucket: bucket,
-        remoteKey: file.name,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Queued for upload: ${file.name}')),
+      if (file.isDirectory) {
+        // Upload folder recursively
+        await _uploadFolder(file);
+      } else {
+        // Upload single file
+        final category = FileCategory.fromPath(file.path);
+        final bucket = category.bucketName;
+        
+        await SyncService.instance.queueUpload(
+          localPath: file.path,
+          remoteBucket: bucket,
+          remoteKey: file.name,
         );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Queued for upload: ${file.name}')),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -718,12 +760,367 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  Future<void> _uploadFolder(LocalFile folder) async {
+    final dir = Directory(folder.path);
+    final folderName = folder.name;
+    int fileCount = 0;
+    
+    // Get all files recursively
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      if (entity is File) {
+        // Calculate relative path from folder root
+        final relativePath = entity.path.substring(folder.path.length + 1);
+        final remoteKey = '$folderName/$relativePath'.replaceAll('\\', '/');
+        
+        // Determine bucket - use 'other' for mixed folder contents
+        final category = FileCategory.fromPath(entity.path);
+        final bucket = category.bucketName;
+        
+        await SyncService.instance.queueUpload(
+          localPath: entity.path,
+          remoteBucket: bucket,
+          remoteKey: remoteKey,
+        );
+        fileCount++;
+      }
+    }
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Queued $fileCount files from "$folderName" for upload')),
+      );
+    }
+  }
+
   Future<void> _uploadSelected() async {
     for (final path in _selectedFiles) {
       final file = _files.firstWhere((f) => f.path == path);
       await _uploadFile(file);
     }
     _clearSelection();
+  }
+
+  // Build sync icon for category with status indication
+  Widget _buildCategorySyncIcon() {
+    final category = _categoryFromString(widget.category!);
+    final syncPath = 'category:${widget.category}';
+    final folderSync = FolderWatchService.instance.getFolderSync(syncPath);
+    
+    IconData icon;
+    Color? color;
+    String tooltip;
+    
+    if (folderSync == null || folderSync.status == FolderSyncStatus.disabled) {
+      icon = LucideIcons.cloudOff;
+      color = Colors.grey;
+      tooltip = 'Enable auto-sync';
+    } else if (folderSync.status == FolderSyncStatus.syncing) {
+      icon = LucideIcons.refreshCw;
+      color = Colors.blue;
+      tooltip = 'Syncing...';
+    } else if (folderSync.status == FolderSyncStatus.synced) {
+      icon = LucideIcons.checkCircle;
+      color = Colors.green;
+      tooltip = 'Synced';
+    } else if (folderSync.status == FolderSyncStatus.error) {
+      icon = LucideIcons.cloudOff;
+      color = Colors.red;
+      tooltip = 'Sync error';
+    } else {
+      icon = LucideIcons.cloud;
+      color = Colors.blue;
+      tooltip = 'Auto-sync enabled';
+    }
+    
+    return IconButton(
+      icon: Icon(icon, color: color),
+      tooltip: tooltip,
+      onPressed: () => _showCategorySyncOptions(category),
+    );
+  }
+
+  void _showCategorySyncOptions(FileCategory category) {
+    final syncPath = 'category:${widget.category}';
+    final folderSync = FolderWatchService.instance.getFolderSync(syncPath);
+    final isEnabled = folderSync?.isEnabled ?? false;
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Auto-Sync ${_categoryTitle(widget.category!)}',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            if (isEnabled) ...[
+              ListTile(
+                leading: Icon(LucideIcons.refreshCw, color: Colors.blue),
+                title: const Text('Sync Now'),
+                subtitle: const Text('Upload all unsynced files'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _syncCategoryNow(category);
+                },
+              ),
+              ListTile(
+                leading: Icon(LucideIcons.cloudOff, color: Colors.red),
+                title: const Text('Disable Auto-Sync'),
+                subtitle: const Text('Stop automatic uploads'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _disableCategorySync();
+                },
+              ),
+            ] else ...[
+              ListTile(
+                leading: Icon(LucideIcons.cloud, color: Colors.blue),
+                title: const Text('Enable Auto-Sync'),
+                subtitle: const Text('Automatically upload new files'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enableCategorySync(category);
+                },
+              ),
+            ],
+            if (folderSync != null) ...[
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Status: ${_syncStatusText(folderSync.status)}'),
+                    if (folderSync.totalFiles > 0)
+                      Text('Progress: ${folderSync.syncedFiles}/${folderSync.totalFiles} files'),
+                    if (folderSync.lastSyncedAt != null)
+                      Text('Last synced: ${_formatDateTime(folderSync.lastSyncedAt!)}'),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _syncStatusText(FolderSyncStatus status) {
+    switch (status) {
+      case FolderSyncStatus.disabled: return 'Disabled';
+      case FolderSyncStatus.enabled: return 'Enabled';
+      case FolderSyncStatus.syncing: return 'Syncing...';
+      case FolderSyncStatus.synced: return 'Synced';
+      case FolderSyncStatus.error: return 'Error';
+    }
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+    if (diff.inDays < 1) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
+  Future<void> _enableCategorySync(FileCategory category) async {
+    try {
+      final syncPath = 'category:${widget.category}';
+      await FolderWatchService.instance.enableFolderSync(
+        path: syncPath,
+        targetBucket: category.bucketName,
+        categoryName: widget.category,
+        isCategory: true,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Auto-sync enabled for ${_categoryTitle(widget.category!)}')),
+        );
+        setState(() {}); // Refresh UI
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to enable sync: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _disableCategorySync() async {
+    try {
+      final syncPath = 'category:${widget.category}';
+      await FolderWatchService.instance.disableFolderSync(syncPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Auto-sync disabled for ${_categoryTitle(widget.category!)}')),
+        );
+        setState(() {}); // Refresh UI
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to disable sync: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncCategoryNow(FileCategory category) async {
+    try {
+      final syncPath = 'category:${widget.category}';
+      await FolderWatchService.instance.syncFolder(syncPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Started syncing ${_categoryTitle(widget.category!)}')),
+        );
+        setState(() {}); // Refresh UI
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // Folder sync helpers
+  bool _isFolderSyncEnabled(String path) {
+    return LocalStorageService.instance.isFolderSyncEnabled(path);
+  }
+
+  void _showFolderSyncOptions(LocalFile folder) {
+    final folderSync = FolderWatchService.instance.getFolderSync(folder.path);
+    final isEnabled = folderSync?.isEnabled ?? false;
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Auto-Sync "${folder.name}"',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            if (isEnabled) ...[
+              ListTile(
+                leading: Icon(LucideIcons.refreshCw, color: Colors.blue),
+                title: const Text('Sync Now'),
+                subtitle: const Text('Upload all unsynced files'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _syncFolderNow(folder);
+                },
+              ),
+              ListTile(
+                leading: Icon(LucideIcons.cloudOff, color: Colors.red),
+                title: const Text('Disable Auto-Sync'),
+                subtitle: const Text('Stop automatic uploads'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _disableFolderSync(folder);
+                },
+              ),
+            ] else ...[
+              ListTile(
+                leading: Icon(LucideIcons.cloud, color: Colors.blue),
+                title: const Text('Enable Auto-Sync'),
+                subtitle: const Text('Automatically upload new files'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enableFolderSync(folder);
+                },
+              ),
+            ],
+            if (folderSync != null) ...[
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Status: ${_syncStatusText(folderSync.status)}'),
+                    if (folderSync.totalFiles > 0)
+                      Text('Progress: ${folderSync.syncedFiles}/${folderSync.totalFiles} files'),
+                    if (folderSync.lastSyncedAt != null)
+                      Text('Last synced: ${_formatDateTime(folderSync.lastSyncedAt!)}'),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _enableFolderSync(LocalFile folder) async {
+    try {
+      final category = FileCategory.fromPath(folder.path);
+      await FolderWatchService.instance.enableFolderSync(
+        path: folder.path,
+        targetBucket: category.bucketName,
+        isCategory: false,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Auto-sync enabled for "${folder.name}"')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to enable sync: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _disableFolderSync(LocalFile folder) async {
+    try {
+      await FolderWatchService.instance.disableFolderSync(folder.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Auto-sync disabled for "${folder.name}"')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to disable sync: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncFolderNow(LocalFile folder) async {
+    try {
+      await FolderWatchService.instance.syncFolder(folder.path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Started syncing "${folder.name}"')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   void _shareSelected() {

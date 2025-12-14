@@ -105,8 +105,33 @@ class AppTheme {
         space: 1,
       ),
       iconTheme: const IconThemeData(
-        color: AppColors.content1Light,
+        color: AppColors.iconLight,
         size: 24,
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: AppColors.bottomSheetLight,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(radiusL)),
+        ),
+        showDragHandle: true,
+        dragHandleColor: AppColors.content3Light,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: AppColors.cardLight,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusM)),
+        titleTextStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: AppColors.content1Light),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: AppColors.content1Light,
+        contentTextStyle: const TextStyle(color: Colors.white),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusS)),
+        behavior: SnackBarBehavior.floating,
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: AppColors.backgroundPrimaryLight,
+        selectedColor: AppColors.primary.withValues(alpha: 0.2),
+        labelStyle: const TextStyle(fontSize: 14, color: AppColors.content1Light),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusS)),
       ),
       textTheme: const TextTheme(
         headlineLarge: TextStyle(fontSize: 28, fontWeight: FontWeight.w600, color: AppColors.content1Light),
@@ -213,8 +238,33 @@ class AppTheme {
         space: 1,
       ),
       iconTheme: const IconThemeData(
-        color: AppColors.content1Dark,
+        color: AppColors.iconDark,
         size: 24,
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: AppColors.bottomSheetDark,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(radiusL)),
+        ),
+        showDragHandle: true,
+        dragHandleColor: AppColors.content3Dark,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: AppColors.cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusM)),
+        titleTextStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: AppColors.content1Dark),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: AppColors.backgroundTertiaryDark,
+        contentTextStyle: const TextStyle(color: AppColors.content1Dark),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusS)),
+        behavior: SnackBarBehavior.floating,
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: AppColors.backgroundSecondaryDark,
+        selectedColor: AppColors.primary.withValues(alpha: 0.3),
+        labelStyle: const TextStyle(fontSize: 14, color: AppColors.content1Dark),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radiusS)),
       ),
       textTheme: const TextTheme(
         headlineLarge: TextStyle(fontSize: 28, fontWeight: FontWeight.w600, color: AppColors.content1Dark),

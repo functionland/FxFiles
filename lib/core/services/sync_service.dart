@@ -24,6 +24,10 @@ class SyncService {
 
   bool _isProcessingUpload = false;
   
+  // Parallel upload configuration
+  static const int maxParallelUploads = 4;
+  int _activeUploads = 0;
+  
   void addListener(SyncStatusCallback callback) {
     _listeners.add(callback);
   }
@@ -91,9 +95,32 @@ class SyncService {
   }
 
   Future<void> processUploadQueue() async {
-    while (_uploadQueue.isNotEmpty) {
-      final task = _uploadQueue.removeAt(0);
-      await _executeUpload(task);
+    // Process uploads in parallel batches
+    final futures = <Future<void>>[];
+    
+    while (_uploadQueue.isNotEmpty || futures.isNotEmpty) {
+      // Start new uploads up to max parallel limit
+      while (_activeUploads < maxParallelUploads && _uploadQueue.isNotEmpty) {
+        final task = _uploadQueue.removeAt(0);
+        _activeUploads++;
+        
+        final future = _executeUpload(task).whenComplete(() {
+          _activeUploads--;
+        });
+        futures.add(future);
+      }
+      
+      // Wait for at least one to complete if at max capacity
+      if (futures.isNotEmpty) {
+        await Future.any(futures);
+        // Remove completed futures
+        futures.removeWhere((f) => f == Future.value());
+      }
+      
+      // Small delay to prevent tight loop
+      if (_uploadQueue.isNotEmpty && _activeUploads >= maxParallelUploads) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
     }
   }
 

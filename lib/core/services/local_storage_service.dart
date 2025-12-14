@@ -1,6 +1,7 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
+import 'package:fula_files/core/models/folder_sync.dart';
 
 class LocalStorageService {
   LocalStorageService._();
@@ -10,20 +11,35 @@ class LocalStorageService {
   late Box<SyncState> _syncStateBox;
   late Box<RecentFile> _recentFilesBox;
   late Box<String> _starredFilesBox;
+  late Box<FolderSync> _folderSyncBox;
 
   Future<void> init() async {
     await Hive.initFlutter();
     
-    // Register adapters
-    Hive.registerAdapter(SyncStatusAdapter());
-    Hive.registerAdapter(SyncStateAdapter());
-    Hive.registerAdapter(RecentFileAdapter());
+    // Register adapters (check if not already registered)
+    // Type IDs: SyncStatus=0, SyncState=1, RecentFile=2, FolderSyncStatus=4, FolderSync=5
+    if (!Hive.isAdapterRegistered(0)) {
+      Hive.registerAdapter(SyncStatusAdapter());
+    }
+    if (!Hive.isAdapterRegistered(1)) {
+      Hive.registerAdapter(SyncStateAdapter());
+    }
+    if (!Hive.isAdapterRegistered(2)) {
+      Hive.registerAdapter(RecentFileAdapter());
+    }
+    if (!Hive.isAdapterRegistered(4)) {
+      Hive.registerAdapter(FolderSyncStatusAdapter());
+    }
+    if (!Hive.isAdapterRegistered(5)) {
+      Hive.registerAdapter(FolderSyncAdapter());
+    }
 
     // Open boxes
     _settingsBox = await Hive.openBox('settings');
     _syncStateBox = await Hive.openBox<SyncState>('sync_states');
     _recentFilesBox = await Hive.openBox<RecentFile>('recent_files');
     _starredFilesBox = await Hive.openBox<String>('starred_files');
+    _folderSyncBox = await Hive.openBox<FolderSync>('folder_syncs');
   }
 
   // Settings
@@ -124,11 +140,57 @@ class LocalStorageService {
     await _starredFilesBox.clear();
   }
 
+  // Folder Sync
+  Future<void> addFolderSync(FolderSync folderSync) async {
+    await _folderSyncBox.put(folderSync.path, folderSync);
+  }
+
+  FolderSync? getFolderSync(String path) {
+    return _folderSyncBox.get(path);
+  }
+
+  List<FolderSync> getAllFolderSyncs() {
+    return _folderSyncBox.values.toList();
+  }
+
+  List<FolderSync> getEnabledFolderSyncs() {
+    return _folderSyncBox.values
+        .where((fs) => fs.status != FolderSyncStatus.disabled)
+        .toList();
+  }
+
+  Future<void> updateFolderSyncStatus(String path, FolderSyncStatus status, {
+    int? totalFiles,
+    int? syncedFiles,
+    String? errorMessage,
+  }) async {
+    final existing = _folderSyncBox.get(path);
+    if (existing != null) {
+      await _folderSyncBox.put(path, existing.copyWith(
+        status: status,
+        totalFiles: totalFiles,
+        syncedFiles: syncedFiles,
+        errorMessage: errorMessage,
+        lastSyncedAt: status == FolderSyncStatus.synced ? DateTime.now() : null,
+      ));
+    }
+  }
+
+  Future<void> deleteFolderSync(String path) async {
+    await _folderSyncBox.delete(path);
+  }
+
+  bool isFolderSyncEnabled(String path) {
+    final sync = _folderSyncBox.get(path);
+    return sync != null && sync.isEnabled;
+  }
+
   // Cleanup
   Future<void> clearAll() async {
     await _settingsBox.clear();
     await _syncStateBox.clear();
     await _recentFilesBox.clear();
     await _starredFilesBox.clear();
+    await _folderSyncBox.clear();
   }
 }
