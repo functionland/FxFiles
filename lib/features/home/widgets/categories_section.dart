@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fula_files/app/theme/app_theme.dart';
 
 class CategoriesSection extends StatelessWidget {
   const CategoriesSection({super.key});
@@ -11,7 +12,7 @@ class CategoriesSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
           child: Text(
             'Categories',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -125,27 +126,27 @@ class _CategoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      margin: const EdgeInsets.all(4),
+      margin: const EdgeInsets.all(AppTheme.spacing4),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppTheme.radiusS),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+          padding: const EdgeInsets.symmetric(vertical: AppTheme.spacing16, horizontal: AppTheme.spacing8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(AppTheme.spacing12),
                 decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(12),
+                  color: color.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusM),
                 ),
                 child: Icon(icon, color: color, size: 24),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppTheme.spacing8),
               Text(
                 label,
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                style: Theme.of(context).textTheme.labelMedium,
               ),
             ],
           ),

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -197,13 +198,44 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ascending: _sortAscending,
       );
       
-      // Fetch cloud files for this category
+      // Fetch cloud files for this category and sync status
       List<FulaObject> cloudOnlyFiles = [];
       if (FulaApiService.instance.isConfigured && AuthService.instance.isAuthenticated) {
         try {
           final bucketName = category.bucketName;
           final cloudFiles = await FulaApiService.instance.listObjects(bucketName);
           debugPrint('Cloud files in $bucketName: ${cloudFiles.length}');
+          
+          // Create a map of cloud file names for quick lookup
+          final cloudFileMap = {for (var cf in cloudFiles) cf.key: cf};
+          
+          // Sync local file status with cloud
+          for (final localFile in result.files) {
+            final cloudFile = cloudFileMap[localFile.name];
+            final currentState = LocalStorageService.instance.getSyncState(localFile.path);
+            
+            if (cloudFile != null) {
+              // File exists on cloud - mark as synced if not already
+              if (currentState?.status != SyncStatus.synced) {
+                await LocalStorageService.instance.addSyncState(SyncState(
+                  localPath: localFile.path,
+                  remotePath: '$bucketName/${localFile.name}',
+                  remoteKey: localFile.name,
+                  bucket: bucketName,
+                  status: SyncStatus.synced,
+                  lastSyncedAt: cloudFile.lastModified ?? DateTime.now(),
+                  etag: cloudFile.etag,
+                  localSize: localFile.size,
+                  remoteSize: cloudFile.size,
+                ));
+              }
+            } else {
+              // File not on cloud - remove synced status if it was marked synced
+              if (currentState?.status == SyncStatus.synced) {
+                await LocalStorageService.instance.deleteSyncState(localFile.path);
+              }
+            }
+          }
           
           // Find files that are on cloud but not locally
           final localFileNames = result.files.map((f) => f.name).toSet();
@@ -564,12 +596,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Star/Unstar option
-            ListTile(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Star/Unstar option
+              ListTile(
               leading: Icon(isStarred ? LucideIcons.starOff : LucideIcons.star),
               title: Text(isStarred ? 'Remove from Starred' : 'Add to Starred'),
               onTap: () async {
@@ -652,7 +686,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             ),
             // Delete options based on sync status
             ..._buildDeleteOptions(ctx, file),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -874,8 +909,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     );
     
     try {
-      // Download file data from cloud
-      final data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
+      // Get encryption key for decryption
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      
+      Uint8List data;
+      if (encryptionKey != null) {
+        // Download and decrypt if we have an encryption key
+        data = await FulaApiService.instance.downloadAndDecrypt(
+          bucket,
+          cloudFile.key,
+          encryptionKey,
+        );
+        debugPrint('Downloaded and decrypted ${cloudFile.key}');
+      } else {
+        // Fallback to plain download if no encryption key
+        data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
+        debugPrint('Downloaded ${cloudFile.key} without decryption (no key)');
+      }
       
       // Get the appropriate download directory based on category
       final downloadPath = await _getDownloadPath(category, cloudFile.key);
@@ -888,7 +938,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       // Add sync state for the downloaded file
       await LocalStorageService.instance.addSyncState(SyncState(
         localPath: downloadPath,
-        remotePath: '${bucket}/${cloudFile.key}',
+        remotePath: '$bucket/${cloudFile.key}',
         remoteKey: cloudFile.key,
         bucket: bucket,
         status: SyncStatus.synced,

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:minio/minio.dart';
 import 'package:fula_files/core/models/fula_object.dart';

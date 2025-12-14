@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/app/theme/app_theme.dart';
 
 final storageInfoProvider = FutureProvider<List<_StorageInfo>>((ref) async {
   final roots = await FileService.instance.getStorageRoots();
@@ -57,7 +58,7 @@ class StorageSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
           child: Text(
             'Storage',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(

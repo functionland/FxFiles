@@ -5,6 +5,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/background_sync_service.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,6 +13,9 @@ void main() async {
   // Initialize services
   await SecureStorageService.instance.init();
   await LocalStorageService.instance.init();
+
+  // Check for existing auth session (restores sign-in state)
+  await AuthService.instance.checkExistingSession();
 
   // Initialize background sync
   await BackgroundSyncService.instance.initialize();
