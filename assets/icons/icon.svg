@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simplified version optimized for small sizes (favicon, notifications) -->
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fulaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22E8C8"/>
+      <stop offset="100%" stop-color="#1DB9A0"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="512" height="512" rx="102" fill="#0D1117"/>
+  
+  <!-- Simplified F shape -->
+  <path d="M 100 120 
+           L 290 120 
+           Q 330 120 330 160 
+           Q 330 200 290 200 
+           L 180 200 
+           L 180 260 
+           L 260 260 
+           Q 290 260 290 290 
+           Q 290 320 260 320 
+           L 180 320 
+           L 180 380 
+           Q 180 412 148 412 
+           Q 116 412 116 380 
+           L 116 160 
+           Q 116 120 156 120 
+           L 100 120 Z" 
+        fill="url(#fulaGrad)"/>
+  
+  <!-- File icon -->
+  <path d="M 350 200 
+           L 350 392 
+           Q 350 412 370 412 
+           L 412 412 
+           Q 432 412 432 392 
+           L 432 240 
+           L 392 200 
+           L 350 200 Z" 
+        fill="url(#fulaGrad)"/>
+  
+  <!-- Corner fold -->
+  <path d="M 392 200 L 392 240 L 432 240" 
+        fill="none" stroke="#0D1117" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
