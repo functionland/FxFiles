@@ -591,7 +591,37 @@ enum FileCategory {
   downloads,
   archives,
   starred,
-  other,
+  other;
+  
+  /// Get bucket name for this category (lowercase)
+  String get bucketName => name.toLowerCase();
+  
+  /// Get category from file extension
+  static FileCategory fromExtension(String extension) {
+    final ext = extension.toLowerCase();
+    if ({'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif', 'svg', 'raw', 'cr2', 'nef', 'arw'}.contains(ext)) {
+      return FileCategory.images;
+    }
+    if ({'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp', 'm4v', 'mpeg', 'mpg'}.contains(ext)) {
+      return FileCategory.videos;
+    }
+    if ({'mp3', 'wav', 'aac', 'flac', 'ogg', 'wma', 'm4a', 'opus', 'aiff'}.contains(ext)) {
+      return FileCategory.audio;
+    }
+    if ({'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'odt', 'ods', 'odp', 'csv', 'md', 'json', 'xml', 'html', 'log', 'ini', 'cfg', 'conf'}.contains(ext)) {
+      return FileCategory.documents;
+    }
+    if ({'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'}.contains(ext)) {
+      return FileCategory.archives;
+    }
+    return FileCategory.other;
+  }
+  
+  /// Get category from file path
+  static FileCategory fromPath(String path) {
+    final ext = path.split('.').last;
+    return fromExtension(ext);
+  }
 }
 
 class FileServiceException implements Exception {

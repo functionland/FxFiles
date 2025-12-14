@@ -7,6 +7,8 @@ import 'package:fula_files/core/services/auth_service.dart';
 
 enum SyncDirection { upload, download, bidirectional }
 
+typedef SyncStatusCallback = void Function(String localPath, SyncStatus status);
+
 class SyncService {
   SyncService._();
   static final SyncService instance = SyncService._();
@@ -14,10 +16,27 @@ class SyncService {
   final List<SyncTask> _uploadQueue = [];
   final List<SyncTask> _downloadQueue = [];
   final Map<String, SyncProgress> _activeSync = {};
+  final List<SyncStatusCallback> _listeners = [];
 
   List<SyncTask> get uploadQueue => List.unmodifiable(_uploadQueue);
   List<SyncTask> get downloadQueue => List.unmodifiable(_downloadQueue);
   Map<String, SyncProgress> get activeSync => Map.unmodifiable(_activeSync);
+
+  bool _isProcessingUpload = false;
+  
+  void addListener(SyncStatusCallback callback) {
+    _listeners.add(callback);
+  }
+  
+  void removeListener(SyncStatusCallback callback) {
+    _listeners.remove(callback);
+  }
+  
+  void _notifyListeners(String localPath, SyncStatus status) {
+    for (final listener in _listeners) {
+      listener(localPath, status);
+    }
+  }
 
   Future<void> queueUpload({
     required String localPath,
@@ -42,6 +61,16 @@ class SyncService {
       status: SyncStatus.notSynced,
     );
     await LocalStorageService.instance.addSyncState(state);
+    _notifyListeners(localPath, SyncStatus.notSynced);
+    
+    // Auto-process the queue
+    _processUploadQueueAsync();
+  }
+  
+  void _processUploadQueueAsync() {
+    if (_isProcessingUpload) return;
+    _isProcessingUpload = true;
+    processUploadQueue().whenComplete(() => _isProcessingUpload = false);
   }
 
   Future<void> queueDownload({
@@ -76,12 +105,17 @@ class SyncService {
   }
 
   Future<void> _executeUpload(SyncTask task) async {
+    debugPrint('Starting upload: ${task.localPath} -> ${task.remoteBucket}/${task.remoteKey}');
     try {
+      // Ensure bucket exists before upload
+      await _ensureBucketExists(task.remoteBucket);
+      
       final state = LocalStorageService.instance.getSyncState(task.localPath);
       if (state != null) {
         await LocalStorageService.instance.addSyncState(
           state.copyWith(status: SyncStatus.syncing),
         );
+        _notifyListeners(task.localPath, SyncStatus.syncing);
       }
 
       _activeSync[task.localPath] = SyncProgress(
@@ -131,6 +165,8 @@ class SyncService {
         );
       }
 
+      debugPrint('Upload completed: ${task.remoteKey}, etag: $etag');
+      
       if (state != null) {
         await LocalStorageService.instance.addSyncState(
           state.copyWith(
@@ -140,11 +176,13 @@ class SyncService {
             localSize: data.length,
           ),
         );
+        _notifyListeners(task.localPath, SyncStatus.synced);
       }
 
       _activeSync.remove(task.localPath);
-    } catch (e) {
+    } catch (e, stack) {
       debugPrint('Upload failed: $e');
+      debugPrint('Stack: $stack');
       
       final state = LocalStorageService.instance.getSyncState(task.localPath);
       if (state != null) {
@@ -154,9 +192,35 @@ class SyncService {
             errorMessage: e.toString(),
           ),
         );
+        _notifyListeners(task.localPath, SyncStatus.error);
       }
 
       _activeSync.remove(task.localPath);
+      rethrow;
+    }
+  }
+  
+  final Set<String> _verifiedBuckets = {};
+  
+  Future<void> _ensureBucketExists(String bucket) async {
+    // Skip if we've already verified this bucket exists
+    if (_verifiedBuckets.contains(bucket)) return;
+    
+    try {
+      final exists = await FulaApiService.instance.bucketExists(bucket);
+      if (!exists) {
+        debugPrint('Creating bucket: $bucket');
+        await FulaApiService.instance.createBucket(bucket);
+      }
+      _verifiedBuckets.add(bucket);
+    } catch (e) {
+      debugPrint('Error ensuring bucket exists: $e');
+      // If bucket already exists, that's fine
+      if (e.toString().contains('BucketAlreadyExists') || 
+          e.toString().contains('BucketAlreadyOwnedByYou')) {
+        _verifiedBuckets.add(bucket);
+        return;
+      }
       rethrow;
     }
   }

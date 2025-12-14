@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:minio/minio.dart';
@@ -20,18 +21,28 @@ class FulaApiService {
     required String accessKey,
     required String secretKey,
     String? defaultBucket,
-    bool useSSL = true,
+    bool? useSSL,
   }) {
     final uri = Uri.parse(endpoint);
+    
+    // Auto-detect SSL from URL scheme
+    final ssl = useSSL ?? uri.scheme == 'https';
+    
+    // For self-signed certs, globally allow bad certificates (dev only)
+    if (ssl) {
+      HttpOverrides.global = _AllowSelfSignedHttpOverrides();
+    }
+    
     _minio = Minio(
       endPoint: uri.host,
-      port: uri.hasPort ? uri.port : (useSSL ? 443 : 80),
+      port: uri.hasPort ? uri.port : (ssl ? 443 : 80),
       accessKey: accessKey,
       secretKey: secretKey,
-      useSSL: useSSL,
+      useSSL: ssl,
     );
     _defaultBucket = defaultBucket;
     _isConfigured = true;
+    debugPrint('FulaApiService configured: ${uri.host}:${uri.hasPort ? uri.port : (ssl ? 443 : 80)}, SSL: $ssl');
   }
 
   void _ensureConfigured() {
@@ -367,4 +378,12 @@ class FulaApiException implements Exception {
 
   @override
   String toString() => 'FulaApiException: $message';
+}
+
+class _AllowSelfSignedHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+  }
 }

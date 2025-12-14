@@ -48,6 +48,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    SyncService.instance.addListener(_onSyncStatusChanged);
     _initPath();
   }
 
@@ -55,7 +56,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    SyncService.instance.removeListener(_onSyncStatusChanged);
     super.dispose();
+  }
+  
+  void _onSyncStatusChanged(String localPath, SyncStatus status) {
+    // Refresh UI when a file in our current view changes sync status
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void _onScroll() {
@@ -435,9 +444,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                         subtitle: Row(
                           children: [
                             Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
-                            if (syncState?.status == SyncStatus.synced) ...[
+                            if (syncState != null) ...[
                               const SizedBox(width: 8),
-                              Icon(LucideIcons.cloud, size: 14, color: Colors.green),
+                              _buildSyncStatusIcon(syncState.status),
                             ],
                           ],
                         ),
@@ -605,9 +614,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _uploadFile(LocalFile file) async {
     try {
+      // Determine bucket based on file category
+      final category = FileCategory.fromPath(file.path);
+      final bucket = category.bucketName;
+      
       await SyncService.instance.queueUpload(
         localPath: file.path,
-        remoteBucket: 'user-bucket',
+        remoteBucket: bucket,
         remoteKey: file.name,
       );
       if (mounted) {
@@ -690,6 +703,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           );
         }
       }
+    }
+  }
+
+  Widget _buildSyncStatusIcon(SyncStatus status) {
+    switch (status) {
+      case SyncStatus.notSynced:
+        return Icon(LucideIcons.cloud, size: 14, color: Colors.grey.shade400);
+      case SyncStatus.syncing:
+        return const SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+      case SyncStatus.synced:
+        return const Icon(LucideIcons.checkCircle, size: 14, color: Colors.green);
+      case SyncStatus.error:
+        return const Icon(LucideIcons.cloudOff, size: 14, color: Colors.red);
     }
   }
 
