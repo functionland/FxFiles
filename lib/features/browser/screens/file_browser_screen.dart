@@ -7,7 +7,9 @@ import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
+import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
@@ -25,6 +27,7 @@ class FileBrowserScreen extends ConsumerStatefulWidget {
 
 class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   List<LocalFile> _files = [];
+  List<FulaObject> _cloudOnlyFiles = []; // Files on cloud but not locally
   String _currentPath = '';
   String _rootPath = ''; // Track the root to know when to pop navigation
   bool _isLoading = true;
@@ -177,8 +180,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         sortBy: _sortBy,
         ascending: _sortAscending,
       );
+      
+      // Fetch cloud files for this category
+      List<FulaObject> cloudOnlyFiles = [];
+      if (FulaApiService.instance.isConfigured && AuthService.instance.isAuthenticated) {
+        try {
+          final bucketName = category.bucketName;
+          final cloudFiles = await FulaApiService.instance.listObjects(bucketName);
+          debugPrint('Cloud files in $bucketName: ${cloudFiles.length}');
+          
+          // Find files that are on cloud but not locally
+          final localFileNames = result.files.map((f) => f.name).toSet();
+          cloudOnlyFiles = cloudFiles.where((cf) => !localFileNames.contains(cf.key)).toList();
+          debugPrint('Cloud-only files: ${cloudOnlyFiles.length}');
+        } catch (e) {
+          debugPrint('Error fetching cloud files: $e');
+        }
+      }
+      
       setState(() {
         _files = result.files;
+        _cloudOnlyFiles = cloudOnlyFiles;
         _totalCount = result.totalCount;
         _hasMore = result.hasMore;
         _currentOffset = result.files.length;
@@ -406,7 +428,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _files.isEmpty
+          : (_files.isEmpty && _cloudOnlyFiles.isEmpty)
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -422,14 +444,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   child: ListView.builder(
                     controller: _scrollController,
                     cacheExtent: 500, // Virtualization: cache items outside viewport
-                    itemCount: _files.length + (_hasMore ? 1 : 0),
+                    itemCount: _files.length + _cloudOnlyFiles.length + (_hasMore ? 1 : 0),
                     itemBuilder: (context, index) {
                       // Loading indicator at bottom
-                      if (index >= _files.length) {
+                      if (index >= _files.length + _cloudOnlyFiles.length) {
                         return const Padding(
                           padding: EdgeInsets.all(16),
                           child: Center(child: CircularProgressIndicator()),
                         );
+                      }
+                      
+                      // Cloud-only files section
+                      if (index >= _files.length) {
+                        final cloudFile = _cloudOnlyFiles[index - _files.length];
+                        return _buildCloudOnlyFileItem(cloudFile);
                       }
                       
                       final file = _files[index];
@@ -721,6 +749,49 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       case SyncStatus.error:
         return const Icon(LucideIcons.cloudOff, size: 14, color: Colors.red);
     }
+  }
+
+  Widget _buildCloudOnlyFileItem(FulaObject cloudFile) {
+    return ListTile(
+      leading: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.blue.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Icon(LucideIcons.cloud, color: Colors.blue),
+      ),
+      title: Text(cloudFile.key, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Row(
+        children: [
+          Text(_formatFileSize(cloudFile.size)),
+          const SizedBox(width: 8),
+          const Icon(LucideIcons.download, size: 14, color: Colors.blue),
+          const SizedBox(width: 4),
+          Text('Cloud only', style: TextStyle(color: Colors.blue.shade700, fontSize: 12)),
+        ],
+      ),
+      trailing: IconButton(
+        icon: const Icon(LucideIcons.download),
+        tooltip: 'Download',
+        onPressed: () => _downloadCloudFile(cloudFile),
+      ),
+    );
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  }
+
+  Future<void> _downloadCloudFile(FulaObject cloudFile) async {
+    // TODO: Implement download from cloud
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Download ${cloudFile.key} - Coming soon')),
+    );
   }
 
   Future<void> _renameFile(LocalFile file) async {

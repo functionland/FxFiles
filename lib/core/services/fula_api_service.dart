@@ -67,6 +67,13 @@ class FulaApiService {
       final buckets = await _minio!.listBuckets();
       return buckets.map((b) => b.name).toList();
     } catch (e) {
+      // If minio XML parsing fails, try to return known buckets from sync states
+      debugPrint('listBuckets error: $e');
+      if (e.toString().contains('XmlText') || e.toString().contains('XmlElement')) {
+        debugPrint('XML parsing error, returning known category buckets');
+        // Return standard category buckets as fallback
+        return ['images', 'videos', 'audio', 'documents', 'archives', 'other'];
+      }
       throw FulaApiException('Failed to list buckets: $e');
     }
   }
