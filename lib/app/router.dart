@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:fula_files/features/home/screens/home_screen.dart';
 import 'package:fula_files/features/browser/screens/file_browser_screen.dart';
-import 'package:fula_files/features/fula/screens/fula_browser_screen.dart';
 import 'package:fula_files/features/settings/screens/settings_screen.dart';
 import 'package:fula_files/features/search/screens/search_screen.dart';
 import 'package:fula_files/features/trash/screens/trash_screen.dart';
@@ -34,7 +33,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final bucket = state.uri.queryParameters['bucket'];
           final prefix = state.uri.queryParameters['prefix'];
-          return FulaBrowserScreen(bucket: bucket, prefix: prefix);
+          return FileBrowserScreen(
+            cloudMode: true,
+            initialBucket: bucket,
+            initialPrefix: prefix,
+          );
         },
       ),
       GoRoute(

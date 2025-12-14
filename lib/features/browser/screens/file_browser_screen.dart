@@ -26,8 +26,18 @@ import 'package:share_plus/share_plus.dart';
 class FileBrowserScreen extends ConsumerStatefulWidget {
   final String? initialPath;
   final String? category;
+  final bool cloudMode; // True to browse cloud buckets/folders
+  final String? initialBucket; // Initial bucket for cloud mode
+  final String? initialPrefix; // Initial prefix for cloud mode
 
-  const FileBrowserScreen({super.key, this.initialPath, this.category});
+  const FileBrowserScreen({
+    super.key, 
+    this.initialPath, 
+    this.category,
+    this.cloudMode = false,
+    this.initialBucket,
+    this.initialPrefix,
+  });
 
   @override
   ConsumerState<FileBrowserScreen> createState() => _FileBrowserScreenState();
@@ -56,6 +66,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   final Set<String> _selectedFiles = {};
   bool _selectionMode = false;
   bool _isCategoryMode = false; // True when showing flat category files
+  
+  // Cloud mode state
+  bool _isCloudMode = false;
+  String? _currentBucket;
+  String _currentPrefix = '';
+  List<String> _buckets = [];
+  List<FulaObject> _cloudObjects = [];
   
   // Pagination & sorting state
   int _totalCount = 0;
@@ -126,6 +143,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _initPath() async {
+    // Check if cloud mode
+    if (widget.cloudMode) {
+      _isCloudMode = true;
+      _currentBucket = widget.initialBucket;
+      _currentPrefix = widget.initialPrefix ?? '';
+      await _loadCloudData();
+      return;
+    }
+    
     // Request permissions first
     final hasPermission = await FileService.instance.requestStoragePermission();
     if (!hasPermission && mounted) {
@@ -161,6 +187,157 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       }
       await _loadFiles();
     }
+  }
+  
+  // ============================================================================
+  // CLOUD MODE METHODS
+  // ============================================================================
+  
+  Future<void> _loadCloudData() async {
+    if (!FulaApiService.instance.isConfigured) {
+      setState(() {
+        _isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Fula API not configured. Go to Settings to configure.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _cloudObjects = [];
+      _combinedFiles = [];
+    });
+
+    try {
+      if (_currentBucket == null) {
+        // Load bucket list (treated as root folders)
+        _buckets = await FulaApiService.instance.listBuckets();
+        setState(() => _isLoading = false);
+      } else {
+        // Load objects in current bucket/prefix
+        _cloudObjects = await FulaApiService.instance.listObjects(
+          _currentBucket!,
+          prefix: _currentPrefix,
+        );
+        
+        // Build combined list with local file info where available
+        await _buildCloudCombinedList();
+        
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+  
+  Future<void> _buildCloudCombinedList() async {
+    final combined = <_FileListItem>[];
+    
+    for (final cloudObj in _cloudObjects) {
+      // Try to find matching local file
+      final localFile = await _findLocalFileForCloudObject(cloudObj);
+      
+      if (localFile != null) {
+        // File exists locally - use local file (has thumbnail, can open)
+        combined.add(_FileListItem.local(localFile));
+      } else {
+        // Cloud only
+        combined.add(_FileListItem.cloud(cloudObj));
+      }
+    }
+    
+    // Sort combined list
+    combined.sort((a, b) {
+      // Directories first
+      final aIsDir = a.localFile?.isDirectory == true || a.cloudFile?.isDirectory == true;
+      final bIsDir = b.localFile?.isDirectory == true || b.cloudFile?.isDirectory == true;
+      if (aIsDir && !bIsDir) return -1;
+      if (!aIsDir && bIsDir) return 1;
+      
+      int comparison;
+      if (_sortBy == 'name') {
+        comparison = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      } else {
+        comparison = a.sortDate.compareTo(b.sortDate);
+      }
+      return _sortAscending ? comparison : -comparison;
+    });
+    
+    _combinedFiles = combined;
+  }
+  
+  Future<LocalFile?> _findLocalFileForCloudObject(FulaObject cloudObj) async {
+    // Check sync states to find local path for this cloud object
+    final allSyncStates = LocalStorageService.instance.getAllSyncStates();
+    
+    for (final state in allSyncStates) {
+      if (state.bucket == _currentBucket && state.remoteKey == cloudObj.key) {
+        // Found matching sync state - check if local file exists
+        final file = File(state.localPath);
+        if (await file.exists()) {
+          final stat = await file.stat();
+          return LocalFile(
+            path: state.localPath,
+            name: state.localPath.split('/').last.split('\\').last,
+            isDirectory: false,
+            size: stat.size,
+            modifiedAt: stat.modified,
+          );
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  void _navigateToCloudFolder(FulaObject folder) {
+    setState(() {
+      _currentPrefix = folder.key;
+    });
+    _loadCloudData();
+  }
+  
+  void _navigateToCloudBucket(String bucket) {
+    setState(() {
+      _currentBucket = bucket;
+      _currentPrefix = '';
+    });
+    _loadCloudData();
+  }
+  
+  bool _handleCloudBackNavigation() {
+    if (_currentPrefix.isNotEmpty) {
+      // Navigate up in prefix
+      final parts = _currentPrefix.split('/');
+      parts.removeLast(); // Remove trailing empty string from ending /
+      if (parts.isNotEmpty) parts.removeLast(); // Remove current folder
+      setState(() {
+        _currentPrefix = parts.isEmpty ? '' : '${parts.join('/')}/';
+      });
+      _loadCloudData();
+      return true;
+    } else if (_currentBucket != null) {
+      // Navigate back to bucket list
+      setState(() {
+        _currentBucket = null;
+        _currentPrefix = '';
+      });
+      _loadCloudData();
+      return true;
+    }
+    return false; // At root, allow normal back
   }
 
   Future<void> _loadCategoryFiles() async {
@@ -425,6 +602,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   void _navigateUp() {
+    // Handle cloud mode navigation
+    if (_isCloudMode) {
+      if (!_handleCloudBackNavigation()) {
+        context.pop();
+      }
+      return;
+    }
+    
     if (_isCategoryMode) {
       // In category mode, just go back in navigation
       context.pop();
@@ -444,6 +629,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   // Determines if system back gesture should pop the route or be handled internally
   bool _canPopNavigation() {
+    // Handle cloud mode - don't pop if we can navigate up
+    if (_isCloudMode) {
+      return _currentBucket == null; // Only pop if at bucket list root
+    }
+    
     if (_isCategoryMode) {
       // In category mode, allow system pop
       return true;
@@ -473,9 +663,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final title = widget.category != null 
-        ? _categoryTitle(widget.category!)
-        : _currentPath.split(Platform.pathSeparator).last;
+    final title = _isCloudMode 
+        ? (_currentBucket ?? 'Cloud Storage')
+        : widget.category != null 
+            ? _categoryTitle(widget.category!)
+            : _currentPath.split(Platform.pathSeparator).last;
 
     return PopScope(
       canPop: _canPopNavigation(),
@@ -494,7 +686,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(title),
-            if (_totalCount > 0)
+            if (_isCloudMode && _currentPrefix.isNotEmpty)
+              Text(
+                _currentPrefix,
+                style: Theme.of(context).textTheme.bodySmall,
+              )
+            else if (_totalCount > 0)
               Text(
                 '$_totalCount items${_hasMore ? '+' : ''}',
                 style: Theme.of(context).textTheme.bodySmall,
@@ -510,70 +707,202 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             tooltip: 'Sort',
             onPressed: _showSortOptions,
           ),
-          if (!_isCategoryMode)
+          if (!_isCategoryMode && !_isCloudMode)
             IconButton(
               icon: const Icon(LucideIcons.folderUp),
               onPressed: _navigateUp,
             ),
           IconButton(
             icon: const Icon(LucideIcons.refreshCw),
-            onPressed: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
+            onPressed: _isCloudMode 
+                ? _loadCloudData 
+                : (_isCategoryMode ? _loadCategoryFiles : _loadFiles),
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : (_isCategoryMode ? _combinedFiles.isEmpty : _files.isEmpty)
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(LucideIcons.folderOpen, size: 64, color: Colors.grey),
-                      const SizedBox(height: 16),
-                      const Text('No files found'),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
-                  child: ListView.builder(
-                    controller: _scrollController,
-                    cacheExtent: 500, // Virtualization: cache items outside viewport
-                    itemCount: _isCategoryMode 
-                        ? _combinedFiles.length + (_hasMore ? 1 : 0)
-                        : _files.length + (_hasMore ? 1 : 0),
-                    itemBuilder: (context, index) {
-                      final itemCount = _isCategoryMode ? _combinedFiles.length : _files.length;
-                      
-                      // Loading indicator at bottom
-                      if (index >= itemCount) {
-                        return const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-                      
-                      // Category mode: use combined sorted list
-                      if (_isCategoryMode) {
-                        final item = _combinedFiles[index];
-                        if (item.isCloudOnly) {
-                          return _buildCloudOnlyFileItem(item.cloudFile!);
-                        }
-                        final file = item.localFile!;
-                        final syncState = LocalStorageService.instance.getSyncState(file.path);
-                        final isSelected = _selectedFiles.contains(file.path);
-                        return _buildLocalFileItem(file, syncState, isSelected);
-                      }
-                      
-                      // Folder mode: just local files
-                      final file = _files[index];
-                      final syncState = LocalStorageService.instance.getSyncState(file.path);
-                      final isSelected = _selectedFiles.contains(file.path);
-                      return _buildLocalFileItem(file, syncState, isSelected);
-                    },
-                  ),
-                ),
+      body: _buildBody(),
       ),
+    );
+  }
+  
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    
+    // Cloud mode
+    if (_isCloudMode) {
+      return _buildCloudBody();
+    }
+    
+    // Category or folder mode
+    final isEmpty = _isCategoryMode ? _combinedFiles.isEmpty : _files.isEmpty;
+    if (isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(LucideIcons.folderOpen, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text('No files found'),
+          ],
+        ),
+      );
+    }
+    
+    return RefreshIndicator(
+      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
+      child: ListView.builder(
+        controller: _scrollController,
+        cacheExtent: 500,
+        itemCount: _isCategoryMode 
+            ? _combinedFiles.length + (_hasMore ? 1 : 0)
+            : _files.length + (_hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          final itemCount = _isCategoryMode ? _combinedFiles.length : _files.length;
+          
+          // Loading indicator at bottom
+          if (index >= itemCount) {
+            return const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          
+          // Category mode: use combined sorted list
+          if (_isCategoryMode) {
+            final item = _combinedFiles[index];
+            if (item.isCloudOnly) {
+              return _buildCloudOnlyFileItem(item.cloudFile!);
+            }
+            final file = item.localFile!;
+            final syncState = LocalStorageService.instance.getSyncState(file.path);
+            final isSelected = _selectedFiles.contains(file.path);
+            return _buildLocalFileItem(file, syncState, isSelected);
+          }
+          
+          // Folder mode: just local files
+          final file = _files[index];
+          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final isSelected = _selectedFiles.contains(file.path);
+          return _buildLocalFileItem(file, syncState, isSelected);
+        },
+      ),
+    );
+  }
+  
+  Widget _buildCloudBody() {
+    // Show bucket list if no bucket selected
+    if (_currentBucket == null) {
+      if (_buckets.isEmpty) {
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(LucideIcons.cloud, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text('No cloud storage found'),
+              const SizedBox(height: 8),
+              Text(
+                'Configure Fula API in Settings',
+                style: TextStyle(color: Colors.grey[600]),
+              ),
+            ],
+          ),
+        );
+      }
+      
+      return RefreshIndicator(
+        onRefresh: _loadCloudData,
+        child: ListView.builder(
+          itemCount: _buckets.length,
+          itemBuilder: (context, index) {
+            final bucket = _buckets[index];
+            return ListTile(
+              leading: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  LucideIcons.database,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              title: Text(bucket, style: const TextStyle(fontWeight: FontWeight.w500)),
+              subtitle: const Text('Cloud bucket'),
+              trailing: const Icon(LucideIcons.chevronRight),
+              onTap: () => _navigateToCloudBucket(bucket),
+            );
+          },
+        ),
+      );
+    }
+    
+    // Show files in current bucket/prefix
+    if (_combinedFiles.isEmpty && _cloudObjects.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(LucideIcons.folderOpen, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text('No files in this location'),
+          ],
+        ),
+      );
+    }
+    
+    return RefreshIndicator(
+      onRefresh: _loadCloudData,
+      child: ListView.builder(
+        controller: _scrollController,
+        itemCount: _combinedFiles.length,
+        itemBuilder: (context, index) {
+          final item = _combinedFiles[index];
+          
+          if (item.isCloudOnly) {
+            final cloudFile = item.cloudFile!;
+            if (cloudFile.isDirectory) {
+              return _buildCloudFolderItem(cloudFile);
+            }
+            return _buildCloudOnlyFileItem(cloudFile);
+          }
+          
+          // File exists locally - show with thumbnail
+          final file = item.localFile!;
+          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final isSelected = _selectedFiles.contains(file.path);
+          return _buildLocalFileItem(file, syncState, isSelected);
+        },
+      ),
+    );
+  }
+  
+  Widget _buildCloudFolderItem(FulaObject folder) {
+    // Extract just the folder name from the key
+    final parts = folder.key.split('/');
+    final folderName = parts.where((p) => p.isNotEmpty).lastOrNull ?? folder.key;
+    
+    return ListTile(
+      leading: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          LucideIcons.folder,
+          color: Theme.of(context).colorScheme.secondary,
+        ),
+      ),
+      title: Text(folderName, style: const TextStyle(fontWeight: FontWeight.w500)),
+      subtitle: const Text('Folder'),
+      trailing: const Icon(LucideIcons.chevronRight),
+      onTap: () => _navigateToCloudFolder(folder),
     );
   }
 
