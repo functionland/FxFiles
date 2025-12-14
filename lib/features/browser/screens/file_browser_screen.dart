@@ -25,9 +25,22 @@ class FileBrowserScreen extends ConsumerStatefulWidget {
   ConsumerState<FileBrowserScreen> createState() => _FileBrowserScreenState();
 }
 
+// Wrapper to hold either a local file or a cloud-only file for unified list
+class _FileListItem {
+  final LocalFile? localFile;
+  final FulaObject? cloudFile;
+  
+  _FileListItem.local(this.localFile) : cloudFile = null;
+  _FileListItem.cloud(this.cloudFile) : localFile = null;
+  
+  bool get isCloudOnly => cloudFile != null;
+  String get name => localFile?.name ?? cloudFile?.key ?? '';
+  DateTime get sortDate => localFile?.modifiedAt ?? cloudFile?.lastModified ?? DateTime.now();
+}
+
 class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   List<LocalFile> _files = [];
-  List<FulaObject> _cloudOnlyFiles = []; // Files on cloud but not locally
+  List<_FileListItem> _combinedFiles = []; // Merged and sorted list (local + cloud-only)
   String _currentPath = '';
   String _rootPath = ''; // Track the root to know when to pop navigation
   bool _isLoading = true;
@@ -143,10 +156,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _loadCategoryFiles() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _currentOffset = 0;
       _files = [];
+      _combinedFiles = [];
     });
     try {
       final category = _categoryFromString(widget.category!);
@@ -164,6 +179,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           }
           return _sortAscending ? comparison : -comparison;
         });
+        if (!mounted) return;
         setState(() {
           _files = files;
           _totalCount = files.length;
@@ -198,15 +214,35 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         }
       }
       
+      if (!mounted) return;
+      
+      // Build combined list and sort by timestamp
+      final combined = <_FileListItem>[
+        ...result.files.map((f) => _FileListItem.local(f)),
+        ...cloudOnlyFiles.map((f) => _FileListItem.cloud(f)),
+      ];
+      
+      // Sort combined list
+      combined.sort((a, b) {
+        int comparison;
+        if (_sortBy == 'name') {
+          comparison = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        } else {
+          comparison = a.sortDate.compareTo(b.sortDate);
+        }
+        return _sortAscending ? comparison : -comparison;
+      });
+      
       setState(() {
         _files = result.files;
-        _cloudOnlyFiles = cloudOnlyFiles;
+        _combinedFiles = combined;
         _totalCount = result.totalCount;
         _hasMore = result.hasMore;
         _currentOffset = result.files.length;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -428,7 +464,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : (_files.isEmpty && _cloudOnlyFiles.isEmpty)
+          : (_isCategoryMode ? _combinedFiles.isEmpty : _files.isEmpty)
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -444,49 +480,37 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   child: ListView.builder(
                     controller: _scrollController,
                     cacheExtent: 500, // Virtualization: cache items outside viewport
-                    itemCount: _files.length + _cloudOnlyFiles.length + (_hasMore ? 1 : 0),
+                    itemCount: _isCategoryMode 
+                        ? _combinedFiles.length + (_hasMore ? 1 : 0)
+                        : _files.length + (_hasMore ? 1 : 0),
                     itemBuilder: (context, index) {
+                      final itemCount = _isCategoryMode ? _combinedFiles.length : _files.length;
+                      
                       // Loading indicator at bottom
-                      if (index >= _files.length + _cloudOnlyFiles.length) {
+                      if (index >= itemCount) {
                         return const Padding(
                           padding: EdgeInsets.all(16),
                           child: Center(child: CircularProgressIndicator()),
                         );
                       }
                       
-                      // Cloud-only files section
-                      if (index >= _files.length) {
-                        final cloudFile = _cloudOnlyFiles[index - _files.length];
-                        return _buildCloudOnlyFileItem(cloudFile);
+                      // Category mode: use combined sorted list
+                      if (_isCategoryMode) {
+                        final item = _combinedFiles[index];
+                        if (item.isCloudOnly) {
+                          return _buildCloudOnlyFileItem(item.cloudFile!);
+                        }
+                        final file = item.localFile!;
+                        final syncState = LocalStorageService.instance.getSyncState(file.path);
+                        final isSelected = _selectedFiles.contains(file.path);
+                        return _buildLocalFileItem(file, syncState, isSelected);
                       }
                       
+                      // Folder mode: just local files
                       final file = _files[index];
                       final syncState = LocalStorageService.instance.getSyncState(file.path);
                       final isSelected = _selectedFiles.contains(file.path);
-                      
-                      return ListTile(
-                        selected: isSelected,
-                        selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
-                        leading: FileThumbnail(file: file, size: 48),
-                        title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Row(
-                          children: [
-                            Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
-                            if (syncState != null) ...[
-                              const SizedBox(width: 8),
-                              _buildSyncStatusIcon(syncState.status),
-                            ],
-                          ],
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(LucideIcons.moreVertical),
-                          onPressed: () => _showFileOptions(file),
-                        ),
-                        onTap: _selectionMode 
-                            ? () => _toggleSelection(file)
-                            : () => _navigateTo(file),
-                        onLongPress: () => _toggleSelection(file),
-                      );
+                      return _buildLocalFileItem(file, syncState, isSelected);
                     },
                   ),
                 ),
@@ -626,14 +650,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                 _moveFile(file);
               },
             ),
-            ListTile(
-              leading: const Icon(LucideIcons.trash2, color: Colors.red),
-              title: const Text('Delete', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _deleteFile(file);
-              },
-            ),
+            // Delete options based on sync status
+            ..._buildDeleteOptions(ctx, file),
           ],
         ),
       ),
@@ -734,6 +752,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  Widget _buildLocalFileItem(LocalFile file, SyncState? syncState, bool isSelected) {
+    return ListTile(
+      selected: isSelected,
+      selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+      leading: FileThumbnail(file: file, size: 48),
+      title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Row(
+        children: [
+          Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
+          if (syncState != null) ...[
+            const SizedBox(width: 8),
+            _buildSyncStatusIcon(syncState.status),
+          ],
+        ],
+      ),
+      trailing: IconButton(
+        icon: const Icon(LucideIcons.moreVertical),
+        onPressed: () => _showFileOptions(file),
+      ),
+      onTap: _selectionMode 
+          ? () => _toggleSelection(file)
+          : () => _navigateTo(file),
+      onLongPress: () => _toggleSelection(file),
+    );
+  }
+
   Widget _buildSyncStatusIcon(SyncStatus status) {
     switch (status) {
       case SyncStatus.notSynced:
@@ -773,9 +817,41 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ],
       ),
       trailing: IconButton(
-        icon: const Icon(LucideIcons.download),
-        tooltip: 'Download',
-        onPressed: () => _downloadCloudFile(cloudFile),
+        icon: const Icon(LucideIcons.moreVertical),
+        onPressed: () => _showCloudFileOptions(cloudFile),
+      ),
+    );
+  }
+
+  void _showCloudFileOptions(FulaObject cloudFile) {
+    // Get bucket from current category
+    final category = _categoryFromString(widget.category!);
+    final bucket = category.bucketName;
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.download, color: Colors.blue),
+              title: const Text('Download'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _downloadCloudFile(cloudFile);
+              },
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.cloudOff, color: Colors.red),
+              title: const Text('Delete from Cloud', style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _deleteCloudOnlyFile(cloudFile, bucket);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -788,10 +864,68 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _downloadCloudFile(FulaObject cloudFile) async {
-    // TODO: Implement download from cloud
+    // Get bucket from current category
+    final category = _categoryFromString(widget.category!);
+    final bucket = category.bucketName;
+    
+    // Show downloading indicator
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Download ${cloudFile.key} - Coming soon')),
+      SnackBar(content: Text('Downloading ${cloudFile.key}...')),
     );
+    
+    try {
+      // Download file data from cloud
+      final data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
+      
+      // Get the appropriate download directory based on category
+      final downloadPath = await _getDownloadPath(category, cloudFile.key);
+      
+      // Write file to local storage
+      final file = File(downloadPath);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(data);
+      
+      // Add sync state for the downloaded file
+      await LocalStorageService.instance.addSyncState(SyncState(
+        localPath: downloadPath,
+        remotePath: '${bucket}/${cloudFile.key}',
+        remoteKey: cloudFile.key,
+        bucket: bucket,
+        status: SyncStatus.synced,
+        lastSyncedAt: DateTime.now(),
+        etag: cloudFile.etag,
+        localSize: data.length,
+        remoteSize: cloudFile.size,
+      ));
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Downloaded ${cloudFile.key}')),
+        );
+        // Refresh to show the file locally
+        _loadCategoryFiles();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<String> _getDownloadPath(FileCategory category, String fileName) async {
+    // Get external storage directory
+    final directories = await FileService.instance.getStorageRoots();
+    if (directories.isEmpty) {
+      throw Exception('No storage available');
+    }
+    
+    // Use Download folder as base
+    final basePath = directories.first.path;
+    final downloadDir = '$basePath/Download';
+    
+    return '$downloadDir/$fileName';
   }
 
   Future<void> _renameFile(LocalFile file) async {
@@ -897,6 +1031,34 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     );
   }
 
+  List<Widget> _buildDeleteOptions(BuildContext ctx, LocalFile file) {
+    final syncState = LocalStorageService.instance.getSyncState(file.path);
+    final isOnCloud = syncState?.status == SyncStatus.synced;
+    final isLoggedIn = AuthService.instance.isAuthenticated;
+    
+    return [
+      // Delete from device (always available for local files)
+      ListTile(
+        leading: const Icon(LucideIcons.trash2, color: Colors.red),
+        title: const Text('Delete from Device', style: TextStyle(color: Colors.red)),
+        onTap: () {
+          Navigator.pop(ctx);
+          _deleteFile(file);
+        },
+      ),
+      // Delete from cloud (only if synced and logged in)
+      if (isOnCloud && isLoggedIn)
+        ListTile(
+          leading: const Icon(LucideIcons.cloudOff, color: Colors.red),
+          title: const Text('Delete from Cloud', style: TextStyle(color: Colors.red)),
+          onTap: () {
+            Navigator.pop(ctx);
+            _deleteFromCloud(file);
+          },
+        ),
+    ];
+  }
+
   Future<void> _deleteFile(LocalFile file) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -933,6 +1095,87 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         _loadCategoryFiles();
       } else {
         _loadFiles();
+      }
+    }
+  }
+
+  Future<void> _deleteFromCloud(LocalFile file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete from Cloud'),
+        content: Text('Delete "${file.name}" from cloud storage?\n\nThe local file will not be affected.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        final category = FileCategory.fromPath(file.path);
+        final bucket = category.bucketName;
+        await FulaApiService.instance.deleteObject(bucket, file.name);
+        
+        // Remove sync state since file is no longer on cloud
+        await LocalStorageService.instance.deleteSyncState(file.path);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Deleted from cloud')),
+          );
+          // Refresh to update sync status icons
+          if (_isCategoryMode) {
+            _loadCategoryFiles();
+          } else {
+            _loadFiles();
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteCloudOnlyFile(FulaObject cloudFile, String bucket) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete from Cloud'),
+        content: Text('Delete "${cloudFile.key}" from cloud storage?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await FulaApiService.instance.deleteObject(bucket, cloudFile.key);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Deleted from cloud')),
+          );
+          _loadCategoryFiles();
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
