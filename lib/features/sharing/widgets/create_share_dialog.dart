@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
@@ -39,6 +40,15 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
     _recipientNameController.dispose();
     _labelController.dispose();
     super.dispose();
+  }
+
+  Future<void> _pasteRecipientKey() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      setState(() {
+        _recipientKeyController.text = data.text!.trim();
+      });
+    }
   }
 
   @override
@@ -103,11 +113,16 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                 // Recipient Share ID
                 TextFormField(
                   controller: _recipientKeyController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Recipient\'s Share ID',
                     hintText: 'FULA-xxx... or paste their key',
-                    prefixIcon: Icon(LucideIcons.fingerprint),
+                    prefixIcon: const Icon(LucideIcons.fingerprint),
                     helperText: 'Ask them for their Share ID from Settings',
+                    suffixIcon: IconButton(
+                      icon: const Icon(LucideIcons.clipboard),
+                      tooltip: 'Paste from clipboard',
+                      onPressed: _pasteRecipientKey,
+                    ),
                   ),
                   maxLines: 1,
                   validator: (value) {

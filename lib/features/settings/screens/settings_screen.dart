@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -29,14 +30,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _loadSettings();
   }
 
+  static const String _defaultApiGateway = 'https://api.gateway.cloud.fx.land';
+  static const String _defaultIpfsServer = 'https://ipfs.gateway.cloud.fx.land';
+
   Future<void> _loadSettings() async {
     final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
     final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
 
     setState(() {
-      _apiGatewayController.text = apiGateway ?? '';
-      _ipfsServerController.text = ipfsServer ?? '';
+      _apiGatewayController.text = apiGateway ?? _defaultApiGateway;
+      _ipfsServerController.text = ipfsServer ?? _defaultIpfsServer;
       _jwtTokenController.text = jwtToken ?? '';
     });
   }
@@ -47,6 +51,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _ipfsServerController.dispose();
     _jwtTokenController.dispose();
     super.dispose();
+  }
+
+  Future<void> _openCloudFxLand() async {
+    final uri = Uri.parse('https://cloud.fx.land');
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open cloud.fx.land: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _pasteJwtFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      setState(() {
+        _jwtTokenController.text = data.text!.trim();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('JWT token pasted')),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Clipboard is empty')),
+        );
+      }
+    }
   }
 
   @override
@@ -117,7 +154,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         controller: _apiGatewayController,
                         decoration: const InputDecoration(
                           labelText: 'API Gateway URL',
-                          hintText: 'https://api.example.com',
+                          hintText: 'https://api.gateway.cloud.fx.land',
                           prefixIcon: Icon(LucideIcons.server),
                         ),
                       ),
@@ -126,19 +163,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         controller: _ipfsServerController,
                         decoration: const InputDecoration(
                           labelText: 'IPFS Server URL',
-                          hintText: 'https://ipfs.example.com',
+                          hintText: 'https://ipfs.gateway.cloud.fx.land',
                           prefixIcon: Icon(LucideIcons.globe),
                         ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: _jwtTokenController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'JWT Token',
                           hintText: 'Your JWT token',
-                          prefixIcon: Icon(LucideIcons.key),
+                          prefixIcon: const Icon(LucideIcons.key),
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_jwtTokenController.text.isEmpty)
+                                IconButton(
+                                  icon: const Icon(LucideIcons.externalLink),
+                                  tooltip: 'Get token from cloud.fx.land',
+                                  onPressed: () => _openCloudFxLand(),
+                                ),
+                              IconButton(
+                                icon: const Icon(LucideIcons.clipboard),
+                                tooltip: 'Paste from clipboard',
+                                onPressed: () => _pasteJwtFromClipboard(),
+                              ),
+                            ],
+                          ),
                         ),
                         obscureText: true,
+                        onChanged: (_) => setState(() {}),
                       ),
                       const SizedBox(height: 16),
                       Row(

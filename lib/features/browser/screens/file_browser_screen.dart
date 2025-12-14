@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -10,13 +11,17 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
+import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:share_plus/share_plus.dart';
 
 class FileBrowserScreen extends ConsumerStatefulWidget {
   final String? initialPath;
@@ -676,7 +681,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               subtitle: isLoggedIn ? null : const Text('Sign in required', style: TextStyle(fontSize: 12)),
               onTap: isLoggedIn ? () {
                 Navigator.pop(ctx);
-                context.push('/shared');
+                _createShareLink(file);
               } : null,
             ),
             const Divider(height: 1),
@@ -691,10 +696,10 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             ),
             ListTile(
               leading: const Icon(LucideIcons.share),
-              title: const Text('Share'),
+              title: const Text('Share via...'),
               onTap: () {
                 Navigator.pop(ctx);
-                _shareFile(file);
+                _shareFileViaNative(file);
               },
             ),
             ListTile(
@@ -1123,18 +1128,167 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
-  void _shareSelected() {
-    // Use platform share
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Sharing ${_selectedFiles.length} files')),
+  // ============================================================================
+  // SHARING
+  // ============================================================================
+
+  Future<void> _createShareLink(LocalFile file) async {
+    // Get encryption key (DEK) for sharing
+    final dek = await AuthService.instance.getEncryptionKey();
+    if (dek == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Encryption key not available. Please sign in again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Determine bucket based on file category
+    final category = FileCategory.fromPath(file.path);
+    final bucket = category.bucketName;
+    
+    // Use file path relative to storage root for path scope
+    final pathScope = file.isDirectory 
+        ? '/${file.name}/'
+        : '/${file.name}';
+
+    if (!mounted) return;
+
+    // Show create share dialog
+    final token = await showCreateShareDialog(
+      context: context,
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
     );
+
+    if (token != null && mounted) {
+      // Generate share link
+      final shareLink = SharingService.instance.generateShareLink(token);
+      
+      // Show success dialog with link
+      _showShareLinkDialog(shareLink, token);
+    }
+  }
+
+  void _showShareLinkDialog(String shareLink, ShareToken token) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(LucideIcons.checkCircle, color: Colors.green),
+            const SizedBox(width: 8),
+            const Expanded(child: Text('Share Created!')),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Share link created successfully. Send this link to the recipient:'),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                shareLink,
+                style: TextStyle(
+                  fontFamily: 'monospace', 
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Icon(LucideIcons.shield, size: 16, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Permission: ${token.permissions.displayName}',
+                    style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+            if (token.expiresAt != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(LucideIcons.clock, size: 16, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Expires: ${_formatDateTime(token.expiresAt!)}',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: shareLink));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Share link copied to clipboard')),
+              );
+              Navigator.pop(ctx);
+            },
+            icon: const Icon(LucideIcons.copy),
+            label: const Text('Copy Link'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _shareSelected() async {
+    // Use platform share for selected files
+    final files = _selectedFiles.map((path) => XFile(path)).toList();
+    try {
+      await SharePlus.instance.share(ShareParams(files: files));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
     _clearSelection();
   }
 
-  void _shareFile(LocalFile file) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Sharing: ${file.name}')),
-    );
+  Future<void> _shareFileViaNative(LocalFile file) async {
+    try {
+      if (file.isDirectory) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot share folders directly. Share individual files instead.')),
+        );
+        return;
+      }
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Future<void> _deleteSelected() async {

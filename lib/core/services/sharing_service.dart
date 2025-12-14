@@ -286,7 +286,7 @@ class SharingService {
   /// Generate a shareable link
   String generateShareLink(ShareToken token, {String? baseUrl}) {
     final encoded = token.encode();
-    final base = baseUrl ?? 'fula://share';
+    final base = baseUrl ?? 'fxblox://share';
     return '$base/$encoded';
   }
 
@@ -295,8 +295,8 @@ class SharingService {
     try {
       // Handle different URL formats
       String encoded;
-      if (url.startsWith('fula://share/')) {
-        encoded = url.substring('fula://share/'.length);
+      if (url.startsWith('fxblox://share/')) {
+        encoded = url.substring('fxblox://share/'.length);
       } else if (url.contains('?token=')) {
         final uri = Uri.parse(url);
         encoded = uri.queryParameters['token'] ?? '';

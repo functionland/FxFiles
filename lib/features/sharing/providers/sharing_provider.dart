@@ -41,7 +41,8 @@ class SharesNotifier extends Notifier<SharesState> {
   @override
   SharesState build() {
     _sharingService = SharingService.instance;
-    loadShares();
+    // Schedule loadShares after build completes to avoid circular dependency
+    Future.microtask(() => loadShares());
     return SharesState.initial();
   }
 

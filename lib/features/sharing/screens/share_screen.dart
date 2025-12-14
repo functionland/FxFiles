@@ -134,7 +134,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
             TextField(
               controller: controller,
               decoration: const InputDecoration(
-                hintText: 'fula://share/... or paste token',
+                hintText: 'fxblox://share/... or paste token',
                 border: OutlineInputBorder(),
               ),
               maxLines: 3,
@@ -156,7 +156,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
               final notifier = ref.read(sharesProvider.notifier);
               AcceptedShare? accepted;
               
-              if (input.startsWith('fula://') || input.contains('?token=')) {
+              if (input.startsWith('fxblox://') || input.contains('?token=')) {
                 accepted = await notifier.acceptShareFromUrl(input);
               } else {
                 accepted = await notifier.acceptShare(input);

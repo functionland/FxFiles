@@ -1,9 +1,16 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+
+// Top-level function for isolate - reads file bytes
+Future<Uint8List> _readFileInIsolate(String path) async {
+  final file = File(path);
+  return await file.readAsBytes();
+}
 
 enum SyncDirection { upload, download, bidirectional }
 
@@ -24,9 +31,12 @@ class SyncService {
 
   bool _isProcessingUpload = false;
   
-  // Parallel upload configuration
-  static const int maxParallelUploads = 4;
+  // Parallel upload configuration - reduced to prevent UI blocking
+  static const int maxParallelUploads = 2;
   int _activeUploads = 0;
+  
+  // Throttle upload starts to prevent overwhelming the system
+  DateTime _lastUploadStart = DateTime.now();
   
   void addListener(SyncStatusCallback callback) {
     _listeners.add(callback);
@@ -95,32 +105,37 @@ class SyncService {
   }
 
   Future<void> processUploadQueue() async {
-    // Process uploads in parallel batches
-    final futures = <Future<void>>[];
+    // Process uploads sequentially with delays to keep UI responsive
+    while (_uploadQueue.isNotEmpty) {
+      // Check if we can start a new upload
+      if (_activeUploads >= maxParallelUploads) {
+        // Wait a bit and check again
+        await Future.delayed(const Duration(milliseconds: 500));
+        continue;
+      }
+      
+      final task = _uploadQueue.removeAt(0);
+      _activeUploads++;
+      
+      // Throttle upload starts - wait at least 100ms between starts
+      final timeSinceLastStart = DateTime.now().difference(_lastUploadStart);
+      if (timeSinceLastStart.inMilliseconds < 100) {
+        await Future.delayed(Duration(milliseconds: 100 - timeSinceLastStart.inMilliseconds));
+      }
+      _lastUploadStart = DateTime.now();
+      
+      // Start upload without awaiting - let it run in background
+      _executeUpload(task).whenComplete(() {
+        _activeUploads--;
+      });
+      
+      // Yield to UI thread periodically
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
     
-    while (_uploadQueue.isNotEmpty || futures.isNotEmpty) {
-      // Start new uploads up to max parallel limit
-      while (_activeUploads < maxParallelUploads && _uploadQueue.isNotEmpty) {
-        final task = _uploadQueue.removeAt(0);
-        _activeUploads++;
-        
-        final future = _executeUpload(task).whenComplete(() {
-          _activeUploads--;
-        });
-        futures.add(future);
-      }
-      
-      // Wait for at least one to complete if at max capacity
-      if (futures.isNotEmpty) {
-        await Future.any(futures);
-        // Remove completed futures
-        futures.removeWhere((f) => f == Future.value());
-      }
-      
-      // Small delay to prevent tight loop
-      if (_uploadQueue.isNotEmpty && _activeUploads >= maxParallelUploads) {
-        await Future.delayed(const Duration(milliseconds: 100));
-      }
+    // Wait for all active uploads to complete
+    while (_activeUploads > 0) {
+      await Future.delayed(const Duration(milliseconds: 200));
     }
   }
 
@@ -153,8 +168,8 @@ class SyncService {
         totalBytes: 0,
       );
 
-      final file = File(task.localPath);
-      final data = await file.readAsBytes();
+      // Read file in isolate to avoid blocking UI thread
+      final data = await compute(_readFileInIsolate, task.localPath);
       
       _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
         totalBytes: data.length,
@@ -172,7 +187,7 @@ class SyncService {
           task.remoteKey,
           data,
           encryptionKey,
-          originalFilename: file.path.split('/').last,
+          originalFilename: task.localPath.split('/').last,
           onProgress: (UploadProgress progress) {
             _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
               bytesTransferred: progress.bytesUploaded,
