@@ -12,6 +12,8 @@ class FulaApiService {
   Minio? _minio;
   String? _defaultBucket;
   bool _isConfigured = false;
+  String? _pinningService;
+  String? _pinningToken;
 
   bool get isConfigured => _isConfigured;
   String? get defaultBucket => _defaultBucket;
@@ -22,7 +24,11 @@ class FulaApiService {
     required String secretKey,
     String? defaultBucket,
     bool? useSSL,
+    String? pinningService,
+    String? pinningToken,
   }) {
+    _pinningService = pinningService;
+    _pinningToken = pinningToken;
     final uri = Uri.parse(endpoint);
     
     // Auto-detect SSL from URL scheme
@@ -236,13 +242,22 @@ class FulaApiService {
     try {
       int uploaded = 0;
       final total = data.length;
+      
+      // Add pinning headers to metadata
+      final fullMetadata = <String, String>{...?metadata};
+      if (_pinningService != null && _pinningService!.isNotEmpty) {
+        fullMetadata['x-pinning-service'] = _pinningService!;
+      }
+      if (_pinningToken != null && _pinningToken!.isNotEmpty) {
+        fullMetadata['x-pinning-token'] = _pinningToken!;
+      }
 
       final etag = await _minio!.putObject(
         bucket,
         key,
         Stream.value(data),
         size: data.length,
-        metadata: metadata,
+        metadata: fullMetadata,
         onProgress: (bytes) {
           uploaded = bytes;
           if (onProgress != null) {

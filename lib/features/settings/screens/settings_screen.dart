@@ -295,18 +295,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: Theme.of(context).colorScheme.surface,
                         borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                        ),
                       ),
                       child: Row(
                         children: [
                           Expanded(
                             child: SelectableText(
                               shareId,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500,
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                           ),
@@ -475,6 +479,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           endpoint: _apiGatewayController.text,
           accessKey: 'JWT:${_jwtTokenController.text}',
           secretKey: 'not-used',
+          pinningService: _ipfsServerController.text.isNotEmpty ? _ipfsServerController.text : null,
+          pinningToken: _jwtTokenController.text.isNotEmpty ? _jwtTokenController.text : null,
         );
       }
 

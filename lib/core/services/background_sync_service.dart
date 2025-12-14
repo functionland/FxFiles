@@ -22,6 +22,7 @@ void callbackDispatcher() {
       
       final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
       final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+      final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
       
       if (apiUrl == null || jwtToken == null) {
         debugPrint('Background task: API not configured');
@@ -32,6 +33,8 @@ void callbackDispatcher() {
         endpoint: apiUrl,
         accessKey: 'JWT:$jwtToken',
         secretKey: 'not-used',
+        pinningService: ipfsServer,
+        pinningToken: jwtToken,
       );
 
       await AuthService.instance.checkExistingSession();

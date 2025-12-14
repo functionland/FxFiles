@@ -19,12 +19,15 @@ void main() async {
   // Check if Fula API is configured and schedule sync
   final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
   final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+  final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
   
   if (apiUrl != null && jwtToken != null) {
     FulaApiService.instance.configure(
       endpoint: apiUrl,
       accessKey: 'JWT:$jwtToken',
       secretKey: 'not-used',
+      pinningService: ipfsServer,
+      pinningToken: jwtToken,
     );
     
     // Schedule periodic background sync
