@@ -302,7 +302,12 @@ class AuthService {
   }
 
   Future<void> _generateShareKeyPair() async {
-    final keyPair = await EncryptionService.instance.generateKeyPair();
+    if (_currentUser == null) return;
+    
+    // Derive key pair deterministically from user ID
+    // Uses different salt than encryption key, so they're cryptographically isolated
+    final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
+    final keyPair = await EncryptionService.instance.deriveKeyPairFromUserId(combinedId);
     
     _publicKey = keyPair.publicKey;
     _privateKey = keyPair.privateKey;

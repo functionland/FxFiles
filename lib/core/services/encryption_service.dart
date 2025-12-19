@@ -36,6 +36,25 @@ class EncryptionService {
     return await deriveKeyFromPassword(userId, Uint8List.fromList(salt));
   }
 
+  /// Derives a deterministic X25519 key pair from user ID.
+  /// Uses a completely different salt than encryption key derivation,
+  /// so knowing the sharing keys doesn't reveal the encryption key.
+  Future<KeyPairData> deriveKeyPairFromUserId(String userId) async {
+    // Use different salt for sharing keys - completely isolated from encryption key
+    final salt = utf8.encode('fula-files-sharing-keypair-v1');
+    final seed = await deriveKeyFromPassword(userId, Uint8List.fromList(salt));
+    
+    // X25519 private key is 32 bytes, derived seed is already 32 bytes
+    final keyPair = await _x25519.newKeyPairFromSeed(seed);
+    final publicKey = await keyPair.extractPublicKey();
+    final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
+    
+    return KeyPairData(
+      publicKey: Uint8List.fromList(publicKey.bytes),
+      privateKey: Uint8List.fromList(privateKeyBytes),
+    );
+  }
+
   Future<Uint8List> encrypt(Uint8List data, Uint8List key) async {
     final secretKey = SecretKey(key);
     final nonce = _aesGcm.newNonce();
