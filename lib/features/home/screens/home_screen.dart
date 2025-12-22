@@ -353,28 +353,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     }
                   },
                 ),
-                ListTile(
-                  leading: const Icon(LucideIcons.apple),
-                  title: const Text('Sign in with Apple'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    try {
-                      final user = await AuthService.instance.signInWithApple();
-                      if (user != null && mounted) {
-                        setState(() {});
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Signed in as ${user.email}')),
-                        );
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Sign in failed: $e'), backgroundColor: Colors.red),
-                        );
-                      }
-                    }
-                  },
-                ),
               ],
             ],
           ),

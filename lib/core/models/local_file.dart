@@ -7,6 +7,7 @@ class LocalFile {
   final DateTime modifiedAt;
   final bool isDirectory;
   final String? mimeType;
+  final String? iosAssetId; // iOS PhotoKit asset ID for media files
 
   LocalFile({
     required this.path,
@@ -15,6 +16,7 @@ class LocalFile {
     required this.modifiedAt,
     required this.isDirectory,
     this.mimeType,
+    this.iosAssetId,
   });
 
   factory LocalFile.fromFileSystemEntity(FileSystemEntity entity, FileStat stat) {

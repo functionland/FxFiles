@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
@@ -123,17 +124,41 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     try {
       if (_isCategoryMode) {
         final category = _categoryFromString(widget.category!);
-        final result = await FileService.instance.getFilesByCategory(
-          category,
-          offset: _currentOffset,
-          limit: _pageSize,
-          sortBy: _sortBy,
-          ascending: _sortAscending,
-        );
+        
+        // On iOS, use MediaService for media categories
+        final isMediaCategory = category == FileCategory.images || 
+                                category == FileCategory.videos || 
+                                category == FileCategory.audio;
+        
+        final List<LocalFile> newFiles;
+        final bool hasMore;
+        
+        if (Platform.isIOS && isMediaCategory) {
+          final result = await MediaService.instance.getMediaByCategory(
+            category,
+            offset: _currentOffset,
+            limit: _pageSize,
+            sortBy: _sortBy,
+            ascending: _sortAscending,
+          );
+          newFiles = result.files;
+          hasMore = result.hasMore;
+        } else {
+          final result = await FileService.instance.getFilesByCategory(
+            category,
+            offset: _currentOffset,
+            limit: _pageSize,
+            sortBy: _sortBy,
+            ascending: _sortAscending,
+          );
+          newFiles = result.files;
+          hasMore = result.hasMore;
+        }
+        
         setState(() {
-          _files.addAll(result.files);
-          _currentOffset += result.files.length;
-          _hasMore = result.hasMore;
+          _files.addAll(newFiles);
+          _currentOffset += newFiles.length;
+          _hasMore = hasMore;
           _isLoadingMore = false;
         });
       }
@@ -374,13 +399,36 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         return;
       }
       
-      final result = await FileService.instance.getFilesByCategory(
-        category,
-        offset: 0,
-        limit: _pageSize,
-        sortBy: _sortBy,
-        ascending: _sortAscending,
-      );
+      // On iOS, use MediaService for media categories (images, videos, audio)
+      // This uses PhotoKit to access the device's photo library
+      final isMediaCategory = category == FileCategory.images || 
+                              category == FileCategory.videos || 
+                              category == FileCategory.audio;
+      
+      final MediaResult result;
+      if (Platform.isIOS && isMediaCategory) {
+        result = await MediaService.instance.getMediaByCategory(
+          category,
+          offset: 0,
+          limit: _pageSize,
+          sortBy: _sortBy,
+          ascending: _sortAscending,
+        );
+      } else {
+        // Android or non-media categories: use FileService
+        final fileResult = await FileService.instance.getFilesByCategory(
+          category,
+          offset: 0,
+          limit: _pageSize,
+          sortBy: _sortBy,
+          ascending: _sortAscending,
+        );
+        result = MediaResult(
+          files: fileResult.files,
+          totalCount: fileResult.totalCount,
+          hasMore: fileResult.hasMore,
+        );
+      }
       
       // Fetch cloud files for this category and sync status
       List<FulaObject> cloudOnlyFiles = [];
@@ -541,6 +589,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       case 'starred': return FileCategory.starred;
       default: return FileCategory.other;
     }
+  }
+  
+  /// Check if current category is a media category (images, videos, audio)
+  bool _isMediaCategory() {
+    if (widget.category == null) return false;
+    final category = _categoryFromString(widget.category!);
+    return category == FileCategory.images || 
+           category == FileCategory.videos || 
+           category == FileCategory.audio;
   }
 
   Future<void> _loadFiles() async {
@@ -745,6 +802,19 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             Icon(LucideIcons.folderOpen, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
             const Text('No files found'),
+            // iOS: Show option to select more photos if in limited access mode
+            if (Platform.isIOS && _isCategoryMode && _isMediaCategory())
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: TextButton.icon(
+                  onPressed: () async {
+                    await FileService.instance.openIOSLimitedPhotosPicker();
+                    _loadCategoryFiles();
+                  },
+                  icon: const Icon(LucideIcons.imagePlus),
+                  label: const Text('Select Photos to Access'),
+                ),
+              ),
           ],
         ),
       );

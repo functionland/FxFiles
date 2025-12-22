@@ -587,26 +587,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 if (mounted) setState(() {});
               },
             ),
-            ListTile(
-              leading: const Icon(LucideIcons.apple),
-              title: const Text('Apple'),
-              onTap: () async {
-                Navigator.pop(dialogContext);
-                try {
-                  final user = await AuthService.instance.signInWithApple();
-                  if (user != null) {
-                    messenger.showSnackBar(
-                      SnackBar(content: Text('Signed in as ${user.email}')),
-                    );
-                  }
-                } catch (e) {
-                  messenger.showSnackBar(
-                    SnackBar(content: Text('Sign-in failed: $e'), backgroundColor: Colors.red),
-                  );
-                }
-                if (mounted) setState(() {});
-              },
-            ),
           ],
         ),
       ),

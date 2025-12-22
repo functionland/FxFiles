@@ -31,17 +31,22 @@ class EncryptionService {
     return Uint8List.fromList(bytes);
   }
 
-  Future<Uint8List> deriveKeyFromUserId(String userId) async {
-    final salt = utf8.encode('fula-files-encryption-salt-v1');
+  /// Derives encryption key from user ID using user's email as salt.
+  /// This is deterministic: same userId + same email = same key across devices/platforms.
+  /// The email adds per-user uniqueness while remaining reproducible.
+  Future<Uint8List> deriveKeyFromUserId(String userId, String userEmail) async {
+    // Use email as salt base, prefixed with app identifier for domain separation
+    final salt = utf8.encode('fula-files-v1:$userEmail');
     return await deriveKeyFromPassword(userId, Uint8List.fromList(salt));
   }
 
   /// Derives a deterministic X25519 key pair from user ID.
   /// Uses a completely different salt than encryption key derivation,
   /// so knowing the sharing keys doesn't reveal the encryption key.
-  Future<KeyPairData> deriveKeyPairFromUserId(String userId) async {
+  Future<KeyPairData> deriveKeyPairFromUserId(String userId, String userEmail) async {
     // Use different salt for sharing keys - completely isolated from encryption key
-    final salt = utf8.encode('fula-files-sharing-keypair-v1');
+    // Include email for per-user uniqueness while remaining deterministic
+    final salt = utf8.encode('fula-files-keypair-v1:$userEmail');
     final seed = await deriveKeyFromPassword(userId, Uint8List.fromList(salt));
     
     // X25519 private key is 32 bytes, derived seed is already 32 bytes

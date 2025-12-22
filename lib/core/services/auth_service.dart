@@ -2,12 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/encryption_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 
-enum AuthProvider { google, apple, microsoft }
+enum AuthProvider { google }
 
 // Google OAuth Configuration
 // See: https://console.cloud.google.com/apis/credentials
@@ -180,53 +179,16 @@ class AuthService {
     await _deriveEncryptionKey();
   }
 
-  Future<AuthUser?> signInWithApple() async {
-    try {
-      final credential = await SignInWithApple.getAppleIDCredential(
-        scopes: [
-          AppleIDAuthorizationScopes.email,
-          AppleIDAuthorizationScopes.fullName,
-        ],
-      );
-
-      final userIdentifier = credential.userIdentifier;
-      if (userIdentifier == null) return null;
-
-      _currentUser = AuthUser(
-        id: userIdentifier,
-        email: credential.email ?? '',
-        displayName: credential.givenName != null
-            ? '${credential.givenName} ${credential.familyName ?? ''}'.trim()
-            : null,
-        provider: AuthProvider.apple,
-      );
-
-      await SecureStorageService.instance.writeJson(
-        SecureStorageKeys.userCredentials,
-        _currentUser!.toJson(),
-      );
-
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.authProvider,
-        AuthProvider.apple.name,
-      );
-
-      await _deriveEncryptionKey();
-
-      return _currentUser;
-    } catch (e) {
-      debugPrint('Apple Sign-In error: $e');
-      rethrow;
-    }
-  }
-
   Future<void> _deriveEncryptionKey() async {
     if (_currentUser == null) return;
 
     final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
     
+    // Use email as salt for per-user uniqueness while remaining deterministic
+    // Same user ID + same email = same key across devices/platforms
     _encryptionKey = await EncryptionService.instance.deriveKeyFromUserId(
       combinedId,
+      _currentUser!.email,
     );
 
     await SecureStorageService.instance.write(
@@ -307,8 +269,12 @@ class AuthService {
     
     // Derive key pair deterministically from user ID
     // Uses different salt than encryption key, so they're cryptographically isolated
+    // Email included in salt for per-user uniqueness while remaining deterministic
     final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
-    final keyPair = await EncryptionService.instance.deriveKeyPairFromUserId(combinedId);
+    final keyPair = await EncryptionService.instance.deriveKeyPairFromUserId(
+      combinedId,
+      _currentUser!.email,
+    );
     
     _publicKey = keyPair.publicKey;
     _privateKey = keyPair.privateKey;

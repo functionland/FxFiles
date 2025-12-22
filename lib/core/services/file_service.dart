@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
+import 'package:photo_manager/photo_manager.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 
@@ -44,9 +45,28 @@ class FileService {
         return status.isGranted;
       }
     } else if (Platform.isIOS) {
-      return true;
+      // iOS: Request photo library permission via PhotoManager
+      final permission = await PhotoManager.requestPermissionExtend();
+      // Accept both authorized and limited access
+      return permission.isAuth || permission == PermissionState.limited;
     } else {
       return true;
+    }
+  }
+  
+  /// Check if iOS photo library access is limited (user selected specific photos only)
+  Future<bool> isIOSLimitedAccess() async {
+    if (!Platform.isIOS) return false;
+    final state = await PhotoManager.getPermissionState(
+      requestOption: PermissionRequestOption(),
+    );
+    return state == PermissionState.limited;
+  }
+  
+  /// Open iOS limited photos picker to let user select more photos
+  Future<void> openIOSLimitedPhotosPicker() async {
+    if (Platform.isIOS) {
+      await PhotoManager.presentLimited();
     }
   }
 

@@ -34,7 +34,6 @@ dependencies:
   
   # Authentication
   google_sign_in: ^7.2.0
-  sign_in_with_apple: ^7.0.1
   
   # UI Components
   flutter_svg: ^2.0.16
@@ -50,6 +49,9 @@ dependencies:
   # Permissions
   permission_handler: ^12.0.1
   device_info_plus: ^12.3.0
+  
+  # iOS Photo Library Access
+  photo_manager: ^3.6.2
   
   # Utils
   intl: ^0.20.2

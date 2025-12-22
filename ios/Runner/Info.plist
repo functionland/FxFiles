@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>FxFiles needs access to your photos and videos to browse, manage, and backup your media to the cloud.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FxFiles needs permission to save photos and videos to your library.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
 </dict>
 </plist>
