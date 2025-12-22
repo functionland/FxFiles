@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/local_file.dart';
 
@@ -21,11 +22,39 @@ class FileThumbnail extends StatelessWidget {
       return _buildIconThumbnail(LucideIcons.folder, Colors.amber);
     }
 
+    // Handle SVG files separately
+    if (file.extension.toLowerCase() == 'svg') {
+      return _buildSvgThumbnail();
+    }
+
     if (file.isImage) {
       return _buildImageThumbnail();
     }
 
     return _buildIconThumbnail(_getFileIcon(), _getIconColor());
+  }
+
+  Widget _buildSvgThumbnail() {
+    final svgFile = File(file.path);
+    if (!svgFile.existsSync()) {
+      return _buildIconThumbnail(LucideIcons.image, Colors.green);
+    }
+
+    return ClipRRect(
+      borderRadius: borderRadius ?? BorderRadius.circular(8),
+      child: Container(
+        width: size,
+        height: size,
+        color: Colors.white,
+        child: SvgPicture.file(
+          svgFile,
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          placeholderBuilder: (_) => _buildIconThumbnail(LucideIcons.image, Colors.green),
+        ),
+      ),
+    );
   }
 
   Widget _buildImageThumbnail() {

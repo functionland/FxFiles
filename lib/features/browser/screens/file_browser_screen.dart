@@ -1738,6 +1738,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Widget _buildLocalFileItem(LocalFile file, SyncState? syncState, bool isSelected) {
+    final isFolderSynced = file.isDirectory && _isFolderSyncEnabled(file.path);
     return ListTile(
       selected: isSelected,
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
@@ -1746,6 +1747,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       subtitle: Row(
         children: [
           Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
+          // Show auto-sync indicator for folders with sync enabled
+          if (isFolderSynced) ...[
+            const SizedBox(width: 8),
+            const Icon(LucideIcons.folderSync, size: 14, color: Colors.green),
+          ],
           if (syncState != null) ...[
             const SizedBox(width: 8),
             _buildSyncStatusIcon(syncState.status),

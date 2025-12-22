@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:minio/minio.dart';
@@ -220,7 +221,10 @@ class FulaApiService {
       'x-fula-encryption-version': '1',
     };
     if (originalFilename != null) {
-      metadata['x-fula-original-filename'] = originalFilename;
+      // Base64 encode filename to handle non-ASCII characters (emojis, Unicode)
+      // HTTP headers only support ASCII, so we encode the filename
+      metadata['x-fula-original-filename'] = base64Encode(utf8.encode(originalFilename));
+      metadata['x-fula-filename-encoding'] = 'base64';
     }
     if (contentType != null) {
       metadata['x-fula-original-content-type'] = contentType;
@@ -296,7 +300,10 @@ class FulaApiService {
       'x-fula-encryption-version': '1',
     };
     if (originalFilename != null) {
-      metadata['x-fula-original-filename'] = originalFilename;
+      // Base64 encode filename to handle non-ASCII characters (emojis, Unicode)
+      // HTTP headers only support ASCII, so we encode the filename
+      metadata['x-fula-original-filename'] = base64Encode(utf8.encode(originalFilename));
+      metadata['x-fula-filename-encoding'] = 'base64';
     }
     if (contentType != null) {
       metadata['x-fula-original-content-type'] = contentType;

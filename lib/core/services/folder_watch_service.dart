@@ -7,7 +7,8 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
-import 'package:fula_files/core/services/file_service.dart' show FileCategory;
+import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 
 const String folderSyncTaskName = 'com.functionland.fxfiles.folderSync';
 const String folderSyncPeriodicTaskName = 'com.functionland.fxfiles.folderSyncPeriodic';
@@ -111,6 +112,13 @@ class FolderWatchService {
   Future<void> _startWatching(String path) async {
     if (_watchers.containsKey(path)) return;
     
+    // Category paths (e.g., "category:images") are not real directories
+    // They use MediaService/FileService to get files, so no watching needed
+    if (path.startsWith('category:')) {
+      debugPrint('Skipping directory watch for category path: $path');
+      return;
+    }
+    
     final dir = Directory(path);
     if (!await dir.exists()) {
       debugPrint('Cannot watch non-existent directory: $path');
@@ -204,6 +212,13 @@ class FolderWatchService {
     _notifyListeners(path, FolderSyncStatus.syncing);
     
     try {
+      // Handle category-based sync (e.g., "category:images")
+      if (path.startsWith('category:')) {
+        await _syncCategory(path, folderSync);
+        return;
+      }
+      
+      // Regular directory sync
       final dir = Directory(path);
       if (!await dir.exists()) {
         throw Exception('Directory does not exist: $path');
@@ -291,6 +306,105 @@ class FolderWatchService {
         errorMessage: e.toString(),
       );
       _notifyListeners(path, FolderSyncStatus.error);
+    }
+  }
+  
+  /// Sync files for a category (images, videos, audio)
+  /// Uses MediaService to get files from PhotoKit on iOS or FileService on Android
+  Future<void> _syncCategory(String path, FolderSync folderSync) async {
+    // Extract category name from path (e.g., "category:images" -> "images")
+    final categoryName = path.substring('category:'.length);
+    final category = _categoryFromString(categoryName);
+    
+    try {
+      // Get all files for this category using MediaService
+      final result = await MediaService.instance.getMediaByCategory(
+        category,
+        offset: 0,
+        limit: 10000, // Get all files
+        sortBy: 'date',
+        ascending: false,
+      );
+      
+      final files = result.files;
+      
+      // Update total count
+      await LocalStorageService.instance.updateFolderSyncStatus(
+        path,
+        FolderSyncStatus.syncing,
+        totalFiles: files.length,
+        syncedFiles: 0,
+      );
+      
+      int syncedCount = 0;
+      final bucket = folderSync.targetBucket;
+      final trackedPaths = <String>{};
+      
+      // Queue all files for upload
+      for (final file in files) {
+        trackedPaths.add(file.path);
+        
+        // Check if already synced
+        final syncState = LocalStorageService.instance.getSyncState(file.path);
+        if (syncState?.isSynced == true) {
+          syncedCount++;
+          continue;
+        }
+        
+        // Use file name as remote key for categories
+        final remoteKey = file.name;
+        
+        await SyncService.instance.queueUpload(
+          localPath: file.path,
+          remoteBucket: bucket,
+          remoteKey: remoteKey,
+        );
+      }
+      
+      // Listen for sync completion
+      SyncService.instance.addListener((localPath, status) {
+        if (trackedPaths.contains(localPath) && status == SyncStatus.synced) {
+          syncedCount++;
+          LocalStorageService.instance.updateFolderSyncStatus(
+            path,
+            FolderSyncStatus.syncing,
+            syncedFiles: syncedCount,
+          );
+          
+          // Check if all done
+          if (syncedCount >= files.length) {
+            LocalStorageService.instance.updateFolderSyncStatus(
+              path,
+              FolderSyncStatus.synced,
+              syncedFiles: syncedCount,
+            );
+            _notifyListeners(path, FolderSyncStatus.synced);
+          }
+        }
+      });
+      
+      debugPrint('Started category sync for $categoryName: ${files.length} files');
+      
+    } catch (e) {
+      debugPrint('Category sync failed for $path: $e');
+      await LocalStorageService.instance.updateFolderSyncStatus(
+        path,
+        FolderSyncStatus.error,
+        errorMessage: e.toString(),
+      );
+      _notifyListeners(path, FolderSyncStatus.error);
+    }
+  }
+  
+  FileCategory _categoryFromString(String cat) {
+    switch (cat) {
+      case 'images': return FileCategory.images;
+      case 'videos': return FileCategory.videos;
+      case 'audio': return FileCategory.audio;
+      case 'documents': return FileCategory.documents;
+      case 'downloads': return FileCategory.downloads;
+      case 'archives': return FileCategory.archives;
+      default: return FileCategory.other;
     }
   }
 

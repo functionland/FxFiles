@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
@@ -78,7 +79,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
           maxScale: 4.0,
           child: Center(
             child: file.existsSync()
-              ? Image.file(file, fit: BoxFit.contain)
+              ? _buildImageWidget(file, fileName)
               : const Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -114,6 +115,23 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
         ),
       ) : null,
     );
+  }
+
+  /// Build the appropriate image widget based on file type
+  Widget _buildImageWidget(File file, String fileName) {
+    final extension = fileName.split('.').last.toLowerCase();
+    
+    // Handle SVG files separately
+    if (extension == 'svg') {
+      return SvgPicture.file(
+        file,
+        fit: BoxFit.contain,
+        placeholderBuilder: (context) => const CircularProgressIndicator(),
+      );
+    }
+    
+    // Regular image files (jpg, png, gif, webp, etc.)
+    return Image.file(file, fit: BoxFit.contain);
   }
 
   void _zoomIn() {

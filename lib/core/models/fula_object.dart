@@ -1,3 +1,4 @@
+import 'dart:convert';
 
 class FulaObject {
   final String key;
@@ -40,7 +41,21 @@ class FulaObject {
 
   bool get isEncrypted => metadata?['x-fula-encrypted'] == 'true';
   
-  String? get originalFilename => metadata?['x-fula-original-filename'];
+  /// Get original filename, decoding base64 if necessary
+  String? get originalFilename {
+    final encoded = metadata?['x-fula-original-filename'];
+    if (encoded == null) return null;
+    
+    // Check if filename is base64 encoded
+    if (metadata?['x-fula-filename-encoding'] == 'base64') {
+      try {
+        return utf8.decode(base64Decode(encoded));
+      } catch (_) {
+        return encoded; // Fallback to raw value if decoding fails
+      }
+    }
+    return encoded;
+  }
   
   String? get originalContentType => metadata?['x-fula-original-content-type'];
 
