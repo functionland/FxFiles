@@ -30,8 +30,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _loadSettings();
   }
 
-  static const String _defaultApiGateway = 'https://api.gateway.cloud.fx.land';
-  static const String _defaultIpfsServer = 'https://ipfs.gateway.cloud.fx.land';
+  static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
+  static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
 
   Future<void> _loadSettings() async {
     final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);

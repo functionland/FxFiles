@@ -5,6 +5,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/encryption_service.dart';
+import 'package:fula_files/core/services/sync_service.dart';
 
 enum AuthProvider { google, apple, microsoft }
 
@@ -380,6 +381,9 @@ class AuthService {
       await SecureStorageService.instance.delete(SecureStorageKeys.encryptionKey);
       await SecureStorageService.instance.delete(SecureStorageKeys.userPublicKey);
       await SecureStorageService.instance.delete(SecureStorageKeys.userPrivateKey);
+
+      // Clear sync queues and cached data for the old user
+      await SyncService.instance.clearAll();
 
       _currentUser = null;
       _encryptionKey = null;

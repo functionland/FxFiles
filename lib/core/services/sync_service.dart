@@ -329,6 +329,16 @@ class SyncService {
     _uploadQueue.clear();
     _downloadQueue.clear();
   }
+
+  Future<void> clearAll() async {
+    _uploadQueue.clear();
+    _downloadQueue.clear();
+    _activeSync.clear();
+    _verifiedBuckets.clear();
+    _isProcessingUpload = false;
+    _activeUploads = 0;
+    await LocalStorageService.instance.clearAllSyncStates();
+  }
 }
 
 class SyncTask {
