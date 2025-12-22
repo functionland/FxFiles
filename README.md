@@ -329,4 +329,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Demo
 
-[![Watch the video](https://img.youtube.com/vi/rhEi1yA14LM/maxresdefault.jpg)](https://youtu.be/rhEi1yA14LM)
+[Watch the demo video](https://youtu.be/rhEi1yA14LM)
+
