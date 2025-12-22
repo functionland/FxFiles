@@ -326,3 +326,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Fula Network](https://fula.network) for decentralized storage
 - Flutter team for the amazing framework
 - All open-source contributors
+
+## Demo
+
+[![Watch the video](https://img.youtube.com/vi/rhEi1yA14LM/maxresdefault.jpg)](https://youtu.be/rhEi1yA14LM)
