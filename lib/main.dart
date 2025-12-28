@@ -6,6 +6,8 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/background_sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/face_storage_service.dart';
+import 'package:fula_files/core/services/face_detection_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +18,11 @@ void main() async {
 
   // Check for existing auth session (restores sign-in state)
   await AuthService.instance.checkExistingSession();
+
+  // Initialize face detection services (non-blocking)
+  FaceStorageService.instance.init().then((_) {
+    FaceDetectionService.instance.init();
+  });
 
   // Initialize background sync
   await BackgroundSyncService.instance.initialize();

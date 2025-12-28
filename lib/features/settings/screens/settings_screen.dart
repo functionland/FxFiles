@@ -7,7 +7,11 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/face_detection_service.dart';
+import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
+import 'package:fula_files/features/settings/screens/face_management_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -248,6 +252,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          _buildFaceDetectionSection(),
           _buildSection(
             title: 'Storage',
             children: [
@@ -265,7 +270,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const ListTile(
                 leading: Icon(LucideIcons.info),
                 title: Text('Version'),
-                subtitle: Text('1.0.2'),
+                subtitle: Text('1.1.0'),
               ),
             ],
           ),
@@ -601,6 +606,58 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _clearCache() async {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Cache cleared')),
+    );
+  }
+
+  Widget _buildFaceDetectionSection() {
+    final isEnabled = LocalStorageService.instance.getSetting<bool>('faceDetectionEnabled', defaultValue: true) ?? true;
+    
+    return _buildSection(
+      title: 'Face Recognition',
+      children: [
+        SwitchListTile(
+          secondary: const Icon(LucideIcons.scan),
+          title: const Text('Enable Face Detection'),
+          subtitle: const Text('Automatically detect faces in photos'),
+          value: isEnabled,
+          onChanged: (value) async {
+            await LocalStorageService.instance.saveSetting('faceDetectionEnabled', value);
+            setState(() {});
+            if (!value) {
+              FaceDetectionService.instance.clearQueue();
+            }
+          },
+        ),
+        ListTile(
+          leading: const Icon(LucideIcons.users),
+          title: const Text('Manage People'),
+          subtitle: FutureBuilder<int>(
+            future: FaceStorageService.instance.getTotalPersonCount(),
+            builder: (context, snapshot) {
+              final count = snapshot.data ?? 0;
+              return Text('$count ${count == 1 ? 'person' : 'people'} detected');
+            },
+          ),
+          trailing: const Icon(LucideIcons.chevronRight),
+          enabled: isEnabled,
+          onTap: isEnabled ? () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FaceManagementScreen()),
+            );
+          } : null,
+        ),
+        if (FaceDetectionService.instance.isProcessing)
+          ListTile(
+            leading: const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            title: const Text('Processing images...'),
+            subtitle: Text('${FaceDetectionService.instance.queueLength} images in queue'),
+          ),
+      ],
     );
   }
 }

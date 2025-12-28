@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
+import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
@@ -23,6 +24,13 @@ import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
+
+/// View mode for file browser
+enum ViewMode {
+  list,
+  largeGrid, // 2 columns
+  smallGrid, // 4 columns
+}
 
 class FileBrowserScreen extends ConsumerStatefulWidget {
   final String? initialPath;
@@ -83,6 +91,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   String _sortBy = 'date'; // 'date' or 'name'
   bool _sortAscending = false;
   
+  // View mode state
+  ViewMode _viewMode = ViewMode.list;
+  
   // Scroll controller for lazy loading
   final ScrollController _scrollController = ScrollController();
 
@@ -91,7 +102,39 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     super.initState();
     _scrollController.addListener(_onScroll);
     SyncService.instance.addListener(_onSyncStatusChanged);
+    _loadViewMode();
     _initPath();
+  }
+
+  /// Load saved view mode for current category/path
+  void _loadViewMode() {
+    final key = _getViewModeKey();
+    final savedMode = LocalStorageService.instance.getSetting<String>(key);
+    if (savedMode != null) {
+      setState(() {
+        _viewMode = ViewMode.values.firstWhere(
+          (m) => m.name == savedMode,
+          orElse: () => ViewMode.list,
+        );
+      });
+    }
+  }
+
+  /// Save view mode for current category/path
+  void _saveViewMode() {
+    final key = _getViewModeKey();
+    LocalStorageService.instance.saveSetting(key, _viewMode.name);
+  }
+
+  /// Get storage key for view mode (per category or path)
+  String _getViewModeKey() {
+    if (widget.category != null) {
+      return 'viewMode_category_${widget.category}';
+    } else if (widget.cloudMode) {
+      return 'viewMode_cloud';
+    } else {
+      return 'viewMode_folder';
+    }
   }
 
   @override
@@ -505,6 +548,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         _currentOffset = result.files.length;
         _isLoading = false;
       });
+      
+      // Queue images for face detection in background (only for images category)
+      if (category == FileCategory.images) {
+        _queueImagesForFaceDetection(result.files);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
@@ -598,6 +646,48 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     return category == FileCategory.images || 
            category == FileCategory.videos || 
            category == FileCategory.audio;
+  }
+
+  /// Get icon for current view mode
+  IconData get _viewModeIcon {
+    switch (_viewMode) {
+      case ViewMode.list:
+        return LucideIcons.list;
+      case ViewMode.largeGrid:
+        return LucideIcons.layoutGrid;
+      case ViewMode.smallGrid:
+        return LucideIcons.grid;
+    }
+  }
+
+  /// Get tooltip for current view mode
+  String get _viewModeTooltip {
+    switch (_viewMode) {
+      case ViewMode.list:
+        return 'List view';
+      case ViewMode.largeGrid:
+        return 'Large grid';
+      case ViewMode.smallGrid:
+        return 'Small grid';
+    }
+  }
+
+  /// Cycle through view modes
+  void _cycleViewMode() {
+    setState(() {
+      switch (_viewMode) {
+        case ViewMode.list:
+          _viewMode = ViewMode.largeGrid;
+          break;
+        case ViewMode.largeGrid:
+          _viewMode = ViewMode.smallGrid;
+          break;
+        case ViewMode.smallGrid:
+          _viewMode = ViewMode.list;
+          break;
+      }
+    });
+    _saveViewMode(); // Persist the selection
   }
 
   Future<void> _loadFiles() async {
@@ -759,6 +849,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // Sync icon for categories
           if (_isCategoryMode && AuthService.instance.isAuthenticated)
             _buildCategorySyncIcon(),
+          // View mode toggle
+          IconButton(
+            icon: Icon(_viewModeIcon),
+            tooltip: _viewModeTooltip,
+            onPressed: _cycleViewMode,
+          ),
           IconButton(
             icon: const Icon(LucideIcons.arrowUpDown),
             tooltip: 'Sort',
@@ -820,6 +916,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       );
     }
     
+    // Use different layouts based on view mode
+    if (_viewMode == ViewMode.list) {
+      return _buildListView();
+    } else {
+      return _buildGridView();
+    }
+  }
+
+  Widget _buildListView() {
     return RefreshIndicator(
       onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
       child: ListView.builder(
@@ -859,6 +964,282 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         },
       ),
     );
+  }
+
+  Widget _buildGridView() {
+    final crossAxisCount = _viewMode == ViewMode.largeGrid ? 2 : 4;
+    final itemCount = _isCategoryMode 
+        ? _combinedFiles.length + (_hasMore ? 1 : 0)
+        : _files.length + (_hasMore ? 1 : 0);
+    
+    return RefreshIndicator(
+      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
+      child: GridView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(8),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxisCount,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: _viewMode == ViewMode.largeGrid ? 0.85 : 0.9,
+        ),
+        itemCount: itemCount,
+        itemBuilder: (context, index) {
+          final fileCount = _isCategoryMode ? _combinedFiles.length : _files.length;
+          
+          // Loading indicator at bottom
+          if (index >= fileCount) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          
+          // Category mode: use combined sorted list
+          if (_isCategoryMode) {
+            final item = _combinedFiles[index];
+            if (item.isCloudOnly) {
+              return _buildCloudOnlyGridItem(item.cloudFile!);
+            }
+            final file = item.localFile!;
+            final syncState = LocalStorageService.instance.getSyncState(file.path);
+            final isSelected = _selectedFiles.contains(file.path);
+            return _buildGridItem(file, syncState, isSelected);
+          }
+          
+          // Folder mode: just local files
+          final file = _files[index];
+          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final isSelected = _selectedFiles.contains(file.path);
+          return _buildGridItem(file, syncState, isSelected);
+        },
+      ),
+    );
+  }
+
+  Widget _buildGridItem(LocalFile file, SyncState? syncState, bool isSelected) {
+    final isFolderSynced = file.isDirectory && _isFolderSyncEnabled(file.path);
+    final isLargeGrid = _viewMode == ViewMode.largeGrid;
+    
+    return GestureDetector(
+      onTap: _selectionMode 
+          ? () => _toggleSelection(file)
+          : () => _navigateTo(file),
+      onLongPress: () => _toggleSelection(file),
+      child: Container(
+        decoration: BoxDecoration(
+          color: isSelected 
+              ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5)
+              : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(12),
+          border: isSelected 
+              ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
+              : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Thumbnail area
+            Expanded(
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Thumbnail or icon
+                    _buildGridThumbnail(file),
+                    // Selection indicator
+                    if (isSelected)
+                      Container(
+                        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+                        child: const Center(
+                          child: Icon(LucideIcons.check, color: Colors.white, size: 32),
+                        ),
+                      ),
+                    // Sync status indicator
+                    if (syncState != null || isFolderSynced)
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: isFolderSynced 
+                              ? const Icon(LucideIcons.folderSync, size: 14, color: Colors.green)
+                              : _buildSyncStatusIcon(syncState!.status),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            // File info
+            Container(
+              padding: EdgeInsets.all(isLargeGrid ? 8 : 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    file.name,
+                    maxLines: isLargeGrid ? 2 : 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: isLargeGrid ? 13 : 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  if (isLargeGrid) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      file.isDirectory ? 'Folder' : file.sizeFormatted,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGridThumbnail(LocalFile file) {
+    // For directories, show folder icon
+    if (file.isDirectory) {
+      return Container(
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        child: Icon(
+          LucideIcons.folder,
+          size: _viewMode == ViewMode.largeGrid ? 48 : 32,
+          color: Theme.of(context).colorScheme.secondary,
+        ),
+      );
+    }
+    
+    // For files, try to show thumbnail
+    final category = FileCategory.fromPath(file.path);
+    
+    // Images and videos can have thumbnails
+    if (category == FileCategory.images || category == FileCategory.videos) {
+      return FileThumbnail(
+        file: file, 
+        size: 200, // Use larger size for grid
+      );
+    }
+    
+    // For other files, show category icon
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Icon(
+        _getCategoryIcon(category),
+        size: _viewMode == ViewMode.largeGrid ? 48 : 32,
+        color: Theme.of(context).colorScheme.outline,
+      ),
+    );
+  }
+
+  Widget _buildCloudOnlyGridItem(FulaObject cloudFile) {
+    final isLargeGrid = _viewMode == ViewMode.largeGrid;
+    
+    return GestureDetector(
+      onTap: () => _showCloudFileOptions(cloudFile),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.blue.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Thumbnail area with cloud icon
+            Expanded(
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Container(
+                  color: Colors.blue.withValues(alpha: 0.1),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Center(
+                        child: Icon(
+                          LucideIcons.cloud,
+                          size: isLargeGrid ? 48 : 32,
+                          color: Colors.blue,
+                        ),
+                      ),
+                      // Cloud indicator
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Colors.blue,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(LucideIcons.download, size: 12, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // File info
+            Container(
+              padding: EdgeInsets.all(isLargeGrid ? 8 : 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    cloudFile.key,
+                    maxLines: isLargeGrid ? 2 : 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: isLargeGrid ? 13 : 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  if (isLargeGrid) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Cloud only',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _getCategoryIcon(FileCategory category) {
+    switch (category) {
+      case FileCategory.images:
+        return LucideIcons.image;
+      case FileCategory.videos:
+        return LucideIcons.video;
+      case FileCategory.audio:
+        return LucideIcons.music;
+      case FileCategory.documents:
+        return LucideIcons.fileText;
+      case FileCategory.archives:
+        return LucideIcons.archive;
+      case FileCategory.downloads:
+        return LucideIcons.download;
+      default:
+        return LucideIcons.file;
+    }
   }
   
   Widget _buildCloudBody() {
@@ -1391,6 +1772,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           SnackBar(content: Text('Sync failed: $e'), backgroundColor: Colors.red),
         );
       }
+    }
+  }
+
+  // Face detection helpers
+  void _queueImagesForFaceDetection(List<LocalFile> files) {
+    // Queue images for face detection in background
+    // This runs asynchronously and doesn't block the UI
+    final imagePaths = files
+        .where((f) => f.isImage && !f.isDirectory)
+        .map((f) => f.path)
+        .toList();
+    
+    if (imagePaths.isNotEmpty) {
+      FaceDetectionService.instance.queueImagesForProcessing(imagePaths);
     }
   }
 

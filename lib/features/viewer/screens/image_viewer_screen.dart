@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
+import 'package:fula_files/core/models/face_data.dart';
 
 class ImageViewerScreen extends StatefulWidget {
   final String filePath;
@@ -17,11 +19,24 @@ class ImageViewerScreen extends StatefulWidget {
 class _ImageViewerScreenState extends State<ImageViewerScreen> {
   final TransformationController _transformController = TransformationController();
   bool _showControls = true;
+  List<DetectedFace> _faces = [];
+  bool _facesLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _trackRecentFile();
+    _loadFaces();
+  }
+
+  Future<void> _loadFaces() async {
+    final faces = await FaceStorageService.instance.getFacesForImage(widget.filePath);
+    if (mounted) {
+      setState(() {
+        _faces = faces;
+        _facesLoaded = true;
+      });
+    }
   }
 
   Future<void> _trackRecentFile() async {
@@ -111,6 +126,15 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
               onPressed: _zoomOut,
               tooltip: 'Zoom out',
             ),
+            if (_facesLoaded && _faces.isNotEmpty)
+              IconButton(
+                icon: Badge(
+                  label: Text('${_faces.length}'),
+                  child: const Icon(LucideIcons.scanFace, color: Colors.white),
+                ),
+                onPressed: _showFacesInImage,
+                tooltip: 'People in this photo',
+              ),
           ],
         ),
       ) : null,
@@ -132,6 +156,99 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     
     // Regular image files (jpg, png, gif, webp, etc.)
     return Image.file(file, fit: BoxFit.contain);
+  }
+
+  Future<void> _showFacesInImage() async {
+    // Get person info for each face
+    final facePersonPairs = <(DetectedFace, Person?)>[];
+    for (final face in _faces) {
+      Person? person;
+      if (face.personId != null) {
+        person = await FaceStorageService.instance.getPerson(face.personId!);
+      }
+      facePersonPairs.add((face, person));
+    }
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black87,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(LucideIcons.users, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Text(
+                    'People in this photo (${_faces.length})',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 120,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: facePersonPairs.length,
+                  itemBuilder: (ctx, index) {
+                    final (face, person) = facePersonPairs[index];
+                    final thumbnailFile = face.thumbnailPath != null 
+                        ? File(face.thumbnailPath!) 
+                        : null;
+                    
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
+                            ),
+                            child: ClipOval(
+                              child: thumbnailFile != null && thumbnailFile.existsSync()
+                                  ? Image.file(thumbnailFile, fit: BoxFit.cover)
+                                  : Container(
+                                      color: Colors.grey[700],
+                                      child: const Icon(LucideIcons.user, color: Colors.white54, size: 32),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: 80,
+                            child: Text(
+                              person?.name ?? 'Unknown',
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _zoomIn() {

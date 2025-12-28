@@ -1,7 +1,7 @@
 name: fula_files
 description: FxFiles - A minimalistic file manager with Fula decentralized storage backup support.
 publish_to: 'none'
-version: 1.0.2+486
+version: 1.1.0+487
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -52,6 +52,10 @@ dependencies:
   
   # iOS Photo Library Access
   photo_manager: ^3.6.2
+  
+  # Face Detection & Recognition
+  google_mlkit_face_detection: ^0.12.0
+  image: ^4.3.0
   
   # Utils
   intl: ^0.20.2
