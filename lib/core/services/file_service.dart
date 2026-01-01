@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -13,34 +14,52 @@ class FileService {
   FileService._();
   static final FileService instance = FileService._();
 
+  static const _storageChannel = MethodChannel('land.fx.files/storage');
+
+  /// Request storage permission appropriate for a file manager app
+  ///
+  /// For Android 11+ (API 30+), this requests MANAGE_EXTERNAL_STORAGE permission
+  /// which is required for file manager apps per Google Play policy.
+  /// This will direct users to Settings → Special App Access → All Files Access
   Future<bool> requestStoragePermission() async {
     if (Platform.isAndroid) {
       // Check Android version for appropriate permission strategy
       final androidInfo = await DeviceInfoPlugin().androidInfo;
       final sdkInt = androidInfo.version.sdkInt;
-      
-      if (sdkInt >= 33) {
-        // Android 13+ uses granular media permissions
-        final images = await Permission.photos.request();
-        final videos = await Permission.videos.request();
-        final audio = await Permission.audio.request();
-        return images.isGranted || videos.isGranted || audio.isGranted;
-      } else if (sdkInt >= 30) {
-        // Android 11-12 needs MANAGE_EXTERNAL_STORAGE
-        final status = await Permission.manageExternalStorage.status;
-        if (status.isGranted) return true;
-        
-        // Request it - this will open settings on Android 11+
-        final result = await Permission.manageExternalStorage.request();
-        if (result.isGranted) return true;
-        
-        // If not granted, try to open app settings
-        if (result.isPermanentlyDenied || result.isDenied) {
-          await openAppSettings();
+
+      if (sdkInt >= 30) {
+        // Android 11+ (API 30+): File managers should use MANAGE_EXTERNAL_STORAGE
+        // This is the correct permission for file manager apps per Google policy
+
+        // First check if already granted using native method
+        try {
+          final hasPermission = await _storageChannel.invokeMethod<bool>('hasManageStoragePermission');
+          if (hasPermission == true) return true;
+        } catch (e) {
+          debugPrint('Error checking storage permission: $e');
         }
-        return false;
+
+        // Try standard permission request first
+        final status = await Permission.manageExternalStorage.status;
+        if (!status.isGranted) {
+          final result = await Permission.manageExternalStorage.request();
+          if (result.isGranted) return true;
+        }
+
+        // If still not granted, use native method to open specific settings page
+        // This opens Settings → Special App Access → All Files Access for this app
+        try {
+          await _storageChannel.invokeMethod('openManageStorageSettings');
+          // Return false as user needs to manually enable in settings
+          return false;
+        } catch (e) {
+          debugPrint('Error opening storage settings: $e');
+          // Fallback to general app settings
+          await openAppSettings();
+          return false;
+        }
       } else {
-        // Android 10 and below
+        // Android 10 and below - use legacy storage permission
         final status = await Permission.storage.request();
         return status.isGranted;
       }
@@ -49,6 +68,38 @@ class FileService {
       final permission = await PhotoManager.requestPermissionExtend();
       // Accept both authorized and limited access
       return permission.isAuth || permission == PermissionState.limited;
+    } else {
+      return true;
+    }
+  }
+
+  /// Check if storage permission is currently granted
+  /// For Android 11+, this checks MANAGE_EXTERNAL_STORAGE permission
+  Future<bool> hasStoragePermission() async {
+    if (Platform.isAndroid) {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      final sdkInt = androidInfo.version.sdkInt;
+
+      if (sdkInt >= 30) {
+        // Use native method to check MANAGE_EXTERNAL_STORAGE
+        try {
+          final hasPermission = await _storageChannel.invokeMethod<bool>('hasManageStoragePermission');
+          return hasPermission ?? false;
+        } catch (e) {
+          debugPrint('Error checking storage permission: $e');
+          // Fallback to permission_handler
+          final status = await Permission.manageExternalStorage.status;
+          return status.isGranted;
+        }
+      } else {
+        final status = await Permission.storage.status;
+        return status.isGranted;
+      }
+    } else if (Platform.isIOS) {
+      final state = await PhotoManager.getPermissionState(
+        requestOption: PermissionRequestOption(),
+      );
+      return state.isAuth || state == PermissionState.limited;
     } else {
       return true;
     }
