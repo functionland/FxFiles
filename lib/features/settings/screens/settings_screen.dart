@@ -270,7 +270,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const ListTile(
                 leading: Icon(LucideIcons.info),
                 title: Text('Version'),
-                subtitle: Text('1.1.0'),
+                subtitle: Text('1.1.3'),
               ),
             ],
           ),

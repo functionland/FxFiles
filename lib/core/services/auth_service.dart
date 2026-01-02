@@ -18,7 +18,7 @@ enum AuthProvider { google }
 //
 // Note: For Android, clientId is auto-detected from the signing config
 const String _googleClientIdIOS = ''; // iOS OAuth Client ID  
-const String _googleServerClientId = '407708964452-9gh602vsccdvkq6bmsj5pgf4pj94510v.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
+const String _googleServerClientId = '1095513138272-ctte75q6u17pjusvk9nj607qhecd03qn.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
 
 class AuthUser {
   final String id;
