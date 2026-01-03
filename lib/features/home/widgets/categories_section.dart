@@ -69,42 +69,10 @@ class CategoriesSection extends StatelessWidget {
                 onTap: () => context.push('/browser', extra: {'category': 'archives'}),
               )),
               Expanded(child: _CategoryCard(
-                icon: LucideIcons.star,
-                label: 'Starred',
-                color: Colors.amber,
-                onTap: () => context.push('/browser', extra: {'category': 'starred'}),
-              )),
-              Expanded(child: _CategoryCard(
                 icon: LucideIcons.trash2,
                 label: 'Trash',
                 color: Colors.grey,
                 onTap: () => context.push('/trash'),
-              )),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.cloud,
-                label: 'Cloud',
-                color: Colors.cyan,
-                onTap: () => context.push('/fula'),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.share2,
-                label: 'Shared',
-                color: Colors.teal,
-                onTap: () => context.push('/shared'),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.listMusic,
-                label: 'Playlists',
-                color: Colors.deepOrange,
-                onTap: () => context.push('/playlists'),
               )),
               const Expanded(child: SizedBox()),
             ],

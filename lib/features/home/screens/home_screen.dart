@@ -6,6 +6,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/features/home/widgets/recent_files_section.dart';
 import 'package:fula_files/features/home/widgets/categories_section.dart';
+import 'package:fula_files/features/home/widgets/featured_section.dart';
 import 'package:fula_files/features/home/widgets/storage_section.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -89,6 +90,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const RecentFilesSection(),
             const SizedBox(height: 8),
             const CategoriesSection(),
+            const SizedBox(height: 8),
+            const FeaturedSection(),
             const SizedBox(height: 8),
             const StorageSection(),
             const SizedBox(height: 16),

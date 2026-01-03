@@ -437,6 +437,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         if (!mounted) return;
         setState(() {
           _files = files;
+          // Category mode uses _combinedFiles for rendering
+          _combinedFiles = files.map((f) => _FileListItem.local(f)).toList();
           _totalCount = files.length;
           _hasMore = false;
           _isLoading = false;

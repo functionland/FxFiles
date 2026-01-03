@@ -632,11 +632,14 @@ class FileService {
   Future<List<LocalFile>> getStarredFiles() async {
     final starredPaths = LocalStorageService.instance.getStarredFiles();
     final results = <LocalFile>[];
-    
+
     for (final path in starredPaths) {
       try {
-        final file = File(path);
-        if (await file.exists()) {
+        // Check what type of entity this is (file, directory, or non-existent)
+        final entityType = await FileSystemEntity.type(path);
+
+        if (entityType == FileSystemEntityType.file) {
+          final file = File(path);
           final stat = await file.stat();
           results.add(LocalFile(
             path: path,
@@ -646,10 +649,21 @@ class FileService {
             isDirectory: false,
             mimeType: lookupMimeType(path),
           ));
+        } else if (entityType == FileSystemEntityType.directory) {
+          final dir = Directory(path);
+          final stat = await dir.stat();
+          results.add(LocalFile(
+            path: path,
+            name: p.basename(path),
+            size: stat.size,
+            modifiedAt: stat.modified,
+            isDirectory: true,
+          ));
         }
+        // If entityType is notFound or link, skip this entry
       } catch (_) {}
     }
-    
+
     return results;
   }
 }
