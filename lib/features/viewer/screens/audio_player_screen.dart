@@ -40,7 +40,15 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   Future<void> _initPlayer() async {
     try {
       final service = AudioPlayerService.instance;
+
+      // Initialize service (should be quick if already initialized)
       await service.init();
+
+      // Set loading to false immediately - the player UI uses StreamBuilders
+      // so it will update automatically with track info
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
 
       // Check if we should preserve the existing playlist
       // This prevents overriding the playlist when navigating from PlaylistDetailScreen
@@ -57,12 +65,8 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
             // Switch to the requested track within the existing playlist
             final targetIndex = existingPlaylist.indexWhere((t) => t.path == widget.filePath);
             if (targetIndex >= 0) {
-              await service.skipToIndex(targetIndex);
+              service.skipToIndex(targetIndex);
             }
-          }
-          // Don't create a new playlist
-          if (mounted) {
-            setState(() => _isLoading = false);
           }
           return;
         }
@@ -74,22 +78,13 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
       // If playlist is provided, use it
       if (widget.playlist != null && widget.playlist!.isNotEmpty) {
         final tracks = widget.playlist!.map((path) => audioTrackFromPath(path)).toList();
-        await service.playTrack(track, playlist: tracks, playlistName: widget.playlistName);
+        service.playTrack(track, playlist: tracks, playlistName: widget.playlistName);
       } else {
-        // Check if this file is part of a directory with other audio files
-        final dir = Directory(p.dirname(widget.filePath));
-        final audioFiles = await _getAudioFilesInDirectory(dir);
+        // Start playing the single track immediately
+        service.playTrack(track);
 
-        if (audioFiles.length > 1) {
-          final tracks = audioFiles.map((path) => audioTrackFromPath(path)).toList();
-          await service.playTrack(track, playlist: tracks, playlistName: p.basename(dir.path));
-        } else {
-          await service.playTrack(track);
-        }
-      }
-
-      if (mounted) {
-        setState(() => _isLoading = false);
+        // Then scan for other audio files in background and update playlist
+        _loadDirectoryPlaylist(track);
       }
     } catch (e) {
       if (mounted) {
@@ -98,6 +93,23 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
           _error = 'Failed to load audio: $e';
         });
       }
+    }
+  }
+
+  /// Load directory playlist in background (doesn't block UI)
+  void _loadDirectoryPlaylist(AudioTrack currentTrack) async {
+    try {
+      final dir = Directory(p.dirname(widget.filePath));
+      final audioFiles = await _getAudioFilesInDirectory(dir);
+
+      if (audioFiles.length > 1 && mounted) {
+        final tracks = audioFiles.map((path) => audioTrackFromPath(path)).toList();
+        final service = AudioPlayerService.instance;
+        // Update playlist while keeping current track playing
+        await service.playTrack(currentTrack, playlist: tracks, playlistName: p.basename(dir.path));
+      }
+    } catch (e) {
+      debugPrint('Failed to load directory playlist: $e');
     }
   }
 

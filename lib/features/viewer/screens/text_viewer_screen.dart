@@ -312,11 +312,32 @@ class _TextViewerScreenState extends State<TextViewerScreen> {
               });
             },
           ),
-          // Goto line
+          // Goto line - disabled when wrap text is on due to variable line heights
           IconButton(
-            icon: const Icon(LucideIcons.hash),
-            tooltip: 'Go to line',
-            onPressed: _totalLines > 0 ? _showGotoLineDialog : null,
+            icon: Icon(
+              LucideIcons.hash,
+              color: _wrapText ? Colors.grey : null,
+            ),
+            tooltip: _wrapText
+                ? 'Disable "Wrap text" to use Go to line'
+                : 'Go to line',
+            onPressed: _totalLines > 0 && !_wrapText
+                ? _showGotoLineDialog
+                : _wrapText
+                    ? () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: const Text('Disable "Wrap text" in settings to use Go to line'),
+                            action: SnackBarAction(
+                              label: 'Disable',
+                              onPressed: () {
+                                setState(() => _wrapText = false);
+                              },
+                            ),
+                          ),
+                        );
+                      }
+                    : null,
           ),
           // Copy all
           IconButton(
