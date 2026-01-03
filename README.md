@@ -344,8 +344,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] Audio track playback continues when going out of audios in the app. the player will become minimized at the bottom of hte screen where user can still interat with buttons and see the progress bar of audio while browsing other files (Audio)
 - [ ] Add Image Editor (Images)
 - [ ] Add sharing with links (General)
-- [ ] Add video playback picture-in-picture (Videos)
-- [ ] Add video thumbnail (Videos)
+- [ ] Add video playback picture-in-picture so user can minimize a playing video and continue browsing other files. also it has the picture in picture feature of app that the minimized video can be seen in android screen whele using other apps too (Videos)
+- [ ] Add video thumbnail in browsing but it should be optimized and not consume much processing power (Videos)
 - [ ] Add zip file viewer and unzip functionality to specified location (Archives)
 - [ ] Add file compression (Archives)
 - [ ] Bug: Starred not showing up in the Starred category

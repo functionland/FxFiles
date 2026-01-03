@@ -9,6 +9,8 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
+import 'package:fula_files/core/services/video_thumbnail_service.dart';
+import 'package:fula_files/core/services/pip_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,6 +26,10 @@ void main() async {
   FaceStorageService.instance.init().then((_) {
     FaceDetectionService.instance.init();
   });
+
+  // Initialize video services (non-blocking)
+  VideoThumbnailService.instance.init();
+  PipService.instance.init();
 
   // Initialize playlist service (audio player service is initialized on-demand)
   await PlaylistService.instance.init();
