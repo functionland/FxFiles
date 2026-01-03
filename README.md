@@ -364,3 +364,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ ] Implement proper error handling for background sync
 - [ ] Add unit tests for all services
 - [ ] Bug: Version in about screen not updating according to latest app version
+- [ ] Change package name to land.fx.files.dev and create github actions to remove.dev for publishing to play store
+- [ ] Add AI features that interact with blox
