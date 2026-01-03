@@ -738,7 +738,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final ext = file.extension.toLowerCase();
     
     if (file.isImage) {
-      context.push('/viewer/image', extra: file.path);
+      // Pass the image list when in Images category for correct navigation order
+      if (_isCategoryMode && widget.category == 'images') {
+        // Build image list from combined files, preserving the category's sort order
+        final imageList = _combinedFiles
+            .where((item) => item.localFile != null && !item.isCloudOnly)
+            .map((item) => item.localFile!.path)
+            .toList();
+        final initialIndex = imageList.indexOf(file.path);
+
+        context.push('/viewer/image', extra: {
+          'filePath': file.path,
+          'imageList': imageList,
+          'initialIndex': initialIndex >= 0 ? initialIndex : 0,
+        });
+      } else {
+        context.push('/viewer/image', extra: file.path);
+      }
     } else if (file.isVideo) {
       context.push('/viewer/video', extra: file.path);
     } else if (file.isAudio) {

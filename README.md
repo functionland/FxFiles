@@ -342,22 +342,24 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] Add playback control from lock screen (Audio)
 - [ X ] Add playback control from notification tray (Audio)
 - [ X ] Audio track playback continues when going out of audios in the app. the player will become minimized at the bottom of hte screen where user can still interat with buttons and see the progress bar of audio while browsing other files (Audio)
-- [ ] Add Image Editor (Images)
-- [ ] Add sharing with links (General)
-- [ ] Add video playback picture-in-picture so user can minimize a playing video and continue browsing other files. also it has the picture in picture feature of app that the minimized video can be seen in android screen whele using other apps too (Videos)
-- [ ] Add video thumbnail in browsing but it should be optimized and not consume much processing power (Videos)
+- [ X ] Add video playback picture-in-picture so user can minimize a playing video and continue browsing other files. also it has the picture in picture feature of app that the minimized video can be seen in android screen whele using other apps too (Videos)
+- [ X ] Add video thumbnail in browsing but it should be optimized and not consume much processing power (Videos)
 - [ ] Add zip file viewer and unzip functionality to specified location (Archives)
 - [ ] Add file compression (Archives)
-- [ ] Bug: Starred not showing up in the Starred category
 - [ X ] Bug: Reword JWT Token to API Key
-- [ ] Bug: Version in about screen not updating according to latest app version
-- [ ] Bug: Loading large text files hangs the app, we should add streaming loading and lazy loading for better performance (Documents)
-- [ ] Add search text in text viewer (Documents)
-- [ ] Add goto line functionality in text viewer (Documents)
-- [ ] Bug: In opened text file, the wrap text does not work
-- [ ] Add swipe right nad left to go to next nad previouse image in Images, but ensure that in zoom mode swipe to next bedcome deactivated adn enhance (Images)
-- [ ] In zoom mode of image viewer, double tapping hte screen takes it to normal view (images)
-- [ ] Swiping up the image in image viewer, reveals and shows the file details below the image (Images)
-- [ ] Add thumbscroll functionality for better image navigation (General)
+- [ ] Bug: Loading large text files hangs up the app, we should add streaming loading and lazy loading for better performance for large text files (Documents)
+- [ ] Add search text in text viewer so that user can type a text in document viewer search and can go to next or previouse occurances of that text (Documents)
+- [ ] Add goto line functionality in text viewer that user clicks in document viewer and then enters the line number to jump to and it takes user to that line (Documents)
+- [ ] Bug: In opened text file in the text viewer, the wrap text does not work (Documents)
+- [ ] Clicking on a type like pdf that cannot be opneed in-app, should open the Android or iOS app selector to open it with the correct app (Documents)
+- [ X ] Add Image Editor to be able to crop, rotate, and adjust brightness, contrast, and saturation and write text over image (Images)
+- [ X ] Add swipe right and left gestures in image viewer to go to next and previouse image in Images when an image is opened, but ensure that in zoom mode swipe bedcome deactivated and enhance gesture handlers to differentiate swipe and pinch and pan for zoom clearly (Images)
+- [ X ] In zoom mode of image viewer, double tapping the screen takes it to normal view (images)
+- [ X ] Swiping up the image in image viewer, reveals and shows the file details below the image along with faces that are detected in the image (Images)
+- [ ] Bug: Starred files are not showing up in the Starred category (General)
+- [ ] Add thumbscroll functionality for better navigation. the header tags shown in thumbscroll mode should be according to the sorting. for exmaple in sorting alphanumerically, the headrs become the letters of filenames like A,B,C,... when in date sort mode the tags become the month-year like Jan-2024, Feb-2024, etc. (General)
+- [ ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of paramtetres are based on the current s3 API doc for encrypted files where we have everyting to decrypt a file in the link and it shows hte link to user (General)
 - [ ] Implement proper error handling for background sync
 - [ ] Add unit tests for all services
+- [ ] Bug: In audio player, the first time you open an audio the visualizer stays in loading (Audio)
+- [ ] Bug: Version in about screen not updating according to latest app version

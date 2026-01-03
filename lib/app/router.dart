@@ -61,8 +61,17 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/viewer/image',
         builder: (context, state) {
-          final filePath = state.extra as String;
-          return ImageViewerScreen(filePath: filePath);
+          final extra = state.extra;
+          if (extra is String) {
+            return ImageViewerScreen(filePath: extra);
+          } else if (extra is Map<String, dynamic>) {
+            return ImageViewerScreen(
+              filePath: extra['filePath'] as String,
+              imageList: extra['imageList'] as List<String>?,
+              initialIndex: extra['initialIndex'] as int?,
+            );
+          }
+          return ImageViewerScreen(filePath: extra as String);
         },
       ),
       GoRoute(
