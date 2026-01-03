@@ -53,11 +53,6 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Android Auto support for media playback in navigation mode -->
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
-
         <!-- Audio service for background playback -->
         <service
             android:name="com.ryanheise.audioservice.AudioService"
