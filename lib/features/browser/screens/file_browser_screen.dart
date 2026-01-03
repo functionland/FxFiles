@@ -14,6 +14,8 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
+import 'package:fula_files/core/services/archive_service.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
@@ -1388,6 +1390,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           onPressed: _uploadSelected,
         ),
         IconButton(
+          icon: const Icon(LucideIcons.archive),
+          tooltip: 'Compress to ZIP',
+          onPressed: _compressSelected,
+        ),
+        IconButton(
           icon: const Icon(LucideIcons.share2),
           tooltip: 'Share',
           onPressed: _shareSelected,
@@ -1481,6 +1488,29 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               } : null,
             ),
             const Divider(height: 1),
+            // Archive actions - only for archive files
+            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+              ListTile(
+                leading: const Icon(LucideIcons.folderOutput, color: Colors.orange),
+                title: const Text('Extract Here'),
+                subtitle: const Text('Unzip to current folder'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _extractArchive(file, null);
+                },
+              ),
+            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+              ListTile(
+                leading: const Icon(LucideIcons.folderOpen, color: Colors.orange),
+                title: const Text('Extract to...'),
+                subtitle: const Text('Choose destination folder'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _extractArchiveToLocation(file);
+                },
+              ),
+            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+              const Divider(height: 1),
             // Local actions
             if (!file.isDirectory) ListTile(
               leading: const Icon(LucideIcons.externalLink),
@@ -2593,6 +2623,181 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
           );
         }
+      }
+    }
+  }
+
+  // ============================================================================
+  // ARCHIVE OPERATIONS
+  // ============================================================================
+
+  /// Extract an archive file to the specified directory (or same folder if null)
+  Future<void> _extractArchive(LocalFile file, String? outputDir) async {
+    // Store output path for navigation
+    String? extractedPath;
+
+    // Show loading indicator
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              ),
+              const SizedBox(width: 16),
+              Text('Extracting ${file.name}...'),
+            ],
+          ),
+          duration: const Duration(seconds: 30),
+        ),
+      );
+    }
+
+    try {
+      final result = await ArchiveService.instance.extractZip(
+        file.path,
+        outputDir: outputDir,
+      );
+
+      if (!mounted) return;
+
+      // Clear the loading snackbar
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      if (result.success) {
+        extractedPath = result.outputPath;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Extracted ${result.fileCount} files'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        // Refresh the file list
+        if (_isCategoryMode) {
+          _loadCategoryFiles();
+        } else {
+          _loadFiles();
+        }
+
+        // Navigate to extracted folder after a short delay
+        if (extractedPath != null) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (mounted) {
+            context.push('/browser', extra: {'path': extractedPath});
+          }
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Extraction failed: ${result.error}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  /// Let user pick a destination folder and extract archive there
+  Future<void> _extractArchiveToLocation(LocalFile file) async {
+    try {
+      // Use file_picker to select destination directory
+      final result = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select destination folder',
+      );
+
+      if (result != null && mounted) {
+        await _extractArchive(file, result);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting folder: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  /// Compress selected files to a ZIP archive
+  Future<void> _compressSelected() async {
+    if (_selectedFiles.isEmpty) return;
+
+    // Show loading indicator
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              ),
+              const SizedBox(width: 16),
+              Text('Compressing ${_selectedFiles.length} item(s)...'),
+            ],
+          ),
+          duration: const Duration(seconds: 60),
+        ),
+      );
+    }
+
+    try {
+      final paths = _selectedFiles.toList();
+      final result = await ArchiveService.instance.compressToZip(paths);
+
+      if (!mounted) return;
+
+      // Clear selection and loading snackbar
+      _clearSelection();
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Created ZIP with ${result.fileCount} files'),
+            action: SnackBarAction(
+              label: 'View',
+              onPressed: () {
+                // Refresh and scroll to show the new file
+                if (_isCategoryMode) {
+                  _loadCategoryFiles();
+                } else {
+                  _loadFiles();
+                }
+              },
+            ),
+          ),
+        );
+        // Refresh the file list
+        if (_isCategoryMode) {
+          _loadCategoryFiles();
+        } else {
+          _loadFiles();
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Compression failed: ${result.error}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
       }
     }
   }
