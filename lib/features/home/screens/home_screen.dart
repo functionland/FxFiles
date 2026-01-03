@@ -122,7 +122,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (jwtToken == null || jwtToken.isEmpty) {
       steps.add(_SetupStep(
         icon: LucideIcons.key,
-        title: 'Set up JWT Token',
+        title: 'Set up API Key',
         subtitle: 'Required for cloud storage access',
         action: 'Go to Settings',
         onTap: () => context.push('/settings'),
@@ -131,7 +131,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } else {
       steps.add(_SetupStep(
         icon: LucideIcons.checkCircle,
-        title: 'JWT Token configured',
+        title: 'API Key configured',
         subtitle: 'Cloud storage is ready',
         isComplete: true,
       ));

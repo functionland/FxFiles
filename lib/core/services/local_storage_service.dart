@@ -2,6 +2,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
+import 'package:fula_files/core/models/playlist.dart';
 
 class LocalStorageService {
   LocalStorageService._();
@@ -17,7 +18,7 @@ class LocalStorageService {
     await Hive.initFlutter();
     
     // Register adapters (check if not already registered)
-    // Type IDs: SyncStatus=0, SyncState=1, RecentFile=2, FolderSyncStatus=4, FolderSync=5
+    // Type IDs: SyncStatus=0, SyncState=1, RecentFile=2, FolderSyncStatus=4, FolderSync=5, AudioTrack=6, Playlist=7
     if (!Hive.isAdapterRegistered(0)) {
       Hive.registerAdapter(SyncStatusAdapter());
     }
@@ -32,6 +33,12 @@ class LocalStorageService {
     }
     if (!Hive.isAdapterRegistered(5)) {
       Hive.registerAdapter(FolderSyncAdapter());
+    }
+    if (!Hive.isAdapterRegistered(6)) {
+      Hive.registerAdapter(AudioTrackAdapter());
+    }
+    if (!Hive.isAdapterRegistered(7)) {
+      Hive.registerAdapter(PlaylistAdapter());
     }
 
     // Open boxes

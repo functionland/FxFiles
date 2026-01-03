@@ -331,3 +331,33 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 [Watch the demo video](https://youtu.be/rhEi1yA14LM)
 
+## TODO
+
+- [ X ] Add repeat track for audio playback. An icon to allow user to click and it puts the playing track on repeat and the icon becomes filled and another click toggles off (Audio)
+- [ X ] Add audio playlist creation and management + Upload the playlist to cloud encrypted nad securely using hte S3 APIs so that user can recover them (Audio)
+- [ X ] Add shuffle functionality for playlists (Audio)
+- [ X ] Add playlist management (rename, delete, reorder) (Audio)
+- [ X ] Add audio visualization in the audio player to beautify it with animated waveforms (Audio)
+- [ X ] Add audio equalizer to adjust bass, treble, and mid frequencies with a simpole click (Audio)
+- [ X ] Add playback control from lock screen (Audio)
+- [ X ] Add playback control from notification tray (Audio)
+- [ X ] Audio track playback continues when going out of audios in the app. the player will become minimized at the bottom of hte screen where user can still interat with buttons and see the progress bar of audio while browsing other files (Audio)
+- [ ] Add Image Editor (Images)
+- [ ] Add sharing with links (General)
+- [ ] Add video playback picture-in-picture (Videos)
+- [ ] Add video thumbnail (Videos)
+- [ ] Add zip file viewer and unzip functionality to specified location (Archives)
+- [ ] Add file compression (Archives)
+- [ ] Bug: Starred not showing up in the Starred category
+- [ X ] Bug: Reword JWT Token to API Key
+- [ ] Bug: Version in about screen not updating according to latest app version
+- [ ] Bug: Loading large text files hangs the app, we should add streaming loading and lazy loading for better performance (Documents)
+- [ ] Add search text in text viewer (Documents)
+- [ ] Add goto line functionality in text viewer (Documents)
+- [ ] Bug: In opened text file, the wrap text does not work
+- [ ] Add swipe right nad left to go to next nad previouse image in Images, but ensure that in zoom mode swipe to next bedcome deactivated adn enhance (Images)
+- [ ] In zoom mode of image viewer, double tapping hte screen takes it to normal view (images)
+- [ ] Swiping up the image in image viewer, reveals and shows the file details below the image (Images)
+- [ ] Add thumbscroll functionality for better image navigation (General)
+- [ ] Implement proper error handling for background sync
+- [ ] Add unit tests for all services

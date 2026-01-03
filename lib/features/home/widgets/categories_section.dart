@@ -100,7 +100,12 @@ class CategoriesSection extends StatelessWidget {
                 color: Colors.teal,
                 onTap: () => context.push('/shared'),
               )),
-              const Expanded(child: SizedBox()),
+              Expanded(child: _CategoryCard(
+                icon: LucideIcons.listMusic,
+                label: 'Playlists',
+                color: Colors.deepOrange,
+                onTap: () => context.push('/playlists'),
+              )),
               const Expanded(child: SizedBox()),
             ],
           ),

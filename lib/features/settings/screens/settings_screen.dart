@@ -78,7 +78,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('JWT token pasted')),
+          const SnackBar(content: Text('API Key pasted')),
         );
       }
     } else {
@@ -141,7 +141,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
                 ListTile(
                   leading: const Icon(LucideIcons.key),
-                  title: const Text('JWT Token'),
+                  title: const Text('API Key'),
                   subtitle: Text(
                     _jwtTokenController.text.isEmpty 
                         ? 'Not configured' 
@@ -175,8 +175,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       TextField(
                         controller: _jwtTokenController,
                         decoration: InputDecoration(
-                          labelText: 'JWT Token',
-                          hintText: 'Your JWT token',
+                          labelText: 'API Key',
+                          hintText: 'Your API Key',
                           prefixIcon: const Icon(LucideIcons.key),
                           suffixIcon: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -489,7 +489,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ],
         ),
         content: const Text(
-          'Changing API Gateway, IPFS Server, or JWT Token settings may affect '
+          'Changing API Gateway, IPFS Server, or API Key settings may affect '
           'accessibility of your previously uploaded data.\n\n'
           'Make sure you have the correct credentials before making changes. '
           'Data uploaded to different servers cannot be accessed after switching.',

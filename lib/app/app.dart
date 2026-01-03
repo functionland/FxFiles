@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/app/router.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
+import 'package:fula_files/shared/widgets/mini_player.dart';
 
 class FulaFilesApp extends ConsumerWidget {
   const FulaFilesApp({super.key});
@@ -19,6 +20,14 @@ class FulaFilesApp extends ConsumerWidget {
       darkTheme: AppTheme.darkTheme,
       themeMode: settings.themeMode,
       routerConfig: router,
+      builder: (context, child) {
+        return Column(
+          children: [
+            Expanded(child: child ?? const SizedBox()),
+            const MiniPlayer(),
+          ],
+        );
+      },
     );
   }
 }
