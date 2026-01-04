@@ -17,11 +17,38 @@ import com.ryanheise.audioservice.AudioServiceActivity
 class MainActivity : AudioServiceActivity() {
     private val STORAGE_CHANNEL = "land.fx.files/storage"
     private val PIP_CHANNEL = "land.fx.files/pip"
+    private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
     private var pipEventSink: EventChannel.EventSink? = null
     private var isInPipMode = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Notification channel - for opening notification settings
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "openNotificationSettings" -> {
+                    try {
+                        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            // Android 8.0+ - Open app notification settings directly
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                            }
+                        } else {
+                            // Older Android - Open general app settings
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Could not open notification settings: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         // Storage channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL).setMethodCallHandler { call, result ->

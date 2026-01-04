@@ -1,23 +1,54 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:fula_files/core/models/playlist.dart';
 
 enum RepeatMode { off, one, all }
 
+/// Status of notification permission
+enum NotificationPermissionStatus {
+  /// Permission granted - notifications will show
+  granted,
+  /// Permission denied but can be requested again
+  denied,
+  /// Permission permanently denied - must open settings
+  permanentlyDenied,
+  /// Not applicable (Android < 13 or non-Android platform)
+  notRequired,
+}
+
 class AudioPlayerService {
   AudioPlayerService._();
   static final AudioPlayerService instance = AudioPlayerService._();
+
+  static const _notificationChannel = MethodChannel('land.fx.files/notification');
 
   late AudioPlayer _player;
   AudioHandler? _audioHandler;
   bool _isInitialized = false;
   bool _isInitializing = false;
+
+  // Notification permission state
+  final _notificationPermissionSubject = BehaviorSubject<NotificationPermissionStatus>.seeded(
+    NotificationPermissionStatus.notRequired,
+  );
+
+  /// Stream of notification permission status changes
+  Stream<NotificationPermissionStatus> get notificationPermissionStream =>
+      _notificationPermissionSubject.stream;
+
+  /// Current notification permission status
+  NotificationPermissionStatus get notificationPermissionStatus =>
+      _notificationPermissionSubject.value;
 
   // Current playback state
   final _currentTrackSubject = BehaviorSubject<AudioTrack?>.seeded(null);
@@ -85,6 +116,10 @@ class AudioPlayerService {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration.music());
 
+      // Request notification permission for Android 13+ (API 33+)
+      // This is required for media playback notification to appear
+      await _requestNotificationPermission();
+
       // Initialize audio handler for background playback
       try {
         _audioHandler = await AudioService.init(
@@ -140,6 +175,103 @@ class AudioPlayerService {
       debugPrint('AudioPlayerService.init error: $e');
     } finally {
       _isInitializing = false;
+    }
+  }
+
+  /// Request notification permission for Android 13+ (API 33+)
+  /// This is required for media playback notification to appear in status bar and lock screen
+  /// Returns the permission status after the request
+  Future<NotificationPermissionStatus> _requestNotificationPermission() async {
+    if (!Platform.isAndroid) {
+      _notificationPermissionSubject.add(NotificationPermissionStatus.notRequired);
+      return NotificationPermissionStatus.notRequired;
+    }
+
+    try {
+      // Check if Android 13+ (API 33+)
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt < 33) {
+        debugPrint('Android < 13, notification permission not required');
+        _notificationPermissionSubject.add(NotificationPermissionStatus.notRequired);
+        return NotificationPermissionStatus.notRequired;
+      }
+
+      // Check current permission status
+      final status = await Permission.notification.status;
+      debugPrint('Notification permission status: $status');
+
+      if (status.isGranted) {
+        debugPrint('Notification permission already granted');
+        _notificationPermissionSubject.add(NotificationPermissionStatus.granted);
+        return NotificationPermissionStatus.granted;
+      }
+
+      if (status.isPermanentlyDenied) {
+        debugPrint('Notification permission permanently denied - user must enable in settings');
+        _notificationPermissionSubject.add(NotificationPermissionStatus.permanentlyDenied);
+        return NotificationPermissionStatus.permanentlyDenied;
+      }
+
+      // Request the permission
+      final result = await Permission.notification.request();
+      debugPrint('Notification permission request result: $result');
+
+      if (result.isGranted) {
+        _notificationPermissionSubject.add(NotificationPermissionStatus.granted);
+        return NotificationPermissionStatus.granted;
+      } else if (result.isPermanentlyDenied) {
+        _notificationPermissionSubject.add(NotificationPermissionStatus.permanentlyDenied);
+        return NotificationPermissionStatus.permanentlyDenied;
+      } else {
+        _notificationPermissionSubject.add(NotificationPermissionStatus.denied);
+        return NotificationPermissionStatus.denied;
+      }
+    } catch (e) {
+      debugPrint('Error requesting notification permission: $e');
+      _notificationPermissionSubject.add(NotificationPermissionStatus.denied);
+      return NotificationPermissionStatus.denied;
+    }
+  }
+
+  /// Check the current notification permission status without requesting
+  Future<NotificationPermissionStatus> checkNotificationPermission() async {
+    if (!Platform.isAndroid) {
+      return NotificationPermissionStatus.notRequired;
+    }
+
+    try {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt < 33) {
+        return NotificationPermissionStatus.notRequired;
+      }
+
+      final status = await Permission.notification.status;
+      if (status.isGranted) {
+        return NotificationPermissionStatus.granted;
+      } else if (status.isPermanentlyDenied) {
+        return NotificationPermissionStatus.permanentlyDenied;
+      } else {
+        return NotificationPermissionStatus.denied;
+      }
+    } catch (e) {
+      debugPrint('Error checking notification permission: $e');
+      return NotificationPermissionStatus.denied;
+    }
+  }
+
+  /// Open the system notification settings for this app
+  /// Use this when permission is permanently denied
+  Future<bool> openNotificationSettings() async {
+    if (!Platform.isAndroid) return false;
+
+    try {
+      final result = await _notificationChannel.invokeMethod<bool>('openNotificationSettings');
+      return result ?? false;
+    } catch (e) {
+      debugPrint('Error opening notification settings: $e');
+      // Fallback to general app settings
+      await openAppSettings();
+      return true;
     }
   }
 
@@ -568,6 +700,7 @@ class AudioPlayerService {
     _bassSubject.close();
     _midSubject.close();
     _trebleSubject.close();
+    _notificationPermissionSubject.close();
   }
 }
 

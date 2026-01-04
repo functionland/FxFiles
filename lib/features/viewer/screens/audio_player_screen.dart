@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -30,11 +31,64 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   bool _isLoading = true;
   String? _error;
   bool _showQueue = false;
+  StreamSubscription<NotificationPermissionStatus>? _permissionSubscription;
+  bool _permissionDialogShown = false;
 
   @override
   void initState() {
     super.initState();
     _initPlayer();
+    _setupPermissionListener();
+  }
+
+  @override
+  void dispose() {
+    _permissionSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _setupPermissionListener() {
+    final service = AudioPlayerService.instance;
+    _permissionSubscription = service.notificationPermissionStream.listen((status) {
+      if (status == NotificationPermissionStatus.permanentlyDenied && !_permissionDialogShown) {
+        _permissionDialogShown = true;
+        // Delay slightly to ensure the screen is fully built
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            _showNotificationPermissionDialog();
+          }
+        });
+      }
+    });
+  }
+
+  void _showNotificationPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(LucideIcons.bellOff, size: 48, color: Colors.orange),
+        title: const Text('Notifications Disabled'),
+        content: const Text(
+          'To see playback controls in the status bar and on the lock screen, '
+          'please enable notifications for FxFiles in Settings.\n\n'
+          'Audio will continue to play in the background, but you won\'t see '
+          'the media player controls outside the app.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Not Now'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              AudioPlayerService.instance.openNotificationSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _initPlayer() async {
