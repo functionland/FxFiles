@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/features/home/widgets/recent_files_section.dart';
 import 'package:fula_files/features/home/widgets/categories_section.dart';
 import 'package:fula_files/features/home/widgets/featured_section.dart';
@@ -20,11 +22,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _setupBannerDismissed = false;
   String? _jwtToken;
   bool _isLoadingJwt = true;
-  
+  bool _isGettingApiKey = false;
+  StreamSubscription<String>? _apiKeySubscription;
+
   @override
   void initState() {
     super.initState();
     _loadJwtToken();
+    _setupApiKeyListener();
+  }
+
+  void _setupApiKeyListener() {
+    _apiKeySubscription = DeepLinkService.instance.onApiKeyReceived.listen((apiKey) {
+      if (mounted) {
+        setState(() {
+          _jwtToken = apiKey;
+          _isGettingApiKey = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('API Key configured successfully!'),
+            backgroundColor: Color(0xFF06B597),
+          ),
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _apiKeySubscription?.cancel();
+    super.dispose();
   }
   
   Future<void> _loadJwtToken() async {
@@ -35,6 +63,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _isLoadingJwt = false;
       });
     }
+  }
+
+  Future<void> _getApiKey(BuildContext context) async {
+    setState(() => _isGettingApiKey = true);
+
+    final success = await DeepLinkService.instance.openGetApiKeyPage();
+
+    if (!success && mounted) {
+      setState(() => _isGettingApiKey = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open browser. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+    // Note: _isGettingApiKey will be set to false when the API key is received
+    // via the deep link callback, or we can add a timeout
   }
   
   @override
@@ -127,9 +173,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         icon: LucideIcons.key,
         title: 'Set up API Key',
         subtitle: 'Required for cloud storage access',
-        action: 'Go to Settings',
-        onTap: () => context.push('/settings'),
+        action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
+        onTap: _isGettingApiKey ? null : () => _getApiKey(context),
         isComplete: false,
+        isLoading: _isGettingApiKey,
       ));
     } else {
       steps.add(_SetupStep(
@@ -236,14 +283,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
             if (step.action != null && !step.isComplete)
-              TextButton(
-                onPressed: step.onTap,
-                style: TextButton.styleFrom(
-                  foregroundColor: const Color(0xFF06B597),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                ),
-                child: Text(step.action!),
-              ),
+              step.isLoading
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF06B597),
+                        ),
+                      ),
+                    )
+                  : TextButton(
+                      onPressed: step.onTap,
+                      style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF06B597),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+                      child: Text(step.action!),
+                    ),
           ],
         ),
       ),
@@ -372,7 +431,8 @@ class _SetupStep {
   final String? action;
   final VoidCallback? onTap;
   final bool isComplete;
-  
+  final bool isLoading;
+
   const _SetupStep({
     required this.icon,
     required this.title,
@@ -380,5 +440,6 @@ class _SetupStep {
     this.action,
     this.onTap,
     this.isComplete = false,
+    this.isLoading = false,
   });
 }

@@ -55,5 +55,18 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>land.fx.files</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fxfiles</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

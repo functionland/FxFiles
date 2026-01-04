@@ -87,6 +87,9 @@ dependencies:
   # Icons
   lucide_icons: ^0.257.0
 
+  # Deep Links
+  app_links: ^6.4.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

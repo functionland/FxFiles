@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/services/video_thumbnail_service.dart';
 import 'package:fula_files/core/services/pip_service.dart';
+import 'package:fula_files/core/services/deep_link_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +19,9 @@ void main() async {
   // Initialize services
   await SecureStorageService.instance.init();
   await LocalStorageService.instance.init();
+
+  // Initialize deep link service (must be early to catch initial links)
+  await DeepLinkService.instance.init();
 
   // Check for existing auth session (restores sign-in state)
   await AuthService.instance.checkExistingSession();
