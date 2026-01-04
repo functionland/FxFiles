@@ -5,9 +5,11 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Rational
+import androidx.activity.enableEdgeToEdge
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -15,6 +17,11 @@ import io.flutter.plugin.common.EventChannel
 import com.ryanheise.audioservice.AudioServiceActivity
 
 class MainActivity : AudioServiceActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Enable edge-to-edge display for Android 15+ compatibility
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+    }
     private val STORAGE_CHANNEL = "land.fx.files/storage"
     private val PIP_CHANNEL = "land.fx.files/pip"
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
