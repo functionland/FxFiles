@@ -6,30 +6,37 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 
-/// Dialog for creating a new share
-class CreateShareDialog extends ConsumerStatefulWidget {
+/// Dialog for creating a share link for a specific recipient
+class CreateShareForRecipientDialog extends ConsumerStatefulWidget {
   final String pathScope;
   final String bucket;
   final Uint8List dek;
+  final String? fileName;
+  final String? contentType;
 
-  const CreateShareDialog({
+  const CreateShareForRecipientDialog({
     super.key,
     required this.pathScope,
     required this.bucket,
     required this.dek,
+    this.fileName,
+    this.contentType,
   });
 
   @override
-  ConsumerState<CreateShareDialog> createState() => _CreateShareDialogState();
+  ConsumerState<CreateShareForRecipientDialog> createState() =>
+      _CreateShareForRecipientDialogState();
 }
 
-class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
+class _CreateShareForRecipientDialogState
+    extends ConsumerState<CreateShareForRecipientDialog> {
   final _formKey = GlobalKey<FormState>();
   final _recipientKeyController = TextEditingController();
   final _recipientNameController = TextEditingController();
   final _labelController = TextEditingController();
-  
+
   SharePermissions _permissions = SharePermissions.readOnly;
+  ShareMode _shareMode = ShareMode.temporal;
   int? _expiryDays = 7;
   bool _isLoading = false;
   String? _error;
@@ -53,12 +60,14 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return AlertDialog(
       title: Row(
         children: [
-          const Icon(LucideIcons.share2),
+          const Icon(LucideIcons.userPlus),
           const SizedBox(width: 8),
-          const Expanded(child: Text('Share')),
+          const Expanded(child: Text('Create Link For...')),
         ],
       ),
       content: SizedBox(
@@ -71,26 +80,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Path being shared
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(LucideIcons.folder, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          widget.pathScope,
-                          style: const TextStyle(fontWeight: FontWeight.w500),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _PathDisplay(pathScope: widget.pathScope),
                 const SizedBox(height: 16),
 
                 // Recipient Name
@@ -129,7 +119,6 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                     if (value == null || value.isEmpty) {
                       return 'Please enter the recipient\'s Share ID';
                     }
-                    // Validate format - FULA- prefix or base64
                     final trimmed = value.trim();
                     if (trimmed.toUpperCase().startsWith('FULA-')) {
                       if (trimmed.length < 10) {
@@ -144,61 +133,24 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                 const SizedBox(height: 16),
 
                 // Permissions
-                const Text(
-                  'Permissions',
-                  style: TextStyle(fontWeight: FontWeight.w500),
+                _PermissionsSelector(
+                  value: _permissions,
+                  onChanged: (v) => setState(() => _permissions = v),
                 ),
-                const SizedBox(height: 8),
-                ...SharePermissions.values.map((perm) {
-                  final isSelected = perm == _permissions;
-                  return ListTile(
-                    title: Text(perm.displayName),
-                    subtitle: Text(_getPermissionDescription(perm)),
-                    leading: Icon(
-                      isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                      color: isSelected ? Theme.of(context).colorScheme.primary : null,
-                    ),
-                    onTap: () => setState(() => _permissions = perm),
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                  );
-                }),
+                const SizedBox(height: 16),
+
+                // Share Mode
+                _ShareModeSelector(
+                  value: _shareMode,
+                  onChanged: (v) => setState(() => _shareMode = v),
+                ),
                 const SizedBox(height: 16),
 
                 // Expiry
-                const Text(
-                  'Expiry',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _ExpiryChip(
-                      label: '7 days',
-                      days: 7,
-                      selected: _expiryDays == 7,
-                      onSelected: () => setState(() => _expiryDays = 7),
-                    ),
-                    _ExpiryChip(
-                      label: '30 days',
-                      days: 30,
-                      selected: _expiryDays == 30,
-                      onSelected: () => setState(() => _expiryDays = 30),
-                    ),
-                    _ExpiryChip(
-                      label: '90 days',
-                      days: 90,
-                      selected: _expiryDays == 90,
-                      onSelected: () => setState(() => _expiryDays = 90),
-                    ),
-                    _ExpiryChip(
-                      label: 'Never',
-                      days: null,
-                      selected: _expiryDays == null,
-                      onSelected: () => setState(() => _expiryDays = null),
-                    ),
-                  ],
+                _ExpirySelector(
+                  value: _expiryDays,
+                  onChanged: (v) => setState(() => _expiryDays = v),
+                  showNever: true,
                 ),
                 const SizedBox(height: 16),
 
@@ -213,28 +165,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                 ),
 
                 // Error message
-                if (_error != null) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.red[50],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(LucideIcons.alertCircle, color: Colors.red, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _error!,
-                            style: const TextStyle(color: Colors.red),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                if (_error != null) _ErrorDisplay(error: _error!),
               ],
             ),
           ),
@@ -254,21 +185,10 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(LucideIcons.share2),
-          label: const Text('Create Share'),
+          label: const Text('Create Link'),
         ),
       ],
     );
-  }
-
-  String _getPermissionDescription(SharePermissions perm) {
-    switch (perm) {
-      case SharePermissions.readOnly:
-        return 'View and download files';
-      case SharePermissions.readWrite:
-        return 'View, download, and upload files';
-      case SharePermissions.full:
-        return 'Full access including delete';
-    }
   }
 
   Future<void> _createShare() async {
@@ -281,7 +201,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
 
     try {
       final notifier = ref.read(sharesProvider.notifier);
-      
+
       final token = await notifier.createShare(
         pathScope: widget.pathScope,
         bucket: widget.bucket,
@@ -290,9 +210,12 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
         dek: widget.dek,
         permissions: _permissions,
         expiryDays: _expiryDays,
-        label: _labelController.text.trim().isNotEmpty 
-            ? _labelController.text.trim() 
+        label: _labelController.text.trim().isNotEmpty
+            ? _labelController.text.trim()
             : null,
+        shareMode: _shareMode,
+        fileName: widget.fileName,
+        contentType: widget.contentType,
       );
 
       if (!mounted) return;
@@ -312,6 +235,619 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
         _isLoading = false;
       });
     }
+  }
+}
+
+/// Dialog for creating a public link that anyone can access
+class CreatePublicLinkDialog extends ConsumerStatefulWidget {
+  final String pathScope;
+  final String bucket;
+  final Uint8List dek;
+  final String? fileName;
+  final String? contentType;
+
+  const CreatePublicLinkDialog({
+    super.key,
+    required this.pathScope,
+    required this.bucket,
+    required this.dek,
+    this.fileName,
+    this.contentType,
+  });
+
+  @override
+  ConsumerState<CreatePublicLinkDialog> createState() =>
+      _CreatePublicLinkDialogState();
+}
+
+class _CreatePublicLinkDialogState
+    extends ConsumerState<CreatePublicLinkDialog> {
+  final _labelController = TextEditingController();
+
+  ShareMode _shareMode = ShareMode.temporal;
+  ShareExpiry _expiry = ShareExpiry.oneWeek;
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _labelController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(LucideIcons.link),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('Create Link')),
+        ],
+      ),
+      content: SizedBox(
+        width: 400,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Info box
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(LucideIcons.info, color: Colors.blue[700], size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Anyone with this link can view the file',
+                        style: TextStyle(color: Colors.blue[700]),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Path being shared
+              _PathDisplay(pathScope: widget.pathScope),
+              const SizedBox(height: 16),
+
+              // Share Mode
+              _ShareModeSelector(
+                value: _shareMode,
+                onChanged: (v) => setState(() => _shareMode = v),
+              ),
+              const SizedBox(height: 16),
+
+              // Expiry
+              const Text(
+                'Link Expires',
+                style: TextStyle(fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: ShareExpiry.values.map((exp) {
+                  return ChoiceChip(
+                    label: Text(exp.displayName),
+                    selected: _expiry == exp,
+                    onSelected: (_) => setState(() => _expiry = exp),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+
+              // Label (optional)
+              TextFormField(
+                controller: _labelController,
+                decoration: const InputDecoration(
+                  labelText: 'Label (optional)',
+                  hintText: 'e.g., Project files',
+                  prefixIcon: Icon(LucideIcons.tag),
+                ),
+              ),
+
+              // Error message
+              if (_error != null) _ErrorDisplay(error: _error!),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _isLoading ? null : _createLink,
+          icon: _isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(LucideIcons.link),
+          label: const Text('Create Link'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _createLink() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final notifier = ref.read(sharesProvider.notifier);
+
+      final result = await notifier.createPublicLink(
+        pathScope: widget.pathScope,
+        bucket: widget.bucket,
+        dek: widget.dek,
+        expiryDays: _expiry.days,
+        label: _labelController.text.trim().isNotEmpty
+            ? _labelController.text.trim()
+            : null,
+        shareMode: _shareMode,
+        fileName: widget.fileName,
+        contentType: widget.contentType,
+      );
+
+      if (!mounted) return;
+
+      if (result != null) {
+        Navigator.pop(context, result);
+      } else {
+        final error = ref.read(sharesProvider).error;
+        setState(() {
+          _error = error ?? 'Failed to create link';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+}
+
+/// Dialog for creating a password-protected link
+class CreatePasswordLinkDialog extends ConsumerStatefulWidget {
+  final String pathScope;
+  final String bucket;
+  final Uint8List dek;
+  final String? fileName;
+  final String? contentType;
+
+  const CreatePasswordLinkDialog({
+    super.key,
+    required this.pathScope,
+    required this.bucket,
+    required this.dek,
+    this.fileName,
+    this.contentType,
+  });
+
+  @override
+  ConsumerState<CreatePasswordLinkDialog> createState() =>
+      _CreatePasswordLinkDialogState();
+}
+
+class _CreatePasswordLinkDialogState
+    extends ConsumerState<CreatePasswordLinkDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
+  final _labelController = TextEditingController();
+
+  ShareMode _shareMode = ShareMode.temporal;
+  ShareExpiry _expiry = ShareExpiry.oneWeek;
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+  String? _error;
+
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    _labelController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(LucideIcons.lock),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('Create Link with Password')),
+        ],
+      ),
+      content: SizedBox(
+        width: 400,
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Info box
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(LucideIcons.shieldCheck,
+                          color: Colors.orange[700], size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Recipients need both the link AND password to view',
+                          style: TextStyle(color: Colors.orange[700]),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Path being shared
+                _PathDisplay(pathScope: widget.pathScope),
+                const SizedBox(height: 16),
+
+                // Password
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    hintText: 'Enter a strong password',
+                    prefixIcon: const Icon(LucideIcons.key),
+                    suffixIcon: IconButton(
+                      icon: Icon(_obscurePassword
+                          ? LucideIcons.eye
+                          : LucideIcons.eyeOff),
+                      onPressed: () =>
+                          setState(() => _obscurePassword = !_obscurePassword),
+                    ),
+                  ),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter a password';
+                    }
+                    if (value.length < 4) {
+                      return 'Password must be at least 4 characters';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Confirm Password
+                TextFormField(
+                  controller: _confirmPasswordController,
+                  obscureText: _obscurePassword,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm Password',
+                    hintText: 'Re-enter password',
+                    prefixIcon: Icon(LucideIcons.keyRound),
+                  ),
+                  validator: (value) {
+                    if (value != _passwordController.text) {
+                      return 'Passwords do not match';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Share Mode
+                _ShareModeSelector(
+                  value: _shareMode,
+                  onChanged: (v) => setState(() => _shareMode = v),
+                ),
+                const SizedBox(height: 16),
+
+                // Expiry
+                const Text(
+                  'Link Expires',
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: ShareExpiry.values.map((exp) {
+                    return ChoiceChip(
+                      label: Text(exp.displayName),
+                      selected: _expiry == exp,
+                      onSelected: (_) => setState(() => _expiry = exp),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+
+                // Label (optional)
+                TextFormField(
+                  controller: _labelController,
+                  decoration: const InputDecoration(
+                    labelText: 'Label (optional)',
+                    hintText: 'e.g., Confidential files',
+                    prefixIcon: Icon(LucideIcons.tag),
+                  ),
+                ),
+
+                // Error message
+                if (_error != null) _ErrorDisplay(error: _error!),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _isLoading ? null : _createLink,
+          icon: _isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(LucideIcons.lock),
+          label: const Text('Create Link'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _createLink() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final notifier = ref.read(sharesProvider.notifier);
+
+      final result = await notifier.createPasswordProtectedLink(
+        pathScope: widget.pathScope,
+        bucket: widget.bucket,
+        dek: widget.dek,
+        expiryDays: _expiry.days,
+        password: _passwordController.text,
+        label: _labelController.text.trim().isNotEmpty
+            ? _labelController.text.trim()
+            : null,
+        shareMode: _shareMode,
+        fileName: widget.fileName,
+        contentType: widget.contentType,
+      );
+
+      if (!mounted) return;
+
+      if (result != null) {
+        Navigator.pop(context, result);
+      } else {
+        final error = ref.read(sharesProvider).error;
+        setState(() {
+          _error = error ?? 'Failed to create link';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+}
+
+// ============================================================================
+// SHARED WIDGETS
+// ============================================================================
+
+class _PathDisplay extends StatelessWidget {
+  final String pathScope;
+
+  const _PathDisplay({required this.pathScope});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          const Icon(LucideIcons.folder, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              pathScope,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PermissionsSelector extends StatelessWidget {
+  final SharePermissions value;
+  final ValueChanged<SharePermissions> onChanged;
+
+  const _PermissionsSelector({
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Permissions',
+          style: TextStyle(fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        ...SharePermissions.values.map((perm) {
+          final isSelected = perm == value;
+          return ListTile(
+            title: Text(perm.displayName),
+            subtitle: Text(_getPermissionDescription(perm)),
+            leading: Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color:
+                  isSelected ? Theme.of(context).colorScheme.primary : null,
+            ),
+            onTap: () => onChanged(perm),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          );
+        }),
+      ],
+    );
+  }
+
+  String _getPermissionDescription(SharePermissions perm) {
+    switch (perm) {
+      case SharePermissions.readOnly:
+        return 'View and download files';
+      case SharePermissions.readWrite:
+        return 'View, download, and upload files';
+      case SharePermissions.full:
+        return 'Full access including delete';
+    }
+  }
+}
+
+class _ShareModeSelector extends StatelessWidget {
+  final ShareMode value;
+  final ValueChanged<ShareMode> onChanged;
+
+  const _ShareModeSelector({
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Version Access',
+          style: TextStyle(fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        ...ShareMode.values.map((mode) {
+          final isSelected = mode == value;
+          return ListTile(
+            title: Text(mode.displayName),
+            subtitle: Text(mode.description),
+            leading: Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color:
+                  isSelected ? Theme.of(context).colorScheme.primary : null,
+            ),
+            onTap: () => onChanged(mode),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          );
+        }),
+      ],
+    );
+  }
+}
+
+class _ExpirySelector extends StatelessWidget {
+  final int? value;
+  final ValueChanged<int?> onChanged;
+  final bool showNever;
+
+  const _ExpirySelector({
+    required this.value,
+    required this.onChanged,
+    this.showNever = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Expiry',
+          style: TextStyle(fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _ExpiryChip(
+              label: '7 days',
+              days: 7,
+              selected: value == 7,
+              onSelected: () => onChanged(7),
+            ),
+            _ExpiryChip(
+              label: '30 days',
+              days: 30,
+              selected: value == 30,
+              onSelected: () => onChanged(30),
+            ),
+            _ExpiryChip(
+              label: '90 days',
+              days: 90,
+              selected: value == 90,
+              onSelected: () => onChanged(90),
+            ),
+            if (showNever)
+              _ExpiryChip(
+                label: 'Never',
+                days: null,
+                selected: value == null,
+                onSelected: () => onChanged(null),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 }
 
@@ -338,19 +874,118 @@ class _ExpiryChip extends StatelessWidget {
   }
 }
 
-/// Shows the create share dialog and returns the created token
+class _ErrorDisplay extends StatelessWidget {
+  final String error;
+
+  const _ErrorDisplay({required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.red[50],
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            const Icon(LucideIcons.alertCircle, color: Colors.red, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                error,
+                style: const TextStyle(color: Colors.red),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// DIALOG HELPERS
+// ============================================================================
+
+/// Shows dialog for creating a share for a specific recipient
+Future<ShareToken?> showCreateShareForRecipientDialog({
+  required BuildContext context,
+  required String pathScope,
+  required String bucket,
+  required Uint8List dek,
+  String? fileName,
+  String? contentType,
+}) async {
+  return showDialog<ShareToken>(
+    context: context,
+    builder: (context) => CreateShareForRecipientDialog(
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
+      fileName: fileName,
+      contentType: contentType,
+    ),
+  );
+}
+
+/// Shows dialog for creating a public link
+Future<GeneratedShareLink?> showCreatePublicLinkDialog({
+  required BuildContext context,
+  required String pathScope,
+  required String bucket,
+  required Uint8List dek,
+  String? fileName,
+  String? contentType,
+}) async {
+  return showDialog<GeneratedShareLink>(
+    context: context,
+    builder: (context) => CreatePublicLinkDialog(
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
+      fileName: fileName,
+      contentType: contentType,
+    ),
+  );
+}
+
+/// Shows dialog for creating a password-protected link
+Future<GeneratedShareLink?> showCreatePasswordLinkDialog({
+  required BuildContext context,
+  required String pathScope,
+  required String bucket,
+  required Uint8List dek,
+  String? fileName,
+  String? contentType,
+}) async {
+  return showDialog<GeneratedShareLink>(
+    context: context,
+    builder: (context) => CreatePasswordLinkDialog(
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
+      fileName: fileName,
+      contentType: contentType,
+    ),
+  );
+}
+
+// Keep backward compatibility
+typedef CreateShareDialog = CreateShareForRecipientDialog;
+
 Future<ShareToken?> showCreateShareDialog({
   required BuildContext context,
   required String pathScope,
   required String bucket,
   required Uint8List dek,
 }) async {
-  return showDialog<ShareToken>(
+  return showCreateShareForRecipientDialog(
     context: context,
-    builder: (context) => CreateShareDialog(
-      pathScope: pathScope,
-      bucket: bucket,
-      dek: dek,
-    ),
+    pathScope: pathScope,
+    bucket: bucket,
+    dek: dek,
   );
 }

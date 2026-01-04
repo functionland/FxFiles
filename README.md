@@ -265,26 +265,81 @@ await BackgroundSyncService.instance.cancelAll();
 
 ### Secure Sharing (HPKE)
 
-Share encrypted files with others without exposing your master key:
+Share encrypted files with others without exposing your master key. Three sharing modes are available:
+
+#### Share Types
+
+| Type | Use Case | Security |
+|------|----------|----------|
+| **Create Link For...** | Share with specific recipient | Highest - uses recipient's public key |
+| **Create Link** | Anyone with link can access | Medium - disposable keypair in URL fragment |
+| **Create Link with Password** | Password-protected access | High - password + link required |
+
+#### Gateway URL Structure
+
+All share links use the gateway at `https://cloud.fx.land/view`:
+
+```
+https://cloud.fx.land/view/{shareId}#{payload}
+```
+
+**URL Structure:**
+- `{shareId}` - Unique share identifier (UUID)
+- `#{payload}` - Base64url-encoded payload in URL fragment (never sent to server)
+
+**Payload Contents (for public/password links):**
+```json
+{
+  "v": 1,              // Version
+  "t": "<token>",      // Encoded share token
+  "k": "<secretKey>",  // Link secret key (base64)
+  "b": "bucket-name",  // Storage bucket
+  "p": "/path/to/file", // Path scope
+  "pwd": false         // Is password-protected
+}
+```
+
+#### API Usage
 
 ```dart
 // Get your public key to share with others
 final myPublicKey = await AuthService.instance.getPublicKeyString();
 
-// Create a share for another user
-final token = await SharingService.instance.createShare(
+// 1. Create a share for a specific recipient
+final token = await SharingService.instance.shareWithUser(
   pathScope: '/photos/vacation/',
   bucket: 'my-bucket',
   recipientPublicKey: recipientPublicKeyBytes,
+  recipientName: 'John',
   dek: folderEncryptionKey,
   permissions: SharePermissions.readOnly,
   expiryDays: 30,
   label: 'Vacation photos',
 );
 
-// Generate shareable link
-final link = SharingService.instance.generateShareLink(token);
-// Result: fula://share/eyJpZCI6Ii4uLiJ9...
+// 2. Create a public link (anyone with link can access)
+final publicLink = await SharingService.instance.createPublicLink(
+  pathScope: '/photos/vacation/',
+  bucket: 'my-bucket',
+  dek: folderEncryptionKey,
+  expiryDays: 7,
+  label: 'Vacation photos',
+);
+// Result: https://cloud.fx.land/view/abc123#eyJ2IjoxLC...
+
+// 3. Create a password-protected link
+final passwordLink = await SharingService.instance.createPasswordProtectedLink(
+  pathScope: '/documents/report.pdf',
+  bucket: 'my-bucket',
+  dek: folderEncryptionKey,
+  expiryDays: 30,
+  password: 'secretPassword123',
+  label: 'Monthly report',
+);
+// Recipients need both the link AND password to access
+
+// Generate share link from OutgoingShare
+final link = SharingService.instance.generateShareLinkFromOutgoing(outgoingShare);
 
 // Accept a share from link
 final accepted = await SharingService.instance.acceptShareFromString(encodedToken);
@@ -295,19 +350,193 @@ print('Can write: ${accepted.canWrite}');
 await SharingService.instance.revokeShare(shareId);
 ```
 
-**Sharing Model (from Fula API):**
-- **Path-Scoped**: Share only specific folders
-- **Time-Limited**: Access expires automatically  
+#### Expiry Options
+
+| Option | Duration |
+|--------|----------|
+| 1 Day | 24 hours |
+| 1 Week | 7 days |
+| 1 Month | 30 days |
+| 1 Year | 365 days |
+| 5 Years | 1825 days (max) |
+
+#### Share Modes
+
+- **Temporal**: Recipients see the latest version of the file/folder
+- **Snapshot**: Recipients only see the specific version at share time
+
+**Sharing Model:**
+- **Path-Scoped**: Share only specific folders or files
+- **Time-Limited**: Access expires automatically
 - **Permission-Based**: Read-only, read-write, or full access
 - **Revocable**: Cancel access at any time
 - **Zero Knowledge**: Server can't read shared content
 
+**Security Details:**
+- URL fragment (`#...`) is never sent to server (HTTP standard)
+- Public links use disposable X25519 keypairs - private key in fragment
+- Password links encrypt the payload with PBKDF2-SHA256 derived key
+- All keys stored locally, synced to cloud encrypted with user's master key
+- Each share is isolated - revoking one doesn't affect others
+
 **How it works:**
-1. Owner creates share token with recipient's public key
-2. DEK is re-encrypted for recipient using HPKE (X25519 + AES-256-GCM)
-3. Token sent via any channel (link, QR code, message)
-4. Recipient decrypts with their private key
-5. Owner's master key is never exposed
+1. Owner creates share token with appropriate encryption
+2. For recipient shares: DEK re-encrypted using HPKE (X25519 + AES-256-GCM)
+3. For public links: Disposable keypair generated, private key in URL fragment
+4. For password links: Payload encrypted with password-derived key
+5. Token sent via any channel (link, QR code, message)
+6. Recipient decrypts with their private key or password
+7. Owner's master key is never exposed
+
+#### Cloud Storage Structure for Shares (Owner's Share List)
+
+The gateway can retrieve an owner's share list from cloud storage. Shares are stored encrypted with the owner's encryption key:
+
+**Storage Location:**
+```
+Bucket: fula-metadata
+Key:    .fula/shares/{userId}.json.enc
+```
+
+**User ID Derivation:**
+```dart
+// userId is first 16 chars of SHA-256(publicKey), URL-safe
+final hash = sha256(publicKeyBytes);
+final userId = hash.substring(0, 16).replaceAll('/', '_').replaceAll('+', '-');
+```
+
+**Decrypted JSON Structure:**
+```json
+{
+  "version": 1,
+  "updatedAt": "2024-01-15T10:30:00.000Z",
+  "shares": [
+    {
+      "id": "share-uuid",
+      "token": {
+        "id": "token-uuid",
+        "pathScope": "/photos/vacation/",
+        "permissions": "readOnly",
+        "wrappedDek": "base64...",
+        "recipientPublicKey": "base64...",
+        "issuedAt": "2024-01-15T10:30:00.000Z",
+        "expiresAt": "2024-02-15T10:30:00.000Z",
+        "shareType": "publicLink",
+        "shareMode": "temporal"
+      },
+      "bucket": "photos",
+      "recipientName": "Public Link",
+      "label": "Vacation photos",
+      "sharedAt": "2024-01-15T10:30:00.000Z",
+      "isRevoked": false,
+      "linkSecretKey": "base64...",
+      "passwordSalt": null
+    }
+  ]
+}
+```
+
+**OutgoingShare Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique share identifier |
+| `token` | ShareToken | The share token with encryption details |
+| `bucket` | string | S3 bucket containing shared content |
+| `recipientName` | string | Display name (or "Public Link"/"Password Link") |
+| `label` | string? | Optional user-defined label |
+| `sharedAt` | datetime | When share was created |
+| `isRevoked` | bool | Whether share has been revoked |
+| `linkSecretKey` | string? | Base64 secret key for public links |
+| `passwordSalt` | string? | Base64 salt for password-protected links |
+
+### Audio Playlists Cloud Storage
+
+Playlists are stored encrypted for recovery across devices:
+
+**Storage Location:**
+```
+Bucket: playlists
+Key:    user-playlists/{playlistId}.json
+```
+
+**Decrypted JSON Structure:**
+```json
+{
+  "id": "playlist-uuid",
+  "name": "My Favorites",
+  "tracks": [
+    {
+      "id": "track-uuid",
+      "path": "/storage/emulated/0/Music/song.mp3",
+      "name": "Song Title",
+      "artist": "Artist Name",
+      "album": "Album Name",
+      "duration": 180000,
+      "artworkPath": "/path/to/artwork.jpg"
+    }
+  ],
+  "createdAt": "2024-01-15T10:30:00.000Z",
+  "updatedAt": "2024-01-20T15:45:00.000Z",
+  "cloudKey": "user-playlists/playlist-uuid.json",
+  "isSyncedToCloud": true
+}
+```
+
+**Playlist Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique playlist identifier |
+| `name` | string | Playlist name |
+| `tracks` | AudioTrack[] | List of tracks in order |
+| `createdAt` | datetime | When playlist was created |
+| `updatedAt` | datetime | Last modification time |
+| `cloudKey` | string? | S3 key if synced to cloud |
+| `isSyncedToCloud` | bool | Whether synced to cloud |
+
+**AudioTrack Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique track identifier |
+| `path` | string | Local file path |
+| `name` | string | Track/file name |
+| `artist` | string? | Artist name from metadata |
+| `album` | string? | Album name from metadata |
+| `duration` | int | Duration in milliseconds |
+| `artworkPath` | string? | Path to album artwork |
+
+### Gateway Implementation Notes
+
+For the gateway at `https://cloud.fx.land/view`:
+
+1. **Parsing Share Links:**
+   ```
+   URL: https://cloud.fx.land/view/{shareId}#{payload}
+
+   1. Extract shareId from path
+   2. Extract payload from URL fragment (client-side only)
+   3. Base64url-decode payload
+   4. If password-protected: prompt for password, derive key with PBKDF2
+   5. Decrypt payload to get token, bucket, path, and secretKey
+   6. Use secretKey to decrypt wrappedDek in token
+   7. Use decrypted DEK to access files in bucket/path
+   ```
+
+2. **Fetching Owner's Share List:**
+   ```
+   1. Authenticate owner (get their encryption key)
+   2. Compute userId from owner's public key
+   3. Fetch: fula-metadata/.fula/shares/{userId}.json.enc
+   4. Decrypt with owner's encryption key
+   5. Parse JSON to get list of OutgoingShare objects
+   ```
+
+3. **Fetching User's Playlists:**
+   ```
+   1. Authenticate user (get their encryption key)
+   2. List objects: playlists/user-playlists/*.json
+   3. For each object: download and decrypt with user's key
+   4. Parse JSON to get Playlist objects
+   ```
 
 ## Contributing
 
@@ -362,7 +591,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] Bug: Version in about screen not updating according to latest app version
 - [ X ] Add thumbscroll functionality for better navigation. the header tags shown in thumbscroll mode should be according to the sorting. for exmaple in sorting alphanumerically, the headrs become the letters of filenames like A,B,C,... when in date sort mode the tags become the month-year like Jan-2024, Feb-2024, etc. We should consider all optimizations possible to make it fast and smooth in large folders and in categories and to ensure that the headers are not repeated and updated according to all files in the folder or category without reducing hte performance or making the app laggy. Also it should be a separate module that can be deactivated if user wants (General)
 - [ ] Add folder names in tabs inside each category. default view is All, but user can switch to other tabs in each category like "Images" to see only images in that folder for example "WhatsApp"
-- [ ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of paramtetres are based on the current s3 API doc for encrypted files where we have everyting to decrypt a file in the link and it shows hte link to user (General)
+- [ X ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of parameters are based on the current s3 API doc for encrypted files where we have everything to decrypt a file in the link and it shows the link to user (General) - Implemented three share types: public links, password-protected links, and recipient-specific shares
 - [ ] Implement proper error handling for background sync
 - [ ] Add unit tests for all services
 - [ ] Change package name to land.fx.files.dev and create github actions to remove.dev for publishing to play store

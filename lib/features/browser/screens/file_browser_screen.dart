@@ -1550,13 +1550,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   _showFolderSyncOptions(file);
                 },
               ),
+            // Share options
             ListTile(
-              leading: Icon(LucideIcons.share2, color: isLoggedIn ? null : Colors.grey),
-              title: Text('Create Share Link', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
-              subtitle: isLoggedIn ? null : const Text('Sign in required', style: TextStyle(fontSize: 12)),
+              leading: Icon(LucideIcons.link, color: isLoggedIn ? Colors.blue : Colors.grey),
+              title: Text('Create Link', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
+              subtitle: Text(isLoggedIn ? 'Anyone with link can view' : 'Sign in required', style: const TextStyle(fontSize: 12)),
               onTap: isLoggedIn ? () {
                 Navigator.pop(ctx);
-                _createShareLink(file);
+                _createPublicLink(file);
+              } : null,
+            ),
+            ListTile(
+              leading: Icon(LucideIcons.lock, color: isLoggedIn ? Colors.orange : Colors.grey),
+              title: Text('Create Link with Password', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
+              subtitle: Text(isLoggedIn ? 'Requires password to view' : 'Sign in required', style: const TextStyle(fontSize: 12)),
+              onTap: isLoggedIn ? () {
+                Navigator.pop(ctx);
+                _createPasswordLink(file);
+              } : null,
+            ),
+            ListTile(
+              leading: Icon(LucideIcons.userPlus, color: isLoggedIn ? Colors.green : Colors.grey),
+              title: Text('Create Link For...', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
+              subtitle: Text(isLoggedIn ? 'Share with specific recipient' : 'Sign in required', style: const TextStyle(fontSize: 12)),
+              onTap: isLoggedIn ? () {
+                Navigator.pop(ctx);
+                _createShareForRecipient(file);
               } : null,
             ),
             const Divider(height: 1),
@@ -2044,8 +2063,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   // SHARING
   // ============================================================================
 
-  Future<void> _createShareLink(LocalFile file) async {
-    // Get encryption key (DEK) for sharing
+  /// Create a public link (anyone with link can access)
+  Future<void> _createPublicLink(LocalFile file) async {
     final dek = await AuthService.instance.getEncryptionKey();
     if (dek == null) {
       if (mounted) {
@@ -2059,32 +2078,213 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       return;
     }
 
-    // Determine bucket based on file category
     final category = FileCategory.fromPath(file.path);
     final bucket = category.bucketName;
-    
-    // Use file path relative to storage root for path scope
-    final pathScope = file.isDirectory 
-        ? '/${file.name}/'
-        : '/${file.name}';
+    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
 
     if (!mounted) return;
 
-    // Show create share dialog
-    final token = await showCreateShareDialog(
+    final result = await showCreatePublicLinkDialog(
       context: context,
       pathScope: pathScope,
       bucket: bucket,
       dek: dek,
+      fileName: file.name,
+      contentType: _getContentType(file),
+    );
+
+    if (result != null && mounted) {
+      _showGeneratedShareLinkDialog(result, isPasswordProtected: false);
+    }
+  }
+
+  /// Create a password-protected link
+  Future<void> _createPasswordLink(LocalFile file) async {
+    final dek = await AuthService.instance.getEncryptionKey();
+    if (dek == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Encryption key not available. Please sign in again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    final category = FileCategory.fromPath(file.path);
+    final bucket = category.bucketName;
+    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
+
+    if (!mounted) return;
+
+    final result = await showCreatePasswordLinkDialog(
+      context: context,
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
+      fileName: file.name,
+      contentType: _getContentType(file),
+    );
+
+    if (result != null && mounted) {
+      _showGeneratedShareLinkDialog(result, isPasswordProtected: true);
+    }
+  }
+
+  /// Create a share for a specific recipient
+  Future<void> _createShareForRecipient(LocalFile file) async {
+    final dek = await AuthService.instance.getEncryptionKey();
+    if (dek == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Encryption key not available. Please sign in again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    final category = FileCategory.fromPath(file.path);
+    final bucket = category.bucketName;
+    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
+
+    if (!mounted) return;
+
+    final token = await showCreateShareForRecipientDialog(
+      context: context,
+      pathScope: pathScope,
+      bucket: bucket,
+      dek: dek,
+      fileName: file.name,
+      contentType: _getContentType(file),
     );
 
     if (token != null && mounted) {
-      // Generate share link
       final shareLink = SharingService.instance.generateShareLink(token);
-      
-      // Show success dialog with link
       _showShareLinkDialog(shareLink, token);
     }
+  }
+
+  String? _getContentType(LocalFile file) {
+    final ext = file.extension.toLowerCase();
+    const mimeTypes = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo',
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'pdf': 'application/pdf',
+      'txt': 'text/plain',
+      'json': 'application/json',
+      'zip': 'application/zip',
+    };
+    return mimeTypes[ext];
+  }
+
+  /// Show dialog for generated share links (public or password-protected)
+  void _showGeneratedShareLinkDialog(GeneratedShareLink result, {required bool isPasswordProtected}) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(LucideIcons.checkCircle, color: Colors.green),
+            const SizedBox(width: 8),
+            Expanded(child: Text(isPasswordProtected ? 'Password Link Created!' : 'Link Created!')),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isPasswordProtected
+                  ? 'Share this link. Recipients will need the password you set to access.'
+                  : 'Anyone with this link can view the shared content.',
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                result.url,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Icon(
+                  isPasswordProtected ? LucideIcons.lock : LucideIcons.link,
+                  size: 16,
+                  color: isPasswordProtected ? Colors.orange : Colors.blue,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isPasswordProtected ? 'Password protected' : 'Public link',
+                    style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+            if (result.token.expiresAt != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(LucideIcons.clock, size: 16, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Expires: ${_formatDateTime(result.token.expiresAt!)}',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: result.url));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Link copied to clipboard')),
+              );
+              Navigator.pop(ctx);
+            },
+            icon: const Icon(LucideIcons.copy),
+            label: const Text('Copy Link'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Legacy method for backward compatibility
+  Future<void> _createShareLink(LocalFile file) async {
+    await _createShareForRecipient(file);
   }
 
   void _showShareLinkDialog(String shareLink, ShareToken token) {

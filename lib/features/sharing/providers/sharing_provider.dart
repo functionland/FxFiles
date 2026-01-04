@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/cloud_share_storage_service.dart';
 
 /// Provider for sharing service
 final sharingServiceProvider = Provider<SharingService>((ref) {
@@ -66,7 +67,7 @@ class SharesNotifier extends Notifier<SharesState> {
     }
   }
 
-  /// Create a new share
+  /// Create a new share for a specific recipient
   Future<ShareToken?> createShare({
     required String pathScope,
     required String bucket,
@@ -76,12 +77,16 @@ class SharesNotifier extends Notifier<SharesState> {
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
   }) async {
     state = state.copyWith(isLoading: true, error: null);
-    
+
     try {
       final recipientPublicKey = AuthService.instance.parsePublicKey(recipientPublicKeyBase64);
-      
+
       final outgoingShare = await _sharingService.shareWithUser(
         pathScope: pathScope,
         bucket: bucket,
@@ -91,11 +96,18 @@ class SharesNotifier extends Notifier<SharesState> {
         permissions: permissions,
         expiryDays: expiryDays,
         label: label,
+        shareMode: shareMode,
+        snapshotBinding: snapshotBinding,
+        fileName: fileName,
+        contentType: contentType,
       );
+
+      // Sync to cloud
+      await _syncToCloud();
 
       // Reload shares
       await loadShares();
-      
+
       return outgoingShare.token;
     } catch (e) {
       state = state.copyWith(
@@ -103,6 +115,128 @@ class SharesNotifier extends Notifier<SharesState> {
         error: e.toString(),
       );
       return null;
+    }
+  }
+
+  /// Create a public link that anyone with the link can access
+  Future<GeneratedShareLink?> createPublicLink({
+    required String pathScope,
+    required String bucket,
+    required Uint8List dek,
+    required int expiryDays,
+    String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final result = await _sharingService.createPublicLink(
+        pathScope: pathScope,
+        bucket: bucket,
+        dek: dek,
+        expiryDays: expiryDays,
+        label: label,
+        shareMode: shareMode,
+        snapshotBinding: snapshotBinding,
+        fileName: fileName,
+        contentType: contentType,
+      );
+
+      // Sync to cloud
+      await _syncToCloud();
+
+      // Reload shares
+      await loadShares();
+
+      return result;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: e.toString(),
+      );
+      return null;
+    }
+  }
+
+  /// Create a password-protected link
+  Future<GeneratedShareLink?> createPasswordProtectedLink({
+    required String pathScope,
+    required String bucket,
+    required Uint8List dek,
+    required int expiryDays,
+    required String password,
+    String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final result = await _sharingService.createPasswordProtectedLink(
+        pathScope: pathScope,
+        bucket: bucket,
+        dek: dek,
+        expiryDays: expiryDays,
+        password: password,
+        label: label,
+        shareMode: shareMode,
+        snapshotBinding: snapshotBinding,
+        fileName: fileName,
+        contentType: contentType,
+      );
+
+      // Sync to cloud
+      await _syncToCloud();
+
+      // Reload shares
+      await loadShares();
+
+      return result;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: e.toString(),
+      );
+      return null;
+    }
+  }
+
+  /// Sync shares to cloud storage
+  Future<void> _syncToCloud() async {
+    try {
+      final shares = await _sharingService.getOutgoingShares();
+      await CloudShareStorageService.instance.uploadShares(shares);
+    } catch (e) {
+      // Don't fail the operation if cloud sync fails
+      // Just log the error
+    }
+  }
+
+  /// Sync shares from cloud storage
+  Future<void> syncFromCloud() async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final localShares = await _sharingService.getOutgoingShares();
+      final mergedShares = await CloudShareStorageService.instance.syncShares(localShares);
+
+      // Update local storage with merged shares if different
+      if (mergedShares.length != localShares.length) {
+        // There are shares from cloud that aren't local
+        // The SharingService will need a method to import these
+      }
+
+      await loadShares();
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: e.toString(),
+      );
     }
   }
 
@@ -191,9 +325,14 @@ class SharesNotifier extends Notifier<SharesState> {
     }
   }
 
-  /// Generate share link
-  String generateShareLink(ShareToken token) {
-    return _sharingService.generateShareLink(token);
+  /// Generate share link for a token
+  String generateShareLink(ShareToken token, {Uint8List? linkSecretKey}) {
+    return _sharingService.generateShareLink(token, linkSecretKey: linkSecretKey);
+  }
+
+  /// Generate share link from an OutgoingShare (handles all types)
+  String generateShareLinkFromOutgoing(OutgoingShare share) {
+    return _sharingService.generateShareLinkFromOutgoing(share);
   }
 
   /// Clear error

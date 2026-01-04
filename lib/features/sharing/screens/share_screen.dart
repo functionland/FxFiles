@@ -254,39 +254,63 @@ class _OutgoingShareCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isExpired = share.isExpired;
     final isRevoked = share.isRevoked;
-    
+    final shareType = share.token.shareType;
+
+    // Determine icon and color based on share type and status
+    IconData typeIcon;
+    Color typeColor;
+    String typeLabel;
+
+    if (isRevoked) {
+      typeIcon = LucideIcons.ban;
+      typeColor = Colors.red;
+      typeLabel = share.recipientName;
+    } else if (isExpired) {
+      typeIcon = LucideIcons.clock;
+      typeColor = Colors.orange;
+      typeLabel = share.recipientName;
+    } else {
+      switch (shareType) {
+        case ShareType.publicLink:
+          typeIcon = LucideIcons.link;
+          typeColor = Colors.blue;
+          typeLabel = share.token.label ?? 'Public Link';
+          break;
+        case ShareType.passwordProtected:
+          typeIcon = LucideIcons.lock;
+          typeColor = Colors.orange;
+          typeLabel = share.token.label ?? 'Password Link';
+          break;
+        case ShareType.recipient:
+          typeIcon = LucideIcons.userCheck;
+          typeColor = Colors.green;
+          typeLabel = share.recipientName;
+          break;
+      }
+    }
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: isRevoked
-              ? Colors.red[100]
-              : isExpired
-                  ? Colors.orange[100]
-                  : Colors.green[100],
-          child: Icon(
-            isRevoked
-                ? LucideIcons.ban
-                : isExpired
-                    ? LucideIcons.clock
-                    : LucideIcons.share2,
-            color: isRevoked
-                ? Colors.red
-                : isExpired
-                    ? Colors.orange
-                    : Colors.green,
-          ),
+          backgroundColor: typeColor.withValues(alpha: 0.15),
+          child: Icon(typeIcon, color: typeColor),
         ),
-        title: Text(share.recipientName),
+        title: Text(typeLabel),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(share.pathScope),
-            const SizedBox(height: 4),
-            Row(
+            Text(
+              share.pathScope,
+              style: TextStyle(color: Colors.grey[600], fontSize: 13),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
               children: [
+                _ShareTypeChip(shareType: shareType),
                 _PermissionChip(permissions: share.permissions),
-                const SizedBox(width: 8),
                 if (isRevoked)
                   const _StatusChip(label: 'Revoked', color: Colors.red)
                 else if (isExpired)
@@ -329,7 +353,8 @@ class _OutgoingShareCard extends ConsumerWidget {
   void _handleAction(BuildContext context, WidgetRef ref, String action) async {
     switch (action) {
       case 'copy':
-        final link = ref.read(sharesProvider.notifier).generateShareLink(share.token);
+        // Use generateShareLinkFromOutgoing to properly handle all share types
+        final link = ref.read(sharesProvider.notifier).generateShareLinkFromOutgoing(share);
         Clipboard.setData(ClipboardData(text: link));
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Share link copied')),
@@ -341,7 +366,7 @@ class _OutgoingShareCard extends ConsumerWidget {
           builder: (context) => AlertDialog(
             title: const Text('Revoke Share?'),
             content: Text(
-              'This will revoke ${share.recipientName}\'s access to ${share.pathScope}',
+              'This will revoke access to ${share.pathScope}',
             ),
             actions: [
               TextButton(
@@ -356,7 +381,7 @@ class _OutgoingShareCard extends ConsumerWidget {
             ],
           ),
         );
-        
+
         if (confirmed == true) {
           await ref.read(sharesProvider.notifier).revokeShare(share.id);
           if (context.mounted) {
@@ -579,6 +604,57 @@ class _StatusChip extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(fontSize: 12, color: color),
+      ),
+    );
+  }
+}
+
+class _ShareTypeChip extends StatelessWidget {
+  final ShareType shareType;
+
+  const _ShareTypeChip({required this.shareType});
+
+  @override
+  Widget build(BuildContext context) {
+    String label;
+    Color color;
+    IconData icon;
+
+    switch (shareType) {
+      case ShareType.publicLink:
+        label = 'Public';
+        color = Colors.blue;
+        icon = LucideIcons.globe;
+        break;
+      case ShareType.passwordProtected:
+        label = 'Password';
+        color = Colors.orange;
+        icon = LucideIcons.keyRound;
+        break;
+      case ShareType.recipient:
+        label = 'Private';
+        color = Colors.green;
+        icon = LucideIcons.user;
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500),
+          ),
+        ],
       ),
     );
   }

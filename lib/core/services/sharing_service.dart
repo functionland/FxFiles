@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/share_token.dart';
@@ -6,14 +7,22 @@ import 'package:fula_files/core/services/encryption_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
+/// Gateway base URL for public share links
+const String kShareGatewayBaseUrl = 'https://cloud.fx.land';
+
 /// Service for secure file sharing between users
-/// 
+///
 /// Based on Fula API sharing pattern:
 /// - Path-Scoped: Share only specific folders
 /// - Time-Limited: Access expires automatically
 /// - Permission-Based: Read-only, read-write, or full
 /// - Revocable: Cancel access at any time
 /// - Zero Knowledge: Server can't read shared content
+///
+/// Supports three share types:
+/// 1. Recipient-specific: Share with a known public key
+/// 2. Public link: Anyone with the link can access (disposable keypair in URL)
+/// 3. Password-protected: Requires both link and password
 class SharingService {
   static final SharingService instance = SharingService._();
   SharingService._();
@@ -29,7 +38,7 @@ class SharingService {
   // ============================================================================
 
   /// Create a share token for a recipient
-  /// 
+  ///
   /// Process:
   /// 1. Generate ephemeral keypair for HPKE
   /// 2. Derive shared secret using X25519 DH
@@ -43,6 +52,11 @@ class SharingService {
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
+    ShareType shareType = ShareType.recipient,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
   }) async {
     // Get owner's keypair
     final ownerPublicKey = await AuthService.instance.getPublicKey();
@@ -52,7 +66,7 @@ class SharingService {
 
     // Generate ephemeral keypair for HPKE key wrapping
     final ephemeralKeyPair = await EncryptionService.instance.generateKeyPair();
-    
+
     // Wrap DEK for recipient using HPKE
     // DEK is encrypted with a key derived from:
     // ephemeral_secret + recipient_public_key
@@ -63,7 +77,7 @@ class SharingService {
     );
 
     final now = DateTime.now();
-    final expiresAt = expiryDays != null 
+    final expiresAt = expiryDays != null
         ? now.add(Duration(days: expiryDays))
         : null;
 
@@ -79,10 +93,15 @@ class SharingService {
       createdAt: now,
       expiresAt: expiresAt,
       label: label,
+      shareType: shareType,
+      shareMode: shareMode,
+      snapshotBinding: snapshotBinding,
+      fileName: fileName,
+      contentType: contentType,
     );
   }
 
-  /// Create and save an outgoing share
+  /// Create and save an outgoing share for a specific recipient
   Future<OutgoingShare> shareWithUser({
     required String pathScope,
     required String bucket,
@@ -92,6 +111,10 @@ class SharingService {
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
   }) async {
     final token = await createShare(
       pathScope: pathScope,
@@ -101,6 +124,11 @@ class SharingService {
       permissions: permissions,
       expiryDays: expiryDays,
       label: label,
+      shareType: ShareType.recipient,
+      shareMode: shareMode,
+      snapshotBinding: snapshotBinding,
+      fileName: fileName,
+      contentType: contentType,
     );
 
     final outgoingShare = OutgoingShare(
@@ -112,6 +140,239 @@ class SharingService {
     await _saveOutgoingShare(outgoingShare);
 
     return outgoingShare;
+  }
+
+  /// Create a public link that anyone with the link can access
+  ///
+  /// This generates a disposable keypair, wraps the DEK for that keypair,
+  /// and embeds both the token and the private key in the URL fragment.
+  /// The fragment is never sent to the server, keeping secrets client-side.
+  ///
+  /// Security considerations:
+  /// - The link allows access to ONLY the specified file/folder (path-scoped)
+  /// - Access expires according to expiryDays
+  /// - Owner can revoke access at any time
+  /// - URL fragment is never transmitted to server (HTTP spec)
+  Future<GeneratedShareLink> createPublicLink({
+    required String pathScope,
+    required String bucket,
+    required Uint8List dek,
+    required int expiryDays,
+    String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
+    String? gatewayBaseUrl,
+  }) async {
+    // Generate a disposable keypair for this link
+    final linkKeyPair = await EncryptionService.instance.generateKeyPair();
+
+    // Create share token with the disposable public key as recipient
+    final token = await createShare(
+      pathScope: pathScope,
+      bucket: bucket,
+      recipientPublicKey: linkKeyPair.publicKey,
+      dek: dek,
+      permissions: SharePermissions.readOnly,
+      expiryDays: expiryDays,
+      label: label,
+      shareType: ShareType.publicLink,
+      shareMode: shareMode,
+      snapshotBinding: snapshotBinding,
+      fileName: fileName,
+      contentType: contentType,
+    );
+
+    // Create the payload for the URL fragment
+    final payload = PublicLinkPayload(
+      token: token,
+      linkSecretKey: linkKeyPair.privateKey,
+      bucket: bucket,
+      key: pathScope,
+      label: label,
+    );
+
+    // Build the URL
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+    final url = '$baseUrl/view/${token.id}#${payload.encode()}';
+
+    // Save outgoing share (with the link secret key for potential regeneration)
+    final outgoingShare = OutgoingShare(
+      token: token,
+      recipientName: 'Anyone with link',
+      linkSecretKey: linkKeyPair.privateKey,
+    );
+    await _saveOutgoingShare(outgoingShare);
+
+    return GeneratedShareLink(
+      url: url,
+      token: token,
+      outgoingShare: outgoingShare,
+      payload: payload,
+    );
+  }
+
+  /// Create a password-protected link
+  ///
+  /// Similar to public link, but the fragment payload is encrypted with
+  /// a key derived from the password. Anyone with both the link AND the
+  /// password can access the file.
+  ///
+  /// Security: Adds an extra layer - even if link is intercepted,
+  /// password is still required to decrypt.
+  Future<GeneratedShareLink> createPasswordProtectedLink({
+    required String pathScope,
+    required String bucket,
+    required Uint8List dek,
+    required int expiryDays,
+    required String password,
+    String? label,
+    ShareMode shareMode = ShareMode.temporal,
+    SnapshotBinding? snapshotBinding,
+    String? fileName,
+    String? contentType,
+    String? gatewayBaseUrl,
+  }) async {
+    if (password.isEmpty) {
+      throw SharingException('Password cannot be empty');
+    }
+
+    // Generate a disposable keypair for this link
+    final linkKeyPair = await EncryptionService.instance.generateKeyPair();
+
+    // Create share token with the disposable public key as recipient
+    final token = await createShare(
+      pathScope: pathScope,
+      bucket: bucket,
+      recipientPublicKey: linkKeyPair.publicKey,
+      dek: dek,
+      permissions: SharePermissions.readOnly,
+      expiryDays: expiryDays,
+      label: label,
+      shareType: ShareType.passwordProtected,
+      shareMode: shareMode,
+      snapshotBinding: snapshotBinding,
+      fileName: fileName,
+      contentType: contentType,
+    );
+
+    // Create the inner payload (unencrypted data)
+    final innerPayload = PublicLinkPayload(
+      token: token,
+      linkSecretKey: linkKeyPair.privateKey,
+      bucket: bucket,
+      key: pathScope,
+      label: label,
+      isPasswordProtected: true,
+    );
+
+    // Encrypt the payload with password-derived key
+    final salt = EncryptionService.instance.generateSalt(16);
+    final passwordKey = await EncryptionService.instance.deriveKeyFromPassword(
+      password,
+      salt,
+    );
+
+    final innerPayloadBytes = utf8.encode(jsonEncode(innerPayload.toJson()));
+    final encryptedPayload = await EncryptionService.instance.encrypt(
+      Uint8List.fromList(innerPayloadBytes),
+      passwordKey,
+    );
+
+    // Create outer wrapper with salt and encrypted inner payload
+    final outerPayload = {
+      'v': PublicLinkPayload.currentVersion,
+      'p': true, // password protected flag
+      's': base64Encode(salt),
+      'e': base64Encode(encryptedPayload),
+    };
+
+    // Encode outer payload for URL
+    final fragment = base64UrlEncode(utf8.encode(jsonEncode(outerPayload)));
+
+    // Build the URL
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+    final url = '$baseUrl/view/${token.id}#$fragment';
+
+    // Save outgoing share
+    final outgoingShare = OutgoingShare(
+      token: token,
+      recipientName: 'Password Protected',
+      linkSecretKey: linkKeyPair.privateKey,
+      passwordSalt: salt,
+    );
+    await _saveOutgoingShare(outgoingShare);
+
+    return GeneratedShareLink(
+      url: url,
+      token: token,
+      outgoingShare: outgoingShare,
+      payload: innerPayload,
+      password: password,
+    );
+  }
+
+  /// Decode a password-protected link payload
+  ///
+  /// Called by the gateway/viewer to decrypt the inner payload
+  static Future<PublicLinkPayload> decodePasswordProtectedPayload(
+    String fragment,
+    String password,
+  ) async {
+    // Decode outer payload
+    String normalized = fragment;
+    while (normalized.length % 4 != 0) {
+      normalized += '=';
+    }
+    final outerBytes = base64Url.decode(normalized);
+    final outerJson = jsonDecode(utf8.decode(outerBytes)) as Map<String, dynamic>;
+
+    if (outerJson['p'] != true) {
+      throw SharingException('Not a password-protected link');
+    }
+
+    final salt = base64Decode(outerJson['s'] as String);
+    final encryptedPayload = base64Decode(outerJson['e'] as String);
+
+    // Derive key from password
+    final passwordKey = await EncryptionService.instance.deriveKeyFromPassword(
+      password,
+      salt,
+    );
+
+    // Decrypt inner payload
+    try {
+      final decryptedBytes = await EncryptionService.instance.decrypt(
+        encryptedPayload,
+        passwordKey,
+      );
+      final innerJson = jsonDecode(utf8.decode(decryptedBytes)) as Map<String, dynamic>;
+      return PublicLinkPayload.fromJson(innerJson);
+    } catch (e) {
+      throw SharingException('Invalid password');
+    }
+  }
+
+  /// Regenerate a public link URL from an existing share
+  ///
+  /// Useful when user wants to copy the link again
+  String regeneratePublicLink(OutgoingShare share, {String? gatewayBaseUrl}) {
+    if (share.linkSecretKey == null) {
+      throw SharingException('Not a public link share');
+    }
+
+    final payload = PublicLinkPayload(
+      token: share.token,
+      linkSecretKey: share.linkSecretKey!,
+      bucket: share.bucket,
+      key: share.pathScope,
+      label: share.token.label,
+      isPasswordProtected: share.shareType == ShareType.passwordProtected,
+    );
+
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+    return '$baseUrl/view/${share.token.id}#${payload.encode()}';
   }
 
   /// Revoke a share
@@ -283,11 +544,42 @@ class SharingService {
   // HELPER METHODS
   // ============================================================================
 
-  /// Generate a shareable link
-  String generateShareLink(ShareToken token, {String? baseUrl}) {
+  /// Generate a shareable link based on share type
+  ///
+  /// For recipient-specific shares: fxblox://share/{encoded_token}
+  /// For public links: Already generated with createPublicLink()
+  /// For password links: Already generated with createPasswordProtectedLink()
+  String generateShareLink(ShareToken token, {String? baseUrl, Uint8List? linkSecretKey}) {
+    // For public/password links that have linkSecretKey, generate gateway URL
+    if (linkSecretKey != null &&
+        (token.shareType == ShareType.publicLink ||
+         token.shareType == ShareType.passwordProtected)) {
+      final payload = PublicLinkPayload(
+        token: token,
+        linkSecretKey: linkSecretKey,
+        bucket: token.bucket,
+        key: token.pathScope,
+        label: token.label,
+        isPasswordProtected: token.shareType == ShareType.passwordProtected,
+      );
+
+      final gatewayBase = baseUrl ?? kShareGatewayBaseUrl;
+      return '$gatewayBase/view/${token.id}#${payload.encode()}';
+    }
+
+    // For recipient-specific shares, use app deep link
     final encoded = token.encode();
     final base = baseUrl ?? 'fxblox://share';
     return '$base/$encoded';
+  }
+
+  /// Generate share link from OutgoingShare (handles all types)
+  String generateShareLinkFromOutgoing(OutgoingShare share, {String? baseUrl}) {
+    return generateShareLink(
+      share.token,
+      baseUrl: baseUrl,
+      linkSecretKey: share.linkSecretKey,
+    );
   }
 
   /// Parse share token from URL
@@ -295,6 +587,26 @@ class SharingService {
     try {
       // Handle different URL formats
       String encoded;
+
+      // Check for gateway public link format
+      if (url.contains('/view/') && url.contains('#')) {
+        // This is a public/password link - parse the fragment
+        final uri = Uri.parse(url);
+        final fragment = uri.fragment;
+        if (fragment.isNotEmpty) {
+          try {
+            final payload = PublicLinkPayload.decode(fragment);
+            return payload.token;
+          } catch (e) {
+            // Might be password-protected, return null for now
+            debugPrint('Could not parse public link fragment: $e');
+            return null;
+          }
+        }
+        return null;
+      }
+
+      // Handle app deep link format
       if (url.startsWith('fxblox://share/')) {
         encoded = url.substring('fxblox://share/'.length);
       } else if (url.contains('?token=')) {
@@ -304,11 +616,50 @@ class SharingService {
         // Assume it's just the encoded token
         encoded = url;
       }
-      
+
       return ShareToken.decode(encoded);
     } catch (e) {
       debugPrint('Error parsing share link: $e');
       return null;
+    }
+  }
+
+  /// Parse a public link and return the full payload
+  PublicLinkPayload? parsePublicLink(String url) {
+    try {
+      if (!url.contains('#')) return null;
+
+      final uri = Uri.parse(url);
+      final fragment = uri.fragment;
+      if (fragment.isEmpty) return null;
+
+      return PublicLinkPayload.decode(fragment);
+    } catch (e) {
+      debugPrint('Error parsing public link: $e');
+      return null;
+    }
+  }
+
+  /// Check if a URL is a password-protected link
+  bool isPasswordProtectedLink(String url) {
+    try {
+      if (!url.contains('#')) return false;
+
+      final uri = Uri.parse(url);
+      final fragment = uri.fragment;
+      if (fragment.isEmpty) return false;
+
+      // Try to parse the outer wrapper
+      String normalized = fragment;
+      while (normalized.length % 4 != 0) {
+        normalized += '=';
+      }
+      final bytes = base64Url.decode(normalized);
+      final json = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+
+      return json['p'] == true;
+    } catch (e) {
+      return false;
     }
   }
 
