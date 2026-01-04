@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
@@ -23,6 +24,8 @@ import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:fula_files/shared/widgets/thumb_scroll.dart';
+import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
@@ -163,21 +166,21 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _loadMoreFiles() async {
     if (_isLoadingMore || !_hasMore) return;
-    
+
     setState(() => _isLoadingMore = true);
-    
+
     try {
       if (_isCategoryMode) {
         final category = _categoryFromString(widget.category!);
-        
+
         // On iOS, use MediaService for media categories
-        final isMediaCategory = category == FileCategory.images || 
-                                category == FileCategory.videos || 
+        final isMediaCategory = category == FileCategory.images ||
+                                category == FileCategory.videos ||
                                 category == FileCategory.audio;
-        
+
         final List<LocalFile> newFiles;
         final bool hasMore;
-        
+
         if (Platform.isIOS && isMediaCategory) {
           final result = await MediaService.instance.getMediaByCategory(
             category,
@@ -199,16 +202,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           newFiles = result.files;
           hasMore = result.hasMore;
         }
-        
+
+        if (!mounted) return;
+
         setState(() {
           _files.addAll(newFiles);
+          // Also update _combinedFiles which is used for rendering in category mode
+          _combinedFiles.addAll(newFiles.map((f) => _FileListItem.local(f)));
           _currentOffset += newFiles.length;
+          _totalCount = _files.length;
           _hasMore = hasMore;
           _isLoadingMore = false;
         });
       }
     } catch (e) {
-      setState(() => _isLoadingMore = false);
+      debugPrint('Error loading more files: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingMore = false;
+          _hasMore = false; // Stop trying to load more on error
+        });
+      }
     }
   }
 
@@ -947,18 +961,41 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  /// Build ThumbScrollItem list for thumbscroll widget
+  List<ThumbScrollItem> _buildThumbScrollItems() {
+    if (_isCategoryMode) {
+      return _combinedFiles.map((item) => ThumbScrollItem(
+        name: item.name,
+        date: item.sortDate,
+      )).toList();
+    } else {
+      return _files.map((file) => ThumbScrollItem(
+        name: file.name,
+        date: file.modifiedAt,
+      )).toList();
+    }
+  }
+
+  /// Get current sort mode for thumbscroll
+  ThumbScrollSortMode _getThumbScrollSortMode() {
+    return _sortBy == 'name' ? ThumbScrollSortMode.name : ThumbScrollSortMode.date;
+  }
+
   Widget _buildListView() {
-    return RefreshIndicator(
+    final settings = ref.watch(settingsProvider);
+    final thumbScrollItems = _buildThumbScrollItems();
+
+    final listView = RefreshIndicator(
       onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
       child: ListView.builder(
         controller: _scrollController,
         cacheExtent: 500,
-        itemCount: _isCategoryMode 
+        itemCount: _isCategoryMode
             ? _combinedFiles.length + (_hasMore ? 1 : 0)
             : _files.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {
           final itemCount = _isCategoryMode ? _combinedFiles.length : _files.length;
-          
+
           // Loading indicator at bottom
           if (index >= itemCount) {
             return const Padding(
@@ -966,7 +1003,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               child: Center(child: CircularProgressIndicator()),
             );
           }
-          
+
           // Category mode: use combined sorted list
           if (_isCategoryMode) {
             final item = _combinedFiles[index];
@@ -978,7 +1015,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             final isSelected = _selectedFiles.contains(file.path);
             return _buildLocalFileItem(file, syncState, isSelected);
           }
-          
+
           // Folder mode: just local files
           final file = _files[index];
           final syncState = LocalStorageService.instance.getSyncState(file.path);
@@ -987,15 +1024,31 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         },
       ),
     );
+
+    // Wrap with ThumbScroll if enabled and has enough items
+    if (settings.thumbScrollEnabled && thumbScrollItems.length > 20) {
+      return ThumbScroll(
+        controller: _scrollController,
+        items: thumbScrollItems,
+        sortMode: _getThumbScrollSortMode(),
+        ascending: _sortAscending,
+        enabled: true,
+        child: listView,
+      );
+    }
+
+    return listView;
   }
 
   Widget _buildGridView() {
+    final settings = ref.watch(settingsProvider);
+    final thumbScrollItems = _buildThumbScrollItems();
     final crossAxisCount = _viewMode == ViewMode.largeGrid ? 2 : 4;
-    final itemCount = _isCategoryMode 
+    final itemCount = _isCategoryMode
         ? _combinedFiles.length + (_hasMore ? 1 : 0)
         : _files.length + (_hasMore ? 1 : 0);
-    
-    return RefreshIndicator(
+
+    final gridView = RefreshIndicator(
       onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
       child: GridView.builder(
         controller: _scrollController,
@@ -1009,12 +1062,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         itemCount: itemCount,
         itemBuilder: (context, index) {
           final fileCount = _isCategoryMode ? _combinedFiles.length : _files.length;
-          
+
           // Loading indicator at bottom
           if (index >= fileCount) {
             return const Center(child: CircularProgressIndicator());
           }
-          
+
           // Category mode: use combined sorted list
           if (_isCategoryMode) {
             final item = _combinedFiles[index];
@@ -1026,7 +1079,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             final isSelected = _selectedFiles.contains(file.path);
             return _buildGridItem(file, syncState, isSelected);
           }
-          
+
           // Folder mode: just local files
           final file = _files[index];
           final syncState = LocalStorageService.instance.getSyncState(file.path);
@@ -1035,6 +1088,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         },
       ),
     );
+
+    // Wrap with ThumbScroll if enabled and has enough items
+    if (settings.thumbScrollEnabled && thumbScrollItems.length > 20) {
+      return ThumbScroll(
+        controller: _scrollController,
+        items: thumbScrollItems,
+        sortMode: _getThumbScrollSortMode(),
+        ascending: _sortAscending,
+        enabled: true,
+        child: gridView,
+      );
+    }
+
+    return gridView;
   }
 
   Widget _buildGridItem(LocalFile file, SyncState? syncState, bool isSelected) {
@@ -2185,6 +2252,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Widget _buildLocalFileItem(LocalFile file, SyncState? syncState, bool isSelected) {
     final isFolderSynced = file.isDirectory && _isFolderSyncEnabled(file.path);
+    final dateFormatted = _formatFileDate(file.modifiedAt);
+
     return ListTile(
       selected: isSelected,
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
@@ -2193,6 +2262,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       subtitle: Row(
         children: [
           Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
+          Text(
+            ' • $dateFormatted',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
           // Show auto-sync indicator for folders with sync enabled
           if (isFolderSynced) ...[
             const SizedBox(width: 8),
@@ -2208,11 +2283,31 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         icon: const Icon(LucideIcons.moreVertical),
         onPressed: () => _showFileOptions(file),
       ),
-      onTap: _selectionMode 
+      onTap: _selectionMode
           ? () => _toggleSelection(file)
           : () => _navigateTo(file),
       onLongPress: () => _toggleSelection(file),
     );
+  }
+
+  /// Format file date for display
+  String _formatFileDate(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final fileDate = DateTime(date.year, date.month, date.day);
+
+    if (fileDate == today) {
+      return 'Today';
+    } else if (fileDate == yesterday) {
+      return 'Yesterday';
+    } else if (now.difference(date).inDays < 7) {
+      return DateFormat('EEEE').format(date); // Day name (e.g., "Monday")
+    } else if (date.year == now.year) {
+      return DateFormat('MMM d').format(date); // e.g., "Jan 15"
+    } else {
+      return DateFormat('MMM d, y').format(date); // e.g., "Jan 15, 2023"
+    }
   }
 
   Widget _buildSyncStatusIcon(SyncStatus status) {
@@ -2233,6 +2328,10 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Widget _buildCloudOnlyFileItem(FulaObject cloudFile) {
+    final dateFormatted = cloudFile.lastModified != null
+        ? _formatFileDate(cloudFile.lastModified!)
+        : null;
+
     return ListTile(
       leading: Container(
         width: 48,
@@ -2247,6 +2346,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       subtitle: Row(
         children: [
           Text(_formatFileSize(cloudFile.size)),
+          if (dateFormatted != null)
+            Text(
+              ' • $dateFormatted',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
           const SizedBox(width: 8),
           const Icon(LucideIcons.download, size: 14, color: Colors.blue),
           const SizedBox(width: 4),

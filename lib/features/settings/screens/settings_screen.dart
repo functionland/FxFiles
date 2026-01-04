@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -254,6 +255,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           _buildFaceDetectionSection(),
           _buildSection(
+            title: 'Display',
+            children: [
+              SwitchListTile(
+                secondary: const Icon(LucideIcons.scrollText),
+                title: const Text('Fast scroll'),
+                subtitle: const Text('Show scroll indicator with section headers'),
+                value: settings.thumbScrollEnabled,
+                onChanged: (value) {
+                  ref.read(settingsProvider.notifier).setThumbScrollEnabled(value);
+                },
+              ),
+            ],
+          ),
+          _buildSection(
             title: 'Storage',
             children: [
               ListTile(
@@ -267,10 +282,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildSection(
             title: 'About',
             children: [
-              const ListTile(
-                leading: Icon(LucideIcons.info),
-                title: Text('Version'),
-                subtitle: Text('1.1.5'),
+              FutureBuilder<PackageInfo>(
+                future: PackageInfo.fromPlatform(),
+                builder: (context, snapshot) {
+                  final version = snapshot.hasData
+                      ? '${snapshot.data!.version} (${snapshot.data!.buildNumber})'
+                      : 'Loading...';
+                  return ListTile(
+                    leading: const Icon(LucideIcons.info),
+                    title: const Text('Version'),
+                    subtitle: Text(version),
+                  );
+                },
               ),
             ],
           ),

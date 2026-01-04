@@ -359,8 +359,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] Design: Separate the Starred, Cloud, Shared and Playlists categories under a differnet section, named "Featured" below hte Categories section and before "Storage" section (General)
 - [ X ] Bug: Starred files are not showing up in the Starred category. Although it seems hte file is starred but hte starred category remains empty (General)
 - [ X ] Bug: In audio player, the first time you open an audio the visualizer stays in loading (Audio)
-- [ ] Bug: Version in about screen not updating according to latest app version
-- [ ] Add thumbscroll functionality for better navigation. the header tags shown in thumbscroll mode should be according to the sorting. for exmaple in sorting alphanumerically, the headrs become the letters of filenames like A,B,C,... when in date sort mode the tags become the month-year like Jan-2024, Feb-2024, etc. (General)
+- [ X ] Bug: Version in about screen not updating according to latest app version
+- [ X ] Add thumbscroll functionality for better navigation. the header tags shown in thumbscroll mode should be according to the sorting. for exmaple in sorting alphanumerically, the headrs become the letters of filenames like A,B,C,... when in date sort mode the tags become the month-year like Jan-2024, Feb-2024, etc. We should consider all optimizations possible to make it fast and smooth in large folders and in categories and to ensure that the headers are not repeated and updated according to all files in the folder or category without reducing hte performance or making the app laggy. Also it should be a separate module that can be deactivated if user wants (General)
+- [ ] Add folder names in tabs inside each category. default view is All, but user can switch to other tabs in each category like "Images" to see only images in that folder for example "WhatsApp"
 - [ ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of paramtetres are based on the current s3 API doc for encrypted files where we have everyting to decrypt a file in the link and it shows hte link to user (General)
 - [ ] Implement proper error handling for background sync
 - [ ] Add unit tests for all services
