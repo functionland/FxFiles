@@ -36,7 +36,7 @@ class _CreateShareForRecipientDialogState
   final _labelController = TextEditingController();
 
   SharePermissions _permissions = SharePermissions.readOnly;
-  ShareMode _shareMode = ShareMode.temporal;
+  ShareMode _shareMode = ShareMode.snapshot;
   int? _expiryDays = 7;
   bool _isLoading = false;
   String? _error;
@@ -264,7 +264,7 @@ class _CreatePublicLinkDialogState
     extends ConsumerState<CreatePublicLinkDialog> {
   final _labelController = TextEditingController();
 
-  ShareMode _shareMode = ShareMode.temporal;
+  ShareMode _shareMode = ShareMode.snapshot;
   ShareExpiry _expiry = ShareExpiry.oneWeek;
   bool _isLoading = false;
   String? _error;
@@ -452,7 +452,7 @@ class _CreatePasswordLinkDialogState
   final _confirmPasswordController = TextEditingController();
   final _labelController = TextEditingController();
 
-  ShareMode _shareMode = ShareMode.temporal;
+  ShareMode _shareMode = ShareMode.snapshot;
   ShareExpiry _expiry = ShareExpiry.oneWeek;
   bool _isLoading = false;
   bool _obscurePassword = true;
@@ -678,20 +678,24 @@ class _PathDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey[100],
+        color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         children: [
-          const Icon(LucideIcons.folder, size: 20),
+          Icon(LucideIcons.folder, size: 20, color: theme.colorScheme.onSurfaceVariant),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               pathScope,
-              style: const TextStyle(fontWeight: FontWeight.w500),
+              style: TextStyle(
+                fontWeight: FontWeight.w500,
+                color: theme.colorScheme.onSurface,
+              ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -881,22 +885,24 @@ class _ErrorDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final errorColor = theme.colorScheme.error;
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.red[50],
+          color: errorColor.withOpacity(0.1),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
           children: [
-            const Icon(LucideIcons.alertCircle, color: Colors.red, size: 20),
+            Icon(LucideIcons.alertCircle, color: errorColor, size: 20),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 error,
-                style: const TextStyle(color: Colors.red),
+                style: TextStyle(color: errorColor),
               ),
             ),
           ],
