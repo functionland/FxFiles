@@ -1,4 +1,4 @@
-package land.fx.files
+package land.fx.files.dev
 
 import android.app.PictureInPictureParams
 import android.content.Intent

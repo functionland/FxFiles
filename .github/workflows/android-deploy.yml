@@ -50,6 +50,27 @@ jobs:
     - name: Get Dependencies
       run: flutter pub get
 
+    - name: Set Production Package Name
+      run: |
+        echo "Changing package name from land.fx.files.dev to land.fx.files for production..."
+
+        # Update build.gradle.kts
+        sed -i 's/namespace = "land.fx.files.dev"/namespace = "land.fx.files"/' android/app/build.gradle.kts
+        sed -i 's/applicationId = "land.fx.files.dev"/applicationId = "land.fx.files"/' android/app/build.gradle.kts
+
+        # Update MainActivity.kt package declaration
+        sed -i 's/^package land.fx.files.dev$/package land.fx.files/' android/app/src/main/kotlin/land/fx/files/dev/MainActivity.kt
+
+        # Move MainActivity.kt to production package directory
+        mkdir -p android/app/src/main/kotlin/land/fx/files
+        mv android/app/src/main/kotlin/land/fx/files/dev/MainActivity.kt android/app/src/main/kotlin/land/fx/files/
+        rmdir android/app/src/main/kotlin/land/fx/files/dev
+
+        echo "Package name updated to land.fx.files"
+        echo "Verifying changes..."
+        grep -n "namespace\|applicationId" android/app/build.gradle.kts
+        head -1 android/app/src/main/kotlin/land/fx/files/MainActivity.kt
+
     - name: Get Package Version
       run: |
         VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
