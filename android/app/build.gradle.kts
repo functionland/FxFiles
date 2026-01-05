@@ -55,6 +55,14 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Enable R8 code shrinking and resource shrinking
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // ProGuard rules to keep audio_service and just_audio classes
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }

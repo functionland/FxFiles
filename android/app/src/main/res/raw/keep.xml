@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This file tells R8 to keep specific resources that are only referenced
+     by string names in Dart code (not directly in Android XML/Java/Kotlin).
+     Without this, R8 strips these "unused" resources in release builds. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_forward_10,@drawable/ic_replay_10" />
