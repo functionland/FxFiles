@@ -60,6 +60,10 @@ class PlaylistService {
     );
     await _playlistBox.put(playlist.id, playlist);
     debugPrint('Created playlist: ${playlist.name} with ${playlist.trackCount} tracks');
+
+    // Auto-sync to cloud if configured
+    _autoSyncPlaylist(playlist.id);
+
     return playlist;
   }
 
@@ -67,6 +71,23 @@ class PlaylistService {
     playlist.updatedAt = DateTime.now();
     await _playlistBox.put(playlist.id, playlist);
     debugPrint('Updated playlist: ${playlist.name}');
+
+    // Auto-sync to cloud if configured
+    _autoSyncPlaylist(playlist.id);
+  }
+
+  /// Auto-sync playlist to cloud in background (fire and forget)
+  void _autoSyncPlaylist(String playlistId) {
+    if (!FulaApiService.instance.isConfigured) return;
+
+    // Run sync in background, don't wait for it
+    Future(() async {
+      try {
+        await syncPlaylistToCloud(playlistId);
+      } catch (e) {
+        debugPrint('Auto-sync playlist failed: $e');
+      }
+    });
   }
 
   Future<void> deletePlaylist(String id) async {
@@ -92,6 +113,7 @@ class PlaylistService {
       playlist.updatedAt = DateTime.now();
       await _playlistBox.put(id, playlist);
       debugPrint('Renamed playlist to: $newName');
+      _autoSyncPlaylist(id);
     }
   }
 
@@ -101,6 +123,7 @@ class PlaylistService {
       playlist.addTrack(track);
       await _playlistBox.put(playlistId, playlist);
       debugPrint('Added track to playlist: ${track.name}');
+      _autoSyncPlaylist(playlistId);
     }
   }
 
@@ -110,6 +133,7 @@ class PlaylistService {
       playlist.addTracks(tracks);
       await _playlistBox.put(playlistId, playlist);
       debugPrint('Added ${tracks.length} tracks to playlist');
+      _autoSyncPlaylist(playlistId);
     }
   }
 
@@ -119,6 +143,7 @@ class PlaylistService {
       playlist.removeTrackAt(trackIndex);
       await _playlistBox.put(playlistId, playlist);
       debugPrint('Removed track at index $trackIndex from playlist');
+      _autoSyncPlaylist(playlistId);
     }
   }
 
@@ -128,6 +153,7 @@ class PlaylistService {
       playlist.reorderTrack(oldIndex, newIndex);
       await _playlistBox.put(playlistId, playlist);
       debugPrint('Reordered track from $oldIndex to $newIndex');
+      _autoSyncPlaylist(playlistId);
     }
   }
 

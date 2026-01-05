@@ -49,11 +49,25 @@ class SharesNotifier extends Notifier<SharesState> {
 
   Future<void> loadShares() async {
     state = state.copyWith(isLoading: true, error: null);
-    
+
     try {
-      final outgoing = await _sharingService.getOutgoingShares();
+      var outgoing = await _sharingService.getOutgoingShares();
       final accepted = await _sharingService.getValidAcceptedShares();
-      
+
+      // Auto-restore from cloud if local is empty
+      if (outgoing.isEmpty) {
+        try {
+          final cloudShares = await CloudShareStorageService.instance.downloadShares();
+          if (cloudShares.isNotEmpty) {
+            // Merge cloud shares into local
+            await CloudShareStorageService.instance.syncShares(outgoing);
+            outgoing = await _sharingService.getOutgoingShares();
+          }
+        } catch (e) {
+          // Ignore errors - cloud sync is optional
+        }
+      }
+
       state = state.copyWith(
         isLoading: false,
         outgoingShares: outgoing,
@@ -225,10 +239,9 @@ class SharesNotifier extends Notifier<SharesState> {
       final localShares = await _sharingService.getOutgoingShares();
       final mergedShares = await CloudShareStorageService.instance.syncShares(localShares);
 
-      // Update local storage with merged shares if different
+      // Import merged shares if there are new ones from cloud
       if (mergedShares.length != localShares.length) {
-        // There are shares from cloud that aren't local
-        // The SharingService will need a method to import these
+        await _sharingService.importOutgoingShares(mergedShares);
       }
 
       await loadShares();

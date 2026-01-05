@@ -17,6 +17,7 @@ class ShareScreen extends ConsumerStatefulWidget {
 class _ShareScreenState extends ConsumerState<ShareScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  bool _isSyncing = false;
 
   @override
   void initState() {
@@ -28,6 +29,29 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _syncShares() async {
+    setState(() => _isSyncing = true);
+
+    try {
+      await ref.read(sharesProvider.notifier).syncFromCloud();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Shares synced')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSyncing = false);
+      }
+    }
   }
 
   @override
@@ -43,6 +67,17 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
           ],
         ),
         actions: [
+          IconButton(
+            icon: _isSyncing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(LucideIcons.refreshCw),
+            onPressed: _isSyncing ? null : _syncShares,
+            tooltip: 'Sync from cloud',
+          ),
           IconButton(
             icon: const Icon(LucideIcons.qrCode),
             onPressed: _showMyPublicKey,

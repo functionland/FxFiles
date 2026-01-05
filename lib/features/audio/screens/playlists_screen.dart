@@ -26,8 +26,20 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
   Future<void> _loadPlaylists() async {
     await PlaylistService.instance.init();
+    var playlists = PlaylistService.instance.getAllPlaylists();
+
+    // Auto-restore from cloud if local is empty and cloud is configured
+    if (playlists.isEmpty && FulaApiService.instance.isConfigured) {
+      try {
+        await PlaylistService.instance.restorePlaylistsFromCloud();
+        playlists = PlaylistService.instance.getAllPlaylists();
+      } catch (e) {
+        debugPrint('Auto-restore playlists from cloud failed: $e');
+      }
+    }
+
     setState(() {
-      _playlists = PlaylistService.instance.getAllPlaylists();
+      _playlists = playlists;
       _isLoading = false;
     });
   }
