@@ -2092,50 +2092,25 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void _showShareDisabledInfo(bool isLoggedIn) {
     if (!mounted) return;
 
+    // Clear any existing snackbars first
+    ScaffoldMessenger.of(context).clearSnackBars();
+
     if (!isLoggedIn) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please sign in to share files.'),
           backgroundColor: Colors.orange,
+          duration: Duration(seconds: 5),
         ),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Please upload the file to cloud first before sharing.'),
+        const SnackBar(
+          content: Text('Please upload the file to cloud first before sharing.'),
           backgroundColor: Colors.orange,
-          action: SnackBarAction(
-            label: 'Learn more',
-            textColor: Colors.white,
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Row(
-                    children: [
-                      Icon(LucideIcons.info, color: Colors.blue),
-                      SizedBox(width: 8),
-                      Text('Sharing Requires Cloud Upload'),
-                    ],
-                  ),
-                  content: const Text(
-                    'To share a file, it must first be uploaded to the cloud.\n\n'
-                    'You can upload files by:\n'
-                    '• Long-pressing a file and selecting "Upload to Cloud"\n'
-                    '• Selecting files and tapping the upload icon in the toolbar\n'
-                    '• Enabling Auto-Sync for a folder\n\n'
-                    'Once uploaded, you can create share links for others to access your files securely.',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Got it'),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
+          duration: Duration(seconds: 5),
+          showCloseIcon: true,
+          closeIconColor: Colors.white,
         ),
       );
     }

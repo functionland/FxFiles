@@ -306,30 +306,6 @@ class _ThumbScrollState extends State<ThumbScroll>
     _scheduleHide();
   }
 
-  /// Handle tap on the track to jump to position
-  void _onTrackTap(TapUpDetails details) {
-    if (!widget.controller.hasClients) return;
-
-    final renderBox = context.findRenderObject() as RenderBox;
-    final height = renderBox.size.height;
-    final thumbTrackHeight = height - _kThumbHeight - _kTrackPadding * 2;
-
-    if (thumbTrackHeight <= 0) return;
-
-    final localY = details.localPosition.dy - _kTrackPadding - _kThumbHeight / 2;
-    final fraction = (localY / thumbTrackHeight).clamp(0.0, 1.0);
-
-    final newScrollPosition = fraction * _maxScrollExtent;
-    widget.controller.animateTo(
-      newScrollPosition.clamp(0.0, _maxScrollExtent),
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
-    );
-
-    _showThumb();
-    _scheduleHide();
-  }
-
   // Constants
   static const double _kThumbWidth = 56.0;
   static const double _kThumbHeight = 52.0;
@@ -360,79 +336,78 @@ class _ThumbScrollState extends State<ThumbScroll>
             bottom: 0,
             child: FadeTransition(
               opacity: _fadeAnimation,
-              child: GestureDetector(
-                onTapUp: _onTrackTap,
-                onVerticalDragStart: _onVerticalDragStart,
-                onVerticalDragUpdate: _onVerticalDragUpdate,
-                onVerticalDragEnd: _onVerticalDragEnd,
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  width: _kTrackWidth + _kHeaderBubbleWidth,
-                  padding: const EdgeInsets.symmetric(vertical: _kTrackPadding),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final trackHeight = constraints.maxHeight - _kThumbHeight;
-                      final thumbTop = trackHeight * _thumbPosition;
+              child: Container(
+                width: _kTrackWidth + _kHeaderBubbleWidth,
+                padding: const EdgeInsets.symmetric(vertical: _kTrackPadding),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final trackHeight = constraints.maxHeight - _kThumbHeight;
+                    final thumbTop = trackHeight * _thumbPosition;
 
-                      return Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          // Track background
+                    return Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        // Track background (not interactive)
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: _kTrackWidth,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surfaceContainerHighest
+                                  .withOpacity(0.3),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        ),
+
+                        // Section header bubble (shows when dragging)
+                        if (_isDragging && _currentSection.isNotEmpty)
                           Positioned(
-                            right: 0,
-                            top: 0,
-                            bottom: 0,
-                            width: _kTrackWidth,
+                            right: _kTrackWidth,
+                            top: thumbTop,
                             child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 8),
+                              height: _kThumbHeight,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.surfaceContainerHighest
-                                    .withOpacity(0.3),
-                                borderRadius: BorderRadius.circular(4),
+                                color: thumbColor.withOpacity(0.95),
+                                borderRadius: const BorderRadius.horizontal(
+                                  left: Radius.circular(24),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black26,
+                                    blurRadius: 8,
+                                    offset: const Offset(-2, 2),
+                                  ),
+                                ],
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                _currentSection,
+                                style: TextStyle(
+                                  color: headerTextColor,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
                           ),
 
-                          // Section header bubble (shows when dragging)
-                          if (_isDragging && _currentSection.isNotEmpty)
-                            Positioned(
-                              right: _kTrackWidth,
-                              top: thumbTop,
-                              child: Container(
-                                height: _kThumbHeight,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: thumbColor.withOpacity(0.95),
-                                  borderRadius: const BorderRadius.horizontal(
-                                    left: Radius.circular(24),
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black26,
-                                      blurRadius: 8,
-                                      offset: const Offset(-2, 2),
-                                    ),
-                                  ],
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  _currentSection,
-                                  style: TextStyle(
-                                    color: headerTextColor,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ),
-                            ),
-
-                          // Thumb indicator
-                          Positioned(
-                            right: 4,
-                            top: thumbTop,
+                        // Thumb indicator (only this is draggable)
+                        Positioned(
+                          right: 4,
+                          top: thumbTop,
+                          child: GestureDetector(
+                            onVerticalDragStart: _onVerticalDragStart,
+                            onVerticalDragUpdate: _onVerticalDragUpdate,
+                            onVerticalDragEnd: _onVerticalDragEnd,
+                            behavior: HitTestBehavior.opaque,
                             child: Container(
                               width: _kTrackWidth - 8,
                               height: _kThumbHeight,
@@ -462,10 +437,10 @@ class _ThumbScrollState extends State<ThumbScroll>
                               ),
                             ),
                           ),
-                        ],
-                      );
-                    },
-                  ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
