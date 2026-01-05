@@ -489,12 +489,17 @@ class OutgoingShare {
   /// Used to verify the password on the gateway
   final Uint8List? passwordSalt;
 
+  /// Encrypted URL fragment for password-protected links
+  /// Stored so we can regenerate the exact same URL without the password
+  final String? encryptedFragment;
+
   OutgoingShare({
     required this.token,
     required this.recipientName,
     DateTime? sharedAt,
     this.linkSecretKey,
     this.passwordSalt,
+    this.encryptedFragment,
   }) : sharedAt = sharedAt ?? DateTime.now();
 
   /// Share ID
@@ -534,6 +539,7 @@ class OutgoingShare {
     'sharedAt': sharedAt.toIso8601String(),
     if (linkSecretKey != null) 'linkSecretKey': base64Encode(linkSecretKey!),
     if (passwordSalt != null) 'passwordSalt': base64Encode(passwordSalt!),
+    if (encryptedFragment != null) 'encryptedFragment': encryptedFragment,
   };
 
   /// Create from JSON
@@ -547,6 +553,7 @@ class OutgoingShare {
     passwordSalt: json['passwordSalt'] != null
         ? base64Decode(json['passwordSalt'] as String)
         : null,
+    encryptedFragment: json['encryptedFragment'] as String?,
   );
 }
 

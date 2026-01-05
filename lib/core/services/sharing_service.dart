@@ -295,12 +295,13 @@ class SharingService {
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     final url = '$baseUrl/view/${token.id}#$fragment';
 
-    // Save outgoing share
+    // Save outgoing share with the encrypted fragment for regeneration
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Password Protected',
       linkSecretKey: linkKeyPair.privateKey,
       passwordSalt: salt,
+      encryptedFragment: fragment, // Store to regenerate same URL later
     );
     await _saveOutgoingShare(outgoingShare);
 
@@ -362,16 +363,24 @@ class SharingService {
       throw SharingException('Not a public link share');
     }
 
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+
+    // For password-protected links, use the stored encrypted fragment
+    // This ensures we regenerate the exact same URL that was originally created
+    if (share.shareType == ShareType.passwordProtected && share.encryptedFragment != null) {
+      return '$baseUrl/view/${share.token.id}#${share.encryptedFragment}';
+    }
+
+    // For regular public links, encode the payload normally
     final payload = PublicLinkPayload(
       token: share.token,
       linkSecretKey: share.linkSecretKey!,
       bucket: share.bucket,
       key: share.pathScope,
       label: share.token.label,
-      isPasswordProtected: share.shareType == ShareType.passwordProtected,
+      isPasswordProtected: false,
     );
 
-    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     return '$baseUrl/view/${share.token.id}#${payload.encode()}';
   }
 
@@ -549,21 +558,28 @@ class SharingService {
   /// For recipient-specific shares: fxblox://share/{encoded_token}
   /// For public links: Already generated with createPublicLink()
   /// For password links: Already generated with createPasswordProtectedLink()
-  String generateShareLink(ShareToken token, {String? baseUrl, Uint8List? linkSecretKey}) {
-    // For public/password links that have linkSecretKey, generate gateway URL
-    if (linkSecretKey != null &&
-        (token.shareType == ShareType.publicLink ||
-         token.shareType == ShareType.passwordProtected)) {
+  ///
+  /// NOTE: For password-protected links, use generateShareLinkFromOutgoing() instead
+  /// as it can use the stored encrypted fragment.
+  String generateShareLink(ShareToken token, {String? baseUrl, Uint8List? linkSecretKey, String? encryptedFragment}) {
+    final gatewayBase = baseUrl ?? kShareGatewayBaseUrl;
+
+    // For password-protected links with stored encrypted fragment, use it directly
+    if (token.shareType == ShareType.passwordProtected && encryptedFragment != null) {
+      return '$gatewayBase/view/${token.id}#$encryptedFragment';
+    }
+
+    // For public links that have linkSecretKey, generate gateway URL
+    if (linkSecretKey != null && token.shareType == ShareType.publicLink) {
       final payload = PublicLinkPayload(
         token: token,
         linkSecretKey: linkSecretKey,
         bucket: token.bucket,
         key: token.pathScope,
         label: token.label,
-        isPasswordProtected: token.shareType == ShareType.passwordProtected,
+        isPasswordProtected: false,
       );
 
-      final gatewayBase = baseUrl ?? kShareGatewayBaseUrl;
       return '$gatewayBase/view/${token.id}#${payload.encode()}';
     }
 
@@ -579,6 +595,7 @@ class SharingService {
       share.token,
       baseUrl: baseUrl,
       linkSecretKey: share.linkSecretKey,
+      encryptedFragment: share.encryptedFragment,
     );
   }
 
