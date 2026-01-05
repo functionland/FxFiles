@@ -4,6 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/core/models/sync_state.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 
 /// Dialog for creating a share link for a specific recipient
@@ -13,6 +16,7 @@ class CreateShareForRecipientDialog extends ConsumerStatefulWidget {
   final Uint8List dek;
   final String? fileName;
   final String? contentType;
+  final String? localPath; // Local file path to fetch CID from SyncState
 
   const CreateShareForRecipientDialog({
     super.key,
@@ -21,6 +25,7 @@ class CreateShareForRecipientDialog extends ConsumerStatefulWidget {
     required this.dek,
     this.fileName,
     this.contentType,
+    this.localPath,
   });
 
   @override
@@ -191,6 +196,49 @@ class _CreateShareForRecipientDialogState
     );
   }
 
+  /// Check if a string is a valid IPFS CID
+  /// CIDv1: bafy... (dag-pb), bafk... (raw), bafz... (dag-cbor), etc.
+  /// CIDv0: Qm... (base58)
+  bool _isValidCid(String value) {
+    // CIDv1 base32: starts with 'baf' and is typically 50+ chars
+    if (value.startsWith('baf') && value.length >= 50) {
+      return true;
+    }
+    // CIDv0 base58: starts with 'Qm' and is 46 chars
+    if (value.startsWith('Qm') && value.length == 46) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Get CID from SyncState (ETag contains CID after gateway update)
+  Future<String?> _getCidForFile() async {
+    if (widget.localPath == null) return null;
+
+    final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
+    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+
+    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
+    final etag = syncState.etag;
+    if (etag != null && _isValidCid(etag)) {
+      return etag;
+    }
+
+    // Fallback: fetch from API if local etag doesn't have CID
+    if (syncState.bucket != null && syncState.remotePath != null) {
+      try {
+        final metadata = await FulaApiService.instance.getObjectMetadata(
+          syncState.bucket!,
+          syncState.remotePath!,
+        );
+        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+          return metadata.etag;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> _createShare() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -201,6 +249,23 @@ class _CreateShareForRecipientDialogState
 
     try {
       final notifier = ref.read(sharesProvider.notifier);
+
+      // Get CID for SnapshotBinding (needed for both modes to embed in URL)
+      final cid = await _getCidForFile();
+      final syncState = widget.localPath != null
+          ? LocalStorageService.instance.getSyncState(widget.localPath!)
+          : null;
+
+      SnapshotBinding? snapshotBinding;
+      if (cid != null && syncState != null) {
+        snapshotBinding = SnapshotBinding(
+          contentHash: syncState.etag ?? cid,
+          size: syncState.localSize ?? 0,
+          modifiedAt: syncState.lastSyncedAt?.millisecondsSinceEpoch ??
+              DateTime.now().millisecondsSinceEpoch,
+          storageKey: cid, // IPFS CID for gateway to fetch
+        );
+      }
 
       final token = await notifier.createShare(
         pathScope: widget.pathScope,
@@ -214,6 +279,7 @@ class _CreateShareForRecipientDialogState
             ? _labelController.text.trim()
             : null,
         shareMode: _shareMode,
+        snapshotBinding: snapshotBinding,
         fileName: widget.fileName,
         contentType: widget.contentType,
       );
@@ -245,6 +311,7 @@ class CreatePublicLinkDialog extends ConsumerStatefulWidget {
   final Uint8List dek;
   final String? fileName;
   final String? contentType;
+  final String? localPath; // Local file path to fetch CID from SyncState
 
   const CreatePublicLinkDialog({
     super.key,
@@ -253,6 +320,7 @@ class CreatePublicLinkDialog extends ConsumerStatefulWidget {
     required this.dek,
     this.fileName,
     this.contentType,
+    this.localPath,
   });
 
   @override
@@ -381,6 +449,47 @@ class _CreatePublicLinkDialogState
     );
   }
 
+  /// Check if a string is a valid IPFS CID
+  bool _isValidCid(String value) {
+    // CIDv1 base32: starts with 'baf' (bafy, bafk, bafz, etc.) and is typically 50+ chars
+    if (value.startsWith('baf') && value.length >= 50) {
+      return true;
+    }
+    // CIDv0 base58: starts with 'Qm' and is 46 chars
+    if (value.startsWith('Qm') && value.length == 46) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Get CID from SyncState (ETag contains CID after gateway update)
+  Future<String?> _getCidForFile() async {
+    if (widget.localPath == null) return null;
+
+    final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
+    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+
+    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
+    final etag = syncState.etag;
+    if (etag != null && _isValidCid(etag)) {
+      return etag;
+    }
+
+    // Fallback: fetch from API if local etag doesn't have CID
+    if (syncState.bucket != null && syncState.remotePath != null) {
+      try {
+        final metadata = await FulaApiService.instance.getObjectMetadata(
+          syncState.bucket!,
+          syncState.remotePath!,
+        );
+        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+          return metadata.etag;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> _createLink() async {
     setState(() {
       _isLoading = true;
@@ -389,6 +498,23 @@ class _CreatePublicLinkDialogState
 
     try {
       final notifier = ref.read(sharesProvider.notifier);
+
+      // Get CID for SnapshotBinding (needed for both modes to embed in URL)
+      final cid = await _getCidForFile();
+      final syncState = widget.localPath != null
+          ? LocalStorageService.instance.getSyncState(widget.localPath!)
+          : null;
+
+      SnapshotBinding? snapshotBinding;
+      if (cid != null && syncState != null) {
+        snapshotBinding = SnapshotBinding(
+          contentHash: syncState.etag ?? cid,
+          size: syncState.localSize ?? 0,
+          modifiedAt: syncState.lastSyncedAt?.millisecondsSinceEpoch ??
+              DateTime.now().millisecondsSinceEpoch,
+          storageKey: cid, // IPFS CID for gateway to fetch
+        );
+      }
 
       final result = await notifier.createPublicLink(
         pathScope: widget.pathScope,
@@ -399,6 +525,7 @@ class _CreatePublicLinkDialogState
             ? _labelController.text.trim()
             : null,
         shareMode: _shareMode,
+        snapshotBinding: snapshotBinding,
         fileName: widget.fileName,
         contentType: widget.contentType,
       );
@@ -430,6 +557,7 @@ class CreatePasswordLinkDialog extends ConsumerStatefulWidget {
   final Uint8List dek;
   final String? fileName;
   final String? contentType;
+  final String? localPath; // Local file path to fetch CID from SyncState
 
   const CreatePasswordLinkDialog({
     super.key,
@@ -438,6 +566,7 @@ class CreatePasswordLinkDialog extends ConsumerStatefulWidget {
     required this.dek,
     this.fileName,
     this.contentType,
+    this.localPath,
   });
 
   @override
@@ -622,6 +751,47 @@ class _CreatePasswordLinkDialogState
     );
   }
 
+  /// Check if a string is a valid IPFS CID
+  bool _isValidCid(String value) {
+    // CIDv1 base32: starts with 'baf' (bafy, bafk, bafz, etc.) and is typically 50+ chars
+    if (value.startsWith('baf') && value.length >= 50) {
+      return true;
+    }
+    // CIDv0 base58: starts with 'Qm' and is 46 chars
+    if (value.startsWith('Qm') && value.length == 46) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Get CID from SyncState (ETag contains CID after gateway update)
+  Future<String?> _getCidForFile() async {
+    if (widget.localPath == null) return null;
+
+    final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
+    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+
+    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
+    final etag = syncState.etag;
+    if (etag != null && _isValidCid(etag)) {
+      return etag;
+    }
+
+    // Fallback: fetch from API if local etag doesn't have CID
+    if (syncState.bucket != null && syncState.remotePath != null) {
+      try {
+        final metadata = await FulaApiService.instance.getObjectMetadata(
+          syncState.bucket!,
+          syncState.remotePath!,
+        );
+        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+          return metadata.etag;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> _createLink() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -633,6 +803,23 @@ class _CreatePasswordLinkDialogState
     try {
       final notifier = ref.read(sharesProvider.notifier);
 
+      // Get CID for SnapshotBinding (needed for both modes to embed in URL)
+      final cid = await _getCidForFile();
+      final syncState = widget.localPath != null
+          ? LocalStorageService.instance.getSyncState(widget.localPath!)
+          : null;
+
+      SnapshotBinding? snapshotBinding;
+      if (cid != null && syncState != null) {
+        snapshotBinding = SnapshotBinding(
+          contentHash: syncState.etag ?? cid,
+          size: syncState.localSize ?? 0,
+          modifiedAt: syncState.lastSyncedAt?.millisecondsSinceEpoch ??
+              DateTime.now().millisecondsSinceEpoch,
+          storageKey: cid, // IPFS CID for gateway to fetch
+        );
+      }
+
       final result = await notifier.createPasswordProtectedLink(
         pathScope: widget.pathScope,
         bucket: widget.bucket,
@@ -643,6 +830,7 @@ class _CreatePasswordLinkDialogState
             ? _labelController.text.trim()
             : null,
         shareMode: _shareMode,
+        snapshotBinding: snapshotBinding,
         fileName: widget.fileName,
         contentType: widget.contentType,
       );
@@ -924,6 +1112,7 @@ Future<ShareToken?> showCreateShareForRecipientDialog({
   required Uint8List dek,
   String? fileName,
   String? contentType,
+  String? localPath,
 }) async {
   return showDialog<ShareToken>(
     context: context,
@@ -933,6 +1122,7 @@ Future<ShareToken?> showCreateShareForRecipientDialog({
       dek: dek,
       fileName: fileName,
       contentType: contentType,
+      localPath: localPath,
     ),
   );
 }
@@ -945,6 +1135,7 @@ Future<GeneratedShareLink?> showCreatePublicLinkDialog({
   required Uint8List dek,
   String? fileName,
   String? contentType,
+  String? localPath,
 }) async {
   return showDialog<GeneratedShareLink>(
     context: context,
@@ -954,6 +1145,7 @@ Future<GeneratedShareLink?> showCreatePublicLinkDialog({
       dek: dek,
       fileName: fileName,
       contentType: contentType,
+      localPath: localPath,
     ),
   );
 }
@@ -966,6 +1158,7 @@ Future<GeneratedShareLink?> showCreatePasswordLinkDialog({
   required Uint8List dek,
   String? fileName,
   String? contentType,
+  String? localPath,
 }) async {
   return showDialog<GeneratedShareLink>(
     context: context,
@@ -975,6 +1168,7 @@ Future<GeneratedShareLink?> showCreatePasswordLinkDialog({
       dek: dek,
       fileName: fileName,
       contentType: contentType,
+      localPath: localPath,
     ),
   );
 }

@@ -1550,34 +1550,59 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   _showFolderSyncOptions(file);
                 },
               ),
-            // Share options
-            ListTile(
-              leading: Icon(LucideIcons.link, color: isLoggedIn ? Colors.blue : Colors.grey),
-              title: Text('Create Link', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
-              subtitle: Text(isLoggedIn ? 'Anyone with link can view' : 'Sign in required', style: const TextStyle(fontSize: 12)),
-              onTap: isLoggedIn ? () {
-                Navigator.pop(ctx);
-                _createPublicLink(file);
-              } : null,
-            ),
-            ListTile(
-              leading: Icon(LucideIcons.lock, color: isLoggedIn ? Colors.orange : Colors.grey),
-              title: Text('Create Link with Password', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
-              subtitle: Text(isLoggedIn ? 'Requires password to view' : 'Sign in required', style: const TextStyle(fontSize: 12)),
-              onTap: isLoggedIn ? () {
-                Navigator.pop(ctx);
-                _createPasswordLink(file);
-              } : null,
-            ),
-            ListTile(
-              leading: Icon(LucideIcons.userPlus, color: isLoggedIn ? Colors.green : Colors.grey),
-              title: Text('Create Link For...', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
-              subtitle: Text(isLoggedIn ? 'Share with specific recipient' : 'Sign in required', style: const TextStyle(fontSize: 12)),
-              onTap: isLoggedIn ? () {
-                Navigator.pop(ctx);
-                _createShareForRecipient(file);
-              } : null,
-            ),
+            // Share options - require file to be synced to cloud
+            Builder(builder: (context) {
+              final syncState = LocalStorageService.instance.getSyncState(file.path);
+              final isFileSynced = syncState != null && syncState.status == SyncStatus.synced;
+              final canShare = isLoggedIn && isFileSynced;
+              final shareDisabledReason = !isLoggedIn
+                  ? 'Sign in required'
+                  : !isFileSynced
+                      ? 'Upload to cloud first'
+                      : '';
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: Icon(LucideIcons.link, color: canShare ? Colors.blue : Colors.grey),
+                    title: Text('Create Link', style: TextStyle(color: canShare ? null : Colors.grey)),
+                    subtitle: Text(canShare ? 'Anyone with link can view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                    onTap: canShare ? () {
+                      Navigator.pop(ctx);
+                      _createPublicLink(file);
+                    } : () {
+                      Navigator.pop(ctx);
+                      _showShareDisabledInfo(isLoggedIn);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(LucideIcons.lock, color: canShare ? Colors.orange : Colors.grey),
+                    title: Text('Create Link with Password', style: TextStyle(color: canShare ? null : Colors.grey)),
+                    subtitle: Text(canShare ? 'Requires password to view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                    onTap: canShare ? () {
+                      Navigator.pop(ctx);
+                      _createPasswordLink(file);
+                    } : () {
+                      Navigator.pop(ctx);
+                      _showShareDisabledInfo(isLoggedIn);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(LucideIcons.userPlus, color: canShare ? Colors.green : Colors.grey),
+                    title: Text('Create Link For...', style: TextStyle(color: canShare ? null : Colors.grey)),
+                    subtitle: Text(canShare ? 'Share with specific recipient' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                    onTap: canShare ? () {
+                      Navigator.pop(ctx);
+                      _createShareForRecipient(file);
+                    } : () {
+                      Navigator.pop(ctx);
+                      _showShareDisabledInfo(isLoggedIn);
+                    },
+                  ),
+                ],
+              );
+            }),
             const Divider(height: 1),
             // Archive actions - only for archive files
             if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
@@ -2063,6 +2088,59 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   // SHARING
   // ============================================================================
 
+  /// Show info message when share is disabled
+  void _showShareDisabledInfo(bool isLoggedIn) {
+    if (!mounted) return;
+
+    if (!isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to share files.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Please upload the file to cloud first before sharing.'),
+          backgroundColor: Colors.orange,
+          action: SnackBarAction(
+            label: 'Learn more',
+            textColor: Colors.white,
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Row(
+                    children: [
+                      Icon(LucideIcons.info, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Text('Sharing Requires Cloud Upload'),
+                    ],
+                  ),
+                  content: const Text(
+                    'To share a file, it must first be uploaded to the cloud.\n\n'
+                    'You can upload files by:\n'
+                    '• Long-pressing a file and selecting "Upload to Cloud"\n'
+                    '• Selecting files and tapping the upload icon in the toolbar\n'
+                    '• Enabling Auto-Sync for a folder\n\n'
+                    'Once uploaded, you can create share links for others to access your files securely.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Got it'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      );
+    }
+  }
+
   /// Create a public link (anyone with link can access)
   Future<void> _createPublicLink(LocalFile file) async {
     final dek = await AuthService.instance.getEncryptionKey();
@@ -2091,6 +2169,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       dek: dek,
       fileName: file.name,
       contentType: _getContentType(file),
+      localPath: file.path,
     );
 
     if (result != null && mounted) {
@@ -2126,6 +2205,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       dek: dek,
       fileName: file.name,
       contentType: _getContentType(file),
+      localPath: file.path,
     );
 
     if (result != null && mounted) {
@@ -2161,6 +2241,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       dek: dek,
       fileName: file.name,
       contentType: _getContentType(file),
+      localPath: file.path,
     );
 
     if (token != null && mounted) {
