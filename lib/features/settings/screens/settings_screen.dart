@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
+import 'package:fula_files/features/billing/screens/billing_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -24,8 +25,9 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _apiGatewayController = TextEditingController();
   final _ipfsServerController = TextEditingController();
+  final _billingServerController = TextEditingController();
   final _jwtTokenController = TextEditingController();
-  
+
   bool _isEditingApi = false;
   bool _isLoading = false;
 
@@ -37,15 +39,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
   static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
+  static const String _defaultBillingServer = 'https://cloud.fx.land';
 
   Future<void> _loadSettings() async {
     final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
     final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
+    final billingServer = await SecureStorageService.instance.read(SecureStorageKeys.billingServerUrl);
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
 
     setState(() {
       _apiGatewayController.text = apiGateway ?? _defaultApiGateway;
       _ipfsServerController.text = ipfsServer ?? _defaultIpfsServer;
+      _billingServerController.text = billingServer ?? _defaultBillingServer;
       _jwtTokenController.text = jwtToken ?? '';
     });
   }
@@ -54,6 +59,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void dispose() {
     _apiGatewayController.dispose();
     _ipfsServerController.dispose();
+    _billingServerController.dispose();
     _jwtTokenController.dispose();
     super.dispose();
   }
@@ -133,11 +139,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
                 ListTile(
                   leading: const Icon(LucideIcons.globe),
-                  title: const Text('IPFS Server'),
+                  title: const Text('IPFS Pinning Server'),
                   subtitle: Text(
-                    _ipfsServerController.text.isEmpty 
-                        ? 'Not configured' 
+                    _ipfsServerController.text.isEmpty
+                        ? 'Not configured'
                         : _ipfsServerController.text,
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(LucideIcons.wallet),
+                  title: const Text('Billing Server'),
+                  subtitle: Text(
+                    _billingServerController.text.isEmpty
+                        ? 'Not configured'
+                        : _billingServerController.text,
                   ),
                 ),
                 ListTile(
@@ -167,9 +182,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       TextField(
                         controller: _ipfsServerController,
                         decoration: const InputDecoration(
-                          labelText: 'IPFS Server URL',
+                          labelText: 'IPFS Pinning Server URL',
                           hintText: 'https://ipfs.gateway.cloud.fx.land',
                           prefixIcon: Icon(LucideIcons.globe),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _billingServerController,
+                        decoration: const InputDecoration(
+                          labelText: 'Billing Server URL',
+                          hintText: 'https://cloud.fx.land',
+                          prefixIcon: Icon(LucideIcons.wallet),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -232,12 +256,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ListTile(
                 leading: const Icon(LucideIcons.user),
                 title: Text(
-                  AuthService.instance.currentUser?.displayName ?? 
-                  AuthService.instance.currentUser?.email ?? 
+                  AuthService.instance.currentUser?.displayName ??
+                  AuthService.instance.currentUser?.email ??
                   'Not signed in',
                 ),
                 subtitle: Text(
-                  AuthService.instance.isAuthenticated 
+                  AuthService.instance.isAuthenticated
                       ? 'Signed in with ${AuthService.instance.currentUser?.provider.name}'
                       : 'Sign in to enable sync',
                 ),
@@ -250,6 +274,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         onPressed: () => _showSignInDialog(),
                         child: const Text('Sign In'),
                       ),
+              ),
+            ],
+          ),
+          _buildSection(
+            title: 'Billing',
+            children: [
+              ListTile(
+                leading: const Icon(LucideIcons.wallet),
+                title: const Text('Credits & Wallets'),
+                subtitle: const Text('Manage storage credits and linked wallets'),
+                trailing: const Icon(LucideIcons.chevronRight),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BillingScreen()),
+                  );
+                },
               ),
             ],
           ),
@@ -550,6 +591,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await SecureStorageService.instance.write(
         SecureStorageKeys.ipfsServerUrl,
         _ipfsServerController.text,
+      );
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.billingServerUrl,
+        _billingServerController.text,
       );
       await SecureStorageService.instance.write(
         SecureStorageKeys.jwtToken,

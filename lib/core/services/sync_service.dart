@@ -5,6 +5,7 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/storage_refresh_service.dart';
 
 // Top-level function for isolate - reads file bytes
 Future<Uint8List> _readFileInIsolate(String path) async {
@@ -208,7 +209,7 @@ class SyncService {
       }
 
       debugPrint('Upload completed: ${task.remoteKey}, etag: $etag');
-      
+
       if (state != null) {
         await LocalStorageService.instance.addSyncState(
           state.copyWith(
@@ -219,6 +220,9 @@ class SyncService {
           ),
         );
         _notifyListeners(task.localPath, SyncStatus.synced);
+
+        // Request storage refresh after upload (with 10s debounce)
+        StorageRefreshService.instance.requestRefresh();
       }
 
       _activeSync.remove(task.localPath);

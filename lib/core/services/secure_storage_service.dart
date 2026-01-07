@@ -69,6 +69,7 @@ class SecureStorageKeys {
 
   static const String apiGatewayUrl = 'api_gateway_url';
   static const String ipfsServerUrl = 'ipfs_server_url';
+  static const String billingServerUrl = 'billing_server_url';
   static const String jwtToken = 'jwt_token';
   static const String encryptionKey = 'encryption_key';
   static const String userCredentials = 'user_credentials';

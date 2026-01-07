@@ -1,7 +1,7 @@
-name: fula_files
+name: fxfiles
 description: FxFiles - A minimalistic file manager with Fula decentralized storage backup support.
 publish_to: 'none'
-version: 1.1.10+497
+version: 1.2.0+498
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -91,11 +91,19 @@ dependencies:
   # Deep Links
   app_links: ^6.4.0
 
+  # Wallet/Web3
+  reown_appkit: ^1.6.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
+
+# Temporary override until reown_appkit supports flutter_secure_storage 10.x
+# Monitor: https://github.com/reown-com/reown_flutter/issues
+dependency_overrides:
+  flutter_secure_storage: ^10.0.0
 
 flutter_launcher_icons:
   android: true

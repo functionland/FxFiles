@@ -100,5 +100,22 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- WalletConnect queries for wallet apps -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="wc"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="metamask"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="trust"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="rainbow"/>
+        </intent>
     </queries>
 </manifest>

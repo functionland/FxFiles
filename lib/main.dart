@@ -12,6 +12,8 @@ import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/services/video_thumbnail_service.dart';
 import 'package:fula_files/core/services/pip_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
+import 'package:fula_files/core/services/storage_refresh_service.dart';
+import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,14 +56,28 @@ void main() async {
       pinningService: ipfsServer,
       pinningToken: jwtToken,
     );
-    
+
     // Schedule periodic background sync
     await BackgroundSyncService.instance.schedulePeriodicSync();
   }
 
+  // Create provider container for service initialization
+  final container = ProviderContainer();
+
+  // Initialize storage refresh service with container
+  StorageRefreshService.instance.initialize(container);
+
+  // If JWT is available, trigger initial storage load (non-blocking)
+  if (jwtToken != null && jwtToken.isNotEmpty) {
+    Future.microtask(() {
+      container.read(storageProvider.notifier).loadStorageInfo();
+    });
+  }
+
   runApp(
-    const ProviderScope(
-      child: FulaFilesApp(),
+    UncontrolledProviderScope(
+      container: container,
+      child: const FulaFilesApp(),
     ),
   );
 }
