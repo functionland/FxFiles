@@ -234,7 +234,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         steps.add(_SetupStep(
           icon: LucideIcons.wallet,
           title: 'Link your wallet',
-          subtitle: 'Optional: Enable credit purchases',
+          subtitle: 'Optional: Enable getting storage credits',
           action: _isLinkingWallet ? 'Linking...' : 'Link',
           onTap: _isLinkingWallet ? null : () => _linkWallet(),
           onCancel: _isLinkingWallet ? () => _cancelLinkingWallet() : null,

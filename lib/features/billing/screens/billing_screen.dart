@@ -100,7 +100,7 @@ class _BillingScreenState extends ConsumerState<BillingScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  'Link a wallet to purchase credits',
+                                  'Link a wallet to get storage credits',
                                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                                       ),
