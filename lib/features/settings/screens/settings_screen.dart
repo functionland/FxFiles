@@ -14,6 +14,7 @@ import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
+import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -668,6 +669,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _signOut() async {
     await AuthService.instance.signOut();
+    ref.read(storageProvider.notifier).clear();
     setState(() {});
   }
 

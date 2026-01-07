@@ -102,12 +102,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final isLoggedIn = AuthService.instance.isAuthenticated;
     final user = AuthService.instance.currentUser;
-    final needsSetup = !_isLoadingJwt && (!isLoggedIn || (_jwtToken == null || _jwtToken!.isEmpty));
-    final isFullySetup = isLoggedIn && _jwtToken != null && _jwtToken!.isNotEmpty;
 
     // Watch storage provider for wallet and storage info
     final storageState = ref.watch(storageProvider);
-    final showLowStorageWarning = isFullySetup &&
+
+    // Check if any setup step is incomplete
+    final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
+    final hasWallet = storageState.wallets.isNotEmpty;
+
+    // Show setup banner if any step is incomplete (and we're done loading)
+    final needsSetup = !_isLoadingJwt && (
+      !isLoggedIn ||
+      !hasJwt ||
+      (hasJwt && !hasWallet && storageState.error == null)
+    );
+    final isFullySetup = isLoggedIn && hasJwt && hasWallet;
+
+    final showLowStorageWarning = isLoggedIn && hasJwt &&
         storageState.isLowStorage &&
         !_lowStorageWarningDismissed &&
         storageState.info != null;
@@ -158,8 +169,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             // Low storage warning banner
             if (showLowStorageWarning)
               _buildLowStorageWarning(context, storageState),
-            // Setup TODO banner - only show if not fully setup and not dismissed
-            if (needsSetup && !_setupBannerDismissed && !isFullySetup)
+            // Setup TODO banner - only show if any setup step is incomplete and not dismissed
+            if (needsSetup && !_setupBannerDismissed)
               _buildSetupBanner(context, isLoggedIn, _jwtToken, storageState),
             const RecentFilesSection(),
             const SizedBox(height: 8),
@@ -538,8 +549,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   onTap: () async {
                     Navigator.pop(ctx);
                     await AuthService.instance.signOut();
+                    // Clear storage provider state (wallet info, etc.)
+                    ref.read(storageProvider.notifier).clear();
                     if (mounted) {
-                      setState(() {});
+                      setState(() {
+                        _jwtToken = null;
+                      });
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Signed out')),
                       );

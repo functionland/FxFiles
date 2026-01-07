@@ -348,6 +348,10 @@ class AuthService {
       await SecureStorageService.instance.delete(SecureStorageKeys.userPublicKey);
       await SecureStorageService.instance.delete(SecureStorageKeys.userPrivateKey);
 
+      // Clear API key and tokens (tied to user account)
+      await SecureStorageService.instance.delete(SecureStorageKeys.jwtToken);
+      await SecureStorageService.instance.delete(SecureStorageKeys.refreshToken);
+
       // Clear sync queues and cached data for the old user
       await SyncService.instance.clearAll();
 
