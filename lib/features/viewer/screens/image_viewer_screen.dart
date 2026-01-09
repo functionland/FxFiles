@@ -1039,6 +1039,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
 
   Widget _buildFaceItem(DetectedFace face) {
     final theme = Theme.of(context);
+    // Check if face is untagged by looking at personId directly
+    final isUnknown = face.personId == null;
 
     return FutureBuilder<Person?>(
       future: face.personId != null
@@ -1046,7 +1048,6 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
           : Future.value(null),
       builder: (context, snapshot) {
         final person = snapshot.data;
-        final isUnknown = person == null;
         final thumbnailFile = face.thumbnailPath != null
             ? File(face.thumbnailPath!)
             : null;
@@ -1113,7 +1114,9 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                 SizedBox(
                   width: 70,
                   child: Text(
-                    person?.name ?? 'Tap to tag',
+                    isUnknown
+                        ? 'Tap to tag'
+                        : (person?.name ?? '...'),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: isUnknown
                           ? theme.colorScheme.primary
@@ -1181,54 +1184,62 @@ class _TagFaceDialogState extends State<_TagFaceDialog> {
   List<Person> _suggestions = [];
   Person? _selectedPerson;
   bool _isLoading = false;
+  bool _isDisposed = false;
 
   @override
   void initState() {
     super.initState();
     _loadPersons();
-    _nameController.addListener(_updateSuggestions);
   }
 
   @override
   void dispose() {
-    _nameController.removeListener(_updateSuggestions);
+    _isDisposed = true;
     _nameController.dispose();
     super.dispose();
   }
 
   Future<void> _loadPersons() async {
     final persons = await FaceStorageService.instance.getAllPersons();
-    if (mounted) {
+    if (mounted && !_isDisposed) {
       setState(() => _allPersons = persons);
     }
   }
 
-  void _updateSuggestions() {
-    final query = _nameController.text.toLowerCase().trim();
-    if (query.isEmpty) {
-      setState(() {
-        _suggestions = [];
-        _selectedPerson = null;
-      });
-    } else {
-      setState(() {
-        _suggestions = _allPersons
+  void _onNameChanged(String value) {
+    if (_isDisposed) return;
+
+    final query = value.toLowerCase().trim();
+    final newSuggestions = query.isEmpty
+        ? <Person>[]
+        : _allPersons
             .where((p) => p.name.toLowerCase().contains(query))
             .take(5)
             .toList();
-        // Clear selection if text changed
-        if (_selectedPerson != null &&
-            _selectedPerson!.name != _nameController.text) {
-          _selectedPerson = null;
-        }
+
+    // Clear selection if text changed from selected person's name
+    final newSelectedPerson = (_selectedPerson != null &&
+            _selectedPerson!.name != value)
+        ? null
+        : _selectedPerson;
+
+    if (mounted && !_isDisposed) {
+      setState(() {
+        _suggestions = newSuggestions;
+        _selectedPerson = newSelectedPerson;
       });
     }
   }
 
   void _selectPerson(Person person) {
+    // Update controller without triggering onChanged (we handle state manually)
+    _nameController.text = person.name;
+    // Move cursor to end
+    _nameController.selection = TextSelection.fromPosition(
+      TextPosition(offset: person.name.length),
+    );
     setState(() {
       _selectedPerson = person;
-      _nameController.text = person.name;
       _suggestions = [];
     });
   }
@@ -1303,12 +1314,20 @@ class _TagFaceDialogState extends State<_TagFaceDialog> {
         ? File(widget.face.thumbnailPath!)
         : null;
 
-    return AlertDialog(
-      title: const Text('Tag Face'),
-      content: SingleChildScrollView(
+    return Dialog(
+      child: Container(
+        width: 300,
+        padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Title
+            Text(
+              'Tag Face',
+              style: theme.textTheme.titleLarge,
+            ),
+            const SizedBox(height: 16),
+
             // Face thumbnail preview
             Container(
               width: 80,
@@ -1342,95 +1361,100 @@ class _TagFaceDialogState extends State<_TagFaceDialog> {
                 labelText: _selectedPerson != null
                     ? 'Adding to existing person'
                     : 'Person Name',
-                hintText: 'Enter name or select existing',
+                hintText: 'Enter name',
                 filled: true,
                 prefixIcon: _selectedPerson != null
                     ? const Icon(LucideIcons.userCheck, color: Colors.green)
                     : const Icon(LucideIcons.user),
-                suffixIcon: _nameController.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(LucideIcons.x, size: 18),
-                        onPressed: () {
-                          _nameController.clear();
-                          setState(() {
-                            _selectedPerson = null;
-                            _suggestions = [];
-                          });
-                        },
-                      )
-                    : null,
-              ),
-              textCapitalization: TextCapitalization.words,
-              autofocus: true,
-              onSubmitted: (_) => _save(),
-            ),
-
-            // Autocomplete suggestions list
-            if (_suggestions.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Container(
-                constraints: const BoxConstraints(maxHeight: 180),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  itemCount: _suggestions.length,
-                  itemBuilder: (context, index) {
-                    final person = _suggestions[index];
-                    final personThumbnail = person.thumbnailPath != null
-                        ? File(person.thumbnailPath!)
-                        : null;
-
-                    return ListTile(
-                      dense: true,
-                      leading: CircleAvatar(
-                        radius: 18,
-                        backgroundImage: personThumbnail != null &&
-                                personThumbnail.existsSync()
-                            ? FileImage(personThumbnail)
-                            : null,
-                        child: personThumbnail == null ||
-                                !personThumbnail.existsSync()
-                            ? const Icon(LucideIcons.user, size: 18)
-                            : null,
-                      ),
-                      title: Text(
-                        person.name,
-                        style: const TextStyle(fontWeight: FontWeight.w500),
-                      ),
-                      subtitle: Text(
-                        '${person.faceCount} face${person.faceCount != 1 ? 's' : ''}',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                      trailing: const Icon(LucideIcons.plus, size: 18),
-                      onTap: () => _selectPerson(person),
-                    );
+                suffixIcon: IconButton(
+                  icon: const Icon(LucideIcons.x, size: 18),
+                  onPressed: () {
+                    _nameController.clear();
+                    _onNameChanged('');
                   },
                 ),
               ),
-            ],
+              textCapitalization: TextCapitalization.words,
+              autofocus: true,
+              onChanged: _onNameChanged,
+              onSubmitted: (_) => _save(),
+            ),
+
+            // Autocomplete suggestions list - fixed height container
+            SizedBox(
+              height: _suggestions.isEmpty ? 0 : 150,
+              child: _suggestions.isEmpty
+                  ? const SizedBox.shrink()
+                  : Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListView.builder(
+                        padding: EdgeInsets.zero,
+                        itemCount: _suggestions.length,
+                        itemBuilder: (context, index) {
+                          final person = _suggestions[index];
+                          final personThumbnail = person.thumbnailPath != null
+                              ? File(person.thumbnailPath!)
+                              : null;
+
+                          return ListTile(
+                            dense: true,
+                            leading: CircleAvatar(
+                              radius: 18,
+                              backgroundImage: personThumbnail != null &&
+                                      personThumbnail.existsSync()
+                                  ? FileImage(personThumbnail)
+                                  : null,
+                              child: personThumbnail == null ||
+                                      !personThumbnail.existsSync()
+                                  ? const Icon(LucideIcons.user, size: 18)
+                                  : null,
+                            ),
+                            title: Text(
+                              person.name,
+                              style: const TextStyle(fontWeight: FontWeight.w500),
+                            ),
+                            subtitle: Text(
+                              '${person.faceCount} face${person.faceCount != 1 ? 's' : ''}',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                            trailing: const Icon(LucideIcons.plus, size: 18),
+                            onTap: () => _selectPerson(person),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Action buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _isLoading ? null : _save,
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: _isLoading ? null : _save,
-          child: _isLoading
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Save'),
-        ),
-      ],
     );
   }
 }

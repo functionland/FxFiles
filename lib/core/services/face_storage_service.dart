@@ -87,11 +87,18 @@ class FaceStorageService {
   /// Assign multiple faces to a person
   Future<void> assignFacesToPerson(List<String> faceIds, String personId) async {
     if (!_isInitialized) await init();
-    
+
+    // Track unique image paths for syncing
+    final imagePaths = <String>{};
+
     for (final faceId in faceIds) {
+      final face = _facesBox.get(faceId);
+      if (face != null) {
+        imagePaths.add(face.imagePath);
+      }
       await updateFacePerson(faceId, personId);
     }
-    
+
     // Update person face count
     final faceCount = _facesBox.values.where((f) => f.personId == personId).length;
     final person = _personsBox.get(personId);
@@ -101,20 +108,29 @@ class FaceStorageService {
         updatedAt: DateTime.now(),
       ));
     }
+
+    // Sync updated faces to S3 (fire-and-forget for each unique image)
+    for (final imagePath in imagePaths) {
+      final facesForImage = _facesBox.values
+          .where((f) => f.imagePath == imagePath)
+          .toList();
+      syncFaceMetadataToS3(imagePath, facesForImage);
+    }
   }
 
   /// Remove a face from a person (set personId to null)
   Future<void> removeFaceFromPerson(String faceId) async {
     if (!_isInitialized) await init();
-    
+
     final face = _facesBox.get(faceId);
     if (face == null) return;
-    
+
     final oldPersonId = face.personId;
-    
+    final imagePath = face.imagePath; // Save for later sync
+
     // Set face to unnamed
     await updateFacePerson(faceId, null);
-    
+
     // Update old person's face count
     if (oldPersonId != null) {
       final faceCount = _facesBox.values.where((f) => f.personId == oldPersonId).length;
@@ -131,18 +147,33 @@ class FaceStorageService {
         }
       }
     }
+
+    // Sync updated faces to S3
+    final facesForImage = _facesBox.values
+        .where((f) => f.imagePath == imagePath)
+        .toList();
+    syncFaceMetadataToS3(imagePath, facesForImage);
   }
 
   /// Create a new named person and assign faces to it
   Future<Person> createNamedPerson(String name, List<String> faceIds) async {
     if (!_isInitialized) await init();
-    
-    // Get first face for thumbnail
+
+    // Get first face for thumbnail and collect image paths for syncing
     DetectedFace? firstFace;
+    final imagePaths = <String>{};
+
     if (faceIds.isNotEmpty) {
       firstFace = _facesBox.get(faceIds.first);
+      // Collect all image paths for syncing
+      for (final faceId in faceIds) {
+        final face = _facesBox.get(faceId);
+        if (face != null) {
+          imagePaths.add(face.imagePath);
+        }
+      }
     }
-    
+
     final person = Person(
       id: _uuid.v4(),
       name: name,
@@ -152,14 +183,22 @@ class FaceStorageService {
       faceCount: faceIds.length,
       thumbnailPath: firstFace?.thumbnailPath,
     );
-    
+
     await _personsBox.put(person.id, person);
-    
+
     // Assign all faces to this person
     for (final faceId in faceIds) {
       await updateFacePerson(faceId, person.id);
     }
-    
+
+    // Sync updated faces to S3 (fire-and-forget for each unique image)
+    for (final imagePath in imagePaths) {
+      final facesForImage = _facesBox.values
+          .where((f) => f.imagePath == imagePath)
+          .toList();
+      syncFaceMetadataToS3(imagePath, facesForImage);
+    }
+
     return person;
   }
 
