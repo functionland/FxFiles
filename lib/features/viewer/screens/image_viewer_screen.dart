@@ -1025,6 +1025,18 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
     );
   }
 
+  Future<void> _showTagFaceDialog(DetectedFace face) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => _TagFaceDialog(face: face),
+    );
+
+    if (result == true) {
+      // Refresh faces after tagging
+      await _loadFaces();
+    }
+  }
+
   Widget _buildFaceItem(DetectedFace face) {
     final theme = Theme.of(context);
 
@@ -1034,49 +1046,87 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
           : Future.value(null),
       builder: (context, snapshot) {
         final person = snapshot.data;
+        final isUnknown = person == null;
         final thumbnailFile = face.thumbnailPath != null
             ? File(face.thumbnailPath!)
             : null;
 
-        return Padding(
-          padding: const EdgeInsets.only(right: 16),
-          child: Column(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: theme.colorScheme.primary,
-                    width: 2,
-                  ),
-                ),
-                child: ClipOval(
-                  child: thumbnailFile != null && thumbnailFile.existsSync()
-                      ? Image.file(thumbnailFile, fit: BoxFit.cover)
-                      : Container(
-                          color: theme.colorScheme.surfaceContainerHighest,
+        return GestureDetector(
+          onTap: isUnknown ? () => _showTagFaceDialog(face) : null,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Column(
+              children: [
+                Stack(
+                  children: [
+                    Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isUnknown
+                              ? theme.colorScheme.outline
+                              : theme.colorScheme.primary,
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipOval(
+                        child: thumbnailFile != null && thumbnailFile.existsSync()
+                            ? Image.file(thumbnailFile, fit: BoxFit.cover)
+                            : Container(
+                                color: theme.colorScheme.surfaceContainerHighest,
+                                child: Icon(
+                                  LucideIcons.user,
+                                  color: theme.colorScheme.onSurface.withOpacity(0.4),
+                                  size: 28,
+                                ),
+                              ),
+                      ),
+                    ),
+                    // Show "+" badge for unknown faces to hint tappability
+                    if (isUnknown)
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: theme.colorScheme.surface,
+                              width: 2,
+                            ),
+                          ),
                           child: Icon(
-                            LucideIcons.user,
-                            color: theme.colorScheme.onSurface.withOpacity(0.4),
-                            size: 28,
+                            LucideIcons.plus,
+                            size: 12,
+                            color: theme.colorScheme.onPrimary,
                           ),
                         ),
+                      ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 6),
-              SizedBox(
-                width: 70,
-                child: Text(
-                  person?.name ?? 'Unknown',
-                  style: theme.textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: 70,
+                  child: Text(
+                    person?.name ?? 'Tap to tag',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: isUnknown
+                          ? theme.colorScheme.primary
+                          : theme.textTheme.bodySmall?.color,
+                      fontWeight: isUnknown ? FontWeight.w500 : null,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },
@@ -1112,5 +1162,275 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  }
+}
+
+/// Dialog for tagging an unknown face directly from the image viewer
+class _TagFaceDialog extends StatefulWidget {
+  final DetectedFace face;
+
+  const _TagFaceDialog({required this.face});
+
+  @override
+  State<_TagFaceDialog> createState() => _TagFaceDialogState();
+}
+
+class _TagFaceDialogState extends State<_TagFaceDialog> {
+  final _nameController = TextEditingController();
+  List<Person> _allPersons = [];
+  List<Person> _suggestions = [];
+  Person? _selectedPerson;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPersons();
+    _nameController.addListener(_updateSuggestions);
+  }
+
+  @override
+  void dispose() {
+    _nameController.removeListener(_updateSuggestions);
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadPersons() async {
+    final persons = await FaceStorageService.instance.getAllPersons();
+    if (mounted) {
+      setState(() => _allPersons = persons);
+    }
+  }
+
+  void _updateSuggestions() {
+    final query = _nameController.text.toLowerCase().trim();
+    if (query.isEmpty) {
+      setState(() {
+        _suggestions = [];
+        _selectedPerson = null;
+      });
+    } else {
+      setState(() {
+        _suggestions = _allPersons
+            .where((p) => p.name.toLowerCase().contains(query))
+            .take(5)
+            .toList();
+        // Clear selection if text changed
+        if (_selectedPerson != null &&
+            _selectedPerson!.name != _nameController.text) {
+          _selectedPerson = null;
+        }
+      });
+    }
+  }
+
+  void _selectPerson(Person person) {
+    setState(() {
+      _selectedPerson = person;
+      _nameController.text = person.name;
+      _suggestions = [];
+    });
+  }
+
+  Future<void> _save() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a name')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      if (_selectedPerson != null) {
+        // Add to existing person (selected from autocomplete)
+        await FaceStorageService.instance.assignFacesToPerson(
+          [widget.face.id],
+          _selectedPerson!.id,
+        );
+      } else {
+        // Check if person with same name already exists
+        final existing = _allPersons.firstWhere(
+          (p) => p.name.toLowerCase() == name.toLowerCase(),
+          orElse: () => Person(
+            id: '',
+            name: '',
+            averageEmbedding: [],
+            createdAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+            faceCount: 0,
+          ),
+        );
+
+        if (existing.id.isNotEmpty) {
+          // Add to existing person with same name
+          await FaceStorageService.instance.assignFacesToPerson(
+            [widget.face.id],
+            existing.id,
+          );
+        } else {
+          // Create new person
+          await FaceStorageService.instance.createNamedPerson(
+            name,
+            [widget.face.id],
+          );
+        }
+      }
+
+      if (mounted) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final thumbnailFile = widget.face.thumbnailPath != null
+        ? File(widget.face.thumbnailPath!)
+        : null;
+
+    return AlertDialog(
+      title: const Text('Tag Face'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Face thumbnail preview
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: theme.colorScheme.primary,
+                  width: 2,
+                ),
+              ),
+              child: ClipOval(
+                child: thumbnailFile != null && thumbnailFile.existsSync()
+                    ? Image.file(thumbnailFile, fit: BoxFit.cover)
+                    : Container(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        child: Icon(
+                          LucideIcons.user,
+                          color: theme.colorScheme.onSurface.withOpacity(0.4),
+                          size: 36,
+                        ),
+                      ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Name input field
+            TextField(
+              controller: _nameController,
+              decoration: InputDecoration(
+                labelText: _selectedPerson != null
+                    ? 'Adding to existing person'
+                    : 'Person Name',
+                hintText: 'Enter name or select existing',
+                filled: true,
+                prefixIcon: _selectedPerson != null
+                    ? const Icon(LucideIcons.userCheck, color: Colors.green)
+                    : const Icon(LucideIcons.user),
+                suffixIcon: _nameController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(LucideIcons.x, size: 18),
+                        onPressed: () {
+                          _nameController.clear();
+                          setState(() {
+                            _selectedPerson = null;
+                            _suggestions = [];
+                          });
+                        },
+                      )
+                    : null,
+              ),
+              textCapitalization: TextCapitalization.words,
+              autofocus: true,
+              onSubmitted: (_) => _save(),
+            ),
+
+            // Autocomplete suggestions list
+            if (_suggestions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 180),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: _suggestions.length,
+                  itemBuilder: (context, index) {
+                    final person = _suggestions[index];
+                    final personThumbnail = person.thumbnailPath != null
+                        ? File(person.thumbnailPath!)
+                        : null;
+
+                    return ListTile(
+                      dense: true,
+                      leading: CircleAvatar(
+                        radius: 18,
+                        backgroundImage: personThumbnail != null &&
+                                personThumbnail.existsSync()
+                            ? FileImage(personThumbnail)
+                            : null,
+                        child: personThumbnail == null ||
+                                !personThumbnail.existsSync()
+                            ? const Icon(LucideIcons.user, size: 18)
+                            : null,
+                      ),
+                      title: Text(
+                        person.name,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      subtitle: Text(
+                        '${person.faceCount} face${person.faceCount != 1 ? 's' : ''}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      trailing: const Icon(LucideIcons.plus, size: 18),
+                      onTap: () => _selectPerson(person),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _isLoading ? null : _save,
+          child: _isLoading
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Save'),
+        ),
+      ],
+    );
   }
 }
