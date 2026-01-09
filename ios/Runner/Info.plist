@@ -54,6 +54,13 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>processing</string>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>land.fx.files.sync</string>
+		<string>land.fx.files.refresh</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

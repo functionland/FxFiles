@@ -3,6 +3,7 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/playlist.dart';
+import 'package:fula_files/core/models/sync_task.dart';
 
 class LocalStorageService {
   LocalStorageService._();
@@ -13,6 +14,7 @@ class LocalStorageService {
   late Box<RecentFile> _recentFilesBox;
   late Box<String> _starredFilesBox;
   late Box<FolderSync> _folderSyncBox;
+  late Box<SyncTask> _syncQueueBox;
 
   Future<void> init() async {
     await Hive.initFlutter();
@@ -40,6 +42,16 @@ class LocalStorageService {
     if (!Hive.isAdapterRegistered(7)) {
       Hive.registerAdapter(PlaylistAdapter());
     }
+    // SyncTask adapters (typeIds 14, 15, 16)
+    if (!Hive.isAdapterRegistered(14)) {
+      Hive.registerAdapter(SyncTaskStatusAdapter());
+    }
+    if (!Hive.isAdapterRegistered(15)) {
+      Hive.registerAdapter(SyncTaskDirectionAdapter());
+    }
+    if (!Hive.isAdapterRegistered(16)) {
+      Hive.registerAdapter(SyncTaskAdapter());
+    }
 
     // Open boxes
     _settingsBox = await Hive.openBox('settings');
@@ -47,6 +59,7 @@ class LocalStorageService {
     _recentFilesBox = await Hive.openBox<RecentFile>('recent_files');
     _starredFilesBox = await Hive.openBox<String>('starred_files');
     _folderSyncBox = await Hive.openBox<FolderSync>('folder_syncs');
+    _syncQueueBox = await Hive.openBox<SyncTask>('sync_queue');
   }
 
   // Settings
@@ -192,6 +205,61 @@ class LocalStorageService {
     return sync != null && sync.isEnabled;
   }
 
+  // Sync Queue (persistent upload/download queue)
+  Future<void> addToSyncQueue(SyncTask task) async {
+    await _syncQueueBox.put(task.id, task);
+  }
+
+  Future<void> updateSyncTask(SyncTask task) async {
+    await _syncQueueBox.put(task.id, task);
+  }
+
+  SyncTask? getSyncTask(String id) {
+    return _syncQueueBox.get(id);
+  }
+
+  List<SyncTask> getPendingSyncTasks() {
+    return _syncQueueBox.values
+        .where((task) => task.status == SyncTaskStatus.pending ||
+                         task.status == SyncTaskStatus.inProgress)
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  }
+
+  List<SyncTask> getFailedSyncTasks() {
+    return _syncQueueBox.values
+        .where((task) => task.status == SyncTaskStatus.failed)
+        .toList();
+  }
+
+  List<SyncTask> getAllSyncTasks() {
+    return _syncQueueBox.values.toList();
+  }
+
+  Future<void> removeSyncTask(String id) async {
+    await _syncQueueBox.delete(id);
+  }
+
+  Future<void> clearCompletedSyncTasks() async {
+    final completed = _syncQueueBox.values
+        .where((task) => task.status == SyncTaskStatus.completed)
+        .toList();
+    for (final task in completed) {
+      await _syncQueueBox.delete(task.id);
+    }
+  }
+
+  Future<void> clearSyncQueue() async {
+    await _syncQueueBox.clear();
+  }
+
+  int get pendingSyncTaskCount {
+    return _syncQueueBox.values
+        .where((task) => task.status == SyncTaskStatus.pending ||
+                         task.status == SyncTaskStatus.inProgress)
+        .length;
+  }
+
   // Cleanup
   Future<void> clearAll() async {
     await _settingsBox.clear();
@@ -199,5 +267,6 @@ class LocalStorageService {
     await _recentFilesBox.clear();
     await _starredFilesBox.clear();
     await _folderSyncBox.clear();
+    await _syncQueueBox.clear();
   }
 }

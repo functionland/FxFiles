@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
-import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/core/services/billing_api_service.dart';
 
 enum PurchaseStep {
@@ -63,10 +63,13 @@ class _PurchaseDialogState extends State<PurchaseDialog> {
     });
 
     try {
-      // Initialize wallet service if needed
+      // Initialize wallet service with the root navigator context (from walletNavigatorKey)
+      // This ensures the modal uses a stable context
       if (!WalletService.instance.isInitialized) {
         debugPrint('PurchaseDialog: Initializing wallet service...');
-        await WalletService.instance.initialize(context);
+        // Use the navigator key context if available, otherwise use current context
+        final navContext = walletNavigatorKey.currentContext ?? context;
+        await WalletService.instance.initialize(navContext);
       }
 
       if (_isCancelled || !mounted) return;
@@ -161,8 +164,10 @@ class _PurchaseDialogState extends State<PurchaseDialog> {
     });
 
     try {
+      // Use the root navigator context for wallet operations
+      final navContext = walletNavigatorKey.currentContext ?? context;
       debugPrint('PurchaseDialog: Opening wallet connect modal...');
-      final address = await WalletService.instance.connectWallet(context);
+      final address = await WalletService.instance.connectWallet(navContext);
 
       if (_isCancelled || !mounted) return;
 

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
-import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 /// State for the billing screen
@@ -144,16 +144,23 @@ class BillingNotifier extends Notifier<BillingState> {
     state = state.copyWith(isLinkingWallet: true, error: null);
 
     try {
+      // Use the root navigator context for wallet operations
+      final navContext = walletNavigatorKey.currentContext ?? context;
+
       // Initialize wallet service if needed
       if (!WalletService.instance.isInitialized) {
-        await WalletService.instance.initialize(context);
+        await WalletService.instance.initialize(navContext);
       }
 
-      // Connect wallet
-      final address = await WalletService.instance.connectWallet(context);
+      // Check if already connected, otherwise connect
+      String? address = WalletService.instance.connectedAddress;
       if (address == null) {
-        state = state.copyWith(isLinkingWallet: false);
-        return false;
+        // Connect wallet
+        address = await WalletService.instance.connectWallet(navContext);
+        if (address == null) {
+          state = state.copyWith(isLinkingWallet: false);
+          return false;
+        }
       }
 
       // Generate and sign message
@@ -203,6 +210,15 @@ class BillingNotifier extends Notifier<BillingState> {
     }
   }
 
+  /// Cancel wallet linking in progress
+  void cancelLinkWallet() {
+    if (state.isLinkingWallet) {
+      // Disconnect wallet to cancel any pending operations
+      WalletService.instance.disconnect();
+      state = state.copyWith(isLinkingWallet: false, error: null);
+    }
+  }
+
   /// Purchase credits by sending FULA tokens
   Future<bool> purchaseCredits({
     required BuildContext context,
@@ -217,14 +233,17 @@ class BillingNotifier extends Notifier<BillingState> {
     state = state.copyWith(isPurchasing: true, error: null);
 
     try {
+      // Use the root navigator context for wallet operations
+      final navContext = walletNavigatorKey.currentContext ?? context;
+
       // Initialize wallet service if needed
       if (!WalletService.instance.isInitialized) {
-        await WalletService.instance.initialize(context);
+        await WalletService.instance.initialize(navContext);
       }
 
       // Ensure wallet is connected
       if (!WalletService.instance.isConnected) {
-        final address = await WalletService.instance.connectWallet(context);
+        final address = await WalletService.instance.connectWallet(navContext);
         if (address == null) {
           state = state.copyWith(isPurchasing: false);
           return false;

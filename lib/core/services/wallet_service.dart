@@ -7,12 +7,16 @@ import 'package:reown_appkit/reown_appkit.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
+/// Global navigator key for wallet service to use a stable context
+final GlobalKey<NavigatorState> walletNavigatorKey = GlobalKey<NavigatorState>();
+
 class WalletService {
   static final WalletService instance = WalletService._();
   WalletService._();
 
   ReownAppKitModal? _appKitModal;
   bool _isInitialized = false;
+  bool _isInitializing = false;
   String? _connectedAddress;
   int? _connectedChainId;
 
@@ -29,12 +33,20 @@ class WalletService {
   Stream<WalletConnectionEvent> get onConnectionChange => _connectionController.stream;
 
   /// Initialize AppKit with project configuration
+  /// Uses the global walletNavigatorKey context if available, otherwise falls back to provided context
   Future<void> initialize(BuildContext context) async {
     if (_isInitialized) return;
+    if (_isInitializing) return; // Prevent concurrent initialization
+
+    _isInitializing = true;
 
     try {
+      // Prefer using the global navigator context for stability
+      final effectiveContext = walletNavigatorKey.currentContext ?? context;
+      debugPrint('WalletService: Initializing with context: ${effectiveContext.hashCode}');
+
       _appKitModal = ReownAppKitModal(
-        context: context,
+        context: effectiveContext,
         projectId: _projectId,
         metadata: const PairingMetadata(
           name: 'FxFiles',
@@ -60,6 +72,7 @@ class WalletService {
       );
 
       await _appKitModal!.init();
+      debugPrint('WalletService: AppKitModal initialized successfully');
 
       // Listen for session events
       _appKitModal!.onModalConnect.subscribe(_onModalConnect);
@@ -69,12 +82,24 @@ class WalletService {
       // Check for existing session
       if (_appKitModal!.isConnected) {
         _updateConnectionState();
+        debugPrint('WalletService: Existing session found, address: $_connectedAddress');
       }
 
       _isInitialized = true;
     } catch (e) {
+      debugPrint('WalletService: Failed to initialize: $e');
       throw WalletServiceException('Failed to initialize wallet service: $e');
+    } finally {
+      _isInitializing = false;
     }
+  }
+
+  /// Reinitialize with a new context (useful when the old context becomes invalid)
+  Future<void> reinitialize(BuildContext context) async {
+    debugPrint('WalletService: Reinitializing...');
+    _isInitialized = false;
+    _appKitModal = null;
+    await initialize(context);
   }
 
   void _onModalConnect(ModalConnect? event) {
@@ -121,7 +146,9 @@ class WalletService {
     _ensureInitialized();
 
     try {
+      debugPrint('WalletService: Opening modal view...');
       await _appKitModal!.openModalView();
+      debugPrint('WalletService: Modal view opened');
 
       // Wait for connection or timeout
       final completer = Completer<String?>();
@@ -145,7 +172,44 @@ class WalletService {
       });
 
       return await completer.future;
+    } on StateError catch (e) {
+      // Handle "Bad state: No element" error from widget stack
+      debugPrint('WalletService: StateError when opening modal: $e');
+      debugPrint('WalletService: Attempting to reinitialize...');
+
+      // Try to reinitialize with the current context
+      await reinitialize(context);
+
+      // Retry opening the modal
+      try {
+        await _appKitModal!.openModalView();
+
+        final completer = Completer<String?>();
+        StreamSubscription? subscription;
+
+        subscription = onConnectionChange.listen((event) {
+          if (event.type == WalletEventType.connected && event.address != null) {
+            subscription?.cancel();
+            if (!completer.isCompleted) {
+              completer.complete(event.address);
+            }
+          }
+        });
+
+        Future.delayed(const Duration(minutes: 2), () {
+          subscription?.cancel();
+          if (!completer.isCompleted) {
+            completer.complete(null);
+          }
+        });
+
+        return await completer.future;
+      } catch (retryError) {
+        debugPrint('WalletService: Retry also failed: $retryError');
+        throw WalletServiceException('Failed to open wallet modal: $retryError');
+      }
     } catch (e) {
+      debugPrint('WalletService: Failed to connect wallet: $e');
       throw WalletServiceException('Failed to connect wallet: $e');
     }
   }
@@ -174,20 +238,31 @@ Timestamp: $timestamp''';
       final topic = session.topic ?? '';
       final chainId = _appKitModal!.selectedChain?.chainId ?? 'eip155:8453';
 
+      debugPrint('WalletService: Requesting signature...');
+      debugPrint('WalletService: Topic: $topic');
+      debugPrint('WalletService: ChainId: $chainId');
+      debugPrint('WalletService: Address: $_connectedAddress');
+
+      // Convert message to hex for personal_sign (EIP-191)
+      final hexMessage = '0x${message.codeUnits.map((c) => c.toRadixString(16).padLeft(2, '0')).join()}';
+      debugPrint('WalletService: Hex message: $hexMessage');
+
       final signature = await _appKitModal!.request(
         topic: topic,
         chainId: chainId,
         request: SessionRequestParams(
           method: 'personal_sign',
           params: [
-            message,
+            hexMessage,
             _connectedAddress,
           ],
         ),
       );
 
+      debugPrint('WalletService: Signature received: $signature');
       return signature as String;
     } catch (e) {
+      debugPrint('WalletService: Failed to sign message: $e');
       throw WalletServiceException('Failed to sign message: $e');
     }
   }

@@ -12,9 +12,11 @@ import 'package:fula_files/features/viewer/screens/text_viewer_screen.dart';
 import 'package:fula_files/features/viewer/screens/audio_player_screen.dart';
 import 'package:fula_files/features/audio/screens/playlists_screen.dart';
 import 'package:fula_files/features/audio/screens/playlist_detail_screen.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
+    navigatorKey: walletNavigatorKey,
     initialLocation: '/',
     routes: [
       GoRoute(

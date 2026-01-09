@@ -1,7 +1,7 @@
 name: fula_files
 description: FxFiles - A minimalistic file manager with Fula decentralized storage backup support.
 publish_to: 'none'
-version: 1.2.0+498
+version: 1.2.1+499
 
 environment:
   sdk: '>=3.2.0 <4.0.0'

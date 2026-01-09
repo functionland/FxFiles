@@ -71,10 +71,20 @@ class _BillingScreenState extends ConsumerState<BillingScreen> {
                     context,
                     title: 'Linked Wallets',
                     trailing: state.isLinkingWallet
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              const SizedBox(width: 8),
+                              TextButton(
+                                onPressed: _cancelLinkWallet,
+                                child: const Text('Cancel'),
+                              ),
+                            ],
                           )
                         : TextButton.icon(
                             onPressed: () => _linkWallet(),
@@ -244,6 +254,10 @@ class _BillingScreenState extends ConsumerState<BillingScreen> {
 
   Future<void> _linkWallet() async {
     await ref.read(billingProvider.notifier).linkWallet(context);
+  }
+
+  void _cancelLinkWallet() {
+    ref.read(billingProvider.notifier).cancelLinkWallet();
   }
 
   Future<void> _showPurchaseDialog() async {

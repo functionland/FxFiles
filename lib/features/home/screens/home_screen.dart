@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -6,7 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
-import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart' show WalletService, walletNavigatorKey;
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/features/home/widgets/recent_files_section.dart';
 import 'package:fula_files/features/home/widgets/categories_section.dart';
@@ -436,25 +437,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _linkWallet() async {
     setState(() => _isLinkingWallet = true);
+    debugPrint('HomeScreen: Starting wallet linking...');
 
     try {
+      // Use the root navigator context for wallet operations
+      final navContext = walletNavigatorKey.currentContext ?? context;
+      debugPrint('HomeScreen: Got nav context: ${navContext.hashCode}');
+
       // Initialize wallet service if needed
       if (!WalletService.instance.isInitialized) {
-        await WalletService.instance.initialize(context);
+        debugPrint('HomeScreen: Initializing wallet service...');
+        await WalletService.instance.initialize(navContext);
+        debugPrint('HomeScreen: Wallet service initialized');
       }
 
-      // Connect wallet
-      final address = await WalletService.instance.connectWallet(context);
-      if (address == null) {
-        setState(() => _isLinkingWallet = false);
-        return;
+      // Check if already connected, otherwise connect
+      String? address = WalletService.instance.connectedAddress;
+      if (address != null) {
+        debugPrint('HomeScreen: Already connected to wallet: $address');
+      } else {
+        // Connect wallet
+        debugPrint('HomeScreen: Connecting wallet...');
+        address = await WalletService.instance.connectWallet(navContext);
+        debugPrint('HomeScreen: Connect result: $address');
+        if (address == null) {
+          debugPrint('HomeScreen: Connection cancelled or failed');
+          setState(() => _isLinkingWallet = false);
+          return;
+        }
       }
 
       // Generate and sign message
+      debugPrint('HomeScreen: Generating link message...');
       final message = WalletService.instance.generateLinkMessage(address);
+      debugPrint('HomeScreen: Requesting signature...');
       final signature = await WalletService.instance.signLinkMessage(message);
+      debugPrint('HomeScreen: Signature received: ${signature.substring(0, 20)}...');
 
       // Link wallet on server
+      debugPrint('HomeScreen: Linking wallet on server...');
       final chainId = WalletService.instance.connectedChainId ?? 8453;
       await BillingApiService.instance.linkWallet(
         address: address,
@@ -462,6 +483,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         signature: signature,
         message: message,
       );
+      debugPrint('HomeScreen: Wallet linked successfully');
 
       // Refresh storage provider to update wallet list
       ref.read(storageProvider.notifier).loadStorageInfo();
@@ -475,7 +497,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         );
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('HomeScreen: Error linking wallet: $e');
+      debugPrint('HomeScreen: Stack trace: $stackTrace');
       if (mounted) {
         setState(() => _isLinkingWallet = false);
         ScaffoldMessenger.of(context).showSnackBar(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -102,6 +103,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   // Scroll controller for lazy loading
   final ScrollController _scrollController = ScrollController();
 
+  // Debounce timer for sync status updates
+  Timer? _syncRefreshTimer;
+
   @override
   void initState() {
     super.initState();
@@ -146,15 +150,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _syncRefreshTimer?.cancel();
     SyncService.instance.removeListener(_onSyncStatusChanged);
     super.dispose();
   }
-  
+
   void _onSyncStatusChanged(String localPath, SyncStatus status) {
-    // Refresh UI when a file in our current view changes sync status
-    if (mounted) {
-      setState(() {});
-    }
+    // Debounce: Only refresh UI at most once per 500ms
+    // This prevents ~20 rebuilds/sec when 5 parallel uploads are running
+    _syncRefreshTimer?.cancel();
+    _syncRefreshTimer = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   void _onScroll() {
@@ -363,9 +372,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
   
   Future<LocalFile?> _findLocalFileForCloudObject(FulaObject cloudObj) async {
-    // Check sync states to find local path for this cloud object
+    // 1. First check sync states to find local path for this cloud object
     final allSyncStates = LocalStorageService.instance.getAllSyncStates();
-    
+
     for (final state in allSyncStates) {
       if (state.bucket == _currentBucket && state.remoteKey == cloudObj.key) {
         // Found matching sync state - check if local file exists
@@ -382,7 +391,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         }
       }
     }
-    
+
+    // 2. Fallback: Check category directory by filename
+    if (_currentBucket != null) {
+      final category = _categoryFromBucket(_currentBucket!);
+      if (category != null) {
+        try {
+          final categoryDir = await FileService.instance.getCategoryDirectory(category);
+          final filename = cloudObj.key.split('/').last;
+          final potentialPath = '${categoryDir.path}${Platform.pathSeparator}$filename';
+          final file = File(potentialPath);
+          if (await file.exists()) {
+            final stat = await file.stat();
+            return LocalFile(
+              path: potentialPath,
+              name: filename,
+              isDirectory: false,
+              size: stat.size,
+              modifiedAt: stat.modified,
+            );
+          }
+        } catch (_) {
+          // Ignore errors when checking category directory
+        }
+      }
+    }
+
     return null;
   }
   
@@ -656,7 +690,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       default: return FileCategory.other;
     }
   }
-  
+
+  /// Get category from bucket name (nullable for unknown buckets)
+  FileCategory? _categoryFromBucket(String bucket) {
+    switch (bucket.toLowerCase()) {
+      case 'images': return FileCategory.images;
+      case 'videos': return FileCategory.videos;
+      case 'audio': return FileCategory.audio;
+      case 'documents': return FileCategory.documents;
+      case 'downloads': return FileCategory.downloads;
+      case 'archives': return FileCategory.archives;
+      default: return null;
+    }
+  }
+
   /// Check if current category is a media category (images, videos, audio)
   bool _isMediaCategory() {
     if (widget.category == null) return false;
@@ -2623,9 +2670,10 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   void _showCloudFileOptions(FulaObject cloudFile) {
-    // Get bucket from current category
-    final category = _categoryFromString(widget.category!);
-    final bucket = category.bucketName;
+    // Get bucket from current bucket (cloud mode) or category
+    final bucket = _isCloudMode
+        ? _currentBucket!
+        : _categoryFromString(widget.category!).bucketName;
     
     showModalBottomSheet(
       context: context,
@@ -2663,19 +2711,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _downloadCloudFile(FulaObject cloudFile) async {
-    // Get bucket from current category
-    final category = _categoryFromString(widget.category!);
-    final bucket = category.bucketName;
-    
+    // Get bucket from current bucket (cloud mode) or category
+    final bucket = _isCloudMode
+        ? _currentBucket!
+        : _categoryFromString(widget.category!).bucketName;
+    final category = _isCloudMode
+        ? _categoryFromBucket(bucket)
+        : _categoryFromString(widget.category!);
+
     // Show downloading indicator
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Downloading ${cloudFile.key}...')),
     );
-    
+
     try {
       // Get encryption key for decryption
       final encryptionKey = await AuthService.instance.getEncryptionKey();
-      
+
       Uint8List data;
       if (encryptionKey != null) {
         // Download and decrypt if we have an encryption key
@@ -2690,15 +2742,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
         debugPrint('Downloaded ${cloudFile.key} without decryption (no key)');
       }
-      
+
       // Get the appropriate download directory based on category
-      final downloadPath = await _getDownloadPath(category, cloudFile.key);
-      
+      final downloadPath = await _getDownloadPath(category ?? FileCategory.other, cloudFile.key);
+
       // Write file to local storage
       final file = File(downloadPath);
       await file.parent.create(recursive: true);
       await file.writeAsBytes(data);
-      
+
       // Add sync state for the downloaded file
       await LocalStorageService.instance.addSyncState(SyncState(
         localPath: downloadPath,
@@ -2711,13 +2763,17 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         localSize: data.length,
         remoteSize: cloudFile.size,
       ));
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Downloaded ${cloudFile.key}')),
         );
         // Refresh to show the file locally
-        _loadCategoryFiles();
+        if (_isCloudMode) {
+          _loadCloudData();
+        } else {
+          _loadCategoryFiles();
+        }
       }
     } catch (e) {
       if (mounted) {

@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -72,52 +74,72 @@ Future<void> _executePeriodicSync() async {
     return;
   }
 
-  await SyncService.instance.processUploadQueue();
-  await SyncService.instance.processDownloadQueue();
+  // Restore any pending tasks from persistent storage
+  await SyncService.instance.restoreQueue();
+
+  // Process with 9-minute timeout (WorkManager has 10-min limit)
+  final timeout = const Duration(minutes: 9);
+  await SyncService.instance.processQueueWithTimeout(timeout);
 }
 
 Future<void> _executeUploadTask(Map<String, dynamic>? inputData) async {
-  if (inputData == null) return;
+  // First restore any existing queue from storage
+  await SyncService.instance.restoreQueue();
 
-  final localPath = inputData['localPath'] as String?;
-  final bucket = inputData['bucket'] as String?;
-  final key = inputData['key'] as String?;
-  final encrypt = inputData['encrypt'] as bool? ?? true;
+  if (inputData != null) {
+    final localPath = inputData['localPath'] as String?;
+    final bucket = inputData['bucket'] as String?;
+    final key = inputData['key'] as String?;
+    final encrypt = inputData['encrypt'] as bool? ?? true;
 
-  if (localPath == null || bucket == null || key == null) return;
+    if (localPath != null && bucket != null && key != null) {
+      await SyncService.instance.queueUpload(
+        localPath: localPath,
+        remoteBucket: bucket,
+        remoteKey: key,
+        encrypt: encrypt,
+      );
+    }
+  }
 
-  await SyncService.instance.queueUpload(
-    localPath: localPath,
-    remoteBucket: bucket,
-    remoteKey: key,
-    encrypt: encrypt,
-  );
-
-  await SyncService.instance.processUploadQueue();
+  // Process with timeout
+  final timeout = const Duration(minutes: 9);
+  await SyncService.instance.processQueueWithTimeout(timeout);
 }
 
 Future<void> _executeDownloadTask(Map<String, dynamic>? inputData) async {
-  if (inputData == null) return;
+  // First restore any existing queue from storage
+  await SyncService.instance.restoreQueue();
 
-  final bucket = inputData['bucket'] as String?;
-  final key = inputData['key'] as String?;
-  final localPath = inputData['localPath'] as String?;
-  final decrypt = inputData['decrypt'] as bool? ?? true;
+  if (inputData != null) {
+    final bucket = inputData['bucket'] as String?;
+    final key = inputData['key'] as String?;
+    final localPath = inputData['localPath'] as String?;
+    final decrypt = inputData['decrypt'] as bool? ?? true;
 
-  if (bucket == null || key == null || localPath == null) return;
+    if (bucket != null && key != null && localPath != null) {
+      await SyncService.instance.queueDownload(
+        remoteBucket: bucket,
+        remoteKey: key,
+        localPath: localPath,
+        decrypt: decrypt,
+      );
+    }
+  }
 
-  await SyncService.instance.queueDownload(
-    remoteBucket: bucket,
-    remoteKey: key,
-    localPath: localPath,
-    decrypt: decrypt,
-  );
-
-  await SyncService.instance.processDownloadQueue();
+  // Process with timeout
+  final timeout = const Duration(minutes: 9);
+  await SyncService.instance.processQueueWithTimeout(timeout);
 }
 
 Future<void> _executeRetryFailed() async {
+  // Restore queue first
+  await SyncService.instance.restoreQueue();
   await SyncService.instance.retryFailed();
+
+  // Process with timeout
+  final timeout = const Duration(minutes: 9);
+  await SyncService.instance.processQueueWithTimeout(timeout);
 }
 
 Future<void> _executeCleanupIncomplete() async {
@@ -150,31 +172,105 @@ class BackgroundSyncService {
   static final BackgroundSyncService instance = BackgroundSyncService._();
 
   bool _isInitialized = false;
+  static const MethodChannel _iosChannel = MethodChannel('land.fx.files/background_sync');
 
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    await Workmanager().initialize(
-      callbackDispatcher,
-    );
+    // Initialize WorkManager for Android
+    if (Platform.isAndroid) {
+      await Workmanager().initialize(
+        callbackDispatcher,
+      );
+    }
+
+    // Setup iOS method channel handler for background sync callbacks
+    if (Platform.isIOS) {
+      _iosChannel.setMethodCallHandler(_handleIOSMethodCall);
+    }
 
     _isInitialized = true;
+  }
+
+  /// Handle method calls from iOS native code for background sync
+  Future<dynamic> _handleIOSMethodCall(MethodCall call) async {
+    try {
+      switch (call.method) {
+        case 'onBackgroundSync':
+          // iOS triggered background sync - process queue with timeout
+          await _initializeServicesForBackground();
+          await SyncService.instance.restoreQueue();
+          // iOS BGProcessingTask has longer time (up to 30 minutes)
+          await SyncService.instance.processQueueWithTimeout(
+            const Duration(minutes: 25),
+          );
+          return true;
+
+        case 'onBackgroundRefresh':
+          // iOS triggered background refresh - quick check only
+          await _initializeServicesForBackground();
+          await SyncService.instance.restoreQueue();
+          // BGAppRefreshTask has ~30 seconds
+          await SyncService.instance.processQueueWithTimeout(
+            const Duration(seconds: 25),
+          );
+          return true;
+
+        default:
+          return false;
+      }
+    } catch (e) {
+      debugPrint('iOS background sync failed: $e');
+      return false;
+    }
+  }
+
+  /// Initialize services needed for background operations
+  Future<void> _initializeServicesForBackground() async {
+    await SecureStorageService.instance.init();
+    await LocalStorageService.instance.init();
+
+    final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
+    final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
+
+    if (apiUrl != null && jwtToken != null) {
+      FulaApiService.instance.configure(
+        endpoint: apiUrl,
+        accessKey: 'JWT:$jwtToken',
+        secretKey: 'not-used',
+        pinningService: ipfsServer,
+        pinningToken: jwtToken,
+      );
+
+      await AuthService.instance.checkExistingSession();
+    }
   }
 
   Future<void> schedulePeriodicSync({
     Duration frequency = const Duration(minutes: 15),
     bool requiresWifi = false,
   }) async {
-    await Workmanager().registerPeriodicTask(
-      'periodic-sync',
-      periodicSyncTask,
-      frequency: frequency,
-      constraints: Constraints(
-        networkType: requiresWifi ? NetworkType.unmetered : NetworkType.connected,
-        requiresBatteryNotLow: true,
-      ),
-      existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
-    );
+    if (Platform.isAndroid) {
+      await Workmanager().registerPeriodicTask(
+        'periodic-sync',
+        periodicSyncTask,
+        frequency: frequency,
+        constraints: Constraints(
+          networkType: requiresWifi ? NetworkType.unmetered : NetworkType.connected,
+          requiresBatteryNotLow: true,
+        ),
+        existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
+      );
+    } else if (Platform.isIOS) {
+      // Schedule iOS background tasks via native code
+      try {
+        await _iosChannel.invokeMethod('scheduleSync');
+        debugPrint('Scheduled iOS background sync');
+      } catch (e) {
+        debugPrint('Failed to schedule iOS background sync: $e');
+      }
+    }
   }
 
   Future<void> scheduleUpload({
@@ -248,7 +344,15 @@ class BackgroundSyncService {
   }
 
   Future<void> cancelAll() async {
-    await Workmanager().cancelAll();
+    if (Platform.isAndroid) {
+      await Workmanager().cancelAll();
+    } else if (Platform.isIOS) {
+      try {
+        await _iosChannel.invokeMethod('cancelSync');
+      } catch (e) {
+        debugPrint('Failed to cancel iOS background sync: $e');
+      }
+    }
   }
 
   Future<void> cancelByUniqueName(String uniqueName) async {

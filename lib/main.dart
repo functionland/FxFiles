@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/video_thumbnail_service.dart';
 import 'package:fula_files/core/services/pip_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
+import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
@@ -59,6 +60,9 @@ void main() async {
 
     // Schedule periodic background sync
     await BackgroundSyncService.instance.schedulePeriodicSync();
+
+    // Restore any pending sync tasks from previous session
+    await SyncService.instance.restoreQueue();
   }
 
   // Create provider container for service initialization
