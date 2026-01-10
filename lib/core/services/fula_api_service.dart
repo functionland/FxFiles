@@ -1,23 +1,73 @@
-import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:minio/minio.dart';
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
-import 'package:fula_files/core/services/encryption_service.dart';
+
+// Re-export commonly used types for convenience
+export 'package:fula_client/fula_client.dart' show
+    ShareMode,
+    SharePermissions,
+    AcceptedShareHandle,
+    RotationManagerHandle,
+    RotationReport,
+    DirectoryListing,
+    DirectoryEntry,
+    FileMetadata;
 
 class FulaApiService {
   static final FulaApiService instance = FulaApiService._();
   FulaApiService._();
 
-  Minio? _minio;
+  fula.EncryptedClientHandle? _client;
   String? _defaultBucket;
   bool _isConfigured = false;
-  String? _pinningService;
-  String? _pinningToken;
+
+  // Track which buckets have had their forest loaded
+  final Set<String> _loadedForests = {};
 
   bool get isConfigured => _isConfigured;
   String? get defaultBucket => _defaultBucket;
+  fula.EncryptedClientHandle? get client => _client;
 
+  /// Initialize the fula_client with encryption enabled
+  ///
+  /// [endpoint] - The Fula gateway URL (e.g., "http://localhost:9000")
+  /// [secretKey] - 32-byte encryption key (derived from user credentials)
+  /// [accessToken] - Optional JWT token for authentication
+  /// [defaultBucket] - Optional default bucket name
+  Future<void> initialize({
+    required String endpoint,
+    required Uint8List secretKey,
+    String? accessToken,
+    String? defaultBucket,
+  }) async {
+    try {
+      final config = fula.FulaConfig(
+        endpoint: endpoint,
+        accessToken: accessToken,
+        timeoutSeconds: 60,
+        maxRetries: 3,
+      );
+
+      final encConfig = fula.EncryptionConfig(
+        secretKey: secretKey.toList(),
+        enableMetadataPrivacy: true,
+        obfuscationMode: fula.ObfuscationMode.flatNamespace, // Maximum privacy
+      );
+
+      _client = await fula.createEncryptedClient(config, encConfig);
+      _defaultBucket = defaultBucket;
+      _isConfigured = true;
+      _loadedForests.clear();
+
+      debugPrint('FulaApiService initialized with FlatNamespace encryption');
+    } catch (e) {
+      throw FulaApiException('Failed to initialize FulaApiService: $e');
+    }
+  }
+
+  /// Legacy configure method - redirects to initialize
+  /// Kept for backward compatibility during migration
   void configure({
     required String endpoint,
     required String accessKey,
@@ -27,34 +77,52 @@ class FulaApiService {
     String? pinningService,
     String? pinningToken,
   }) {
-    _pinningService = pinningService;
-    _pinningToken = pinningToken;
-    final uri = Uri.parse(endpoint);
-    
-    // Auto-detect SSL from URL scheme
-    final ssl = useSSL ?? uri.scheme == 'https';
-    
-    // For self-signed certs, globally allow bad certificates (dev only)
-    if (ssl) {
-      HttpOverrides.global = _AllowSelfSignedHttpOverrides();
-    }
-    
-    _minio = Minio(
-      endPoint: uri.host,
-      port: uri.hasPort ? uri.port : (ssl ? 443 : 80),
-      accessKey: accessKey,
-      secretKey: secretKey,
-      useSSL: ssl,
-    );
+    debugPrint('Warning: configure() is deprecated. Use initialize() instead.');
+    // This method cannot be used directly with fula_client
+    // The caller should use initialize() with the encryption key
     _defaultBucket = defaultBucket;
-    _isConfigured = true;
-    debugPrint('FulaApiService configured: ${uri.host}:${uri.hasPort ? uri.port : (ssl ? 443 : 80)}, SSL: $ssl');
   }
 
   void _ensureConfigured() {
-    if (!_isConfigured || _minio == null) {
-      throw FulaApiException('FulaApiService is not configured');
+    if (!_isConfigured || _client == null) {
+      throw FulaApiException('FulaApiService is not configured. Call initialize() first.');
     }
+  }
+
+  /// Ensure the forest (encrypted file index) is loaded for a bucket
+  Future<void> _ensureForestLoaded(String bucket) async {
+    if (!_loadedForests.contains(bucket)) {
+      try {
+        await fula.loadForest(_client!, bucket);
+        _loadedForests.add(bucket);
+        debugPrint('Forest loaded for bucket: $bucket');
+      } catch (e) {
+        // Forest may not exist yet for new buckets - that's OK
+        debugPrint('Forest load for $bucket: $e (may be new bucket)');
+        _loadedForests.add(bucket); // Mark as "loaded" to avoid repeated attempts
+      }
+    }
+  }
+
+  /// Clear loaded forest cache (call when switching users or on logout)
+  void clearForestCache() {
+    _loadedForests.clear();
+  }
+
+  // ============================================================================
+  // KEY MANAGEMENT
+  // ============================================================================
+
+  /// Export the secret key for backup
+  Uint8List exportSecretKey() {
+    _ensureConfigured();
+    return Uint8List.fromList(fula.exportSecretKey(_client!));
+  }
+
+  /// Get the public key for sharing
+  Uint8List getPublicKey() {
+    _ensureConfigured();
+    return Uint8List.fromList(fula.getPublicKey(_client!));
   }
 
   // ============================================================================
@@ -64,16 +132,10 @@ class FulaApiService {
   Future<List<String>> listBuckets() async {
     _ensureConfigured();
     try {
-      final buckets = await _minio!.listBuckets();
+      final buckets = await fula.encListBuckets(_client!);
       return buckets.map((b) => b.name).toList();
     } catch (e) {
-      // If minio XML parsing fails, try to return known buckets from sync states
       debugPrint('listBuckets error: $e');
-      if (e.toString().contains('XmlText') || e.toString().contains('XmlElement')) {
-        debugPrint('XML parsing error, returning known category buckets');
-        // Return standard category buckets as fallback
-        return ['images', 'videos', 'audio', 'documents', 'archives', 'other'];
-      }
       throw FulaApiException('Failed to list buckets: $e');
     }
   }
@@ -81,25 +143,30 @@ class FulaApiService {
   Future<void> createBucket(String bucket) async {
     _ensureConfigured();
     try {
-      await _minio!.makeBucket(bucket);
+      await fula.encCreateBucket(_client!, bucket);
     } catch (e) {
-      throw FulaApiException('Failed to create bucket: $e');
+      // Bucket may already exist
+      if (!e.toString().contains('already exists')) {
+        throw FulaApiException('Failed to create bucket: $e');
+      }
     }
   }
 
   Future<bool> bucketExists(String bucket) async {
     _ensureConfigured();
     try {
-      return await _minio!.bucketExists(bucket);
+      final buckets = await listBuckets();
+      return buckets.contains(bucket);
     } catch (e) {
       throw FulaApiException('Failed to check bucket: $e');
     }
   }
 
   // ============================================================================
-  // OBJECT OPERATIONS
+  // ENCRYPTED FILE OPERATIONS (using FlatNamespace)
   // ============================================================================
 
+  /// List all files in a bucket (from the encrypted forest index)
   Future<List<FulaObject>> listObjects(
     String bucket, {
     String prefix = '',
@@ -107,61 +174,85 @@ class FulaApiService {
   }) async {
     _ensureConfigured();
     try {
-      final objects = <FulaObject>[];
-      final stream = _minio!.listObjects(bucket, prefix: prefix, recursive: recursive);
-      
-      await for (final result in stream) {
-        for (final obj in result.objects) {
-          objects.add(FulaObject(
-            key: obj.key ?? '',
-            size: obj.size ?? 0,
-            lastModified: obj.lastModified,
-            etag: obj.eTag,
-            isDirectory: false,
-          ));
-        }
-        for (final p in result.prefixes) {
-          objects.add(FulaObject(
-            key: p,
-            size: 0,
-            isDirectory: true,
-          ));
-        }
-      }
-      return objects;
+      await _ensureForestLoaded(bucket);
+
+      final files = await fula.listFromForest(_client!, bucket);
+
+      // Filter by prefix if specified
+      final filtered = prefix.isEmpty
+          ? files
+          : files.where((f) => f.originalKey.startsWith(prefix)).toList();
+
+      return filtered.map((meta) => FulaObject(
+        key: meta.originalKey,
+        size: meta.size.toInt(),
+        lastModified: meta.modifiedAt != null
+            ? DateTime.fromMillisecondsSinceEpoch(meta.modifiedAt! * 1000)
+            : null,
+        isDirectory: false,
+        metadata: {
+          'storageKey': meta.storageKey,
+          'contentType': meta.contentType ?? '',
+          'isEncrypted': meta.isEncrypted.toString(),
+        },
+      )).toList();
     } catch (e) {
       throw FulaApiException('Failed to list objects: $e');
     }
   }
 
+  /// List directory structure
+  Future<DirectoryListing> listDirectory(String bucket, {String? prefix}) async {
+    _ensureConfigured();
+    try {
+      await _ensureForestLoaded(bucket);
+      return await fula.listDirectory(_client!, bucket, prefix);
+    } catch (e) {
+      throw FulaApiException('Failed to list directory: $e');
+    }
+  }
+
+  /// Get file metadata without downloading content
   Future<FulaObjectMetadata> getObjectMetadata(String bucket, String key) async {
     _ensureConfigured();
     try {
-      final stat = await _minio!.statObject(bucket, key);
+      await _ensureForestLoaded(bucket);
+
+      // Find the file in the forest
+      final files = await fula.listFromForest(_client!, bucket);
+      final file = files.firstWhere(
+        (f) => f.originalKey == key,
+        orElse: () => throw FulaApiException('File not found: $key'),
+      );
+
       return FulaObjectMetadata(
-        size: stat.size ?? 0,
-        lastModified: stat.lastModified,
-        etag: stat.etag,
+        size: file.size.toInt(),
+        lastModified: file.modifiedAt != null
+            ? DateTime.fromMillisecondsSinceEpoch(file.modifiedAt! * 1000)
+            : null,
+        contentType: file.contentType,
+        isEncrypted: file.isEncrypted,
+        originalFilename: file.originalKey.split('/').last,
       );
     } catch (e) {
+      if (e is FulaApiException) rethrow;
       throw FulaApiException('Failed to get object metadata: $e');
     }
   }
 
+  /// Download and decrypt a file by its path
   Future<Uint8List> downloadObject(String bucket, String key) async {
     _ensureConfigured();
     try {
-      final stream = await _minio!.getObject(bucket, key);
-      final chunks = <int>[];
-      await for (final chunk in stream) {
-        chunks.addAll(chunk);
-      }
-      return Uint8List.fromList(chunks);
+      await _ensureForestLoaded(bucket);
+      final data = await fula.getFlat(_client!, bucket, key);
+      return Uint8List.fromList(data);
     } catch (e) {
       throw FulaApiException('Failed to download object: $e');
     }
   }
 
+  /// Upload and encrypt a file
   Future<String> uploadObject(
     String bucket,
     String key,
@@ -171,178 +262,207 @@ class FulaApiService {
   }) async {
     _ensureConfigured();
     try {
-      final etag = await _minio!.putObject(
-        bucket,
-        key,
-        Stream.value(data),
-        size: data.length,
-        metadata: metadata,
-      );
-      return etag;
+      await _ensureForestLoaded(bucket);
+      final result = await fula.putFlat(_client!, bucket, key, data.toList(), contentType);
+      return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload object: $e');
     }
   }
 
+  /// Delete a file
   Future<void> deleteObject(String bucket, String key) async {
     _ensureConfigured();
     try {
-      await _minio!.removeObject(bucket, key);
+      await _ensureForestLoaded(bucket);
+      await fula.deleteFlat(_client!, bucket, key);
     } catch (e) {
       throw FulaApiException('Failed to delete object: $e');
     }
   }
 
   // ============================================================================
-  // ENCRYPTED OPERATIONS
+  // ENCRYPTED OPERATIONS (Compatibility Layer)
+  // These methods maintain backward compatibility with existing code
+  // The encryption is now handled internally by fula_client
   // ============================================================================
 
+  /// Download and decrypt - now just calls downloadObject
+  /// The encryptionKey parameter is ignored as fula_client handles encryption internally
   Future<Uint8List> downloadAndDecrypt(
     String bucket,
     String key,
-    Uint8List encryptionKey,
+    Uint8List encryptionKey, // Ignored - kept for API compatibility
   ) async {
-    final encryptedData = await downloadObject(bucket, key);
-    return await EncryptionService.instance.decrypt(encryptedData, encryptionKey);
+    return downloadObject(bucket, key);
   }
 
+  /// Encrypt and upload - now just calls uploadObject with metadata
+  /// The encryptionKey parameter is ignored as fula_client handles encryption internally
   Future<String> encryptAndUpload(
     String bucket,
     String key,
     Uint8List data,
-    Uint8List encryptionKey, {
+    Uint8List encryptionKey, { // Ignored - kept for API compatibility
     String? originalFilename,
     String? contentType,
   }) async {
-    final encryptedData = await EncryptionService.instance.encrypt(data, encryptionKey);
-    
-    final metadata = <String, String>{
-      'x-fula-encrypted': 'true',
-      'x-fula-encryption-version': '1',
-    };
-    if (originalFilename != null) {
-      // Base64 encode filename to handle non-ASCII characters (emojis, Unicode)
-      // HTTP headers only support ASCII, so we encode the filename
-      metadata['x-fula-original-filename'] = base64Encode(utf8.encode(originalFilename));
-      metadata['x-fula-filename-encoding'] = 'base64';
-    }
-    if (contentType != null) {
-      metadata['x-fula-original-content-type'] = contentType;
-    }
-
-    return await uploadObject(bucket, key, encryptedData, metadata: metadata);
+    // Use the originalFilename as the key if provided, otherwise use key
+    final path = originalFilename != null ? '/$originalFilename' : key;
+    return uploadObject(bucket, path, data, contentType: contentType);
   }
 
   // ============================================================================
-  // MULTIPART UPLOAD (LARGE FILES)
+  // LARGE FILE UPLOADS
+  // fula_client handles chunking internally, so these are simplified
   // ============================================================================
-
-  static const int multipartThreshold = 5 * 1024 * 1024; // 5MB
-  static const int defaultChunkSize = 5 * 1024 * 1024; // 5MB
 
   Future<String> uploadLargeFile(
     String bucket,
     String key,
     Uint8List data, {
-    int chunkSize = defaultChunkSize,
+    int chunkSize = 5 * 1024 * 1024,
     void Function(UploadProgress)? onProgress,
     Map<String, String>? metadata,
   }) async {
     _ensureConfigured();
     try {
-      int uploaded = 0;
-      final total = data.length;
-      
-      // Add pinning headers to metadata
-      final fullMetadata = <String, String>{...?metadata};
-      if (_pinningService != null && _pinningService!.isNotEmpty) {
-        fullMetadata['x-pinning-service'] = _pinningService!;
-      }
-      if (_pinningToken != null && _pinningToken!.isNotEmpty) {
-        fullMetadata['x-pinning-token'] = _pinningToken!;
+      await _ensureForestLoaded(bucket);
+
+      // fula_client handles large files automatically
+      // Progress callback not yet supported in fula_client - upload directly
+      final result = await fula.putFlat(_client!, bucket, key, data.toList(), null);
+
+      // Report completion
+      if (onProgress != null) {
+        onProgress(UploadProgress(
+          bytesUploaded: data.length,
+          totalBytes: data.length,
+        ));
       }
 
-      final etag = await _minio!.putObject(
-        bucket,
-        key,
-        Stream.value(data),
-        size: data.length,
-        metadata: fullMetadata,
-        onProgress: (bytes) {
-          uploaded = bytes;
-          if (onProgress != null) {
-            onProgress(UploadProgress(
-              bytesUploaded: uploaded,
-              totalBytes: total,
-            ));
-          }
-        },
-      );
-      return etag;
+      return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload large file: $e');
     }
   }
 
+  /// Encrypt and upload large file - now uses fula_client's built-in encryption
   Future<String> encryptAndUploadLargeFile(
     String bucket,
     String key,
     Uint8List data,
-    Uint8List encryptionKey, {
+    Uint8List encryptionKey, { // Ignored - kept for API compatibility
     String? originalFilename,
     String? contentType,
     void Function(UploadProgress)? onProgress,
   }) async {
-    final encryptedData = await EncryptionService.instance.encrypt(data, encryptionKey);
-    
-    final metadata = <String, String>{
-      'x-fula-encrypted': 'true',
-      'x-fula-encryption-version': '1',
-    };
-    if (originalFilename != null) {
-      // Base64 encode filename to handle non-ASCII characters (emojis, Unicode)
-      // HTTP headers only support ASCII, so we encode the filename
-      metadata['x-fula-original-filename'] = base64Encode(utf8.encode(originalFilename));
-      metadata['x-fula-filename-encoding'] = 'base64';
-    }
-    if (contentType != null) {
-      metadata['x-fula-original-content-type'] = contentType;
-    }
-
-    return await uploadLargeFile(
-      bucket,
-      key,
-      encryptedData,
-      onProgress: onProgress,
-      metadata: metadata,
-    );
+    final path = originalFilename != null ? '/$originalFilename' : key;
+    return uploadLargeFile(bucket, path, data, onProgress: onProgress);
   }
 
   // ============================================================================
-  // INCOMPLETE UPLOADS MANAGEMENT
+  // BATCH OPERATIONS
+  // ============================================================================
+
+  /// Upload multiple files efficiently (deferred forest save)
+  Future<void> uploadBatch(
+    String bucket,
+    List<BatchUploadItem> files,
+  ) async {
+    _ensureConfigured();
+    try {
+      await _ensureForestLoaded(bucket);
+
+      for (final file in files) {
+        await fula.putFlatDeferred(_client!, bucket, file.path, file.data.toList(), file.contentType);
+      }
+
+      // Save forest once after all uploads
+      await fula.flushForest(_client!, bucket);
+    } catch (e) {
+      throw FulaApiException('Failed to batch upload: $e');
+    }
+  }
+
+  // ============================================================================
+  // SHARING
+  // ============================================================================
+
+  /// Create a share token for a file
+  String createShareToken(
+    String storageKey,
+    Uint8List recipientPublicKey,
+    ShareMode mode,
+    int? expiresAt,
+  ) {
+    _ensureConfigured();
+    return fula.createShareToken(
+      _client!,
+      storageKey,
+      recipientPublicKey.toList(),
+      mode,
+      expiresAt,
+    );
+  }
+
+  /// Accept a share token
+  AcceptedShareHandle acceptShareToken(String tokenJson) {
+    _ensureConfigured();
+    return fula.acceptShare(tokenJson);
+  }
+
+  /// Download a shared file
+  Future<Uint8List> downloadSharedFile(
+    String bucket,
+    String storageKey,
+    AcceptedShareHandle share,
+  ) async {
+    _ensureConfigured();
+    final data = await fula.getWithShare(_client!, bucket, storageKey, share);
+    return Uint8List.fromList(data);
+  }
+
+  /// Get share permissions
+  SharePermissions getSharePermissions(AcceptedShareHandle share) {
+    return fula.getSharePermissions(share);
+  }
+
+  /// Check if share is expired
+  bool isShareExpired(AcceptedShareHandle share) {
+    return fula.isShareExpired(share);
+  }
+
+  // ============================================================================
+  // KEY ROTATION
+  // ============================================================================
+
+  /// Create a rotation manager for key rotation
+  RotationManagerHandle createRotationManager() {
+    _ensureConfigured();
+    return fula.createRotationManager(_client!);
+  }
+
+  /// Rotate all keys in a bucket
+  Future<RotationReport> rotateBucket(
+    String bucket,
+    RotationManagerHandle manager,
+  ) async {
+    _ensureConfigured();
+    return await fula.rotateBucket(_client!, bucket, manager);
+  }
+
+  // ============================================================================
+  // INCOMPLETE UPLOADS (Compatibility - may not be needed with fula_client)
   // ============================================================================
 
   Future<List<IncompleteUploadInfo>> listIncompleteUploads(
     String bucket,
     String prefix,
   ) async {
-    _ensureConfigured();
-    try {
-      final uploads = <IncompleteUploadInfo>[];
-      final stream = _minio!.listIncompleteUploads(bucket, prefix);
-      
-      await for (final upload in stream) {
-        uploads.add(IncompleteUploadInfo(
-          key: upload.upload?.key,
-          uploadId: upload.upload?.uploadId,
-          initiated: upload.upload?.initiated,
-        ));
-      }
-      
-      return uploads;
-    } catch (e) {
-      throw FulaApiException('Failed to list incomplete uploads: $e');
-    }
+    // fula_client handles multipart internally
+    // Return empty list for compatibility
+    return [];
   }
 
   Future<void> removeIncompleteUpload(
@@ -350,16 +470,11 @@ class FulaApiService {
     String key,
     String uploadId,
   ) async {
-    _ensureConfigured();
-    try {
-      await _minio!.removeIncompleteUpload(bucket, key);
-    } catch (e) {
-      throw FulaApiException('Failed to remove incomplete upload: $e');
-    }
+    // No-op for fula_client
   }
 
   // ============================================================================
-  // PRESIGNED URLs
+  // PRESIGNED URLs (Not supported with encrypted client)
   // ============================================================================
 
   Future<String> getPresignedDownloadUrl(
@@ -367,14 +482,28 @@ class FulaApiService {
     String key, {
     int expirySeconds = 3600,
   }) async {
-    _ensureConfigured();
-    try {
-      return await _minio!.presignedGetObject(bucket, key, expires: expirySeconds);
-    } catch (e) {
-      throw FulaApiException('Failed to get presigned URL: $e');
-    }
+    throw FulaApiException(
+      'Presigned URLs are not supported with encrypted storage. '
+      'Use sharing tokens instead.'
+    );
+  }
+
+  // ============================================================================
+  // CLEANUP
+  // ============================================================================
+
+  /// Reset the service (call on logout)
+  void reset() {
+    _client = null;
+    _defaultBucket = null;
+    _isConfigured = false;
+    _loadedForests.clear();
   }
 }
+
+// ============================================================================
+// HELPER CLASSES
+// ============================================================================
 
 class UploadProgress {
   final int bytesUploaded;
@@ -386,6 +515,18 @@ class UploadProgress {
   });
 
   double get percentage => totalBytes > 0 ? (bytesUploaded / totalBytes) * 100 : 0;
+}
+
+class BatchUploadItem {
+  final String path;
+  final Uint8List data;
+  final String? contentType;
+
+  BatchUploadItem({
+    required this.path,
+    required this.data,
+    this.contentType,
+  });
 }
 
 class IncompleteUploadInfo {
@@ -406,12 +547,4 @@ class FulaApiException implements Exception {
 
   @override
   String toString() => 'FulaApiException: $message';
-}
-
-class _AllowSelfSignedHttpOverrides extends HttpOverrides {
-  @override
-  HttpClient createHttpClient(SecurityContext? context) {
-    return super.createHttpClient(context)
-      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
-  }
 }

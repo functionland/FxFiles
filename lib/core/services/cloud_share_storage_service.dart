@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/services/encryption_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
 /// Service for syncing share data to cloud storage
@@ -20,20 +20,14 @@ class CloudShareStorageService {
 
   static const String _metadataBucket = 'fula-metadata';
   static const String _sharesPrefix = '.fula/shares/';
-  static const String _sharesSuffix = '.json.enc';
 
   /// Upload outgoing shares to cloud
   ///
-  /// Shares are encrypted with user's encryption key before upload
+  /// Shares are encrypted automatically by fula_client before upload
   Future<void> uploadShares(List<OutgoingShare> shares) async {
     if (!FulaApiService.instance.isConfigured) {
       debugPrint('CloudShareStorage: Fula API not configured, skipping upload');
       return;
-    }
-
-    final encryptionKey = await AuthService.instance.getEncryptionKey();
-    if (encryptionKey == null) {
-      throw CloudShareStorageException('Encryption key not available');
     }
 
     final userId = await _getUserId();
@@ -50,27 +44,17 @@ class CloudShareStorageService {
         'shares': sharesJson,
       });
 
-      // Encrypt the JSON
-      final plainBytes = Uint8List.fromList(utf8.encode(jsonString));
-      final encryptedBytes = await EncryptionService.instance.encrypt(
-        plainBytes,
-        encryptionKey,
-      );
-
       // Ensure bucket exists
       await _ensureBucketExists();
 
-      // Upload to cloud
-      final key = '$_sharesPrefix$userId$_sharesSuffix';
+      // Upload to cloud (encryption handled by fula_client)
+      final key = '$_sharesPrefix$userId.json';
+      final data = Uint8List.fromList(utf8.encode(jsonString));
       await FulaApiService.instance.uploadObject(
         _metadataBucket,
         key,
-        encryptedBytes,
-        metadata: {
-          'x-fula-encrypted': 'true',
-          'x-fula-content-type': 'application/json',
-          'x-fula-share-count': shares.length.toString(),
-        },
+        data,
+        contentType: 'application/json',
       );
 
       debugPrint('CloudShareStorage: Uploaded ${shares.length} shares to cloud');
@@ -80,16 +64,10 @@ class CloudShareStorageService {
     }
   }
 
-  /// Download and decrypt shares from cloud
+  /// Download shares from cloud (decryption handled by fula_client)
   Future<List<OutgoingShare>> downloadShares() async {
     if (!FulaApiService.instance.isConfigured) {
       debugPrint('CloudShareStorage: Fula API not configured');
-      return [];
-    }
-
-    final encryptionKey = await AuthService.instance.getEncryptionKey();
-    if (encryptionKey == null) {
-      debugPrint('CloudShareStorage: Encryption key not available');
       return [];
     }
 
@@ -100,22 +78,16 @@ class CloudShareStorageService {
     }
 
     try {
-      final key = '$_sharesPrefix$userId$_sharesSuffix';
+      final key = '$_sharesPrefix$userId.json';
 
-      // Download encrypted data
-      final encryptedBytes = await FulaApiService.instance.downloadObject(
+      // Download and decrypt (handled by fula_client)
+      final data = await FulaApiService.instance.downloadObject(
         _metadataBucket,
         key,
       );
 
-      // Decrypt
-      final decryptedBytes = await EncryptionService.instance.decrypt(
-        encryptedBytes,
-        encryptionKey,
-      );
-
       // Parse JSON
-      final jsonString = utf8.decode(decryptedBytes);
+      final jsonString = utf8.decode(data);
       final json = jsonDecode(jsonString) as Map<String, dynamic>;
 
       final sharesJson = json['shares'] as List<dynamic>;
@@ -126,7 +98,9 @@ class CloudShareStorageService {
       debugPrint('CloudShareStorage: Downloaded ${shares.length} shares from cloud');
       return shares;
     } on FulaApiException catch (e) {
-      if (e.message.contains('NoSuchKey') || e.message.contains('404')) {
+      if (e.message.contains('NoSuchKey') ||
+          e.message.contains('404') ||
+          e.message.contains('not found')) {
         // No shares stored yet
         debugPrint('CloudShareStorage: No shares found in cloud');
         return [];
@@ -188,7 +162,7 @@ class CloudShareStorageService {
     if (userId == null) return;
 
     try {
-      final key = '$_sharesPrefix$userId$_sharesSuffix';
+      final key = '$_sharesPrefix$userId.json';
       await FulaApiService.instance.deleteObject(_metadataBucket, key);
       debugPrint('CloudShareStorage: Deleted shares from cloud');
     } catch (e) {
@@ -201,11 +175,10 @@ class CloudShareStorageService {
     final publicKey = await AuthService.instance.getPublicKeyString();
     if (publicKey == null) return null;
 
-    // Use first 16 chars of public key hash as user ID
-    final hash = await EncryptionService.instance.hashDataAsync(
-      Uint8List.fromList(utf8.encode(publicKey)),
-    );
-    return hash.substring(0, 16).replaceAll('/', '_').replaceAll('+', '-');
+    // Use first 16 chars of SHA256 hash of public key as user ID
+    final bytes = utf8.encode(publicKey);
+    final hash = sha256.convert(bytes);
+    return hash.toString().substring(0, 16);
   }
 
   /// Ensure the metadata bucket exists

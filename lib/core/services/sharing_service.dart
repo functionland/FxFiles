@@ -1,9 +1,10 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/share_token.dart';
-import 'package:fula_files/core/services/encryption_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
@@ -32,6 +33,140 @@ class SharingService {
   static const String _revokedSharesKey = 'revoked_shares';
 
   final _uuid = const Uuid();
+  final _random = Random.secure();
+
+  // Cryptographic algorithms
+  static final _x25519 = X25519();
+  static final _aesGcm = AesGcm.with256bits();
+
+  // ============================================================================
+  // CRYPTOGRAPHIC HELPERS (replaces EncryptionService)
+  // ============================================================================
+
+  /// Generate X25519 keypair for sharing
+  Future<({Uint8List publicKey, Uint8List privateKey})> _generateKeyPair() async {
+    final keyPair = await _x25519.newKeyPair();
+    final publicKey = await keyPair.extractPublicKey();
+    final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
+    return (
+      publicKey: Uint8List.fromList(publicKey.bytes),
+      privateKey: Uint8List.fromList(privateKeyBytes),
+    );
+  }
+
+  /// Wrap DEK for recipient using X25519 ECDH + AES-GCM
+  Future<Uint8List> _wrapKeyForRecipient(
+    Uint8List dek,
+    Uint8List recipientPublicKey,
+    Uint8List ephemeralPrivateKey,
+  ) async {
+    // Reconstruct keys
+    final ephemeralKeyPair = await _x25519.newKeyPairFromSeed(ephemeralPrivateKey);
+    final recipientPubKey = SimplePublicKey(recipientPublicKey, type: KeyPairType.x25519);
+
+    // Derive shared secret
+    final sharedSecret = await _x25519.sharedSecretKey(
+      keyPair: ephemeralKeyPair,
+      remotePublicKey: recipientPubKey,
+    );
+    final sharedSecretBytes = await sharedSecret.extractBytes();
+
+    // Use shared secret as AES key to wrap DEK
+    final secretKey = SecretKey(sharedSecretBytes);
+    final nonce = _aesGcm.newNonce();
+    final secretBox = await _aesGcm.encrypt(dek, secretKey: secretKey, nonce: nonce);
+
+    // Return nonce + ciphertext + mac
+    return Uint8List.fromList([
+      ...nonce,
+      ...secretBox.cipherText,
+      ...secretBox.mac.bytes,
+    ]);
+  }
+
+  /// Unwrap DEK from sender using X25519 ECDH + AES-GCM
+  Future<Uint8List> _unwrapKeyFromSender(
+    Uint8List wrappedDek,
+    Uint8List senderEphemeralPublicKey,
+    Uint8List recipientPrivateKey,
+  ) async {
+    // Extract nonce, ciphertext, and mac
+    final nonceLength = _aesGcm.nonceLength;
+    final macLength = _aesGcm.macAlgorithm.macLength;
+
+    final nonce = wrappedDek.sublist(0, nonceLength);
+    final cipherText = wrappedDek.sublist(nonceLength, wrappedDek.length - macLength);
+    final mac = wrappedDek.sublist(wrappedDek.length - macLength);
+
+    // Reconstruct keys
+    final recipientKeyPair = await _x25519.newKeyPairFromSeed(recipientPrivateKey);
+    final senderPubKey = SimplePublicKey(senderEphemeralPublicKey, type: KeyPairType.x25519);
+
+    // Derive shared secret
+    final sharedSecret = await _x25519.sharedSecretKey(
+      keyPair: recipientKeyPair,
+      remotePublicKey: senderPubKey,
+    );
+    final sharedSecretBytes = await sharedSecret.extractBytes();
+
+    // Use shared secret as AES key to unwrap DEK
+    final secretKey = SecretKey(sharedSecretBytes);
+    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
+    final dek = await _aesGcm.decrypt(secretBox, secretKey: secretKey);
+
+    return Uint8List.fromList(dek);
+  }
+
+  /// Derive encryption key from password using PBKDF2
+  Future<Uint8List> _deriveKeyFromPassword(String password, Uint8List salt) async {
+    final pbkdf2 = Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: 100000,
+      bits: 256,
+    );
+
+    final secretKey = await pbkdf2.deriveKey(
+      secretKey: SecretKey(utf8.encode(password)),
+      nonce: salt,
+    );
+
+    return Uint8List.fromList(await secretKey.extractBytes());
+  }
+
+  /// Encrypt data using AES-GCM
+  Future<Uint8List> _encrypt(Uint8List data, Uint8List key) async {
+    final secretKey = SecretKey(key);
+    final nonce = _aesGcm.newNonce();
+    final secretBox = await _aesGcm.encrypt(data, secretKey: secretKey, nonce: nonce);
+
+    // Return nonce + ciphertext + mac
+    return Uint8List.fromList([
+      ...nonce,
+      ...secretBox.cipherText,
+      ...secretBox.mac.bytes,
+    ]);
+  }
+
+  /// Decrypt data using AES-GCM
+  Future<Uint8List> _decrypt(Uint8List encryptedData, Uint8List key) async {
+    final nonceLength = _aesGcm.nonceLength;
+    final macLength = _aesGcm.macAlgorithm.macLength;
+
+    final nonce = encryptedData.sublist(0, nonceLength);
+    final cipherText = encryptedData.sublist(nonceLength, encryptedData.length - macLength);
+    final mac = encryptedData.sublist(encryptedData.length - macLength);
+
+    final secretKey = SecretKey(key);
+    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
+    final decrypted = await _aesGcm.decrypt(secretBox, secretKey: secretKey);
+
+    return Uint8List.fromList(decrypted);
+  }
+
+  /// Generate random salt
+  Uint8List _generateSalt(int length) {
+    return Uint8List.fromList(List.generate(length, (_) => _random.nextInt(256)));
+  }
 
   // ============================================================================
   // OWNER SIDE - Creating and managing shares
@@ -40,7 +175,7 @@ class SharingService {
   /// Create a share token for a recipient
   ///
   /// Process:
-  /// 1. Generate ephemeral keypair for HPKE
+  /// 1. Generate ephemeral keypair for ECDH
   /// 2. Derive shared secret using X25519 DH
   /// 3. Wrap DEK with derived key
   /// 4. Create share token with wrapped DEK
@@ -64,13 +199,13 @@ class SharingService {
       throw SharingException('Owner public key not available. Please sign in first.');
     }
 
-    // Generate ephemeral keypair for HPKE key wrapping
-    final ephemeralKeyPair = await EncryptionService.instance.generateKeyPair();
+    // Generate ephemeral keypair for ECDH key wrapping
+    final ephemeralKeyPair = await _generateKeyPair();
 
-    // Wrap DEK for recipient using HPKE
+    // Wrap DEK for recipient using X25519 ECDH + AES-GCM
     // DEK is encrypted with a key derived from:
-    // ephemeral_secret + recipient_public_key
-    final wrappedDek = await EncryptionService.instance.wrapKeyForRecipient(
+    // ephemeral_private + recipient_public_key
+    final wrappedDek = await _wrapKeyForRecipient(
       dek,
       recipientPublicKey,
       ephemeralKeyPair.privateKey,
@@ -166,7 +301,7 @@ class SharingService {
     String? gatewayBaseUrl,
   }) async {
     // Generate a disposable keypair for this link
-    final linkKeyPair = await EncryptionService.instance.generateKeyPair();
+    final linkKeyPair = await _generateKeyPair();
 
     // Create share token with the disposable public key as recipient
     final token = await createShare(
@@ -239,7 +374,7 @@ class SharingService {
     }
 
     // Generate a disposable keypair for this link
-    final linkKeyPair = await EncryptionService.instance.generateKeyPair();
+    final linkKeyPair = await _generateKeyPair();
 
     // Create share token with the disposable public key as recipient
     final token = await createShare(
@@ -268,14 +403,11 @@ class SharingService {
     );
 
     // Encrypt the payload with password-derived key
-    final salt = EncryptionService.instance.generateSalt(16);
-    final passwordKey = await EncryptionService.instance.deriveKeyFromPassword(
-      password,
-      salt,
-    );
+    final salt = _generateSalt(16);
+    final passwordKey = await _deriveKeyFromPassword(password, salt);
 
     final innerPayloadBytes = utf8.encode(jsonEncode(innerPayload.toJson()));
-    final encryptedPayload = await EncryptionService.instance.encrypt(
+    final encryptedPayload = await _encrypt(
       Uint8List.fromList(innerPayloadBytes),
       passwordKey,
     );
@@ -333,21 +465,15 @@ class SharingService {
       throw SharingException('Not a password-protected link');
     }
 
-    final salt = base64Decode(outerJson['s'] as String);
-    final encryptedPayload = base64Decode(outerJson['e'] as String);
+    final salt = Uint8List.fromList(base64Decode(outerJson['s'] as String));
+    final encryptedPayload = Uint8List.fromList(base64Decode(outerJson['e'] as String));
 
     // Derive key from password
-    final passwordKey = await EncryptionService.instance.deriveKeyFromPassword(
-      password,
-      salt,
-    );
+    final passwordKey = await instance._deriveKeyFromPassword(password, salt);
 
     // Decrypt inner payload
     try {
-      final decryptedBytes = await EncryptionService.instance.decrypt(
-        encryptedPayload,
-        passwordKey,
-      );
+      final decryptedBytes = await instance._decrypt(encryptedPayload, passwordKey);
       final innerJson = jsonDecode(utf8.decode(decryptedBytes)) as Map<String, dynamic>;
       return PublicLinkPayload.fromJson(innerJson);
     } catch (e) {
@@ -445,7 +571,7 @@ class SharingService {
   // ============================================================================
 
   /// Accept a share token
-  /// 
+  ///
   /// Process:
   /// 1. Verify token is valid (not expired, not revoked)
   /// 2. Unwrap DEK using recipient's private key
@@ -477,7 +603,7 @@ class SharingService {
     }
 
     // Unwrap DEK using recipient's private key and ephemeral public key
-    final dek = await EncryptionService.instance.unwrapKeyFromSender(
+    final dek = await _unwrapKeyFromSender(
       token.wrappedDek,
       token.ephemeralPublicKey,
       privateKey,

@@ -39,25 +39,42 @@ class FulaObject {
     return parts.join('/');
   }
 
-  bool get isEncrypted => metadata?['x-fula-encrypted'] == 'true';
-  
-  /// Get original filename, decoding base64 if necessary
-  String? get originalFilename {
-    final encoded = metadata?['x-fula-original-filename'];
-    if (encoded == null) return null;
-    
-    // Check if filename is base64 encoded
-    if (metadata?['x-fula-filename-encoding'] == 'base64') {
-      try {
-        return utf8.decode(base64Decode(encoded));
-      } catch (_) {
-        return encoded; // Fallback to raw value if decoding fails
-      }
-    }
-    return encoded;
+  /// Check if file is encrypted (supports both old and new metadata formats)
+  bool get isEncrypted {
+    // New format from fula_client
+    if (metadata?['isEncrypted'] == 'true') return true;
+    // Legacy format
+    if (metadata?['x-fula-encrypted'] == 'true') return true;
+    return false;
   }
-  
-  String? get originalContentType => metadata?['x-fula-original-content-type'];
+
+  /// Get storage key (obfuscated CID-like key used on server)
+  String? get storageKey => metadata?['storageKey'];
+
+  /// Get original filename (with fula_client, key IS the original name)
+  /// For legacy compatibility, also checks x-fula-original-filename
+  String? get originalFilename {
+    // Legacy format - check for encoded filename
+    final encoded = metadata?['x-fula-original-filename'];
+    if (encoded != null) {
+      // Check if filename is base64 encoded
+      if (metadata?['x-fula-filename-encoding'] == 'base64') {
+        try {
+          return utf8.decode(base64Decode(encoded));
+        } catch (_) {
+          return encoded; // Fallback to raw value if decoding fails
+        }
+      }
+      return encoded;
+    }
+    // With fula_client FlatNamespace, key is the original path
+    return name;
+  }
+
+  /// Get content type (supports both old and new formats)
+  String? get originalContentType {
+    return metadata?['contentType'] ?? metadata?['x-fula-original-content-type'];
+  }
 
   bool get isImage {
     final ext = extension;

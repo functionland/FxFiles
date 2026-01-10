@@ -17,21 +17,20 @@ dependencies:
   # Navigation
   go_router: ^17.0.1
   
-  # Storage & Files
-  minio: ^3.5.8
+  # Storage & Files (with Encryption)
+  fula_client: ^0.2.0
   path_provider: ^2.1.5
   file_picker: ^10.3.7
   open_filex: ^4.6.0
   mime: ^2.0.0
-  
+
   # Local Storage & Security
   flutter_secure_storage: ^10.0.0
   hive_flutter: ^1.1.0
-  
-  # Encryption
+
+  # Key Derivation (PBKDF2 for deterministic user keys)
   cryptography: ^2.7.0
-  pointycastle: ^4.0.0
-  
+
   # Authentication
   google_sign_in: ^7.2.0
   

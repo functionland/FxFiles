@@ -1,23 +1,25 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
-import 'package:fula_files/core/services/encryption_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 
 enum AuthProvider { google }
 
 // Google OAuth Configuration
 // See: https://console.cloud.google.com/apis/credentials
-// 
+//
 // Required setup in Google Cloud Console:
 // 1. Create an Android OAuth client with package: land.fx.files and your SHA-1
 // 2. Create a Web OAuth client (for serverClientId to get idToken)
 // 3. Configure OAuth consent screen
 //
 // Note: For Android, clientId is auto-detected from the signing config
-const String _googleClientIdIOS = ''; // iOS OAuth Client ID  
+const String _googleClientIdIOS = ''; // iOS OAuth Client ID
 const String _googleServerClientId = '1095513138272-ctte75q6u17pjusvk9nj607qhecd03qn.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
 
 class AuthUser {
@@ -70,10 +72,10 @@ class AuthService {
 
   Future<void> _ensureGoogleInitialized() async {
     if (_googleInitialized) return;
-    
+
     String? clientId;
     String? serverClientId;
-    
+
     if (Platform.isAndroid) {
       // Android: clientId is auto-detected, only serverClientId needed for idToken
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
@@ -81,14 +83,14 @@ class AuthService {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
-    
+
     await _googleSignIn.initialize(
       clientId: clientId,
       serverClientId: serverClientId,
     );
     _googleInitialized = true;
   }
-  
+
   /// Check if Google Sign-In is properly configured
   bool get isGoogleSignInConfigured {
     if (Platform.isAndroid) {
@@ -108,6 +110,7 @@ class AuthService {
       if (userJson != null) {
         _currentUser = AuthUser.fromJson(userJson);
         await _deriveEncryptionKey();
+        await _initializeFulaClient();
         return true;
       }
 
@@ -131,12 +134,12 @@ class AuthService {
   Future<AuthUser?> signInWithGoogle() async {
     try {
       await _ensureGoogleInitialized();
-      
+
       if (!_googleSignIn.supportsAuthenticate()) {
         debugPrint('Google Sign-In: authenticate not supported on this platform');
         throw Exception('Google Sign-In not supported on this device');
       }
-      
+
       final account = await _googleSignIn.authenticate();
       await _handleGoogleSignIn(account);
       return _currentUser;
@@ -177,24 +180,69 @@ class AuthService {
     );
 
     await _deriveEncryptionKey();
+    await _initializeFulaClient();
   }
 
+  /// Derive encryption key using PBKDF2 (same as before for compatibility)
   Future<void> _deriveEncryptionKey() async {
     if (_currentUser == null) return;
 
     final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
-    
-    // Use email as salt for per-user uniqueness while remaining deterministic
-    // Same user ID + same email = same key across devices/platforms
-    _encryptionKey = await EncryptionService.instance.deriveKeyFromUserId(
-      combinedId,
-      _currentUser!.email,
+
+    // Use PBKDF2 with same parameters as before for key compatibility
+    // Salt: 'fula-files-v1:{email}'
+    // Iterations: 100,000
+    // Output: 256 bits (32 bytes)
+    final salt = 'fula-files-v1:${_currentUser!.email}';
+
+    final pbkdf2 = Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: 100000,
+      bits: 256,
     );
+
+    final secretKey = await pbkdf2.deriveKey(
+      secretKey: SecretKey(utf8.encode(combinedId)),
+      nonce: utf8.encode(salt),
+    );
+
+    _encryptionKey = Uint8List.fromList(await secretKey.extractBytes());
 
     await SecureStorageService.instance.write(
       SecureStorageKeys.encryptionKey,
       base64Encode(_encryptionKey!),
     );
+  }
+
+  /// Initialize the fula_client with the derived encryption key
+  Future<void> _initializeFulaClient() async {
+    if (_encryptionKey == null) {
+      debugPrint('Cannot initialize FulaApiService: no encryption key');
+      return;
+    }
+
+    try {
+      // Get stored endpoint and token
+      final endpoint = await SecureStorageService.instance.read(
+        SecureStorageKeys.apiGatewayUrl,
+      );
+      final accessToken = await SecureStorageService.instance.read(
+        SecureStorageKeys.jwtToken,
+      );
+
+      if (endpoint != null && endpoint.isNotEmpty) {
+        await FulaApiService.instance.initialize(
+          endpoint: endpoint,
+          secretKey: _encryptionKey!,
+          accessToken: accessToken,
+        );
+        debugPrint('FulaApiService initialized');
+      } else {
+        debugPrint('FulaApiService not initialized: no endpoint configured');
+      }
+    } catch (e) {
+      debugPrint('Failed to initialize FulaApiService: $e');
+    }
   }
 
   Future<Uint8List?> getEncryptionKey() async {
@@ -219,74 +267,39 @@ class AuthService {
 
   // ============================================================================
   // KEY PAIR MANAGEMENT FOR SHARING
+  // Now uses fula_client's built-in keypair
   // ============================================================================
 
-  Uint8List? _publicKey;
-  Uint8List? _privateKey;
-
+  /// Get the user's public key for sharing
+  /// This is derived from the secret key by fula_client
   Future<Uint8List?> getPublicKey() async {
-    if (_publicKey != null) return _publicKey;
+    if (!FulaApiService.instance.isConfigured) {
+      // Try to initialize if not configured
+      await _initializeFulaClient();
+    }
 
+    if (FulaApiService.instance.isConfigured) {
+      return FulaApiService.instance.getPublicKey();
+    }
+
+    // Fallback: try to load from storage (for backwards compatibility)
     final stored = await SecureStorageService.instance.read(
       SecureStorageKeys.userPublicKey,
     );
-
     if (stored != null) {
-      _publicKey = base64Decode(stored);
-      return _publicKey;
-    }
-
-    if (_currentUser != null) {
-      await _generateShareKeyPair();
-      return _publicKey;
+      return base64Decode(stored);
     }
 
     return null;
   }
 
+  /// Get the user's private key for sharing
+  /// With fula_client, the private key is managed internally
+  /// This method is kept for backward compatibility but returns the secret key
   Future<Uint8List?> getPrivateKey() async {
-    if (_privateKey != null) return _privateKey;
-
-    final stored = await SecureStorageService.instance.read(
-      SecureStorageKeys.userPrivateKey,
-    );
-
-    if (stored != null) {
-      _privateKey = base64Decode(stored);
-      return _privateKey;
-    }
-
-    if (_currentUser != null) {
-      await _generateShareKeyPair();
-      return _privateKey;
-    }
-
-    return null;
-  }
-
-  Future<void> _generateShareKeyPair() async {
-    if (_currentUser == null) return;
-    
-    // Derive key pair deterministically from user ID
-    // Uses different salt than encryption key, so they're cryptographically isolated
-    // Email included in salt for per-user uniqueness while remaining deterministic
-    final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
-    final keyPair = await EncryptionService.instance.deriveKeyPairFromUserId(
-      combinedId,
-      _currentUser!.email,
-    );
-    
-    _publicKey = keyPair.publicKey;
-    _privateKey = keyPair.privateKey;
-
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.userPublicKey,
-      base64Encode(_publicKey!),
-    );
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.userPrivateKey,
-      base64Encode(_privateKey!),
-    );
+    // The private key in fula_client is derived from the secret key
+    // We return the secret key for backward compatibility
+    return getEncryptionKey();
   }
 
   Future<String?> getShareId() async {
@@ -302,11 +315,11 @@ class AuthService {
 
   static Uint8List decodeShareId(String input) {
     String keyStr = input.trim();
-    
+
     if (keyStr.toUpperCase().startsWith('FULA-')) {
       keyStr = keyStr.substring(5);
     }
-    
+
     try {
       final padded = _addBase64Padding(keyStr);
       final standard = padded.replaceAll('-', '+').replaceAll('_', '/');
@@ -355,10 +368,11 @@ class AuthService {
       // Clear sync queues and cached data for the old user
       await SyncService.instance.clearAll();
 
+      // Reset FulaApiService
+      FulaApiService.instance.reset();
+
       _currentUser = null;
       _encryptionKey = null;
-      _publicKey = null;
-      _privateKey = null;
     } catch (e) {
       debugPrint('Sign out error: $e');
       rethrow;

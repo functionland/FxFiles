@@ -5,8 +5,6 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/services/encryption_service.dart';
-import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
 class PlaylistService {
@@ -162,13 +160,8 @@ class PlaylistService {
   // ============================================================================
 
   Future<Uint8List?> _getEncryptionKey() async {
-    final user = AuthService.instance.currentUser;
-    if (user == null) return null;
-
-    return await EncryptionService.instance.deriveKeyFromUserId(
-      user.id,
-      user.email ?? user.id,
-    );
+    // Get encryption key from AuthService (derived during login)
+    return await AuthService.instance.getEncryptionKey();
   }
 
   Future<void> syncPlaylistToCloud(String playlistId) async {
