@@ -172,6 +172,10 @@ class ShareToken extends Equatable {
   /// Unique identifier for this share
   final String id;
 
+  /// fula_client share token JSON (new format)
+  /// Contains encrypted key share for the recipient
+  final String? fulaShareToken;
+
   /// Owner's public key (for verification)
   final Uint8List ownerPublicKey;
 
@@ -179,12 +183,13 @@ class ShareToken extends Equatable {
   /// For public links, this is a disposable generated keypair
   final Uint8List recipientPublicKey;
 
-  /// Encrypted DEK (wrapped for recipient using HPKE)
-  /// The DEK is re-encrypted for the recipient's public key
-  final Uint8List wrappedDek;
+  /// DEPRECATED: Encrypted DEK (wrapped for recipient using HPKE)
+  /// Only kept for backward compatibility with serialized data
+  final Uint8List? wrappedDek;
 
-  /// Ephemeral public key used in HPKE encryption
-  final Uint8List ephemeralPublicKey;
+  /// DEPRECATED: Ephemeral public key used in HPKE encryption
+  /// Only kept for backward compatibility with serialized data
+  final Uint8List? ephemeralPublicKey;
 
   /// Path scope - only files under this path can be accessed
   final String pathScope;
@@ -226,12 +231,13 @@ class ShareToken extends Equatable {
     required this.id,
     required this.ownerPublicKey,
     required this.recipientPublicKey,
-    required this.wrappedDek,
-    required this.ephemeralPublicKey,
     required this.pathScope,
     required this.bucket,
     required this.permissions,
     required this.createdAt,
+    this.fulaShareToken,
+    this.wrappedDek,
+    this.ephemeralPublicKey,
     this.expiresAt,
     this.label,
     this.isRevoked = false,
@@ -272,10 +278,11 @@ class ShareToken extends Equatable {
   /// Convert to JSON for transmission
   Map<String, dynamic> toJson() => {
     'id': id,
+    if (fulaShareToken != null) 'fulaShareToken': fulaShareToken,
     'ownerPublicKey': base64Encode(ownerPublicKey),
     'recipientPublicKey': base64Encode(recipientPublicKey),
-    'wrappedDek': base64Encode(wrappedDek),
-    'ephemeralPublicKey': base64Encode(ephemeralPublicKey),
+    if (wrappedDek != null) 'wrappedDek': base64Encode(wrappedDek!),
+    if (ephemeralPublicKey != null) 'ephemeralPublicKey': base64Encode(ephemeralPublicKey!),
     'pathScope': pathScope,
     'bucket': bucket,
     'permissions': permissions.toJson(),
@@ -293,10 +300,15 @@ class ShareToken extends Equatable {
   /// Create from JSON
   factory ShareToken.fromJson(Map<String, dynamic> json) => ShareToken(
     id: json['id'] as String,
+    fulaShareToken: json['fulaShareToken'] as String?,
     ownerPublicKey: base64Decode(json['ownerPublicKey'] as String),
     recipientPublicKey: base64Decode(json['recipientPublicKey'] as String),
-    wrappedDek: base64Decode(json['wrappedDek'] as String),
-    ephemeralPublicKey: base64Decode(json['ephemeralPublicKey'] as String),
+    wrappedDek: json['wrappedDek'] != null
+        ? base64Decode(json['wrappedDek'] as String)
+        : null,
+    ephemeralPublicKey: json['ephemeralPublicKey'] != null
+        ? base64Decode(json['ephemeralPublicKey'] as String)
+        : null,
     pathScope: json['pathScope'] as String,
     bucket: json['bucket'] as String,
     permissions: SharePermissionsExtension.fromJson(json['permissions'] as String),
@@ -331,6 +343,7 @@ class ShareToken extends Equatable {
   /// Create a revoked copy of this token
   ShareToken revoke() => ShareToken(
     id: id,
+    fulaShareToken: fulaShareToken,
     ownerPublicKey: ownerPublicKey,
     recipientPublicKey: recipientPublicKey,
     wrappedDek: wrappedDek,
@@ -352,6 +365,7 @@ class ShareToken extends Equatable {
   /// Create a copy with updated fields
   ShareToken copyWith({
     String? id,
+    String? fulaShareToken,
     Uint8List? ownerPublicKey,
     Uint8List? recipientPublicKey,
     Uint8List? wrappedDek,
@@ -370,6 +384,7 @@ class ShareToken extends Equatable {
     String? contentType,
   }) => ShareToken(
     id: id ?? this.id,
+    fulaShareToken: fulaShareToken ?? this.fulaShareToken,
     ownerPublicKey: ownerPublicKey ?? this.ownerPublicKey,
     recipientPublicKey: recipientPublicKey ?? this.recipientPublicKey,
     wrappedDek: wrappedDek ?? this.wrappedDek,
@@ -391,6 +406,7 @@ class ShareToken extends Equatable {
   @override
   List<Object?> get props => [
     id,
+    fulaShareToken,
     ownerPublicKey,
     recipientPublicKey,
     pathScope,
@@ -409,16 +425,21 @@ class ShareToken extends Equatable {
 class AcceptedShare {
   /// The original share token
   final ShareToken token;
-  
-  /// The decrypted DEK (Data Encryption Key)
-  final Uint8List dek;
-  
+
+  /// fula_client share token for downloads (new format)
+  final String? fulaShareToken;
+
+  /// DEPRECATED: The decrypted DEK (Data Encryption Key)
+  /// No longer used with fula_client - kept for backward compatibility
+  final Uint8List? dek;
+
   /// When this share was accepted
   final DateTime acceptedAt;
-  
+
   AcceptedShare({
     required this.token,
-    required this.dek,
+    this.fulaShareToken,
+    this.dek,
     DateTime? acceptedAt,
   }) : acceptedAt = acceptedAt ?? DateTime.now();
   
@@ -455,16 +476,21 @@ class AcceptedShare {
   /// Convert to JSON for storage
   Map<String, dynamic> toJson() => {
     'token': token.toJson(),
-    'dek': base64Encode(dek),
+    if (fulaShareToken != null) 'fulaShareToken': fulaShareToken,
+    if (dek != null) 'dek': base64Encode(dek!),
     'acceptedAt': acceptedAt.toIso8601String(),
   };
-  
+
   /// Create from JSON
   factory AcceptedShare.fromJson(Map<String, dynamic> json) => AcceptedShare(
     token: ShareToken.fromJson(json['token'] as Map<String, dynamic>),
-    dek: base64Decode(json['dek'] as String),
+    fulaShareToken: json['fulaShareToken'] as String?,
+    dek: json['dek'] != null ? base64Decode(json['dek'] as String) : null,
     acceptedAt: DateTime.parse(json['acceptedAt'] as String),
   );
+
+  /// Get the share ID
+  String get id => token.id;
 }
 
 /// Represents a share that the owner has created (outgoing share)

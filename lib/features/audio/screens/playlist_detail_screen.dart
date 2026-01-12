@@ -375,12 +375,14 @@ class _TrackListItem extends StatelessWidget {
             if (isEditing) ...[
               IconButton(
                 icon: const Icon(LucideIcons.trash2, size: 20),
+                tooltip: 'Remove track',
                 onPressed: onRemove,
               ),
               const Icon(LucideIcons.gripVertical, size: 20),
             ] else
               IconButton(
                 icon: const Icon(LucideIcons.moreVertical, size: 20),
+                tooltip: 'More options',
                 onPressed: () => _showTrackMenu(context),
               ),
           ],

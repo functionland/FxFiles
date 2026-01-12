@@ -15,6 +15,7 @@ import 'package:fula_files/features/home/widgets/featured_section.dart';
 import 'package:fula_files/features/home/widgets/storage_section.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -142,16 +143,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       : null,
                 )
               : const Icon(LucideIcons.userCircle),
+          tooltip: 'Profile',
           onPressed: () => _showProfileSheet(context),
         ),
         title: const Text('FxFiles'),
         actions: [
           IconButton(
             icon: const Icon(LucideIcons.search),
+            tooltip: 'Search',
             onPressed: () => context.push('/search'),
           ),
           IconButton(
             icon: const Icon(LucideIcons.settings),
+            tooltip: 'Settings',
             onPressed: () => context.push('/settings'),
           ),
         ],
@@ -504,7 +508,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         setState(() => _isLinkingWallet = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to link wallet: $e'),
+            content: Text(ErrorMessages.forBilling(e, operation: 'link wallet')),
             backgroundColor: Colors.red,
           ),
         );
@@ -622,7 +626,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     } catch (e) {
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Sign in failed: $e'), backgroundColor: Colors.red),
+                          SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
                         );
                       }
                     }

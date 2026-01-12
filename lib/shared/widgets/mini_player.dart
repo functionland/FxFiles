@@ -133,6 +133,7 @@ class _MiniPlayerContent extends StatelessWidget {
                         onPressed: () => service.skipToPrevious(),
                         padding: const EdgeInsets.all(8),
                         constraints: const BoxConstraints(),
+                        tooltip: 'Previous track',
                       ),
                       // Play/Pause
                       StreamBuilder<bool>(
@@ -147,6 +148,7 @@ class _MiniPlayerContent extends StatelessWidget {
                             onPressed: () => service.playPause(),
                             padding: const EdgeInsets.all(8),
                             constraints: const BoxConstraints(),
+                            tooltip: isPlaying ? 'Pause' : 'Play',
                           );
                         },
                       ),
@@ -156,6 +158,7 @@ class _MiniPlayerContent extends StatelessWidget {
                         onPressed: () => service.skipToNext(),
                         padding: const EdgeInsets.all(8),
                         constraints: const BoxConstraints(),
+                        tooltip: 'Next track',
                       ),
                       // Close
                       IconButton(
@@ -163,6 +166,7 @@ class _MiniPlayerContent extends StatelessWidget {
                         onPressed: () => service.stop(),
                         padding: const EdgeInsets.all(8),
                         constraints: const BoxConstraints(),
+                        tooltip: 'Stop playback',
                       ),
                     ],
                   ),

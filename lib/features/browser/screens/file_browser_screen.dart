@@ -30,6 +30,7 @@ import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 /// View mode for file browser
 enum ViewMode {
@@ -329,7 +330,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -947,12 +948,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           if (!_isCategoryMode && !_isCloudMode)
             IconButton(
               icon: const Icon(LucideIcons.folderUp),
+              tooltip: 'Go up',
               onPressed: _navigateUp,
             ),
           IconButton(
             icon: const Icon(LucideIcons.refreshCw),
-            onPressed: _isCloudMode 
-                ? _loadCloudData 
+            tooltip: 'Refresh',
+            onPressed: _isCloudMode
+                ? _loadCloudData
                 : (_isCategoryMode ? _loadCategoryFiles : _loadFiles),
           ),
         ],
@@ -1748,7 +1751,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forUpload(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -1940,7 +1943,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to enable sync: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -1959,7 +1962,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to disable sync: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -1978,7 +1981,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2089,7 +2092,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to enable sync: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2107,7 +2110,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to disable sync: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2125,7 +2128,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forSync(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2481,7 +2484,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forShare(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2500,7 +2503,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forShare(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2778,7 +2781,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forDownload(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -2835,7 +2838,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+            SnackBar(content: Text(ErrorMessages.forRename(e)), backgroundColor: Colors.red),
           );
         }
       }
@@ -2865,7 +2868,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             } catch (e) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Copy failed: $e'), backgroundColor: Colors.red),
+                  SnackBar(content: Text(ErrorMessages.forCopy(e)), backgroundColor: Colors.red),
                 );
               }
             }
@@ -2890,7 +2893,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             } catch (e) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Move failed: $e'), backgroundColor: Colors.red),
+                  SnackBar(content: Text(ErrorMessages.forMove(e)), backgroundColor: Colors.red),
                 );
               }
             }
@@ -2956,7 +2959,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('$e'), backgroundColor: Colors.orange),
+            SnackBar(content: Text(ErrorMessages.forDelete(e)), backgroundColor: Colors.orange),
           );
         }
       }
@@ -3008,7 +3011,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+            SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
           );
         }
       }
@@ -3043,7 +3046,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+            SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
           );
         }
       }
@@ -3124,7 +3127,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -3144,7 +3147,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error selecting folder: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'select folder')), backgroundColor: Colors.red),
         );
       }
     }
@@ -3219,7 +3222,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }

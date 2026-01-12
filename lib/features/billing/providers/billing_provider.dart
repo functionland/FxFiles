@@ -5,6 +5,7 @@ import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 /// State for the billing screen
 class BillingState {
@@ -129,7 +130,7 @@ class BillingNotifier extends Notifier<BillingState> {
       debugPrint('BillingProvider: error - $e');
       state = state.copyWith(
         isLoading: false,
-        error: 'Failed to load billing data: $e',
+        error: ErrorMessages.forBilling(e, operation: 'load billing data'),
       );
     }
   }
@@ -204,7 +205,7 @@ class BillingNotifier extends Notifier<BillingState> {
     } catch (e) {
       state = state.copyWith(
         isLinkingWallet: false,
-        error: 'Failed to link wallet: $e',
+        error: ErrorMessages.forBilling(e, operation: 'link wallet'),
       );
       return false;
     }
@@ -296,7 +297,7 @@ class BillingNotifier extends Notifier<BillingState> {
     } catch (e) {
       state = state.copyWith(
         isPurchasing: false,
-        error: 'Failed to purchase credits: $e',
+        error: ErrorMessages.forBilling(e, operation: 'purchase credits'),
       );
       return false;
     }
@@ -338,7 +339,7 @@ class BillingNotifier extends Notifier<BillingState> {
     } catch (e) {
       state = state.copyWith(
         isLoadingHistory: false,
-        error: 'Failed to load history: $e',
+        error: ErrorMessages.forBilling(e, operation: 'load history'),
       );
     }
   }

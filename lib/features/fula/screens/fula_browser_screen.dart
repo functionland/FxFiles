@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class FulaBrowserScreen extends StatefulWidget {
   final String? bucket;
@@ -57,7 +58,7 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
     } catch (e) {
       setState(() {
         _isLoading = false;
-        _error = e.toString();
+        _error = ErrorMessages.getUserFriendlyMessage(e, context: 'load files');
       });
     }
   }
@@ -98,10 +99,12 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
           if (_currentBucket != null)
             IconButton(
               icon: const Icon(LucideIcons.folderUp),
+              tooltip: 'Go up',
               onPressed: _navigateUp,
             ),
           IconButton(
             icon: const Icon(LucideIcons.refreshCw),
+            tooltip: 'Refresh',
             onPressed: _loadData,
           ),
         ],

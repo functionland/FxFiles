@@ -9,6 +9,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:image/image.dart' as img;
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 enum EditMode { none, adjust, text }
 
@@ -424,7 +425,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Crop failed: $e')),
+          SnackBar(content: Text(ErrorMessages.forImageEdit(e, operation: 'crop image'))),
         );
       }
     } finally {
@@ -522,7 +523,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to apply adjustments: $e')),
+          SnackBar(content: Text(ErrorMessages.forImageEdit(e, operation: 'apply adjustments'))),
         );
       }
     } finally {
@@ -577,6 +578,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
                       children: [
                         IconButton(
                           icon: const Icon(Icons.remove),
+                          tooltip: 'Decrease size',
                           onPressed: () {
                             setState(() {
                               if (overlay.fontSize > 12) overlay.fontSize -= 2;
@@ -586,6 +588,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
                         Text('${overlay.fontSize.toInt()}'),
                         IconButton(
                           icon: const Icon(Icons.add),
+                          tooltip: 'Increase size',
                           onPressed: () {
                             setState(() {
                               if (overlay.fontSize < 72) overlay.fontSize += 2;
@@ -754,7 +757,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save: $e')),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'save image'))),
         );
       }
     } finally {

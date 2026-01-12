@@ -60,6 +60,7 @@ class FileListItem extends StatelessWidget {
           if (onMorePressed != null)
             IconButton(
               icon: const Icon(LucideIcons.moreVertical),
+              tooltip: 'More options',
               onPressed: onMorePressed,
             ),
         ],

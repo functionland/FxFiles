@@ -8,12 +8,13 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 /// Dialog for creating a share link for a specific recipient
 class CreateShareForRecipientDialog extends ConsumerStatefulWidget {
   final String pathScope;
   final String bucket;
-  final Uint8List dek;
+  final Uint8List? dek;  // DEPRECATED - ignored, kept for interface compat
   final String? fileName;
   final String? contentType;
   final String? localPath; // Local file path to fetch CID from SyncState
@@ -22,7 +23,7 @@ class CreateShareForRecipientDialog extends ConsumerStatefulWidget {
     super.key,
     required this.pathScope,
     required this.bucket,
-    required this.dek,
+    this.dek,  // DEPRECATED - ignored, kept for interface compat
     this.fileName,
     this.contentType,
     this.localPath,
@@ -300,7 +301,7 @@ class _CreateShareForRecipientDialogState
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = ErrorMessages.forShare(e);
         _isLoading = false;
       });
     }
@@ -311,7 +312,7 @@ class _CreateShareForRecipientDialogState
 class CreatePublicLinkDialog extends ConsumerStatefulWidget {
   final String pathScope;
   final String bucket;
-  final Uint8List dek;
+  final Uint8List? dek;  // DEPRECATED - ignored, kept for interface compat
   final String? fileName;
   final String? contentType;
   final String? localPath; // Local file path to fetch CID from SyncState
@@ -320,7 +321,7 @@ class CreatePublicLinkDialog extends ConsumerStatefulWidget {
     super.key,
     required this.pathScope,
     required this.bucket,
-    required this.dek,
+    this.dek,  // DEPRECATED - ignored, kept for interface compat
     this.fileName,
     this.contentType,
     this.localPath,
@@ -549,7 +550,7 @@ class _CreatePublicLinkDialogState
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = ErrorMessages.forShare(e);
         _isLoading = false;
       });
     }
@@ -560,7 +561,7 @@ class _CreatePublicLinkDialogState
 class CreatePasswordLinkDialog extends ConsumerStatefulWidget {
   final String pathScope;
   final String bucket;
-  final Uint8List dek;
+  final Uint8List? dek;  // DEPRECATED - ignored, kept for interface compat
   final String? fileName;
   final String? contentType;
   final String? localPath; // Local file path to fetch CID from SyncState
@@ -569,7 +570,7 @@ class CreatePasswordLinkDialog extends ConsumerStatefulWidget {
     super.key,
     required this.pathScope,
     required this.bucket,
-    required this.dek,
+    this.dek,  // DEPRECATED - ignored, kept for interface compat
     this.fileName,
     this.contentType,
     this.localPath,
@@ -663,6 +664,7 @@ class _CreatePasswordLinkDialogState
                       icon: Icon(_obscurePassword
                           ? LucideIcons.eye
                           : LucideIcons.eyeOff),
+                      tooltip: _obscurePassword ? 'Show password' : 'Hide password',
                       onPressed: () =>
                           setState(() => _obscurePassword = !_obscurePassword),
                     ),
@@ -857,7 +859,7 @@ class _CreatePasswordLinkDialogState
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = ErrorMessages.forShare(e);
         _isLoading = false;
       });
     }
@@ -1118,7 +1120,7 @@ Future<ShareToken?> showCreateShareForRecipientDialog({
   required BuildContext context,
   required String pathScope,
   required String bucket,
-  required Uint8List dek,
+  Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
   String? fileName,
   String? contentType,
   String? localPath,
@@ -1128,7 +1130,6 @@ Future<ShareToken?> showCreateShareForRecipientDialog({
     builder: (context) => CreateShareForRecipientDialog(
       pathScope: pathScope,
       bucket: bucket,
-      dek: dek,
       fileName: fileName,
       contentType: contentType,
       localPath: localPath,
@@ -1141,7 +1142,7 @@ Future<GeneratedShareLink?> showCreatePublicLinkDialog({
   required BuildContext context,
   required String pathScope,
   required String bucket,
-  required Uint8List dek,
+  Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
   String? fileName,
   String? contentType,
   String? localPath,
@@ -1151,7 +1152,6 @@ Future<GeneratedShareLink?> showCreatePublicLinkDialog({
     builder: (context) => CreatePublicLinkDialog(
       pathScope: pathScope,
       bucket: bucket,
-      dek: dek,
       fileName: fileName,
       contentType: contentType,
       localPath: localPath,
@@ -1164,7 +1164,7 @@ Future<GeneratedShareLink?> showCreatePasswordLinkDialog({
   required BuildContext context,
   required String pathScope,
   required String bucket,
-  required Uint8List dek,
+  Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
   String? fileName,
   String? contentType,
   String? localPath,
@@ -1174,7 +1174,6 @@ Future<GeneratedShareLink?> showCreatePasswordLinkDialog({
     builder: (context) => CreatePasswordLinkDialog(
       pathScope: pathScope,
       bucket: bucket,
-      dek: dek,
       fileName: fileName,
       contentType: contentType,
       localPath: localPath,
@@ -1189,12 +1188,11 @@ Future<ShareToken?> showCreateShareDialog({
   required BuildContext context,
   required String pathScope,
   required String bucket,
-  required Uint8List dek,
+  Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
 }) async {
   return showCreateShareForRecipientDialog(
     context: context,
     pathScope: pathScope,
     bucket: bucket,
-    dek: dek,
   );
 }

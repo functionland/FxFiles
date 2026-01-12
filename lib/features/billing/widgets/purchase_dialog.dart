@@ -6,6 +6,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/core/services/billing_api_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 enum PurchaseStep {
   initializing,
@@ -199,7 +200,7 @@ class _PurchaseDialogState extends State<PurchaseDialog> {
       if (_isCancelled || !mounted) return;
       setState(() {
         _step = PurchaseStep.error;
-        _errorMessage = e.toString();
+        _errorMessage = ErrorMessages.forBilling(e);
       });
     }
   }
@@ -303,7 +304,7 @@ class _PurchaseDialogState extends State<PurchaseDialog> {
       if (_isCancelled || !mounted) return;
       setState(() {
         _step = PurchaseStep.error;
-        _errorMessage = e.toString();
+        _errorMessage = ErrorMessages.forBilling(e);
       });
     }
   }

@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/shared/widgets/audio_visualizer.dart';
 import 'package:fula_files/shared/widgets/audio_equalizer.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class AudioPlayerScreen extends StatefulWidget {
   final String filePath;
@@ -144,7 +145,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _error = 'Failed to load audio: $e';
+          _error = ErrorMessages.getUserFriendlyMessage(e, context: 'load audio');
         });
       }
     }
@@ -396,6 +397,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         IconButton(
           iconSize: 36,
           icon: const Icon(LucideIcons.skipBack),
+          tooltip: 'Previous track',
           onPressed: () => service.skipToPrevious(),
         ),
         const SizedBox(width: 8),
@@ -403,6 +405,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         IconButton(
           iconSize: 28,
           icon: const Icon(LucideIcons.rewind),
+          tooltip: 'Rewind 10 seconds',
           onPressed: () => service.seekBackward(),
         ),
         const SizedBox(width: 8),
@@ -462,6 +465,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         IconButton(
           iconSize: 28,
           icon: const Icon(LucideIcons.fastForward),
+          tooltip: 'Forward 10 seconds',
           onPressed: () => service.seekForward(),
         ),
         const SizedBox(width: 8),
@@ -469,6 +473,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         IconButton(
           iconSize: 36,
           icon: const Icon(LucideIcons.skipForward),
+          tooltip: 'Next track',
           onPressed: () => service.skipToNext(),
         ),
       ],

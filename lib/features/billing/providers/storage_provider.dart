@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 /// Global state for storage and wallet information.
 /// This provider is accessed throughout the app for:
@@ -107,7 +108,7 @@ class StorageNotifier extends Notifier<StorageState> {
       debugPrint('StorageProvider: error - $e');
       state = state.copyWith(
         isLoading: false,
-        error: 'Failed to load storage info: $e',
+        error: ErrorMessages.getUserFriendlyMessage(e, context: 'load storage info'),
       );
     }
   }

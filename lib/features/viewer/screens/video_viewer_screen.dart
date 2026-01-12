@@ -7,6 +7,7 @@ import 'package:video_player/video_player.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/pip_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class VideoViewerScreen extends StatefulWidget {
   final String filePath;
@@ -89,7 +90,7 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
 
       setState(() => _isInitialized = true);
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = ErrorMessages.getUserFriendlyMessage(e, context: 'load video'));
     }
   }
 
@@ -259,6 +260,7 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
             children: [
               IconButton(
                 icon: const Icon(LucideIcons.skipBack, color: Colors.white),
+                tooltip: 'Rewind 10 seconds',
                 onPressed: () {
                   final pos = _controller.value.position;
                   _controller.seekTo(pos - const Duration(seconds: 10));
@@ -273,6 +275,7 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
                       color: Colors.white,
                       size: 32,
                     ),
+                    tooltip: value.isPlaying ? 'Pause' : 'Play',
                     onPressed: () {
                       if (value.isPlaying) {
                         _controller.pause();
@@ -285,6 +288,7 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
               ),
               IconButton(
                 icon: const Icon(LucideIcons.skipForward, color: Colors.white),
+                tooltip: 'Forward 10 seconds',
                 onPressed: () {
                   final pos = _controller.value.position;
                   _controller.seekTo(pos + const Duration(seconds: 10));

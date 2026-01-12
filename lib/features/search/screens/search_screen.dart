@@ -80,6 +80,7 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
           if (_searchController.text.isNotEmpty)
             IconButton(
               icon: const Icon(LucideIcons.x),
+              tooltip: 'Clear search',
               onPressed: () {
                 _searchController.clear();
                 setState(() {

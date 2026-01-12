@@ -5,6 +5,8 @@ import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/services/audio_player_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({super.key});
@@ -67,7 +69,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e')),
+          SnackBar(content: Text(ErrorMessages.forSync(e))),
         );
       }
     } finally {
@@ -101,7 +103,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const PlaylistListSkeleton(itemCount: 5)
           : _playlists.isEmpty
               ? _buildEmptyState(theme)
               : _buildPlaylistList(theme),
@@ -305,7 +307,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e')),
+          SnackBar(content: Text(ErrorMessages.forSync(e))),
         );
       }
     }

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
 final trashContentsProvider = FutureProvider<List<LocalFile>>((ref) async {
   return FileService.instance.getTrashContents();
@@ -55,8 +57,8 @@ class TrashScreen extends ConsumerWidget {
             ),
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Error: $e')),
+        loading: () => const FileListSkeleton(itemCount: 6),
+        error: (e, _) => Center(child: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'load trash'))),
       ),
     );
   }
@@ -103,7 +105,7 @@ class TrashScreen extends ConsumerWidget {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to restore: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.forRestore(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -137,7 +139,7 @@ class TrashScreen extends ConsumerWidget {
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to delete: $e'), backgroundColor: Colors.red),
+            SnackBar(content: Text(ErrorMessages.forDelete(e)), backgroundColor: Colors.red),
           );
         }
       }

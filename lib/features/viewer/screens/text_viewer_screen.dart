@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class TextViewerScreen extends StatefulWidget {
   final String filePath;
@@ -90,7 +91,7 @@ class _TextViewerScreenState extends State<TextViewerScreen> {
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = ErrorMessages.getUserFriendlyMessage(e, context: 'read file');
         _isLoading = false;
       });
     }
@@ -435,6 +436,7 @@ class _TextViewerScreenState extends State<TextViewerScreen> {
                 suffixIcon: _searchController.text.isNotEmpty
                     ? IconButton(
                         icon: const Icon(LucideIcons.x, size: 18),
+                        tooltip: 'Clear search',
                         onPressed: () {
                           _searchController.clear();
                           _performSearch('');

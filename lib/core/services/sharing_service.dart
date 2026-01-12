@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// Gateway base URL for public share links
@@ -35,87 +37,12 @@ class SharingService {
   final _uuid = const Uuid();
   final _random = Random.secure();
 
-  // Cryptographic algorithms
-  static final _x25519 = X25519();
+  // Cryptographic algorithm for password encryption
   static final _aesGcm = AesGcm.with256bits();
 
   // ============================================================================
-  // CRYPTOGRAPHIC HELPERS (replaces EncryptionService)
+  // CRYPTOGRAPHIC HELPERS (for password-protected links)
   // ============================================================================
-
-  /// Generate X25519 keypair for sharing
-  Future<({Uint8List publicKey, Uint8List privateKey})> _generateKeyPair() async {
-    final keyPair = await _x25519.newKeyPair();
-    final publicKey = await keyPair.extractPublicKey();
-    final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
-    return (
-      publicKey: Uint8List.fromList(publicKey.bytes),
-      privateKey: Uint8List.fromList(privateKeyBytes),
-    );
-  }
-
-  /// Wrap DEK for recipient using X25519 ECDH + AES-GCM
-  Future<Uint8List> _wrapKeyForRecipient(
-    Uint8List dek,
-    Uint8List recipientPublicKey,
-    Uint8List ephemeralPrivateKey,
-  ) async {
-    // Reconstruct keys
-    final ephemeralKeyPair = await _x25519.newKeyPairFromSeed(ephemeralPrivateKey);
-    final recipientPubKey = SimplePublicKey(recipientPublicKey, type: KeyPairType.x25519);
-
-    // Derive shared secret
-    final sharedSecret = await _x25519.sharedSecretKey(
-      keyPair: ephemeralKeyPair,
-      remotePublicKey: recipientPubKey,
-    );
-    final sharedSecretBytes = await sharedSecret.extractBytes();
-
-    // Use shared secret as AES key to wrap DEK
-    final secretKey = SecretKey(sharedSecretBytes);
-    final nonce = _aesGcm.newNonce();
-    final secretBox = await _aesGcm.encrypt(dek, secretKey: secretKey, nonce: nonce);
-
-    // Return nonce + ciphertext + mac
-    return Uint8List.fromList([
-      ...nonce,
-      ...secretBox.cipherText,
-      ...secretBox.mac.bytes,
-    ]);
-  }
-
-  /// Unwrap DEK from sender using X25519 ECDH + AES-GCM
-  Future<Uint8List> _unwrapKeyFromSender(
-    Uint8List wrappedDek,
-    Uint8List senderEphemeralPublicKey,
-    Uint8List recipientPrivateKey,
-  ) async {
-    // Extract nonce, ciphertext, and mac
-    final nonceLength = _aesGcm.nonceLength;
-    final macLength = _aesGcm.macAlgorithm.macLength;
-
-    final nonce = wrappedDek.sublist(0, nonceLength);
-    final cipherText = wrappedDek.sublist(nonceLength, wrappedDek.length - macLength);
-    final mac = wrappedDek.sublist(wrappedDek.length - macLength);
-
-    // Reconstruct keys
-    final recipientKeyPair = await _x25519.newKeyPairFromSeed(recipientPrivateKey);
-    final senderPubKey = SimplePublicKey(senderEphemeralPublicKey, type: KeyPairType.x25519);
-
-    // Derive shared secret
-    final sharedSecret = await _x25519.sharedSecretKey(
-      keyPair: recipientKeyPair,
-      remotePublicKey: senderPubKey,
-    );
-    final sharedSecretBytes = await sharedSecret.extractBytes();
-
-    // Use shared secret as AES key to unwrap DEK
-    final secretKey = SecretKey(sharedSecretBytes);
-    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
-    final dek = await _aesGcm.decrypt(secretBox, secretKey: secretKey);
-
-    return Uint8List.fromList(dek);
-  }
 
   /// Derive encryption key from password using PBKDF2
   Future<Uint8List> _deriveKeyFromPassword(String password, Uint8List salt) async {
@@ -172,18 +99,38 @@ class SharingService {
   // OWNER SIDE - Creating and managing shares
   // ============================================================================
 
+  /// Get the storage key (CID) for a path from the forest metadata
+  Future<String> _getStorageKeyForPath(String bucket, String path) async {
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured');
+    }
+    final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: path);
+    final obj = objects.firstWhere(
+      (o) => o.key == path,
+      orElse: () => throw SharingException('File not found: $path'),
+    );
+    return obj.storageKey ?? obj.key;
+  }
+
+  /// Map ShareMode to fula_client ShareMode
+  ShareMode _mapShareMode(ShareMode mode) {
+    // Direct mapping - same enum names
+    return mode;
+  }
+
   /// Create a share token for a recipient
   ///
-  /// Process:
-  /// 1. Generate ephemeral keypair for ECDH
-  /// 2. Derive shared secret using X25519 DH
-  /// 3. Wrap DEK with derived key
-  /// 4. Create share token with wrapped DEK
+  /// Process (with fula_client):
+  /// 1. Get storage key for the path
+  /// 2. Create fula_client share token with recipient's public key
+  /// 3. Return ShareToken with embedded fula_client token
+  ///
+  /// Note: The 'dek' parameter is ignored - kept for interface compatibility
   Future<ShareToken> createShare({
     required String pathScope,
     required String bucket,
     required Uint8List recipientPublicKey,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
@@ -193,35 +140,41 @@ class SharingService {
     String? fileName,
     String? contentType,
   }) async {
-    // Get owner's keypair
+    // Get owner's public key
     final ownerPublicKey = await AuthService.instance.getPublicKey();
     if (ownerPublicKey == null) {
       throw SharingException('Owner public key not available. Please sign in first.');
     }
 
-    // Generate ephemeral keypair for ECDH key wrapping
-    final ephemeralKeyPair = await _generateKeyPair();
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured. Please connect to cloud storage first.');
+    }
 
-    // Wrap DEK for recipient using X25519 ECDH + AES-GCM
-    // DEK is encrypted with a key derived from:
-    // ephemeral_private + recipient_public_key
-    final wrappedDek = await _wrapKeyForRecipient(
-      dek,
-      recipientPublicKey,
-      ephemeralKeyPair.privateKey,
-    );
+    // Get storage key for the path
+    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
 
+    // Calculate expiry as Unix timestamp
     final now = DateTime.now();
     final expiresAt = expiryDays != null
         ? now.add(Duration(days: expiryDays))
         : null;
+    final expiresAtUnix = expiresAt != null
+        ? expiresAt.millisecondsSinceEpoch ~/ 1000
+        : null;
+
+    // Create fula_client share token
+    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
+      storageKey,
+      recipientPublicKey,
+      _mapShareModeToFula(shareMode),
+      expiresAtUnix,
+    );
 
     return ShareToken(
       id: _uuid.v4(),
+      fulaShareToken: fulaToken,
       ownerPublicKey: ownerPublicKey,
       recipientPublicKey: recipientPublicKey,
-      wrappedDek: wrappedDek,
-      ephemeralPublicKey: ephemeralKeyPair.publicKey,
       pathScope: pathScope,
       bucket: bucket,
       permissions: permissions,
@@ -236,13 +189,23 @@ class SharingService {
     );
   }
 
+  /// Map ShareMode to fula_client ShareMode
+  fula.ShareMode _mapShareModeToFula(ShareMode mode) {
+    switch (mode) {
+      case ShareMode.temporal:
+        return fula.ShareMode.temporal;
+      case ShareMode.snapshot:
+        return fula.ShareMode.snapshot;
+    }
+  }
+
   /// Create and save an outgoing share for a specific recipient
   Future<OutgoingShare> shareWithUser({
     required String pathScope,
     required String bucket,
     required Uint8List recipientPublicKey,
     required String recipientName,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
@@ -255,7 +218,6 @@ class SharingService {
       pathScope: pathScope,
       bucket: bucket,
       recipientPublicKey: recipientPublicKey,
-      dek: dek,
       permissions: permissions,
       expiryDays: expiryDays,
       label: label,
@@ -279,9 +241,8 @@ class SharingService {
 
   /// Create a public link that anyone with the link can access
   ///
-  /// This generates a disposable keypair, wraps the DEK for that keypair,
-  /// and embeds both the token and the private key in the URL fragment.
-  /// The fragment is never sent to the server, keeping secrets client-side.
+  /// Uses fula_client share tokens. The token is embedded in the URL fragment
+  /// so it's never sent to the server, keeping secrets client-side.
   ///
   /// Security considerations:
   /// - The link allows access to ONLY the specified file/folder (path-scoped)
@@ -291,7 +252,7 @@ class SharingService {
   Future<GeneratedShareLink> createPublicLink({
     required String pathScope,
     required String bucket,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     required int expiryDays,
     String? label,
     ShareMode shareMode = ShareMode.temporal,
@@ -300,17 +261,44 @@ class SharingService {
     String? contentType,
     String? gatewayBaseUrl,
   }) async {
-    // Generate a disposable keypair for this link
-    final linkKeyPair = await _generateKeyPair();
+    // Get owner's public key
+    final ownerPublicKey = await AuthService.instance.getPublicKey();
+    if (ownerPublicKey == null) {
+      throw SharingException('Owner public key not available. Please sign in first.');
+    }
 
-    // Create share token with the disposable public key as recipient
-    final token = await createShare(
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured. Please connect to cloud storage first.');
+    }
+
+    // Get storage key for the path
+    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+
+    // Calculate expiry as Unix timestamp
+    final now = DateTime.now();
+    final expiresAt = now.add(Duration(days: expiryDays));
+    final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
+
+    // Create fula_client share token (empty recipient for public share)
+    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
+      storageKey,
+      Uint8List(32),  // Empty recipient for public share
+      _mapShareModeToFula(shareMode),
+      expiresAtUnix,
+    );
+
+    // Create share token for our records
+    final tokenId = _uuid.v4();
+    final token = ShareToken(
+      id: tokenId,
+      fulaShareToken: fulaToken,
+      ownerPublicKey: ownerPublicKey,
+      recipientPublicKey: Uint8List(32),  // Empty for public
       pathScope: pathScope,
       bucket: bucket,
-      recipientPublicKey: linkKeyPair.publicKey,
-      dek: dek,
       permissions: SharePermissions.readOnly,
-      expiryDays: expiryDays,
+      createdAt: now,
+      expiresAt: expiresAt,
       label: label,
       shareType: ShareType.publicLink,
       shareMode: shareMode,
@@ -319,24 +307,25 @@ class SharingService {
       contentType: contentType,
     );
 
-    // Create the payload for the URL fragment
-    final payload = PublicLinkPayload(
-      token: token,
-      linkSecretKey: linkKeyPair.privateKey,
-      bucket: bucket,
-      key: pathScope,
-      label: label,
-    );
+    // Build payload with fula token (v2 format)
+    final payloadMap = {
+      'v': 2,  // Version 2 = fula_client format
+      't': fulaToken,
+      'b': bucket,
+      'k': pathScope,
+      if (label != null) 'l': label,
+      if (fileName != null) 'f': fileName,
+    };
+    final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
 
     // Build the URL
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
-    final url = '$baseUrl/view/${token.id}#${payload.encode()}';
+    final url = '$baseUrl/view/$tokenId#$fragment';
 
-    // Save outgoing share (with the link secret key for potential regeneration)
+    // Save outgoing share
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Anyone with link',
-      linkSecretKey: linkKeyPair.privateKey,
     );
     await _saveOutgoingShare(outgoingShare);
 
@@ -344,22 +333,20 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
-      payload: payload,
     );
   }
 
   /// Create a password-protected link
   ///
-  /// Similar to public link, but the fragment payload is encrypted with
-  /// a key derived from the password. Anyone with both the link AND the
-  /// password can access the file.
+  /// Uses fula_client share tokens, encrypted with a password-derived key.
+  /// Anyone with both the link AND the password can access the file.
   ///
   /// Security: Adds an extra layer - even if link is intercepted,
-  /// password is still required to decrypt.
+  /// password is still required to decrypt the fula_client token.
   Future<GeneratedShareLink> createPasswordProtectedLink({
     required String pathScope,
     required String bucket,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     required int expiryDays,
     required String password,
     String? label,
@@ -373,17 +360,44 @@ class SharingService {
       throw SharingException('Password cannot be empty');
     }
 
-    // Generate a disposable keypair for this link
-    final linkKeyPair = await _generateKeyPair();
+    // Get owner's public key
+    final ownerPublicKey = await AuthService.instance.getPublicKey();
+    if (ownerPublicKey == null) {
+      throw SharingException('Owner public key not available. Please sign in first.');
+    }
 
-    // Create share token with the disposable public key as recipient
-    final token = await createShare(
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured. Please connect to cloud storage first.');
+    }
+
+    // Get storage key for the path
+    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+
+    // Calculate expiry as Unix timestamp
+    final now = DateTime.now();
+    final expiresAt = now.add(Duration(days: expiryDays));
+    final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
+
+    // Create fula_client share token
+    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
+      storageKey,
+      Uint8List(32),  // Empty recipient for password-protected share
+      _mapShareModeToFula(shareMode),
+      expiresAtUnix,
+    );
+
+    // Create share token for our records
+    final tokenId = _uuid.v4();
+    final token = ShareToken(
+      id: tokenId,
+      fulaShareToken: fulaToken,
+      ownerPublicKey: ownerPublicKey,
+      recipientPublicKey: Uint8List(32),  // Empty for password-protected
       pathScope: pathScope,
       bucket: bucket,
-      recipientPublicKey: linkKeyPair.publicKey,
-      dek: dek,
       permissions: SharePermissions.readOnly,
-      expiryDays: expiryDays,
+      createdAt: now,
+      expiresAt: expiresAt,
       label: label,
       shareType: ShareType.passwordProtected,
       shareMode: shareMode,
@@ -392,32 +406,32 @@ class SharingService {
       contentType: contentType,
     );
 
-    // Create the inner payload (unencrypted data)
-    final innerPayload = PublicLinkPayload(
-      token: token,
-      linkSecretKey: linkKeyPair.privateKey,
-      bucket: bucket,
-      key: pathScope,
-      label: label,
-      isPasswordProtected: true,
-    );
+    // Build inner payload with fula token (v2 format)
+    final innerPayloadMap = {
+      'v': 2,
+      't': fulaToken,
+      'b': bucket,
+      'k': pathScope,
+      if (label != null) 'l': label,
+      if (fileName != null) 'f': fileName,
+    };
 
-    // Encrypt the payload with password-derived key
+    // Encrypt the inner payload with password-derived key
     final salt = _generateSalt(16);
     final passwordKey = await _deriveKeyFromPassword(password, salt);
-
-    final innerPayloadBytes = utf8.encode(jsonEncode(innerPayload.toJson()));
     final encryptedPayload = await _encrypt(
-      Uint8List.fromList(innerPayloadBytes),
+      Uint8List.fromList(utf8.encode(jsonEncode(innerPayloadMap))),
       passwordKey,
     );
 
     // Create outer wrapper with salt and encrypted inner payload
     final outerPayload = {
-      'v': PublicLinkPayload.currentVersion,
+      'v': 2,  // Version 2 = fula_client format
       'p': true, // password protected flag
       's': base64Encode(salt),
       'e': base64Encode(encryptedPayload),
+      'b': bucket,
+      'k': pathScope,
     };
 
     // Encode outer payload for URL
@@ -425,13 +439,12 @@ class SharingService {
 
     // Build the URL
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
-    final url = '$baseUrl/view/${token.id}#$fragment';
+    final url = '$baseUrl/view/$tokenId#$fragment';
 
     // Save outgoing share with the encrypted fragment for regeneration
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Password Protected',
-      linkSecretKey: linkKeyPair.privateKey,
       passwordSalt: salt,
       encryptedFragment: fragment, // Store to regenerate same URL later
     );
@@ -441,7 +454,6 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
-      payload: innerPayload,
       password: password,
     );
   }
@@ -449,7 +461,10 @@ class SharingService {
   /// Decode a password-protected link payload
   ///
   /// Called by the gateway/viewer to decrypt the inner payload
-  static Future<PublicLinkPayload> decodePasswordProtectedPayload(
+  /// Supports both v1 (legacy) and v2 (fula_client) formats
+  ///
+  /// Returns the decrypted payload as a Map containing the fula_client token
+  static Future<Map<String, dynamic>> decodePasswordProtectedPayloadV2(
     String fragment,
     String password,
   ) async {
@@ -475,39 +490,61 @@ class SharingService {
     try {
       final decryptedBytes = await instance._decrypt(encryptedPayload, passwordKey);
       final innerJson = jsonDecode(utf8.decode(decryptedBytes)) as Map<String, dynamic>;
-      return PublicLinkPayload.fromJson(innerJson);
+      return innerJson;
     } catch (e) {
       throw SharingException('Invalid password');
     }
+  }
+
+  /// Legacy: Decode a password-protected link payload (v1 format)
+  /// @deprecated Use decodePasswordProtectedPayloadV2 instead
+  static Future<PublicLinkPayload> decodePasswordProtectedPayload(
+    String fragment,
+    String password,
+  ) async {
+    final innerJson = await decodePasswordProtectedPayloadV2(fragment, password);
+    return PublicLinkPayload.fromJson(innerJson);
   }
 
   /// Regenerate a public link URL from an existing share
   ///
   /// Useful when user wants to copy the link again
   String regeneratePublicLink(OutgoingShare share, {String? gatewayBaseUrl}) {
-    if (share.linkSecretKey == null) {
-      throw SharingException('Not a public link share');
-    }
-
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
 
     // For password-protected links, use the stored encrypted fragment
-    // This ensures we regenerate the exact same URL that was originally created
     if (share.shareType == ShareType.passwordProtected && share.encryptedFragment != null) {
       return '$baseUrl/view/${share.token.id}#${share.encryptedFragment}';
     }
 
-    // For regular public links, encode the payload normally
-    final payload = PublicLinkPayload(
-      token: share.token,
-      linkSecretKey: share.linkSecretKey!,
-      bucket: share.bucket,
-      key: share.pathScope,
-      label: share.token.label,
-      isPasswordProtected: false,
-    );
+    // For public links with fula token (v2 format)
+    if (share.token.fulaShareToken != null) {
+      final payloadMap = {
+        'v': 2,
+        't': share.token.fulaShareToken,
+        'b': share.bucket,
+        'k': share.pathScope,
+        if (share.token.label != null) 'l': share.token.label,
+        if (share.token.fileName != null) 'f': share.token.fileName,
+      };
+      final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
+      return '$baseUrl/view/${share.token.id}#$fragment';
+    }
 
-    return '$baseUrl/view/${share.token.id}#${payload.encode()}';
+    // For legacy public links with linkSecretKey (v1 format)
+    if (share.linkSecretKey != null) {
+      final payload = PublicLinkPayload(
+        token: share.token,
+        linkSecretKey: share.linkSecretKey!,
+        bucket: share.bucket,
+        key: share.pathScope,
+        label: share.token.label,
+        isPasswordProtected: false,
+      );
+      return '$baseUrl/view/${share.token.id}#${payload.encode()}';
+    }
+
+    throw SharingException('Cannot regenerate link - missing required data');
   }
 
   /// Revoke a share
@@ -572,10 +609,11 @@ class SharingService {
 
   /// Accept a share token
   ///
-  /// Process:
+  /// Process (with fula_client):
   /// 1. Verify token is valid (not expired, not revoked)
-  /// 2. Unwrap DEK using recipient's private key
-  /// 3. Store accepted share for future use
+  /// 2. Verify recipient matches (for non-public shares)
+  /// 3. Validate with fula_client
+  /// 4. Store accepted share for future use
   Future<AcceptedShare> acceptShare(ShareToken token) async {
     // Check if share is valid
     if (token.isExpired) {
@@ -590,34 +628,61 @@ class SharingService {
       throw SharingException('Share has been revoked by owner');
     }
 
-    // Get recipient's private key
-    final privateKey = await AuthService.instance.getPrivateKey();
-    if (privateKey == null) {
-      throw SharingException('Private key not available. Please sign in first.');
+    // For recipient-specific shares, verify recipient
+    if (token.shareType == ShareType.recipient) {
+      final myPublicKey = await AuthService.instance.getPublicKey();
+      if (myPublicKey == null || !_compareKeys(myPublicKey, token.recipientPublicKey)) {
+        throw SharingException('This share was not intended for you');
+      }
     }
 
-    // Verify recipient public key matches
-    final myPublicKey = await AuthService.instance.getPublicKey();
-    if (myPublicKey == null || !_compareKeys(myPublicKey, token.recipientPublicKey)) {
-      throw SharingException('This share was not intended for you');
+    // Get fula_client token
+    final fulaToken = token.fulaShareToken;
+    if (fulaToken == null) {
+      throw SharingException('Invalid share token format - missing fula token');
     }
 
-    // Unwrap DEK using recipient's private key and ephemeral public key
-    final dek = await _unwrapKeyFromSender(
-      token.wrappedDek,
-      token.ephemeralPublicKey,
-      privateKey,
-    );
+    // Validate with fula_client (will throw if invalid)
+    try {
+      fula_service.FulaApiService.instance.acceptShareToken(fulaToken);
+    } catch (e) {
+      throw SharingException('Failed to validate share token: $e');
+    }
 
     final acceptedShare = AcceptedShare(
       token: token,
-      dek: dek,
+      fulaShareToken: fulaToken,
     );
 
     // Save accepted share
     await _saveAcceptedShare(acceptedShare);
 
     return acceptedShare;
+  }
+
+  /// Download a file using an accepted share
+  ///
+  /// This is the new method for downloading shared files with fula_client
+  Future<Uint8List> downloadSharedFile(AcceptedShare share) async {
+    final fulaToken = share.fulaShareToken ?? share.token.fulaShareToken;
+    if (fulaToken == null) {
+      throw SharingException('Invalid share - no fula token available');
+    }
+
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured');
+    }
+
+    // Get storage key for the path
+    final storageKey = await _getStorageKeyForPath(share.bucket, share.pathScope);
+
+    // Accept and download via fula_client
+    final handle = fula_service.FulaApiService.instance.acceptShareToken(fulaToken);
+    return await fula_service.FulaApiService.instance.downloadSharedFile(
+      share.bucket,
+      storageKey,
+      handle,
+    );
   }
 
   /// Accept a share from encoded string (from URL/QR code)
@@ -812,10 +877,13 @@ class SharingService {
     return share != null;
   }
 
-  /// Get DEK for a shared path
+  /// DEPRECATED: Get DEK for a shared path
+  /// With fula_client, use downloadSharedFile() instead
+  @Deprecated('Use downloadSharedFile() instead')
   Future<Uint8List?> getDekForPath(String bucket, String path) async {
-    final share = await getShareForPath(bucket, path);
-    return share?.dek;
+    // DEKs are no longer used with fula_client
+    // Use downloadSharedFile() to download shared files
+    return null;
   }
 
   // ============================================================================

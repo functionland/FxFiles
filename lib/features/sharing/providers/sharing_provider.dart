@@ -4,6 +4,7 @@ import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/cloud_share_storage_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 /// Provider for sharing service
 final sharingServiceProvider = Provider<SharingService>((ref) {
@@ -76,7 +77,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
     }
   }
@@ -87,7 +88,7 @@ class SharesNotifier extends Notifier<SharesState> {
     required String bucket,
     required String recipientPublicKeyBase64,
     required String recipientName,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     SharePermissions permissions = SharePermissions.readOnly,
     int? expiryDays,
     String? label,
@@ -106,7 +107,6 @@ class SharesNotifier extends Notifier<SharesState> {
         bucket: bucket,
         recipientPublicKey: recipientPublicKey,
         recipientName: recipientName,
-        dek: dek,
         permissions: permissions,
         expiryDays: expiryDays,
         label: label,
@@ -126,7 +126,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return null;
     }
@@ -136,7 +136,7 @@ class SharesNotifier extends Notifier<SharesState> {
   Future<GeneratedShareLink?> createPublicLink({
     required String pathScope,
     required String bucket,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     required int expiryDays,
     String? label,
     ShareMode shareMode = ShareMode.temporal,
@@ -150,7 +150,6 @@ class SharesNotifier extends Notifier<SharesState> {
       final result = await _sharingService.createPublicLink(
         pathScope: pathScope,
         bucket: bucket,
-        dek: dek,
         expiryDays: expiryDays,
         label: label,
         shareMode: shareMode,
@@ -169,7 +168,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return null;
     }
@@ -179,7 +178,7 @@ class SharesNotifier extends Notifier<SharesState> {
   Future<GeneratedShareLink?> createPasswordProtectedLink({
     required String pathScope,
     required String bucket,
-    required Uint8List dek,
+    Uint8List? dek,  // DEPRECATED - ignored, kept for interface compat
     required int expiryDays,
     required String password,
     String? label,
@@ -194,7 +193,6 @@ class SharesNotifier extends Notifier<SharesState> {
       final result = await _sharingService.createPasswordProtectedLink(
         pathScope: pathScope,
         bucket: bucket,
-        dek: dek,
         expiryDays: expiryDays,
         password: password,
         label: label,
@@ -214,7 +212,48 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
+      );
+      return null;
+    }
+  }
+
+  /// Download a file using an accepted share
+  Future<Uint8List?> downloadSharedFile(String shareId) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final share = state.acceptedShares.firstWhere(
+        (s) => s.id == shareId,
+        orElse: () => throw SharingException('Share not found'),
+      );
+
+      final data = await _sharingService.downloadSharedFile(share);
+
+      state = state.copyWith(isLoading: false);
+      return data;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forShare(e),
+      );
+      return null;
+    }
+  }
+
+  /// Download a file using an accepted share object directly
+  Future<Uint8List?> downloadFromShare(AcceptedShare share) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final data = await _sharingService.downloadSharedFile(share);
+
+      state = state.copyWith(isLoading: false);
+      return data;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forShare(e),
       );
       return null;
     }
@@ -248,7 +287,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
     }
   }
@@ -267,7 +306,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return null;
     }
@@ -292,7 +331,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return null;
     }
@@ -312,7 +351,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return false;
     }
@@ -332,7 +371,7 @@ class SharesNotifier extends Notifier<SharesState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: e.toString(),
+        error: ErrorMessages.forShare(e),
       );
       return false;
     }

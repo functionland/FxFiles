@@ -6,6 +6,8 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
 class ShareScreen extends ConsumerStatefulWidget {
   const ShareScreen({super.key});
@@ -44,7 +46,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e')),
+          SnackBar(content: Text(ErrorMessages.forSync(e))),
         );
       }
     } finally {
@@ -233,7 +235,7 @@ class _OutgoingSharesTab extends ConsumerWidget {
     final sharesState = ref.watch(sharesProvider);
     
     if (sharesState.isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const ShareListSkeleton(itemCount: 4);
     }
     
     final shares = sharesState.outgoingShares;
@@ -438,7 +440,7 @@ class _AcceptedSharesTab extends ConsumerWidget {
     final sharesState = ref.watch(sharesProvider);
     
     if (sharesState.isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const ShareListSkeleton(itemCount: 4);
     }
     
     final shares = sharesState.acceptedShares;

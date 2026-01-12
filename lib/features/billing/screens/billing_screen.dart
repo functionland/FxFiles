@@ -7,6 +7,7 @@ import 'package:fula_files/features/billing/widgets/wallet_tile.dart';
 import 'package:fula_files/features/billing/widgets/chain_selector.dart';
 import 'package:fula_files/features/billing/widgets/history_tile.dart';
 import 'package:fula_files/features/billing/widgets/purchase_dialog.dart';
+import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
 class BillingScreen extends ConsumerStatefulWidget {
   const BillingScreen({super.key});
@@ -60,7 +61,7 @@ class _BillingScreenState extends ConsumerState<BillingScreen> {
           await ref.read(billingProvider.notifier).loadBillingData();
         },
         child: state.isLoading && state.storageInfo == null
-            ? const Center(child: CircularProgressIndicator())
+            ? const BillingScreenSkeleton()
             : ListView(
                 children: [
                   // Credits & Storage Card

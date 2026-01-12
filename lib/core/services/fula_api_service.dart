@@ -2,11 +2,10 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/models/share_token.dart' as local;
 
-// Re-export commonly used types for convenience
+// Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
-    ShareMode,
-    SharePermissions,
     AcceptedShareHandle,
     RotationManagerHandle,
     RotationReport,
@@ -45,17 +44,17 @@ class FulaApiService {
       final config = fula.FulaConfig(
         endpoint: endpoint,
         accessToken: accessToken,
-        timeoutSeconds: 60,
+        timeoutSeconds: BigInt.from(60),
         maxRetries: 3,
       );
 
       final encConfig = fula.EncryptionConfig(
-        secretKey: secretKey.toList(),
+        secretKey: secretKey,
         enableMetadataPrivacy: true,
         obfuscationMode: fula.ObfuscationMode.flatNamespace, // Maximum privacy
       );
 
-      _client = await fula.createEncryptedClient(config, encConfig);
+      _client = await fula.createEncryptedClient(config: config, encryption: encConfig);
       _defaultBucket = defaultBucket;
       _isConfigured = true;
       _loadedForests.clear();
@@ -93,7 +92,7 @@ class FulaApiService {
   Future<void> _ensureForestLoaded(String bucket) async {
     if (!_loadedForests.contains(bucket)) {
       try {
-        await fula.loadForest(_client!, bucket);
+        await fula.loadForest(client: _client!, bucket: bucket);
         _loadedForests.add(bucket);
         debugPrint('Forest loaded for bucket: $bucket');
       } catch (e) {
@@ -114,15 +113,15 @@ class FulaApiService {
   // ============================================================================
 
   /// Export the secret key for backup
-  Uint8List exportSecretKey() {
+  Future<Uint8List> exportSecretKey() async {
     _ensureConfigured();
-    return Uint8List.fromList(fula.exportSecretKey(_client!));
+    return await fula.exportSecretKey(client: _client!);
   }
 
   /// Get the public key for sharing
-  Uint8List getPublicKey() {
+  Future<Uint8List> getPublicKey() async {
     _ensureConfigured();
-    return Uint8List.fromList(fula.getPublicKey(_client!));
+    return await fula.getPublicKey(client: _client!);
   }
 
   // ============================================================================
@@ -132,7 +131,7 @@ class FulaApiService {
   Future<List<String>> listBuckets() async {
     _ensureConfigured();
     try {
-      final buckets = await fula.encListBuckets(_client!);
+      final buckets = await fula.encListBuckets(client: _client!);
       return buckets.map((b) => b.name).toList();
     } catch (e) {
       debugPrint('listBuckets error: $e');
@@ -143,7 +142,7 @@ class FulaApiService {
   Future<void> createBucket(String bucket) async {
     _ensureConfigured();
     try {
-      await fula.encCreateBucket(_client!, bucket);
+      await fula.encCreateBucket(client: _client!, name: bucket);
     } catch (e) {
       // Bucket may already exist
       if (!e.toString().contains('already exists')) {
@@ -176,7 +175,7 @@ class FulaApiService {
     try {
       await _ensureForestLoaded(bucket);
 
-      final files = await fula.listFromForest(_client!, bucket);
+      final files = await fula.listFromForest(client: _client!, bucket: bucket);
 
       // Filter by prefix if specified
       final filtered = prefix.isEmpty
@@ -202,11 +201,11 @@ class FulaApiService {
   }
 
   /// List directory structure
-  Future<DirectoryListing> listDirectory(String bucket, {String? prefix}) async {
+  Future<fula.DirectoryListing> listDirectory(String bucket, {String? prefix}) async {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
-      return await fula.listDirectory(_client!, bucket, prefix);
+      return await fula.listDirectory(client: _client!, bucket: bucket, prefix: prefix);
     } catch (e) {
       throw FulaApiException('Failed to list directory: $e');
     }
@@ -219,7 +218,7 @@ class FulaApiService {
       await _ensureForestLoaded(bucket);
 
       // Find the file in the forest
-      final files = await fula.listFromForest(_client!, bucket);
+      final files = await fula.listFromForest(client: _client!, bucket: bucket);
       final file = files.firstWhere(
         (f) => f.originalKey == key,
         orElse: () => throw FulaApiException('File not found: $key'),
@@ -245,7 +244,7 @@ class FulaApiService {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
-      final data = await fula.getFlat(_client!, bucket, key);
+      final data = await fula.getFlat(client: _client!, bucket: bucket, path: key);
       return Uint8List.fromList(data);
     } catch (e) {
       throw FulaApiException('Failed to download object: $e');
@@ -263,7 +262,13 @@ class FulaApiService {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
-      final result = await fula.putFlat(_client!, bucket, key, data.toList(), contentType);
+      final result = await fula.putFlat(
+        client: _client!,
+        bucket: bucket,
+        path: key,
+        data: data.toList(),
+        contentType: contentType,
+      );
       return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload object: $e');
@@ -275,7 +280,7 @@ class FulaApiService {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
-      await fula.deleteFlat(_client!, bucket, key);
+      await fula.deleteFlat(client: _client!, bucket: bucket, path: key);
     } catch (e) {
       throw FulaApiException('Failed to delete object: $e');
     }
@@ -331,7 +336,13 @@ class FulaApiService {
 
       // fula_client handles large files automatically
       // Progress callback not yet supported in fula_client - upload directly
-      final result = await fula.putFlat(_client!, bucket, key, data.toList(), null);
+      final result = await fula.putFlat(
+        client: _client!,
+        bucket: bucket,
+        path: key,
+        data: data.toList(),
+        contentType: null,
+      );
 
       // Report completion
       if (onProgress != null) {
@@ -375,11 +386,17 @@ class FulaApiService {
       await _ensureForestLoaded(bucket);
 
       for (final file in files) {
-        await fula.putFlatDeferred(_client!, bucket, file.path, file.data.toList(), file.contentType);
+        await fula.putFlatDeferred(
+          client: _client!,
+          bucket: bucket,
+          path: file.path,
+          data: file.data.toList(),
+          contentType: file.contentType,
+        );
       }
 
       // Save forest once after all uploads
-      await fula.flushForest(_client!, bucket);
+      await fula.flushForest(client: _client!, bucket: bucket);
     } catch (e) {
       throw FulaApiException('Failed to batch upload: $e');
     }
@@ -389,48 +406,76 @@ class FulaApiService {
   // SHARING
   // ============================================================================
 
+  /// Convert local ShareMode to fula_client ShareMode
+  fula.ShareMode _convertShareMode(local.ShareMode mode) {
+    switch (mode) {
+      case local.ShareMode.temporal:
+        return fula.ShareMode.temporal;
+      case local.ShareMode.snapshot:
+        return fula.ShareMode.snapshot;
+    }
+  }
+
   /// Create a share token for a file
-  String createShareToken(
+  /// Accepts local ShareMode from share_token.dart
+  Future<String> createShareToken(
     String storageKey,
     Uint8List recipientPublicKey,
-    ShareMode mode,
+    local.ShareMode mode,
     int? expiresAt,
-  ) {
+  ) async {
     _ensureConfigured();
-    return fula.createShareToken(
-      _client!,
-      storageKey,
-      recipientPublicKey.toList(),
-      mode,
-      expiresAt,
+    return await fula.createShareTokenWithMode(
+      client: _client!,
+      storageKey: storageKey,
+      recipientPublicKey: recipientPublicKey.toList(),
+      mode: _convertShareMode(mode),
+      expiresAt: expiresAt,
     );
   }
 
   /// Accept a share token
-  AcceptedShareHandle acceptShareToken(String tokenJson) {
+  Future<fula.AcceptedShareHandle> acceptShareToken(String tokenJson) async {
     _ensureConfigured();
-    return fula.acceptShare(tokenJson);
+    return await fula.acceptShare(client: _client!, tokenJson: tokenJson);
   }
 
   /// Download a shared file
   Future<Uint8List> downloadSharedFile(
     String bucket,
     String storageKey,
-    AcceptedShareHandle share,
+    fula.AcceptedShareHandle share,
   ) async {
     _ensureConfigured();
-    final data = await fula.getWithShare(_client!, bucket, storageKey, share);
+    final data = await fula.getWithShare(
+      client: _client!,
+      bucket: bucket,
+      storageKey: storageKey,
+      share: share,
+    );
     return Uint8List.fromList(data);
   }
 
-  /// Get share permissions
-  SharePermissions getSharePermissions(AcceptedShareHandle share) {
-    return fula.getSharePermissions(share);
+  /// Get share permissions (returns local SharePermissions enum)
+  Future<local.SharePermissions> getSharePermissions(fula.AcceptedShareHandle share) async {
+    final fulaPerms = await fula.getSharePermissions(share: share);
+    // Convert fula_client SharePermissions class to local enum
+    if (fulaPerms.canWrite) {
+      return local.SharePermissions.full; // If can write, assume full access
+    } else if (fulaPerms.canRead) {
+      return local.SharePermissions.readOnly;
+    }
+    return local.SharePermissions.readOnly; // Default
+  }
+
+  /// Get raw share permissions from fula_client
+  Future<fula.SharePermissions> getRawSharePermissions(fula.AcceptedShareHandle share) async {
+    return await fula.getSharePermissions(share: share);
   }
 
   /// Check if share is expired
-  bool isShareExpired(AcceptedShareHandle share) {
-    return fula.isShareExpired(share);
+  Future<bool> isShareExpired(fula.AcceptedShareHandle share) async {
+    return await fula.isShareExpired(share: share);
   }
 
   // ============================================================================
@@ -438,18 +483,18 @@ class FulaApiService {
   // ============================================================================
 
   /// Create a rotation manager for key rotation
-  RotationManagerHandle createRotationManager() {
+  Future<fula.RotationManagerHandle> createRotationManager() async {
     _ensureConfigured();
-    return fula.createRotationManager(_client!);
+    return await fula.createRotationManager(client: _client!);
   }
 
   /// Rotate all keys in a bucket
-  Future<RotationReport> rotateBucket(
+  Future<fula.RotationReport> rotateBucket(
     String bucket,
-    RotationManagerHandle manager,
+    fula.RotationManagerHandle manager,
   ) async {
     _ensureConfigured();
-    return await fula.rotateBucket(_client!, bucket, manager);
+    return await fula.rotateBucket(client: _client!, bucket: bucket, manager: manager);
   }
 
   // ============================================================================

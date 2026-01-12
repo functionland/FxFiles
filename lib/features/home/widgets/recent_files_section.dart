@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 final recentFilesProvider = FutureProvider<List<RecentFile>>((ref) async {
   return LocalStorageService.instance.getRecentFiles(limit: 10);
@@ -51,7 +52,7 @@ class RecentFilesSection extends ConsumerWidget {
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => Center(child: Text('Error: $e')),
+            error: (e, _) => Center(child: Text(ErrorMessages.getUserFriendlyMessage(e))),
           ),
         ),
       ],

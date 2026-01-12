@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 final storageInfoProvider = FutureProvider<List<_StorageInfo>>((ref) async {
   final roots = await FileService.instance.getStorageRoots();
@@ -76,7 +77,7 @@ class StorageSection extends ConsumerWidget {
           ),
           error: (e, _) => Padding(
             padding: const EdgeInsets.all(16),
-            child: Text('Error loading storage: $e'),
+            child: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'load storage')),
           ),
         ),
         // Trash tile

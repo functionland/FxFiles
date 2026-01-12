@@ -4,6 +4,8 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
 class FaceManagementScreen extends StatefulWidget {
   const FaceManagementScreen({super.key});
@@ -47,7 +49,7 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading face data: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'load face data')), backgroundColor: Colors.red),
         );
       }
     }
@@ -181,7 +183,7 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -230,7 +232,7 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -279,7 +281,7 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }
@@ -337,7 +339,7 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const PersonListSkeleton(itemCount: 6)
           : Column(
               children: [
                 // Stats card
@@ -1231,7 +1233,7 @@ class _UnnamedFacesScreenState extends State<_UnnamedFacesScreen> {
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e)), backgroundColor: Colors.red),
         );
       }
     }

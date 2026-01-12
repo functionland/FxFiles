@@ -15,6 +15,7 @@ import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -72,7 +73,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open cloud.fx.land: $e')),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open website'))),
         );
       }
     }
@@ -135,6 +136,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                   trailing: IconButton(
                     icon: const Icon(LucideIcons.edit),
+                    tooltip: 'Edit',
                     onPressed: () => _startEditingApi(),
                   ),
                 ),
@@ -626,7 +628,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save settings: $e')),
+          SnackBar(content: Text(ErrorMessages.forSettings(e))),
         );
       }
     }
@@ -655,7 +657,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   }
                 } catch (e) {
                   messenger.showSnackBar(
-                    SnackBar(content: Text('Sign-in failed: $e'), backgroundColor: Colors.red),
+                    SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
                   );
                 }
                 if (mounted) setState(() {});

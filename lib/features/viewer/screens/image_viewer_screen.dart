@@ -12,6 +12,7 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/features/viewer/screens/image_editor_screen.dart';
+import 'package:fula_files/shared/utils/error_messages.dart';
 
 class ImageViewerScreen extends StatefulWidget {
   final String filePath;
@@ -323,7 +324,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
       if (mounted) {
         setState(() => _isDetectingFaces = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Face detection failed: $e')),
+          SnackBar(content: Text(ErrorMessages.forFaceDetection(e))),
         );
       }
     }
@@ -631,6 +632,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                     children: [
                       IconButton(
                         icon: const Icon(LucideIcons.arrowLeft, color: Colors.white),
+                        tooltip: 'Back',
                         onPressed: () => Navigator.pop(context),
                       ),
                       Expanded(
@@ -1298,7 +1300,7 @@ class _TagFaceDialogState extends State<_TagFaceDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error: $e'),
+            content: Text(ErrorMessages.getUserFriendlyMessage(e)),
             backgroundColor: Colors.red,
           ),
         );
@@ -1368,6 +1370,7 @@ class _TagFaceDialogState extends State<_TagFaceDialog> {
                     : const Icon(LucideIcons.user),
                 suffixIcon: IconButton(
                   icon: const Icon(LucideIcons.x, size: 18),
+                  tooltip: 'Clear name',
                   onPressed: () {
                     _nameController.clear();
                     _onNameChanged('');
