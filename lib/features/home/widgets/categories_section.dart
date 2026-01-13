@@ -2,83 +2,96 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
+import 'package:fula_files/core/services/tutorial_service.dart';
 
 class CategoriesSection extends StatelessWidget {
   const CategoriesSection({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
-          child: Text(
-            'Categories',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
+    return TutorialShowcase(
+      showcaseKey: TutorialService.instance.categoriesKey,
+      stepIndex: 2,
+      targetBorderRadius: BorderRadius.circular(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
+            child: Text(
+              'Categories',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.image,
-                label: 'Images',
-                color: Colors.green,
-                onTap: () => context.push('/browser', extra: {'category': 'images'}),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.video,
-                label: 'Videos',
-                color: Colors.red,
-                onTap: () => context.push('/browser', extra: {'category': 'videos'}),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.music,
-                label: 'Audio',
-                color: Colors.orange,
-                onTap: () => context.push('/browser', extra: {'category': 'audio'}),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.fileText,
-                label: 'Docs',
-                color: Colors.blue,
-                onTap: () => context.push('/browser', extra: {'category': 'documents'}),
-              )),
-            ],
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.image,
+                  label: 'Images',
+                  color: Colors.green,
+                  onTap: () => context.push('/browser', extra: {'category': 'images'}),
+                )),
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.video,
+                  label: 'Videos',
+                  color: Colors.red,
+                  onTap: () => context.push('/browser', extra: {'category': 'videos'}),
+                )),
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.music,
+                  label: 'Audio',
+                  color: Colors.orange,
+                  onTap: () => context.push('/browser', extra: {'category': 'audio'}),
+                )),
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.fileText,
+                  label: 'Docs',
+                  color: Colors.blue,
+                  onTap: () => context.push('/browser', extra: {'category': 'documents'}),
+                )),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.download,
-                label: 'Downloads',
-                color: Colors.purple,
-                onTap: () => context.push('/browser', extra: {'category': 'downloads'}),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.archive,
-                label: 'Archives',
-                color: Colors.brown,
-                onTap: () => context.push('/browser', extra: {'category': 'archives'}),
-              )),
-              Expanded(child: _CategoryCard(
-                icon: LucideIcons.trash2,
-                label: 'Trash',
-                color: Colors.grey,
-                onTap: () => context.push('/trash'),
-              )),
-              const Expanded(child: SizedBox()),
-            ],
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.download,
+                  label: 'Downloads',
+                  color: Colors.purple,
+                  onTap: () => context.push('/browser', extra: {'category': 'downloads'}),
+                )),
+                Expanded(child: _CategoryCard(
+                  icon: LucideIcons.archive,
+                  label: 'Archives',
+                  color: Colors.brown,
+                  onTap: () => context.push('/browser', extra: {'category': 'archives'}),
+                )),
+                Expanded(
+                  child: TutorialShowcase(
+                    showcaseKey: TutorialService.instance.trashKey,
+                    stepIndex: 8,
+                    targetBorderRadius: BorderRadius.circular(12),
+                    child: _CategoryCard(
+                      icon: LucideIcons.trash2,
+                      label: 'Trash',
+                      color: Colors.grey,
+                      onTap: () => context.push('/trash'),
+                    ),
+                  ),
+                ),
+                const Expanded(child: SizedBox()),
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

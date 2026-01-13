@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -19,27 +20,19 @@ const String cleanupTask = 'cleanupIncomplete';
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     try {
+      // Initialize RustLib in background isolate (required for fula_client FFI)
+      await RustLib.init();
+
       await SecureStorageService.instance.init();
       await LocalStorageService.instance.init();
       
-      final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
-      final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
-      final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
-      
-      if (apiUrl == null || jwtToken == null) {
-        debugPrint('Background task: API not configured');
+      // Restore auth session which initializes FulaApiService
+      final hasSession = await AuthService.instance.checkExistingSession();
+
+      if (!hasSession || !FulaApiService.instance.isConfigured) {
+        debugPrint('Background task: Not configured (session: $hasSession, fula: ${FulaApiService.instance.isConfigured})');
         return true;
       }
-
-      FulaApiService.instance.configure(
-        endpoint: apiUrl,
-        accessKey: 'JWT:$jwtToken',
-        secretKey: 'not-used',
-        pinningService: ipfsServer,
-        pinningToken: jwtToken,
-      );
-
-      await AuthService.instance.checkExistingSession();
 
       switch (task) {
         case periodicSyncTask:
@@ -227,24 +220,14 @@ class BackgroundSyncService {
 
   /// Initialize services needed for background operations
   Future<void> _initializeServicesForBackground() async {
+    // Initialize RustLib in background isolate (required for fula_client FFI)
+    await RustLib.init();
+
     await SecureStorageService.instance.init();
     await LocalStorageService.instance.init();
 
-    final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
-    final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
-    final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
-
-    if (apiUrl != null && jwtToken != null) {
-      FulaApiService.instance.configure(
-        endpoint: apiUrl,
-        accessKey: 'JWT:$jwtToken',
-        secretKey: 'not-used',
-        pinningService: ipfsServer,
-        pinningToken: jwtToken,
-      );
-
-      await AuthService.instance.checkExistingSession();
-    }
+    // Restore auth session which initializes FulaApiService
+    await AuthService.instance.checkExistingSession();
   }
 
   Future<void> schedulePeriodicSync({

@@ -78,6 +78,9 @@ class CloudShareStorageService {
     }
 
     try {
+      // Ensure bucket exists (create if needed)
+      await _ensureBucketExists();
+
       final key = '$_sharesPrefix$userId.json';
 
       // Download and decrypt (handled by fula_client)
@@ -99,10 +102,12 @@ class CloudShareStorageService {
       return shares;
     } on FulaApiException catch (e) {
       if (e.message.contains('NoSuchKey') ||
+          e.message.contains('NoSuchBucket') ||
+          e.message.contains('bucket not found') ||
           e.message.contains('404') ||
           e.message.contains('not found')) {
-        // No shares stored yet
-        debugPrint('CloudShareStorage: No shares found in cloud');
+        // No shares stored yet or bucket doesn't exist
+        debugPrint('CloudShareStorage: No shares found in cloud (bucket may not exist yet)');
         return [];
       }
       debugPrint('CloudShareStorage: Failed to download shares: $e');
@@ -165,6 +170,16 @@ class CloudShareStorageService {
       final key = '$_sharesPrefix$userId.json';
       await FulaApiService.instance.deleteObject(_metadataBucket, key);
       debugPrint('CloudShareStorage: Deleted shares from cloud');
+    } on FulaApiException catch (e) {
+      // Ignore if bucket/key doesn't exist
+      if (e.message.contains('NoSuchKey') ||
+          e.message.contains('NoSuchBucket') ||
+          e.message.contains('bucket not found') ||
+          e.message.contains('404')) {
+        debugPrint('CloudShareStorage: No shares to delete');
+        return;
+      }
+      debugPrint('CloudShareStorage: Failed to delete shares: $e');
     } catch (e) {
       debugPrint('CloudShareStorage: Failed to delete shares: $e');
     }

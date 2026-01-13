@@ -313,7 +313,7 @@ class FulaApiService {
     String? contentType,
   }) async {
     // Use the originalFilename as the key if provided, otherwise use key
-    final path = originalFilename != null ? '/$originalFilename' : key;
+    final path = originalFilename ?? key;
     return uploadObject(bucket, path, data, contentType: contentType);
   }
 
@@ -368,7 +368,7 @@ class FulaApiService {
     String? contentType,
     void Function(UploadProgress)? onProgress,
   }) async {
-    final path = originalFilename != null ? '/$originalFilename' : key;
+    final path = originalFilename ?? key;
     return uploadLargeFile(bucket, path, data, onProgress: onProgress);
   }
 
@@ -419,6 +419,7 @@ class FulaApiService {
   /// Create a share token for a file
   /// Accepts local ShareMode from share_token.dart
   Future<String> createShareToken(
+    String bucket,
     String storageKey,
     Uint8List recipientPublicKey,
     local.ShareMode mode,
@@ -427,6 +428,7 @@ class FulaApiService {
     _ensureConfigured();
     return await fula.createShareTokenWithMode(
       client: _client!,
+      bucket: bucket,
       storageKey: storageKey,
       recipientPublicKey: recipientPublicKey.toList(),
       mode: _convertShareMode(mode),

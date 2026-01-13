@@ -519,6 +519,10 @@ class OutgoingShare {
   /// Stored so we can regenerate the exact same URL without the password
   final String? encryptedFragment;
 
+  /// Storage key (CID) for fetching file from IPFS
+  /// Stored so we can regenerate links without looking up from forest
+  final String? storageKey;
+
   OutgoingShare({
     required this.token,
     required this.recipientName,
@@ -526,6 +530,7 @@ class OutgoingShare {
     this.linkSecretKey,
     this.passwordSalt,
     this.encryptedFragment,
+    this.storageKey,
   }) : sharedAt = sharedAt ?? DateTime.now();
 
   /// Share ID
@@ -566,6 +571,7 @@ class OutgoingShare {
     if (linkSecretKey != null) 'linkSecretKey': base64Encode(linkSecretKey!),
     if (passwordSalt != null) 'passwordSalt': base64Encode(passwordSalt!),
     if (encryptedFragment != null) 'encryptedFragment': encryptedFragment,
+    if (storageKey != null) 'storageKey': storageKey,
   };
 
   /// Create from JSON
@@ -580,6 +586,7 @@ class OutgoingShare {
         ? base64Decode(json['passwordSalt'] as String)
         : null,
     encryptedFragment: json['encryptedFragment'] as String?,
+    storageKey: json['storageKey'] as String?,
   );
 }
 

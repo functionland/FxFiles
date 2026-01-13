@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:showcaseview/showcaseview.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show WalletService, walletNavigatorKey;
 import 'package:fula_files/core/services/billing_api_service.dart';
+import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/features/home/widgets/recent_files_section.dart';
 import 'package:fula_files/features/home/widgets/categories_section.dart';
 import 'package:fula_files/features/home/widgets/featured_section.dart';
@@ -125,42 +127,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         !_lowStorageWarningDismissed &&
         storageState.info != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: isLoggedIn
-              ? CircleAvatar(
-                  radius: 14,
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  backgroundImage: user?.photoUrl != null
-                      ? NetworkImage(user!.photoUrl!)
-                      : null,
-                  child: user?.photoUrl == null
-                      ? Text(
-                          user?.email.substring(0, 1).toUpperCase() ?? 'U',
-                          style: const TextStyle(fontSize: 12, color: Colors.white),
-                        )
-                      : null,
-                )
-              : const Icon(LucideIcons.userCircle),
-          tooltip: 'Profile',
-          onPressed: () => _showProfileSheet(context),
+    return ShowCaseWidget(
+      enableAutoScroll: true,
+      onStart: (index, key) {
+        TutorialService.instance.setTutorialActive(true);
+      },
+      onComplete: (index, key) {
+        // Handled by TutorialShowcase buttons
+      },
+      onFinish: () {
+        TutorialService.instance.setTutorialActive(false);
+      },
+      builder: (context) => Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: isLoggedIn
+                ? CircleAvatar(
+                    radius: 14,
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    backgroundImage: user?.photoUrl != null
+                        ? NetworkImage(user!.photoUrl!)
+                        : null,
+                    child: user?.photoUrl == null
+                        ? Text(
+                            user?.email.substring(0, 1).toUpperCase() ?? 'U',
+                            style: const TextStyle(fontSize: 12, color: Colors.white),
+                          )
+                        : null,
+                  )
+                : const Icon(LucideIcons.userCircle),
+            tooltip: 'Profile',
+            onPressed: () => _showProfileSheet(context),
+          ),
+          title: const Text('FxFiles'),
+          actions: [
+            TutorialShowcase(
+              showcaseKey: TutorialService.instance.searchKey,
+              stepIndex: 10,
+              targetShapeBorder: const CircleBorder(),
+              child: IconButton(
+                icon: const Icon(LucideIcons.search),
+                tooltip: 'Search',
+                onPressed: () => context.push('/search'),
+              ),
+            ),
+            IconButton(
+              icon: Icon(
+                LucideIcons.helpCircle,
+                color: TutorialService.instance.isTutorialActive
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+              tooltip: 'Tutorial',
+              onPressed: () => _startTutorial(context),
+            ),
+            TutorialShowcase(
+              showcaseKey: TutorialService.instance.settingsKey,
+              stepIndex: 9,
+              targetShapeBorder: const CircleBorder(),
+              child: IconButton(
+                icon: const Icon(LucideIcons.settings),
+                tooltip: 'Settings',
+                onPressed: () => context.push('/settings'),
+              ),
+            ),
+          ],
         ),
-        title: const Text('FxFiles'),
-        actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.search),
-            tooltip: 'Search',
-            onPressed: () => context.push('/search'),
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.settings),
-            tooltip: 'Settings',
-            onPressed: () => context.push('/settings'),
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
+        body: RefreshIndicator(
         onRefresh: () async {
           ref.invalidate(recentFilesProvider);
           ref.invalidate(storageInfoProvider);
@@ -176,8 +209,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               _buildLowStorageWarning(context, storageState),
             // Setup TODO banner - only show if any setup step is incomplete and not dismissed
             if (needsSetup && !_setupBannerDismissed)
-              _buildSetupBanner(context, isLoggedIn, _jwtToken, storageState),
-            const RecentFilesSection(),
+              TutorialShowcase(
+                showcaseKey: TutorialService.instance.setupBannerKey,
+                stepIndex: 0,
+                targetBorderRadius: BorderRadius.circular(12),
+                child: _buildSetupBanner(context, isLoggedIn, _jwtToken, storageState),
+              ),
+            TutorialShowcase(
+              showcaseKey: TutorialService.instance.recentFilesKey,
+              stepIndex: 1,
+              targetBorderRadius: BorderRadius.circular(12),
+              child: const RecentFilesSection(),
+            ),
             const SizedBox(height: 8),
             const CategoriesSection(),
             const SizedBox(height: 8),
@@ -187,6 +230,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 16),
           ],
         ),
+      ),
       ),
     );
   }
@@ -520,6 +564,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() => _isLinkingWallet = false);
     // Disconnect wallet if connection was in progress
     WalletService.instance.disconnect();
+  }
+
+  void _startTutorial(BuildContext context) {
+    // Check if setup is complete to determine whether to include setup step
+    final storageState = ref.read(storageProvider);
+    final isLoggedIn = AuthService.instance.isAuthenticated;
+    final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
+    final hasWallet = storageState.wallets.isNotEmpty;
+
+    // Setup is needed if any step is incomplete (same logic as in build)
+    final needsSetup = !_isLoadingJwt && (
+      !isLoggedIn ||
+      !hasJwt ||
+      (hasJwt && !hasWallet && storageState.error == null)
+    );
+
+    // Only include setup step if setup is still needed and banner is visible
+    final includeSetup = needsSetup && !_setupBannerDismissed;
+
+    // Store the include setup state for TutorialShowcase to use
+    TutorialService.instance.setIncludeSetup(includeSetup);
+
+    ShowCaseWidget.of(context).startShowCase(
+      TutorialService.instance.getTutorialKeys(includeSetup: includeSetup),
+    );
   }
 
   void _showProfileSheet(BuildContext context) {

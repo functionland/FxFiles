@@ -101,16 +101,21 @@ class BillingApiService {
     _ensureConfigured(baseUrl, token);
 
     try {
+      final requestBody = {
+        'address': address,
+        'chainId': chainId,
+        'signature': signature,
+        'message': message,
+      };
+      debugPrint('BillingApiService: linkWallet request body: $requestBody');
+
       final response = await http.post(
         Uri.parse('$baseUrl/api/v1/wallets/link'),
         headers: await _getHeaders(),
-        body: jsonEncode({
-          'address': address,
-          'chainId': chainId,
-          'signature': signature,
-          'message': message,
-        }),
+        body: jsonEncode(requestBody),
       );
+
+      debugPrint('BillingApiService: linkWallet response: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return true;

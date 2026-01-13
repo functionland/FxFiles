@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/app/app.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
@@ -18,6 +19,9 @@ import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize fula_client Rust bridge (required before any fula_client operations)
+  await RustLib.init();
 
   // Initialize services
   await SecureStorageService.instance.init();
@@ -45,19 +49,9 @@ void main() async {
   await BackgroundSyncService.instance.initialize();
 
   // Check if Fula API is configured and schedule sync
-  final apiUrl = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
   final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
-  final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
-  
-  if (apiUrl != null && jwtToken != null) {
-    FulaApiService.instance.configure(
-      endpoint: apiUrl,
-      accessKey: 'JWT:$jwtToken',
-      secretKey: 'not-used',
-      pinningService: ipfsServer,
-      pinningToken: jwtToken,
-    );
 
+  if (FulaApiService.instance.isConfigured && jwtToken != null) {
     // Schedule periodic background sync
     await BackgroundSyncService.instance.schedulePeriodicSync();
 

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
@@ -55,47 +56,52 @@ class StorageSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final storageAsync = ref.watch(storageInfoProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
-          child: Text(
-            'Storage',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
+    return TutorialShowcase(
+      showcaseKey: TutorialService.instance.storageKey,
+      stepIndex: 7,
+      targetBorderRadius: BorderRadius.circular(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacing20, vertical: AppTheme.spacing12),
+            child: Text(
+              'Storage',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-        ),
-        storageAsync.when(
-          data: (storages) => Column(
-            children: storages.map((storage) => _StorageTile(storage: storage)).toList(),
-          ),
-          loading: () => const Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(child: CircularProgressIndicator()),
-          ),
-          error: (e, _) => Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'load storage')),
-          ),
-        ),
-        // Trash tile
-        ListTile(
-          leading: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.red.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
+          storageAsync.when(
+            data: (storages) => Column(
+              children: storages.map((storage) => _StorageTile(storage: storage)).toList(),
             ),
-            child: const Icon(LucideIcons.trash2, color: Colors.red),
+            loading: () => const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'load storage')),
+            ),
           ),
-          title: const Text('Trash'),
-          subtitle: const Text('Deleted files'),
-          trailing: const Icon(LucideIcons.chevronRight),
-          onTap: () => context.push('/trash'),
-        ),
-      ],
+          // Trash tile
+          ListTile(
+            leading: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(LucideIcons.trash2, color: Colors.red),
+            ),
+            title: const Text('Trash'),
+            subtitle: const Text('Deleted files'),
+            trailing: const Icon(LucideIcons.chevronRight),
+            onTap: () => context.push('/trash'),
+          ),
+        ],
+      ),
     );
   }
 }

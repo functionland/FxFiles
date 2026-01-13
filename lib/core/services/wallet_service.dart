@@ -153,9 +153,12 @@ class WalletService {
       // Wait for connection or timeout
       final completer = Completer<String?>();
       StreamSubscription? subscription;
+      Timer? pollTimer;
 
       subscription = onConnectionChange.listen((event) {
         if (event.type == WalletEventType.connected && event.address != null) {
+          debugPrint('WalletService: Connection event received: ${event.address}');
+          pollTimer?.cancel();
           subscription?.cancel();
           if (!completer.isCompleted) {
             completer.complete(event.address);
@@ -163,8 +166,25 @@ class WalletService {
         }
       });
 
+      // Also poll for connection state in case event is missed when returning from wallet app
+      pollTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+        // Check if session is now connected (may happen after returning from wallet app)
+        if (_appKitModal!.isConnected) {
+          _updateConnectionState();
+          if (_connectedAddress != null) {
+            debugPrint('WalletService: Connection detected via polling: $_connectedAddress');
+            timer.cancel();
+            subscription?.cancel();
+            if (!completer.isCompleted) {
+              completer.complete(_connectedAddress);
+            }
+          }
+        }
+      });
+
       // Timeout after 2 minutes
       Future.delayed(const Duration(minutes: 2), () {
+        pollTimer?.cancel();
         subscription?.cancel();
         if (!completer.isCompleted) {
           completer.complete(null);
@@ -186,9 +206,12 @@ class WalletService {
 
         final completer = Completer<String?>();
         StreamSubscription? subscription;
+        Timer? pollTimer;
 
         subscription = onConnectionChange.listen((event) {
           if (event.type == WalletEventType.connected && event.address != null) {
+            debugPrint('WalletService: Connection event received (retry): ${event.address}');
+            pollTimer?.cancel();
             subscription?.cancel();
             if (!completer.isCompleted) {
               completer.complete(event.address);
@@ -196,7 +219,23 @@ class WalletService {
           }
         });
 
+        // Also poll for connection state in case event is missed
+        pollTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+          if (_appKitModal!.isConnected) {
+            _updateConnectionState();
+            if (_connectedAddress != null) {
+              debugPrint('WalletService: Connection detected via polling (retry): $_connectedAddress');
+              timer.cancel();
+              subscription?.cancel();
+              if (!completer.isCompleted) {
+                completer.complete(_connectedAddress);
+              }
+            }
+          }
+        });
+
         Future.delayed(const Duration(minutes: 2), () {
+          pollTimer?.cancel();
           subscription?.cancel();
           if (!completer.isCompleted) {
             completer.complete(null);
@@ -218,10 +257,15 @@ class WalletService {
   String generateLinkMessage(String address) {
     final email = AuthService.instance.currentUser?.email ?? 'unknown';
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    return '''Link wallet to Fula Pinning Service
+    final message = '''Link wallet to Fula Pinning Service
 User: $email
 Wallet: $address
 Timestamp: $timestamp''';
+    debugPrint('WalletService: Generated link message:');
+    debugPrint('WalletService: Email: $email');
+    debugPrint('WalletService: Address: $address');
+    debugPrint('WalletService: Message: $message');
+    return message;
   }
 
   /// Sign a message using personal_sign (EIP-191)

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -91,23 +92,10 @@ class DeepLinkService {
         );
       }
 
-      // Configure FulaApiService with the new key
-      final gateway = await SecureStorageService.instance.read(
-        SecureStorageKeys.apiGatewayUrl,
-      );
-      final ipfs = await SecureStorageService.instance.read(
-        SecureStorageKeys.ipfsServerUrl,
-      );
-
-      if (gateway != null) {
-        FulaApiService.instance.configure(
-          endpoint: gateway,
-          accessKey: 'JWT:$apiKey',
-          secretKey: 'not-used',
-          pinningService: ipfs,
-          pinningToken: apiKey,
-        );
-      }
+      // Reinitialize FulaApiService with the new settings
+      debugPrint('DeepLinkService: Calling reinitializeFulaClient...');
+      await AuthService.instance.reinitializeFulaClient();
+      debugPrint('DeepLinkService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
 
       // Notify listeners that API key was received
       _apiKeyReceivedController.add(apiKey);

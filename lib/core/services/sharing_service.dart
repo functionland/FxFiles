@@ -104,18 +104,18 @@ class SharingService {
     if (!fula_service.FulaApiService.instance.isConfigured) {
       throw SharingException('Fula API not configured');
     }
+    debugPrint('SharingService: Looking for file in bucket=$bucket, path=$path');
     final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: path);
+    debugPrint('SharingService: Found ${objects.length} objects with prefix "$path"');
+    for (final o in objects) {
+      debugPrint('SharingService:   - key="${o.key}", storageKey="${o.storageKey}"');
+    }
     final obj = objects.firstWhere(
       (o) => o.key == path,
       orElse: () => throw SharingException('File not found: $path'),
     );
+    debugPrint('SharingService: Found file, storageKey=${obj.storageKey}');
     return obj.storageKey ?? obj.key;
-  }
-
-  /// Map ShareMode to fula_client ShareMode
-  ShareMode _mapShareMode(ShareMode mode) {
-    // Direct mapping - same enum names
-    return mode;
   }
 
   /// Create a share token for a recipient
@@ -163,10 +163,11 @@ class SharingService {
         : null;
 
     // Create fula_client share token
-    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
+    final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+      bucket,  // Bucket name
       storageKey,
       recipientPublicKey,
-      _mapShareModeToFula(shareMode),
+      shareMode,
       expiresAtUnix,
     );
 
@@ -187,16 +188,6 @@ class SharingService {
       fileName: fileName,
       contentType: contentType,
     );
-  }
-
-  /// Map ShareMode to fula_client ShareMode
-  fula.ShareMode _mapShareModeToFula(ShareMode mode) {
-    switch (mode) {
-      case ShareMode.temporal:
-        return fula.ShareMode.temporal;
-      case ShareMode.snapshot:
-        return fula.ShareMode.snapshot;
-    }
   }
 
   /// Create and save an outgoing share for a specific recipient
@@ -271,21 +262,46 @@ class SharingService {
       throw SharingException('Fula API not configured. Please connect to cloud storage first.');
     }
 
-    // Get storage key for the path
+    // Get storage key (CID) for the path - needed for file fetching
+    debugPrint('SharingService.createPublicLink: bucket=$bucket, pathScope=$pathScope');
     final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+    debugPrint('SharingService.createPublicLink: storageKey=$storageKey');
 
     // Calculate expiry as Unix timestamp
     final now = DateTime.now();
     final expiresAt = now.add(Duration(days: expiryDays));
     final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
 
-    // Create fula_client share token (empty recipient for public share)
-    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
-      storageKey,
-      Uint8List(32),  // Empty recipient for public share
-      _mapShareModeToFula(shareMode),
-      expiresAtUnix,
+    // Generate a disposable X25519 keypair for public link
+    // The private key is embedded in the URL so anyone with the link can decrypt
+    // Use Rust-based key derivation for compatibility with fula_client
+    final privateKeyBytes = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      privateKeyBytes[i] = _random.nextInt(256);
+    }
+    final publicKeyBytes = Uint8List.fromList(
+      await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
     );
+    debugPrint('SharingService.createPublicLink: generated disposable keypair (${publicKeyBytes.length} bytes public, ${privateKeyBytes.length} bytes private)');
+
+    // Create fula_client share token with the disposable public key
+    // DEK is fetched from object metadata (x-fula-encryption), not derived from path
+    debugPrint('SharingService.createPublicLink: creating fula share token with bucket=$bucket, storageKey=$storageKey...');
+    String fulaToken;
+    try {
+      fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+        bucket,  // Bucket name
+        storageKey,  // CID - used to fetch object and its DEK from metadata
+        publicKeyBytes,  // Disposable public key for public share
+        shareMode,
+        expiresAtUnix,
+      );
+      debugPrint('SharingService.createPublicLink: fula share token created: ${fulaToken.substring(0, 50)}...');
+    } catch (e, stack) {
+      debugPrint('SharingService.createPublicLink: ERROR creating fula share token: $e');
+      debugPrint('SharingService.createPublicLink: Stack: $stack');
+      rethrow;
+    }
 
     // Create share token for our records
     final tokenId = _uuid.v4();
@@ -293,7 +309,7 @@ class SharingService {
       id: tokenId,
       fulaShareToken: fulaToken,
       ownerPublicKey: ownerPublicKey,
-      recipientPublicKey: Uint8List(32),  // Empty for public
+      recipientPublicKey: publicKeyBytes,  // Store the disposable public key
       pathScope: pathScope,
       bucket: bucket,
       permissions: SharePermissions.readOnly,
@@ -307,12 +323,15 @@ class SharingService {
       contentType: contentType,
     );
 
-    // Build payload with fula token (v2 format)
+    // Build payload with fula token and private key (v2 format)
+    // The private key is needed by the recipient to decrypt the share token
     final payloadMap = {
       'v': 2,  // Version 2 = fula_client format
       't': fulaToken,
       'b': bucket,
-      'k': pathScope,
+      'k': pathScope,  // Original path - used for DEK derivation
+      'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
+      'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
       if (label != null) 'l': label,
       if (fileName != null) 'f': fileName,
     };
@@ -322,10 +341,12 @@ class SharingService {
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     final url = '$baseUrl/view/$tokenId#$fragment';
 
-    // Save outgoing share
+    // Save outgoing share with the private key and storage key for regeneration
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Anyone with link',
+      linkSecretKey: privateKeyBytes,  // Store for URL regeneration
+      storageKey: storageKey,  // Store CID for URL regeneration
     );
     await _saveOutgoingShare(outgoingShare);
 
@@ -370,7 +391,7 @@ class SharingService {
       throw SharingException('Fula API not configured. Please connect to cloud storage first.');
     }
 
-    // Get storage key for the path
+    // Get storage key (CID) for the path - needed for file fetching
     final storageKey = await _getStorageKeyForPath(bucket, pathScope);
 
     // Calculate expiry as Unix timestamp
@@ -378,11 +399,23 @@ class SharingService {
     final expiresAt = now.add(Duration(days: expiryDays));
     final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
 
-    // Create fula_client share token
-    final fulaToken = fula_service.FulaApiService.instance.createShareToken(
-      storageKey,
-      Uint8List(32),  // Empty recipient for password-protected share
-      _mapShareModeToFula(shareMode),
+    // Generate a disposable X25519 keypair for password-protected link
+    // Use Rust-based key derivation for compatibility with fula_client
+    final privateKeyBytes = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      privateKeyBytes[i] = _random.nextInt(256);
+    }
+    final publicKeyBytes = Uint8List.fromList(
+      await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
+    );
+
+    // Create fula_client share token with the disposable public key
+    // DEK is fetched from object metadata (x-fula-encryption), not derived from path
+    final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+      bucket,  // Bucket name
+      storageKey,  // CID - used to fetch object and its DEK from metadata
+      publicKeyBytes,  // Disposable public key for password-protected share
+      shareMode,
       expiresAtUnix,
     );
 
@@ -392,7 +425,7 @@ class SharingService {
       id: tokenId,
       fulaShareToken: fulaToken,
       ownerPublicKey: ownerPublicKey,
-      recipientPublicKey: Uint8List(32),  // Empty for password-protected
+      recipientPublicKey: publicKeyBytes,  // Store the disposable public key
       pathScope: pathScope,
       bucket: bucket,
       permissions: SharePermissions.readOnly,
@@ -406,12 +439,15 @@ class SharingService {
       contentType: contentType,
     );
 
-    // Build inner payload with fula token (v2 format)
+    // Build inner payload with fula token and secret key (v2 format)
+    // The secret key is needed by the recipient to decrypt the share token
     final innerPayloadMap = {
       'v': 2,
       't': fulaToken,
       'b': bucket,
-      'k': pathScope,
+      'k': pathScope,  // Original path - used for DEK derivation
+      'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
+      'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
       if (label != null) 'l': label,
       if (fileName != null) 'f': fileName,
     };
@@ -441,12 +477,13 @@ class SharingService {
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     final url = '$baseUrl/view/$tokenId#$fragment';
 
-    // Save outgoing share with the encrypted fragment for regeneration
+    // Save outgoing share with the encrypted fragment and storage key for regeneration
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Password Protected',
       passwordSalt: salt,
       encryptedFragment: fragment, // Store to regenerate same URL later
+      storageKey: storageKey,  // Store CID for reference
     );
     await _saveOutgoingShare(outgoingShare);
 
@@ -518,12 +555,14 @@ class SharingService {
     }
 
     // For public links with fula token (v2 format)
-    if (share.token.fulaShareToken != null) {
+    if (share.token.fulaShareToken != null && share.linkSecretKey != null) {
       final payloadMap = {
         'v': 2,
         't': share.token.fulaShareToken,
         'b': share.bucket,
-        'k': share.pathScope,
+        'k': share.pathScope,  // Original path - used for DEK derivation
+        if (share.storageKey != null) 'cid': share.storageKey,  // CID for fetching from IPFS
+        'sk': base64Encode(share.linkSecretKey!),  // Secret key for decryption
         if (share.token.label != null) 'l': share.token.label,
         if (share.token.fileName != null) 'f': share.token.fileName,
       };
@@ -677,7 +716,7 @@ class SharingService {
     final storageKey = await _getStorageKeyForPath(share.bucket, share.pathScope);
 
     // Accept and download via fula_client
-    final handle = fula_service.FulaApiService.instance.acceptShareToken(fulaToken);
+    final handle = await fula_service.FulaApiService.instance.acceptShareToken(fulaToken);
     return await fula_service.FulaApiService.instance.downloadSharedFile(
       share.bucket,
       storageKey,

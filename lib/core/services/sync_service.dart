@@ -325,6 +325,16 @@ class SyncService {
   Future<void> _executeUpload(SyncTask task) async {
     debugPrint('Starting upload: ${task.localPath} -> ${task.remoteBucket}/${task.remoteKey}');
     try {
+      // Ensure FulaApiService is configured before upload
+      if (!FulaApiService.instance.isConfigured) {
+        debugPrint('SyncService: FulaApiService not configured, attempting to initialize...');
+        await AuthService.instance.reinitializeFulaClient();
+        if (!FulaApiService.instance.isConfigured) {
+          throw FulaApiException('FulaApiService is not configured. Please sign in and configure your API key.');
+        }
+        debugPrint('SyncService: FulaApiService initialized successfully');
+      }
+
       // Ensure bucket exists before upload
       await _ensureBucketExists(task.remoteBucket);
       
@@ -550,6 +560,16 @@ class SyncService {
 
   Future<void> _executeDownload(SyncTask task) async {
     try {
+      // Ensure FulaApiService is configured before download
+      if (!FulaApiService.instance.isConfigured) {
+        debugPrint('SyncService: FulaApiService not configured, attempting to initialize...');
+        await AuthService.instance.reinitializeFulaClient();
+        if (!FulaApiService.instance.isConfigured) {
+          throw FulaApiException('FulaApiService is not configured. Please sign in and configure your API key.');
+        }
+        debugPrint('SyncService: FulaApiService initialized successfully');
+      }
+
       _activeSync[task.remoteKey] = SyncProgress(
         localPath: task.localPath,
         remoteKey: task.remoteKey,

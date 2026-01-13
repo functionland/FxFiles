@@ -580,10 +580,10 @@ packages:
     dependency: "direct main"
     description:
       name: fula_client
-      sha256: "18acdcda3310daa45df80420879a2579ddb33274d52cf57cb259054a0f0ca21f"
+      sha256: bd861e37bfcefe62be126df0aeac535661d307d19721753880ffbeaa2f9d0a7b
       url: "https://pub.dev"
     source: hosted
-    version: "0.2.9"
+    version: "0.2.17"
   get_it:
     dependency: transitive
     description:
@@ -1365,6 +1365,14 @@ packages:
     description:
       name: shimmer
       sha256: "5f88c883a22e9f9f299e5ba0e4f7e6054857224976a5d9f839d4ebdc94a14ac9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.0.0"
+  showcaseview:
+    dependency: "direct main"
+    description:
+      name: showcaseview
+      sha256: f236c1f44b286e1ba888f8701adca067af92c33e29ea937d0fe9b4a29d4cd41e
       url: "https://pub.dev"
     source: hosted
     version: "3.0.0"

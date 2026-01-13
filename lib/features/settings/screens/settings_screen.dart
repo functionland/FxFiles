@@ -604,14 +604,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         _jwtTokenController.text,
       );
 
+      // Reinitialize FulaApiService with the new settings
       if (_apiGatewayController.text.isNotEmpty && _jwtTokenController.text.isNotEmpty) {
-        FulaApiService.instance.configure(
-          endpoint: _apiGatewayController.text,
-          accessKey: 'JWT:${_jwtTokenController.text}',
-          secretKey: 'not-used',
-          pinningService: _ipfsServerController.text.isNotEmpty ? _ipfsServerController.text : null,
-          pinningToken: _jwtTokenController.text.isNotEmpty ? _jwtTokenController.text : null,
-        );
+        await AuthService.instance.reinitializeFulaClient();
       }
 
       setState(() {

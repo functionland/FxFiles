@@ -2183,7 +2183,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     final category = FileCategory.fromPath(file.path);
     final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
+    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
 
     if (!mounted) return;
 
@@ -2219,7 +2219,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     final category = FileCategory.fromPath(file.path);
     final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
+    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
 
     if (!mounted) return;
 
@@ -2255,7 +2255,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     final category = FileCategory.fromPath(file.path);
     final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '/${file.name}/' : '/${file.name}';
+    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
 
     if (!mounted) return;
 

@@ -248,12 +248,14 @@ class ErrorMessages {
   }
 
   static bool _isBillingError(String error) {
-    return error.contains('wallet') ||
+    return error.contains('billingapiexception') ||
+        error.contains('wallet') ||
         error.contains('balance') ||
         error.contains('insufficient') ||
         error.contains('transaction') ||
         error.contains('payment') ||
-        error.contains('credit');
+        error.contains('credit') ||
+        error.contains('linked');
   }
 
   static bool _isArchiveError(String error) {
@@ -308,6 +310,24 @@ class ErrorMessages {
     if (error.contains('transaction') && error.contains('failed')) {
       return 'Transaction failed. Please try again.';
     }
+    if (error.contains('already linked')) {
+      return 'This wallet is already linked to another account.';
+    }
+    if (error.contains('invalid signature')) {
+      return 'Signature verification failed. Please try again.';
+    }
+
+    // For BillingApiException errors with server messages like "400 - Actual error message"
+    // Extract and show the actual server message
+    final serverMsgMatch = RegExp(r'\d{3}\s*-\s*(.+)$').firstMatch(error);
+    if (serverMsgMatch != null) {
+      final serverMessage = serverMsgMatch.group(1)!.trim();
+      // Capitalize first letter if needed
+      if (serverMessage.isNotEmpty) {
+        return serverMessage[0].toUpperCase() + serverMessage.substring(1);
+      }
+    }
+
     return context != null
         ? 'Unable to $context. Please try again.'
         : 'Billing operation failed. Please try again.';

@@ -102,14 +102,19 @@ class AuthService {
   }
 
   Future<bool> checkExistingSession() async {
+    debugPrint('AuthService: checkExistingSession called');
     try {
       final userJson = await SecureStorageService.instance.readJson(
         SecureStorageKeys.userCredentials,
       );
 
+      debugPrint('AuthService: userJson = ${userJson != null ? "found" : "null"}');
+
       if (userJson != null) {
         _currentUser = AuthUser.fromJson(userJson);
+        debugPrint('AuthService: Restored user: ${_currentUser!.email}');
         await _deriveEncryptionKey();
+        debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
         await _initializeFulaClient();
         return true;
       }
@@ -216,6 +221,9 @@ class AuthService {
 
   /// Initialize the fula_client with the derived encryption key
   Future<void> _initializeFulaClient() async {
+    debugPrint('AuthService: _initializeFulaClient called');
+    debugPrint('AuthService: _encryptionKey is ${_encryptionKey == null ? "null" : "set (${_encryptionKey!.length} bytes)"}');
+
     if (_encryptionKey == null) {
       debugPrint('Cannot initialize FulaApiService: no encryption key');
       return;
@@ -230,38 +238,77 @@ class AuthService {
         SecureStorageKeys.jwtToken,
       );
 
+      debugPrint('AuthService: endpoint = $endpoint');
+      debugPrint('AuthService: accessToken = ${accessToken != null ? "${accessToken.substring(0, 20)}..." : "null"}');
+
       if (endpoint != null && endpoint.isNotEmpty) {
         await FulaApiService.instance.initialize(
           endpoint: endpoint,
           secretKey: _encryptionKey!,
           accessToken: accessToken,
         );
-        debugPrint('FulaApiService initialized');
+        debugPrint('FulaApiService initialized successfully');
+        debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
       } else {
         debugPrint('FulaApiService not initialized: no endpoint configured');
       }
-    } catch (e) {
+    } catch (e, stack) {
       debugPrint('Failed to initialize FulaApiService: $e');
+      debugPrint('Stack: $stack');
     }
   }
 
+  /// Public method to reinitialize FulaApiService after settings change
+  /// Call this after updating API gateway URL or JWT token
+  Future<void> reinitializeFulaClient() async {
+    debugPrint('AuthService: reinitializeFulaClient called');
+    debugPrint('AuthService: _currentUser = ${_currentUser?.email ?? "null"}');
+
+    // If no current user, try to restore the session first
+    if (_currentUser == null) {
+      debugPrint('AuthService: No current user, attempting to restore session...');
+      final hasSession = await checkExistingSession();
+      debugPrint('AuthService: Session restore result: $hasSession');
+      // checkExistingSession already calls _initializeFulaClient if successful
+      if (hasSession && FulaApiService.instance.isConfigured) {
+        debugPrint('AuthService: FulaApiService already initialized via session restore');
+        return;
+      }
+    }
+
+    // Ensure we have an encryption key
+    if (_encryptionKey == null) {
+      debugPrint('AuthService: No encryption key, calling getEncryptionKey()');
+      await getEncryptionKey();
+      debugPrint('AuthService: After getEncryptionKey(), _encryptionKey is ${_encryptionKey == null ? "null" : "set"}');
+    }
+    await _initializeFulaClient();
+  }
+
   Future<Uint8List?> getEncryptionKey() async {
-    if (_encryptionKey != null) return _encryptionKey;
+    debugPrint('AuthService: getEncryptionKey called');
+    if (_encryptionKey != null) {
+      debugPrint('AuthService: Using cached encryption key');
+      return _encryptionKey;
+    }
 
     final stored = await SecureStorageService.instance.read(
       SecureStorageKeys.encryptionKey,
     );
+    debugPrint('AuthService: Stored encryption key = ${stored != null ? "found" : "null"}');
 
     if (stored != null) {
       _encryptionKey = base64Decode(stored);
       return _encryptionKey;
     }
 
+    debugPrint('AuthService: _currentUser = ${_currentUser?.email ?? "null"}');
     if (_currentUser != null) {
       await _deriveEncryptionKey();
       return _encryptionKey;
     }
 
+    debugPrint('AuthService: Cannot get encryption key - no stored key and no current user');
     return null;
   }
 
