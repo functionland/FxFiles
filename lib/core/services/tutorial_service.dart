@@ -25,6 +25,14 @@ class TutorialService {
   final GlobalKey settingsKey = GlobalKey(debugLabel: 'tutorial_settings');
   final GlobalKey searchKey = GlobalKey(debugLabel: 'tutorial_search');
 
+  // GlobalKeys for browser/category screen tutorial
+  final GlobalKey browserRefreshKey = GlobalKey(debugLabel: 'browser_refresh');
+  final GlobalKey browserSortKey = GlobalKey(debugLabel: 'browser_sort');
+  final GlobalKey browserViewModeKey = GlobalKey(debugLabel: 'browser_viewmode');
+  final GlobalKey browserSyncKey = GlobalKey(debugLabel: 'browser_sync');
+  final GlobalKey browserItemMenuKey = GlobalKey(debugLabel: 'browser_item_menu');
+  final GlobalKey browserItemKey = GlobalKey(debugLabel: 'browser_item');
+
   bool _tutorialActive = false;
   bool get isTutorialActive => _tutorialActive;
 
@@ -81,7 +89,7 @@ class TutorialService {
     return includeSetup ? 0 : 1;
   }
 
-  /// Tutorial step descriptions
+  /// Tutorial step descriptions for home screen
   static const Map<int, TutorialStep> steps = {
     0: TutorialStep(
       title: 'Complete Setup',
@@ -128,6 +136,46 @@ class TutorialService {
       description: 'Search files by name or by tagged people in your photos.',
     ),
   };
+
+  /// Tutorial step descriptions for browser/category screen
+  static const Map<int, TutorialStep> browserSteps = {
+    0: TutorialStep(
+      title: 'Refresh',
+      description: 'Tap to refresh the loaded files. These are all files in your local storage for this category.',
+    ),
+    1: TutorialStep(
+      title: 'Sort Order',
+      description: 'Tap to change the sort order. You can sort by date or name, ascending or descending.',
+    ),
+    2: TutorialStep(
+      title: 'View Mode',
+      description: 'Tap to switch between list view and grid view. Grid view shows larger thumbnails.',
+    ),
+    3: TutorialStep(
+      title: 'Auto-Sync',
+      description: 'Tap to activate auto-sync for this category. All items will automatically sync to the Fula network.',
+    ),
+    4: TutorialStep(
+      title: 'Item Actions',
+      description: 'Tap to see all actions for this file: upload to cloud, share through link, share through another app, or delete.',
+    ),
+    5: TutorialStep(
+      title: 'Open File',
+      description: 'Tap to open the file. For images, you can edit or tag faces. Long press to activate multi-select for bulk actions like upload.',
+    ),
+  };
+
+  /// Get ordered list of browser tutorial keys
+  List<GlobalKey> getBrowserTutorialKeys() {
+    return [
+      browserRefreshKey,
+      browserSortKey,
+      browserViewModeKey,
+      browserSyncKey,
+      browserItemMenuKey,
+      browserItemKey,
+    ];
+  }
 }
 
 /// Data class for tutorial step information
@@ -336,6 +384,69 @@ class _TutorialTooltipContent extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Custom Showcase widget for browser/category screens
+class BrowserTutorialShowcase extends StatelessWidget {
+  final GlobalKey showcaseKey;
+  final int stepIndex;
+  final Widget child;
+  final ShapeBorder? targetShapeBorder;
+  final BorderRadius? targetBorderRadius;
+  final VoidCallback? onComplete;
+
+  const BrowserTutorialShowcase({
+    super.key,
+    required this.showcaseKey,
+    required this.stepIndex,
+    required this.child,
+    this.targetShapeBorder,
+    this.targetBorderRadius,
+    this.onComplete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final step = TutorialService.browserSteps[stepIndex];
+    final totalSteps = TutorialService.browserSteps.length;
+    final isFirst = stepIndex == 0;
+    final isLast = stepIndex == totalSteps - 1;
+
+    return Builder(
+      builder: (showcaseContext) {
+        return Showcase.withWidget(
+          key: showcaseKey,
+          targetShapeBorder: targetShapeBorder ?? const RoundedRectangleBorder(),
+          targetBorderRadius: targetBorderRadius,
+          height: 220,
+          width: MediaQuery.of(showcaseContext).size.width * 0.85 > 300
+              ? 300
+              : MediaQuery.of(showcaseContext).size.width * 0.85,
+          container: _TutorialTooltipContent(
+            title: step?.title ?? '',
+            description: step?.description ?? '',
+            stepIndex: stepIndex,
+            totalSteps: totalSteps,
+            isFirst: isFirst,
+            isLast: isLast,
+            onSkip: () {
+              ShowCaseWidget.of(showcaseContext).dismiss();
+            },
+            onPrev: () => ShowCaseWidget.of(showcaseContext).previous(),
+            onNext: () {
+              if (isLast) {
+                ShowCaseWidget.of(showcaseContext).dismiss();
+                onComplete?.call();
+              } else {
+                ShowCaseWidget.of(showcaseContext).next();
+              }
+            },
+          ),
+          child: child,
+        );
+      },
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:showcaseview/showcaseview.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -17,6 +18,7 @@ import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/archive_service.dart';
+import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
@@ -895,74 +897,126 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final title = _isCloudMode 
+    final title = _isCloudMode
         ? (_currentBucket ?? 'Cloud Storage')
-        : widget.category != null 
+        : widget.category != null
             ? _categoryTitle(widget.category!)
             : _currentPath.split(Platform.pathSeparator).last;
 
-    return PopScope(
-      canPop: _canPopNavigation(),
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          _navigateUp();
-        }
-      },
-      child: Scaffold(
-        appBar: _selectionMode ? _buildSelectionAppBar() : AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: _navigateUp,
-        ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title),
-            if (_isCloudMode && _currentPrefix.isNotEmpty)
-              Text(
-                _currentPrefix,
-                style: Theme.of(context).textTheme.bodySmall,
-              )
-            else if (_totalCount > 0)
-              Text(
-                '$_totalCount items${_hasMore ? '+' : ''}',
-                style: Theme.of(context).textTheme.bodySmall,
+    return ShowCaseWidget(
+      builder: (showcaseContext) => PopScope(
+        canPop: _canPopNavigation(),
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) {
+            _navigateUp();
+          }
+        },
+        child: Scaffold(
+          appBar: _selectionMode ? _buildSelectionAppBar() : AppBar(
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: _navigateUp,
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title),
+              if (_isCloudMode && _currentPrefix.isNotEmpty)
+                Text(
+                  _currentPrefix,
+                  style: Theme.of(context).textTheme.bodySmall,
+                )
+              else if (_totalCount > 0)
+                Text(
+                  '$_totalCount items${_hasMore ? '+' : ''}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
+          ),
+          actions: [
+            // Sync icon for categories
+            if (_isCategoryMode && AuthService.instance.isAuthenticated)
+              BrowserTutorialShowcase(
+                showcaseKey: TutorialService.instance.browserSyncKey,
+                stepIndex: 3,
+                targetBorderRadius: BorderRadius.circular(20),
+                child: _buildCategorySyncIcon(),
+              ),
+            // View mode toggle
+            BrowserTutorialShowcase(
+              showcaseKey: TutorialService.instance.browserViewModeKey,
+              stepIndex: 2,
+              targetBorderRadius: BorderRadius.circular(20),
+              child: IconButton(
+                icon: Icon(_viewModeIcon),
+                onPressed: _cycleViewMode,
+              ),
+            ),
+            // Sort
+            BrowserTutorialShowcase(
+              showcaseKey: TutorialService.instance.browserSortKey,
+              stepIndex: 1,
+              targetBorderRadius: BorderRadius.circular(20),
+              child: IconButton(
+                icon: const Icon(LucideIcons.arrowUpDown),
+                onPressed: _showSortOptions,
+              ),
+            ),
+            if (!_isCategoryMode && !_isCloudMode)
+              IconButton(
+                icon: const Icon(LucideIcons.folderUp),
+                tooltip: 'Go up',
+                onPressed: _navigateUp,
+              ),
+            // Refresh
+            BrowserTutorialShowcase(
+              showcaseKey: TutorialService.instance.browserRefreshKey,
+              stepIndex: 0,
+              targetBorderRadius: BorderRadius.circular(20),
+              child: IconButton(
+                icon: const Icon(LucideIcons.refreshCw),
+                onPressed: _isCloudMode
+                    ? _loadCloudData
+                    : (_isCategoryMode ? _loadCategoryFiles : _loadFiles),
+              ),
+            ),
+            // Help icon for tutorial
+            if (_isCategoryMode)
+              IconButton(
+                icon: const Icon(LucideIcons.helpCircle),
+                onPressed: () => _startTutorial(showcaseContext),
               ),
           ],
         ),
-        actions: [
-          // Sync icon for categories
-          if (_isCategoryMode && AuthService.instance.isAuthenticated)
-            _buildCategorySyncIcon(),
-          // View mode toggle
-          IconButton(
-            icon: Icon(_viewModeIcon),
-            tooltip: _viewModeTooltip,
-            onPressed: _cycleViewMode,
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.arrowUpDown),
-            tooltip: 'Sort',
-            onPressed: _showSortOptions,
-          ),
-          if (!_isCategoryMode && !_isCloudMode)
-            IconButton(
-              icon: const Icon(LucideIcons.folderUp),
-              tooltip: 'Go up',
-              onPressed: _navigateUp,
-            ),
-          IconButton(
-            icon: const Icon(LucideIcons.refreshCw),
-            tooltip: 'Refresh',
-            onPressed: _isCloudMode
-                ? _loadCloudData
-                : (_isCategoryMode ? _loadCategoryFiles : _loadFiles),
-          ),
-        ],
-      ),
-      body: _buildBody(),
+        body: _buildBody(),
+        ),
       ),
     );
+  }
+
+  void _startTutorial(BuildContext showcaseContext) {
+    // Filter keys based on what's visible
+    final keys = <GlobalKey>[
+      TutorialService.instance.browserRefreshKey,
+      TutorialService.instance.browserSortKey,
+      TutorialService.instance.browserViewModeKey,
+    ];
+
+    // Add sync key only if category mode and authenticated
+    if (_isCategoryMode && AuthService.instance.isAuthenticated) {
+      keys.add(TutorialService.instance.browserSyncKey);
+    }
+
+    // Add item keys only if there are items
+    if (_combinedFiles.isNotEmpty || _files.isNotEmpty) {
+      // Menu key is only available in list view
+      if (_viewMode == ViewMode.list) {
+        keys.add(TutorialService.instance.browserItemMenuKey);
+      }
+      keys.add(TutorialService.instance.browserItemKey);
+    }
+
+    ShowCaseWidget.of(showcaseContext).startShowCase(keys);
   }
   
   Widget _buildBody() {
@@ -1063,14 +1117,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             final file = item.localFile!;
             final syncState = LocalStorageService.instance.getSyncState(file.path);
             final isSelected = _selectedFiles.contains(file.path);
-            return _buildLocalFileItem(file, syncState, isSelected);
+            return _buildLocalFileItem(file, syncState, isSelected, index: index);
           }
 
           // Folder mode: just local files
           final file = _files[index];
           final syncState = LocalStorageService.instance.getSyncState(file.path);
           final isSelected = _selectedFiles.contains(file.path);
-          return _buildLocalFileItem(file, syncState, isSelected);
+          return _buildLocalFileItem(file, syncState, isSelected, index: index);
         },
       ),
     );
@@ -1127,14 +1181,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
             final file = item.localFile!;
             final syncState = LocalStorageService.instance.getSyncState(file.path);
             final isSelected = _selectedFiles.contains(file.path);
-            return _buildGridItem(file, syncState, isSelected);
+            return _buildGridItem(file, syncState, isSelected, index: index);
           }
 
           // Folder mode: just local files
           final file = _files[index];
           final syncState = LocalStorageService.instance.getSyncState(file.path);
           final isSelected = _selectedFiles.contains(file.path);
-          return _buildGridItem(file, syncState, isSelected);
+          return _buildGridItem(file, syncState, isSelected, index: index);
         },
       ),
     );
@@ -1154,22 +1208,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     return gridView;
   }
 
-  Widget _buildGridItem(LocalFile file, SyncState? syncState, bool isSelected) {
+  Widget _buildGridItem(LocalFile file, SyncState? syncState, bool isSelected, {int index = -1}) {
     final isFolderSynced = file.isDirectory && _isFolderSyncEnabled(file.path);
     final isLargeGrid = _viewMode == ViewMode.largeGrid;
-    
-    return GestureDetector(
-      onTap: _selectionMode 
+    final isFirstItem = index == 0 && _isCategoryMode;
+
+    Widget gridItem = GestureDetector(
+      onTap: _selectionMode
           ? () => _toggleSelection(file)
           : () => _navigateTo(file),
       onLongPress: () => _toggleSelection(file),
       child: Container(
         decoration: BoxDecoration(
-          color: isSelected 
+          color: isSelected
               ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5)
               : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
           borderRadius: BorderRadius.circular(12),
-          border: isSelected 
+          border: isSelected
               ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
               : null,
         ),
@@ -1204,7 +1259,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                             color: Colors.black54,
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: isFolderSynced 
+                          child: isFolderSynced
                               ? const Icon(LucideIcons.folderSync, size: 14, color: Colors.green)
                               : _buildSyncStatusIcon(syncState!.status),
                         ),
@@ -1245,6 +1300,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ),
       ),
     );
+
+    // Wrap first item with showcase
+    if (isFirstItem) {
+      gridItem = BrowserTutorialShowcase(
+        showcaseKey: TutorialService.instance.browserItemKey,
+        stepIndex: 5,
+        targetBorderRadius: BorderRadius.circular(12),
+        child: gridItem,
+      );
+    }
+
+    return gridItem;
   }
 
   Widget _buildGridThumbnail(LocalFile file) {
@@ -2556,11 +2623,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
-  Widget _buildLocalFileItem(LocalFile file, SyncState? syncState, bool isSelected) {
+  Widget _buildLocalFileItem(LocalFile file, SyncState? syncState, bool isSelected, {int index = -1}) {
     final isFolderSynced = file.isDirectory && _isFolderSyncEnabled(file.path);
     final dateFormatted = _formatFileDate(file.modifiedAt);
+    final isFirstItem = index == 0 && _isCategoryMode;
 
-    return ListTile(
+    // Build the trailing menu button, with showcase for first item
+    Widget menuButton = IconButton(
+      icon: const Icon(LucideIcons.moreVertical),
+      onPressed: () => _showFileOptions(file),
+    );
+    if (isFirstItem) {
+      menuButton = BrowserTutorialShowcase(
+        showcaseKey: TutorialService.instance.browserItemMenuKey,
+        stepIndex: 4,
+        targetBorderRadius: BorderRadius.circular(20),
+        child: menuButton,
+      );
+    }
+
+    // Build the list tile
+    Widget listTile = ListTile(
       selected: isSelected,
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
       leading: FileThumbnail(file: file, size: 48),
@@ -2585,15 +2668,24 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           ],
         ],
       ),
-      trailing: IconButton(
-        icon: const Icon(LucideIcons.moreVertical),
-        onPressed: () => _showFileOptions(file),
-      ),
+      trailing: menuButton,
       onTap: _selectionMode
           ? () => _toggleSelection(file)
           : () => _navigateTo(file),
       onLongPress: () => _toggleSelection(file),
     );
+
+    // Wrap first item with showcase for the item itself
+    if (isFirstItem) {
+      listTile = BrowserTutorialShowcase(
+        showcaseKey: TutorialService.instance.browserItemKey,
+        stepIndex: 5,
+        targetBorderRadius: BorderRadius.circular(8),
+        child: listTile,
+      );
+    }
+
+    return listTile;
   }
 
   /// Format file date for display
