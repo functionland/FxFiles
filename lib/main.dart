@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/app/app.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -21,7 +24,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize fula_client Rust bridge (required before any fula_client operations)
-  await RustLib.init();
+  // On iOS, the Rust library is statically linked into the executable,
+  // so we need to use DynamicLibrary.process() instead of loading a framework
+  if (Platform.isIOS) {
+    await RustLib.init(
+      externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+    );
+  } else {
+    await RustLib.init();
+  }
 
   // Initialize services
   await SecureStorageService.instance.init();
