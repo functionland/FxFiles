@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/file_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/face_data.dart';
@@ -45,12 +46,29 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
 
     setState(() => _isSearching = true);
     try {
-      // Search files
-      final fileResults = await FileService.instance.searchFiles(query);
-      
+      List<LocalFile> fileResults;
+
+      if (Platform.isIOS) {
+        // iOS: Search PhotoKit media library + imported files
+        final mediaResults = await MediaService.instance.searchPhotoLibrary(query);
+        final importedResults = await FileService.instance.searchImportedFiles(query);
+
+        // Combine results and remove duplicates
+        final seen = <String>{};
+        fileResults = [];
+        for (final file in [...mediaResults, ...importedResults]) {
+          if (seen.add(file.path)) {
+            fileResults.add(file);
+          }
+        }
+      } else {
+        // Android: Search filesystem
+        fileResults = await FileService.instance.searchFiles(query);
+      }
+
       // Search people by name
       final personResults = await FaceStorageService.instance.searchPersonsByName(query);
-      
+
       setState(() {
         _fileResults = fileResults;
         _personResults = personResults;

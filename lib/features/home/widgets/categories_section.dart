@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 class CategoriesSection extends StatelessWidget {
   const CategoriesSection({super.key});
@@ -31,7 +32,7 @@ class CategoriesSection extends StatelessWidget {
               children: [
                 Expanded(child: _CategoryCard(
                   icon: LucideIcons.image,
-                  label: 'Images',
+                  label: PlatformCapabilities.imagesLabel,
                   color: Colors.green,
                   onTap: () => context.push('/browser', extra: {'category': 'images'}),
                 )),
@@ -49,7 +50,7 @@ class CategoriesSection extends StatelessWidget {
                 )),
                 Expanded(child: _CategoryCard(
                   icon: LucideIcons.fileText,
-                  label: 'Docs',
+                  label: PlatformCapabilities.documentsLabel,
                   color: Colors.blue,
                   onTap: () => context.push('/browser', extra: {'category': 'documents'}),
                 )),
@@ -61,12 +62,14 @@ class CategoriesSection extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               children: [
-                Expanded(child: _CategoryCard(
-                  icon: LucideIcons.download,
-                  label: 'Downloads',
-                  color: Colors.purple,
-                  onTap: () => context.push('/browser', extra: {'category': 'downloads'}),
-                )),
+                // Downloads only available on Android (iOS has no Downloads folder)
+                if (PlatformCapabilities.hasDownloadsCategory)
+                  Expanded(child: _CategoryCard(
+                    icon: LucideIcons.download,
+                    label: 'Downloads',
+                    color: Colors.purple,
+                    onTap: () => context.push('/browser', extra: {'category': 'downloads'}),
+                  )),
                 Expanded(child: _CategoryCard(
                   icon: LucideIcons.archive,
                   label: 'Archives',
@@ -86,7 +89,11 @@ class CategoriesSection extends StatelessWidget {
                     ),
                   ),
                 ),
-                const Expanded(child: SizedBox()),
+                // Add spacer to maintain row layout
+                if (PlatformCapabilities.hasDownloadsCategory)
+                  const Expanded(child: SizedBox())
+                else
+                  const Expanded(child: SizedBox()),
               ],
             ),
           ),

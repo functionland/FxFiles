@@ -10,6 +10,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:showcaseview/showcaseview.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
@@ -102,7 +103,10 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   
   // View mode state
   ViewMode _viewMode = ViewMode.list;
-  
+
+  // iOS-specific state
+  bool _isIOSLimitedAccess = false;
+
   // Scroll controller for lazy loading
   final ScrollController _scrollController = ScrollController();
 
@@ -115,7 +119,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     _scrollController.addListener(_onScroll);
     SyncService.instance.addListener(_onSyncStatusChanged);
     _loadViewMode();
+    _checkIOSLimitedAccess();
     _initPath();
+  }
+
+  /// Check if iOS has limited photo library access
+  Future<void> _checkIOSLimitedAccess() async {
+    if (Platform.isIOS) {
+      final isLimited = await FileService.instance.isIOSLimitedAccess();
+      if (mounted && isLimited != _isIOSLimitedAccess) {
+        setState(() => _isIOSLimitedAccess = isLimited);
+      }
+    }
   }
 
   /// Load saved view mode for current category/path
@@ -499,10 +514,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       
       // On iOS, use MediaService for media categories (images, videos, audio)
       // This uses PhotoKit to access the device's photo library
-      final isMediaCategory = category == FileCategory.images || 
-                              category == FileCategory.videos || 
+      final isMediaCategory = category == FileCategory.images ||
+                              category == FileCategory.videos ||
                               category == FileCategory.audio;
-      
+
+      // On iOS, documents/archives come from imported files only
+      final isDocumentsCategory = category == FileCategory.documents ||
+                                  category == FileCategory.archives;
+
       final MediaResult result;
       if (Platform.isIOS && isMediaCategory) {
         result = await MediaService.instance.getMediaByCategory(
@@ -512,8 +531,25 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           sortBy: _sortBy,
           ascending: _sortAscending,
         );
+      } else if (Platform.isIOS && isDocumentsCategory) {
+        // iOS: Load imported files from app sandbox
+        final importedFiles = await FileService.instance.getImportedFiles(
+          sortBy: _sortBy,
+          ascending: _sortAscending,
+        );
+        // Filter by category extensions
+        final extensions = _getCategoryExtensions(category);
+        final filteredFiles = importedFiles.where((f) {
+          final ext = f.name.split('.').last.toLowerCase();
+          return extensions.isEmpty || extensions.contains(ext);
+        }).toList();
+        result = MediaResult(
+          files: filteredFiles,
+          totalCount: filteredFiles.length,
+          hasMore: false,
+        );
       } else {
-        // Android or non-media categories: use FileService
+        // Android or other categories: use FileService
         final fileResult = await FileService.instance.getFilesByCategory(
           category,
           offset: 0,
@@ -1023,12 +1059,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    
+
     // Cloud mode
     if (_isCloudMode) {
       return _buildCloudBody();
     }
-    
+
     // Category or folder mode
     final isEmpty = _isCategoryMode ? _combinedFiles.isEmpty : _files.isEmpty;
     if (isEmpty) {
@@ -1052,16 +1088,159 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   label: const Text('Select Photos to Access'),
                 ),
               ),
+            // iOS: Show import button for documents/archives categories
+            if (Platform.isIOS && _isCategoryMode && _isDocumentsCategory())
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: ElevatedButton.icon(
+                  onPressed: _importFilesFromPicker,
+                  icon: const Icon(LucideIcons.filePlus),
+                  label: const Text('Import Files'),
+                ),
+              ),
           ],
         ),
       );
     }
-    
-    // Use different layouts based on view mode
-    if (_viewMode == ViewMode.list) {
-      return _buildListView();
-    } else {
-      return _buildGridView();
+
+    // Build content (list or grid view)
+    final contentWidget = _viewMode == ViewMode.list
+        ? _buildListView()
+        : _buildGridView();
+
+    // On iOS, show banners above the file list when needed
+    final showLimitedBanner = Platform.isIOS && _isCategoryMode && _isMediaCategory() && _isIOSLimitedAccess;
+    final showImportBanner = Platform.isIOS && _isCategoryMode && _isDocumentsCategory();
+
+    if (showLimitedBanner || showImportBanner) {
+      return Column(
+        children: [
+          // Limited photo access banner
+          if (showLimitedBanner)
+            _buildLimitedAccessBanner(),
+          // Import files banner for documents/archives on iOS
+          if (showImportBanner)
+            _buildImportBanner(),
+          // File list
+          Expanded(child: contentWidget),
+        ],
+      );
+    }
+
+    return contentWidget;
+  }
+
+  /// Check if current category is a documents-like category (documents, archives)
+  bool _isDocumentsCategory() {
+    if (widget.category == null) return false;
+    final category = _categoryFromString(widget.category!);
+    return category == FileCategory.documents || category == FileCategory.archives;
+  }
+
+  /// Get file extensions for a category
+  Set<String> _getCategoryExtensions(FileCategory category) {
+    switch (category) {
+      case FileCategory.images:
+        return {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif', 'svg', 'raw', 'cr2', 'nef', 'arw'};
+      case FileCategory.videos:
+        return {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', '3gp', 'm4v', 'mpeg', 'mpg'};
+      case FileCategory.audio:
+        return {'mp3', 'wav', 'aac', 'flac', 'ogg', 'wma', 'm4a', 'opus', 'aiff'};
+      case FileCategory.documents:
+        return {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'odt', 'ods', 'odp', 'csv', 'md', 'json', 'xml', 'html', 'log'};
+      case FileCategory.archives:
+        return {'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'};
+      default:
+        return {};
+    }
+  }
+
+  /// Build banner for iOS limited photo access mode
+  Widget _buildLimitedAccessBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: Colors.orange.withValues(alpha: 0.1),
+      child: Row(
+        children: [
+          Icon(LucideIcons.alertTriangle, color: Colors.orange, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Limited photo access',
+              style: TextStyle(color: Colors.orange.shade700, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              await MediaService.instance.openLimitedPhotosPicker();
+              _checkIOSLimitedAccess();
+              _loadCategoryFiles();
+            },
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+            child: const Text('Select More'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build banner for importing files on iOS (documents/archives)
+  Widget _buildImportBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+      child: Row(
+        children: [
+          Icon(LucideIcons.info, color: Theme.of(context).colorScheme.primary, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'On iOS, import files from other apps',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _importFilesFromPicker,
+            icon: const Icon(LucideIcons.filePlus, size: 18),
+            label: const Text('Import'),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Import files using the document picker (iOS)
+  Future<void> _importFilesFromPicker() async {
+    try {
+      final importedFiles = await FileService.instance.importMultipleFilesFromPicker();
+      if (importedFiles.isNotEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Imported ${importedFiles.length} file(s)'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        // Reload to show imported files
+        _loadCategoryFiles();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to import files: $e'),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 

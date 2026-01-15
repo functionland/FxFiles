@@ -7,6 +7,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:photo_manager/photo_manager.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 
@@ -665,6 +666,188 @@ class FileService {
     }
 
     return results;
+  }
+
+  // ============================================================
+  // iOS Import Methods (for documents and non-media files)
+  // ============================================================
+
+  /// Get the directory for imported files (Documents/Imported)
+  /// Used on iOS to store files picked via document picker
+  Future<Directory> getImportedFilesDirectory() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final importedDir = Directory(p.join(appDir.path, 'Imported'));
+    if (!await importedDir.exists()) {
+      await importedDir.create(recursive: true);
+    }
+    return importedDir;
+  }
+
+  /// Import a file from the system document picker to the app's sandbox
+  /// Returns the imported LocalFile, or null if cancelled
+  /// On iOS, files picked via document picker are temporary - this copies them to permanent storage
+  Future<LocalFile?> importFileFromPicker() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+      );
+
+      if (result == null || result.files.isEmpty) return null;
+
+      final pickedFile = result.files.first;
+      if (pickedFile.path == null) return null;
+
+      final importedDir = await getImportedFilesDirectory();
+
+      // Generate unique filename if file already exists
+      var destName = pickedFile.name;
+      var destPath = p.join(importedDir.path, destName);
+      var counter = 1;
+      while (await File(destPath).exists()) {
+        final baseName = p.basenameWithoutExtension(pickedFile.name);
+        final ext = p.extension(pickedFile.name);
+        destName = '$baseName ($counter)$ext';
+        destPath = p.join(importedDir.path, destName);
+        counter++;
+      }
+
+      // Copy from picker's temporary location to permanent storage
+      final sourceFile = File(pickedFile.path!);
+      await sourceFile.copy(destPath);
+
+      final destFile = File(destPath);
+      final stat = await destFile.stat();
+
+      return LocalFile(
+        path: destPath,
+        name: destName,
+        size: stat.size,
+        modifiedAt: stat.modified,
+        isDirectory: false,
+        mimeType: lookupMimeType(destPath),
+      );
+    } catch (e) {
+      debugPrint('Error importing file: $e');
+      return null;
+    }
+  }
+
+  /// Import multiple files from the system document picker
+  Future<List<LocalFile>> importMultipleFilesFromPicker() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: true,
+      );
+
+      if (result == null || result.files.isEmpty) return [];
+
+      final importedFiles = <LocalFile>[];
+      final importedDir = await getImportedFilesDirectory();
+
+      for (final pickedFile in result.files) {
+        if (pickedFile.path == null) continue;
+
+        // Generate unique filename if file already exists
+        var destName = pickedFile.name;
+        var destPath = p.join(importedDir.path, destName);
+        var counter = 1;
+        while (await File(destPath).exists()) {
+          final baseName = p.basenameWithoutExtension(pickedFile.name);
+          final ext = p.extension(pickedFile.name);
+          destName = '$baseName ($counter)$ext';
+          destPath = p.join(importedDir.path, destName);
+          counter++;
+        }
+
+        // Copy from picker's temporary location to permanent storage
+        final sourceFile = File(pickedFile.path!);
+        await sourceFile.copy(destPath);
+
+        final destFile = File(destPath);
+        final stat = await destFile.stat();
+
+        importedFiles.add(LocalFile(
+          path: destPath,
+          name: destName,
+          size: stat.size,
+          modifiedAt: stat.modified,
+          isDirectory: false,
+          mimeType: lookupMimeType(destPath),
+        ));
+      }
+
+      return importedFiles;
+    } catch (e) {
+      debugPrint('Error importing files: $e');
+      return [];
+    }
+  }
+
+  /// Get list of imported files (files in Documents/Imported)
+  Future<List<LocalFile>> getImportedFiles({
+    String sortBy = 'date',
+    bool ascending = false,
+  }) async {
+    final importedDir = await getImportedFilesDirectory();
+
+    if (!await importedDir.exists()) {
+      return [];
+    }
+
+    return await listDirectory(
+      importedDir.path,
+      showHidden: false,
+      sortBy: sortBy,
+      ascending: ascending,
+    );
+  }
+
+  /// Search within imported files
+  Future<List<LocalFile>> searchImportedFiles(String query) async {
+    final importedDir = await getImportedFilesDirectory();
+    final results = <LocalFile>[];
+    final queryLower = query.toLowerCase();
+
+    if (!await importedDir.exists()) {
+      return results;
+    }
+
+    try {
+      await for (final entity in importedDir.list(recursive: true)) {
+        if (entity is File) {
+          final name = p.basename(entity.path);
+          if (name.toLowerCase().contains(queryLower)) {
+            final stat = await entity.stat();
+            results.add(LocalFile(
+              path: entity.path,
+              name: name,
+              size: stat.size,
+              modifiedAt: stat.modified,
+              isDirectory: false,
+              mimeType: lookupMimeType(entity.path),
+            ));
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error searching imported files: $e');
+    }
+
+    return results;
+  }
+
+  /// Delete an imported file
+  Future<void> deleteImportedFile(String path) async {
+    final importedDir = await getImportedFilesDirectory();
+
+    // Security check: ensure path is within imported directory
+    if (!path.startsWith(importedDir.path)) {
+      throw FileServiceException('Cannot delete file outside of imported directory');
+    }
+
+    await deleteFile(path);
   }
 }
 

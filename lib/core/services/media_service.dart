@@ -328,6 +328,116 @@ class MediaService {
       hasMore: (offset + limit) < totalCount,
     );
   }
+
+  /// Search photo library by title/filename (iOS only)
+  /// On Android, returns empty list (use FileService.searchFiles instead)
+  Future<List<LocalFile>> searchPhotoLibrary(String query, {int limit = 100}) async {
+    if (!Platform.isIOS || query.isEmpty) {
+      return [];
+    }
+
+    final queryLower = query.toLowerCase();
+    final results = <LocalFile>[];
+
+    try {
+      // Get all albums (images, videos, audio)
+      final albums = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        hasAll: true,
+        onlyAll: true,
+      );
+
+      if (albums.isEmpty) return [];
+
+      final allAlbum = albums.first;
+      final totalCount = await allAlbum.assetCountAsync;
+
+      // Search through all assets in batches
+      const batchSize = 500;
+      var offset = 0;
+
+      while (offset < totalCount && results.length < limit) {
+        final assets = await allAlbum.getAssetListPaged(
+          page: offset ~/ batchSize,
+          size: batchSize,
+        );
+
+        for (final asset in assets) {
+          if (results.length >= limit) break;
+
+          // Check if title matches query
+          final title = asset.title ?? '';
+          if (title.toLowerCase().contains(queryLower)) {
+            final file = await _assetToLocalFile(asset);
+            if (file != null) {
+              results.add(file);
+            }
+          }
+        }
+
+        offset += batchSize;
+      }
+    } catch (e) {
+      debugPrint('Error searching photo library: $e');
+    }
+
+    return results;
+  }
+
+  /// Search photo library by media type
+  Future<List<LocalFile>> searchPhotoLibraryByType(
+    String query,
+    RequestType type, {
+    int limit = 100,
+  }) async {
+    if (!Platform.isIOS || query.isEmpty) {
+      return [];
+    }
+
+    final queryLower = query.toLowerCase();
+    final results = <LocalFile>[];
+
+    try {
+      final albums = await PhotoManager.getAssetPathList(
+        type: type,
+        hasAll: true,
+        onlyAll: true,
+      );
+
+      if (albums.isEmpty) return [];
+
+      final allAlbum = albums.first;
+      final totalCount = await allAlbum.assetCountAsync;
+
+      const batchSize = 500;
+      var offset = 0;
+
+      while (offset < totalCount && results.length < limit) {
+        final assets = await allAlbum.getAssetListPaged(
+          page: offset ~/ batchSize,
+          size: batchSize,
+        );
+
+        for (final asset in assets) {
+          if (results.length >= limit) break;
+
+          final title = asset.title ?? '';
+          if (title.toLowerCase().contains(queryLower)) {
+            final file = await _assetToLocalFile(asset);
+            if (file != null) {
+              results.add(file);
+            }
+          }
+        }
+
+        offset += batchSize;
+      }
+    } catch (e) {
+      debugPrint('Error searching photo library by type: $e');
+    }
+
+    return results;
+  }
 }
 
 /// Result class for media queries

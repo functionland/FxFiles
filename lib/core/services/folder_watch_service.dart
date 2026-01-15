@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
@@ -129,20 +130,29 @@ class FolderWatchService {
 
   Future<void> _startWatching(String path) async {
     if (_watchers.containsKey(path)) return;
-    
+
     // Category paths (e.g., "category:images") are not real directories
     // They use MediaService/FileService to get files, so no watching needed
     if (path.startsWith('category:')) {
       debugPrint('Skipping directory watch for category path: $path');
       return;
     }
-    
+
+    // iOS restriction: Can only watch directories within app sandbox
+    if (Platform.isIOS) {
+      final appDocDir = await getApplicationDocumentsDirectory();
+      if (!path.startsWith(appDocDir.path)) {
+        debugPrint('iOS: Cannot watch external directory: $path (outside app sandbox)');
+        return;
+      }
+    }
+
     final dir = Directory(path);
     if (!await dir.exists()) {
       debugPrint('Cannot watch non-existent directory: $path');
       return;
     }
-    
+
     try {
       final watcher = dir.watch(events: FileSystemEvent.all, recursive: true);
       _watchers[path] = watcher.listen((event) {
@@ -532,6 +542,28 @@ class FolderWatchService {
   List<FolderSync> getAllFolderSyncs() {
     return LocalStorageService.instance.getAllFolderSyncs();
   }
+
+  /// Check if folder sync is supported for a given path on the current platform
+  /// On iOS, only category syncs and app sandbox directories are supported
+  Future<bool> isFolderSyncSupported(String path) async {
+    // Category syncs are always supported (they use MediaService)
+    if (path.startsWith('category:')) {
+      return true;
+    }
+
+    // On iOS, only app sandbox directories can be watched
+    if (Platform.isIOS) {
+      final appDocDir = await getApplicationDocumentsDirectory();
+      return path.startsWith(appDocDir.path);
+    }
+
+    // Android supports watching any directory with storage permission
+    return true;
+  }
+
+  /// Check if arbitrary folder selection for sync is supported on this platform
+  /// Returns false on iOS (can only sync categories or app sandbox)
+  bool get canSelectArbitraryFolders => !Platform.isIOS;
 
   void dispose() {
     for (final subscription in _watchers.values) {
