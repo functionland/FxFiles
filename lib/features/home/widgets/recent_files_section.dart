@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 final recentFilesProvider = FutureProvider<List<RecentFile>>((ref) async {
@@ -60,12 +62,48 @@ class RecentFilesSection extends ConsumerWidget {
   }
 }
 
-class _RecentFileCard extends StatelessWidget {
+class _RecentFileCard extends StatefulWidget {
   final RecentFile file;
 
   const _RecentFileCard({required this.file});
 
+  @override
+  State<_RecentFileCard> createState() => _RecentFileCardState();
+}
+
+class _RecentFileCardState extends State<_RecentFileCard> {
+  Uint8List? _iosThumbnail;
+  bool _thumbnailLoaded = false;
+
+  RecentFile get file => widget.file;
   bool get _isMediaFile => file.isImage || file.isVideo;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadIOSThumbnail();
+  }
+
+  Future<void> _loadIOSThumbnail() async {
+    if (!Platform.isIOS || file.iosAssetId == null) return;
+    if (!file.isImage) return;
+
+    try {
+      final thumbnail = await MediaService.instance.getThumbnail(
+        file.iosAssetId!,
+        width: 160,
+        height: 160,
+      );
+      if (mounted && thumbnail != null) {
+        setState(() {
+          _iosThumbnail = thumbnail;
+          _thumbnailLoaded = true;
+        });
+      }
+    } catch (e) {
+      // Ignore thumbnail load errors
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -128,6 +166,19 @@ class _RecentFileCard extends StatelessWidget {
   }
 
   Widget _buildMediaThumbnail() {
+    // iOS: Use native PhotoKit thumbnail if available
+    if (Platform.isIOS && file.iosAssetId != null && file.isImage) {
+      if (_iosThumbnail != null) {
+        return Image.memory(
+          _iosThumbnail!,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        );
+      }
+      return _buildPlaceholder();
+    }
+
+    // Android/fallback: Use file system
     final imageFile = File(file.path);
     if (file.isImage && imageFile.existsSync()) {
       return Image.file(

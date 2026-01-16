@@ -125,14 +125,8 @@ class MediaService {
       size: limit,
     );
 
-    // Convert to LocalFile objects
-    final files = <LocalFile>[];
-    for (final asset in assets) {
-      final file = await _assetToLocalFile(asset);
-      if (file != null) {
-        files.add(file);
-      }
-    }
+    // Convert to LocalFile objects (batched parallel for performance)
+    final files = await _batchConvertAssets(assets.toList());
 
     // Sort files
     files.sort((a, b) {
@@ -152,12 +146,42 @@ class MediaService {
     );
   }
 
+  /// Ensure filename has extension (iOS PhotoKit often omits it)
+  String _ensureExtension(String? title, String filePath) {
+    final pathBasename = p.basename(filePath);
+    if (title == null || !title.contains('.')) {
+      return pathBasename;  // Use path basename which has extension
+    }
+    return title;
+  }
+
+  /// Get file extension from MIME type
+  String _getExtensionFromMimeType(String mimeType) {
+    final parts = mimeType.split('/');
+    if (parts.length != 2) return 'bin';
+
+    final subtype = parts[1].toLowerCase();
+    switch (subtype) {
+      case 'jpeg': return 'jpg';
+      case 'png': return 'png';
+      case 'gif': return 'gif';
+      case 'webp': return 'webp';
+      case 'heic': return 'heic';
+      case 'heif': return 'heif';
+      case 'mp4': return 'mp4';
+      case 'quicktime': return 'mov';
+      case 'x-m4v': return 'm4v';
+      case 'mpeg': return 'mp3';
+      case 'x-m4a': return 'm4a';
+      case 'aac': return 'aac';
+      default: return subtype;
+    }
+  }
+
   /// Convert PhotoManager AssetEntity to LocalFile
+  /// On iOS, avoids expensive asset.file call by using metadata only
   Future<LocalFile?> _assetToLocalFile(AssetEntity asset) async {
     try {
-      final file = await asset.file;
-      if (file == null) return null;
-
       String mimeType;
       switch (asset.type) {
         case AssetType.image:
@@ -173,14 +197,61 @@ class MediaService {
           mimeType = asset.mimeType ?? 'application/octet-stream';
       }
 
+      // iOS: Use lightweight metadata-only approach to avoid expensive file copy
+      // The actual file is fetched lazily when needed via iosAssetId
+      if (Platform.isIOS) {
+        // Construct filename with proper extension
+        // iOS asset.title can be null, empty, or missing extension
+        final assetTitle = asset.title;
+        final ext = _getExtensionFromMimeType(mimeType);
+        String fileName;
+
+        if (assetTitle != null && assetTitle.isNotEmpty && assetTitle.contains('.')) {
+          // Title has extension, use as-is
+          fileName = assetTitle;
+        } else if (assetTitle != null && assetTitle.isNotEmpty) {
+          // Title exists but no extension, add one
+          fileName = '$assetTitle.$ext';
+        } else {
+          // No title, generate from asset ID
+          final shortId = asset.id.length >= 8 ? asset.id.substring(0, 8).toUpperCase() : asset.id.toUpperCase();
+          fileName = 'IMG_$shortId.$ext';
+        }
+
+        // Construct a virtual path using relative path and filename
+        final relativePath = asset.relativePath ?? '';
+        final virtualPath = relativePath.isNotEmpty
+            ? '$relativePath/$fileName'
+            : 'PhotoKit/$fileName';
+
+        // Use modifiedDateTime, falling back to createDateTime if needed
+        final modifiedDate = asset.modifiedDateTime;
+
+        debugPrint('iOS Asset: id=${asset.id.substring(0, 8)}, title="${asset.title}", fileName="$fileName", mime=$mimeType, date=$modifiedDate');
+
+        return LocalFile(
+          path: virtualPath,
+          name: fileName,
+          size: 0, // Skip file.length() which requires file copy - not needed for display
+          modifiedAt: modifiedDate,
+          isDirectory: false,
+          mimeType: mimeType,
+          iosAssetId: asset.id, // Use this for actual file operations
+        );
+      }
+
+      // Android: Get actual file (fast on Android filesystem)
+      final file = await asset.file;
+      if (file == null) return null;
+
       return LocalFile(
         path: file.path,
-        name: asset.title ?? p.basename(file.path),
-        size: asset.size.width > 0 ? (await file.length()) : 0,
+        name: _ensureExtension(asset.title, file.path),
+        size: await file.length(),
         modifiedAt: asset.modifiedDateTime,
         isDirectory: false,
         mimeType: mimeType,
-        iosAssetId: asset.id, // Store asset ID for iOS-specific operations
+        iosAssetId: asset.id,
       );
     } catch (e) {
       debugPrint('Error converting asset to LocalFile: $e');
@@ -314,19 +385,36 @@ class MediaService {
       size: limit,
     );
 
-    final files = <LocalFile>[];
-    for (final asset in assets) {
-      final file = await _assetToLocalFile(asset);
-      if (file != null) {
-        files.add(file);
-      }
-    }
+    // Convert to LocalFile objects (batched parallel for performance)
+    final files = await _batchConvertAssets(assets.toList());
 
     return MediaResult(
       files: files,
       totalCount: totalCount,
       hasMore: (offset + limit) < totalCount,
     );
+  }
+
+  /// Convert assets to LocalFile objects in batches to avoid overwhelming PhotoKit
+  Future<List<LocalFile>> _batchConvertAssets(List<AssetEntity> assets) async {
+    const batchSize = 20;  // Process 20 assets at a time
+    final files = <LocalFile>[];
+
+    debugPrint('_batchConvertAssets: processing ${assets.length} assets');
+
+    for (var i = 0; i < assets.length; i += batchSize) {
+      final end = (i + batchSize < assets.length) ? i + batchSize : assets.length;
+      final batch = assets.sublist(i, end);
+
+      final futures = batch.map((asset) => _assetToLocalFile(asset));
+      final results = await Future.wait(futures);
+      final validFiles = results.whereType<LocalFile>().toList();
+      files.addAll(validFiles);
+      debugPrint('_batchConvertAssets: batch $i-$end returned ${validFiles.length} files');
+    }
+
+    debugPrint('_batchConvertAssets: total ${files.length} files returned');
+    return files;
   }
 
   /// Search photo library by title/filename (iOS only)

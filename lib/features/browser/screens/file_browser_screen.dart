@@ -578,11 +578,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // Sync local file status with cloud
           for (final localFile in result.files) {
             final cloudFile = cloudFileMap[localFile.name];
-            final currentState = LocalStorageService.instance.getSyncState(localFile.path);
-            
+            // Use smart lookup that checks iosAssetId first
+            final currentState = _getSyncStateForFile(localFile);
+
             if (cloudFile != null) {
-              // File exists on cloud - mark as synced if not already
-              if (currentState?.status != SyncStatus.synced) {
+              // File exists on cloud
+              // Only create new sync state if NO existing state exists
+              // This preserves in-progress states (syncing, error, etc.)
+              if (currentState == null) {
                 await LocalStorageService.instance.addSyncState(SyncState(
                   localPath: localFile.path,
                   remotePath: '$bucketName/${localFile.name}',
@@ -593,10 +596,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   etag: cloudFile.etag,
                   localSize: localFile.size,
                   remoteSize: cloudFile.size,
+                  displayPath: Platform.isIOS && localFile.iosAssetId != null ? localFile.path : null,
+                  iosAssetId: localFile.iosAssetId,
                 ));
               }
+              // Do NOT overwrite existing states (syncing, error, etc.)
             } else {
-              // File not on cloud - remove synced status if it was marked synced
+              // File not on cloud - remove synced status only if it was marked synced
+              // Don't remove states that are syncing/error
               if (currentState?.status == SyncStatus.synced) {
                 await LocalStorageService.instance.deleteSyncState(localFile.path);
               }
@@ -641,7 +648,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       });
       
       // Queue images for face detection in background (only for images category)
-      if (category == FileCategory.images) {
+      // Skip on iOS to avoid memory issues with PhotoKit images
+      if (category == FileCategory.images && !Platform.isIOS) {
         _queueImagesForFaceDetection(result.files);
       }
     } catch (e) {
@@ -671,6 +679,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void _showSortOptions() {
     showModalBottomSheet(
       context: context,
+      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -818,6 +827,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  /// Get sync state for a file, checking by iOS asset ID first (most reliable),
+  /// then by display path / direct path
+  SyncState? _getSyncStateForFile(LocalFile file) {
+    // First try by iOS asset ID (most reliable for iOS PhotoKit files)
+    if (Platform.isIOS && file.iosAssetId != null) {
+      final byAssetId = LocalStorageService.instance.getSyncStateByIosAssetId(file.iosAssetId!);
+      if (byAssetId != null) return byAssetId;
+    }
+    // Then try by display path / direct path
+    return LocalStorageService.instance.getSyncState(file.path);
+  }
+
   void _navigateTo(LocalFile file) {
     if (file.isDirectory) {
       setState(() => _currentPath = file.path);
@@ -828,43 +849,54 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   void _openFile(LocalFile file) async {
+    // For iOS PhotoKit assets, get the actual file path before opening
+    String filePath = file.path;
+    if (Platform.isIOS && file.iosAssetId != null) {
+      final actualFile = await MediaService.instance.getOriginalFile(file.iosAssetId!);
+      if (actualFile != null) {
+        filePath = actualFile.path;
+      }
+    }
+
     // Track as recent file
     await LocalStorageService.instance.addRecentFile(RecentFile(
-      path: file.path,
+      path: filePath,
       name: file.name,
       mimeType: file.mimeType,
       size: file.size,
       accessedAt: DateTime.now(),
+      iosAssetId: file.iosAssetId,
     ));
 
     if (!mounted) return;
 
     final ext = file.extension.toLowerCase();
-    
+
     if (file.isImage) {
       // Pass the image list when in Images category for correct navigation order
-      if (_isCategoryMode && widget.category == 'images') {
+      // On iOS, skip building full image list to avoid slow file fetching
+      if (_isCategoryMode && widget.category == 'images' && !Platform.isIOS) {
         // Build image list from combined files, preserving the category's sort order
         final imageList = _combinedFiles
             .where((item) => item.localFile != null && !item.isCloudOnly)
             .map((item) => item.localFile!.path)
             .toList();
-        final initialIndex = imageList.indexOf(file.path);
+        final initialIndex = imageList.indexOf(filePath);
 
         context.push('/viewer/image', extra: {
-          'filePath': file.path,
+          'filePath': filePath,
           'imageList': imageList,
           'initialIndex': initialIndex >= 0 ? initialIndex : 0,
         });
       } else {
-        context.push('/viewer/image', extra: file.path);
+        context.push('/viewer/image', extra: filePath);
       }
     } else if (file.isVideo) {
-      context.push('/viewer/video', extra: file.path);
+      context.push('/viewer/video', extra: filePath);
     } else if (file.isAudio) {
-      context.push('/viewer/audio', extra: file.path);
+      context.push('/viewer/audio', extra: filePath);
     } else if (['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'dart', 'js', 'py', 'java', 'kt', 'swift', 'go', 'rs', 'c', 'cpp', 'h', 'css', 'html', 'sh', 'rtf', 'csv', 'log', 'ini', 'conf', 'cfg', 'ts', 'tsx', 'jsx', 'vue', 'sql', 'gradle', 'properties', 'env', 'gitignore', 'dockerignore', 'makefile', 'cmake'].contains(ext)) {
-      context.push('/viewer/text', extra: file.path);
+      context.push('/viewer/text', extra: filePath);
     } else {
       // Unknown file type - open with system app selector
       _openWithExternalApp(file);
@@ -1294,14 +1326,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               return _buildCloudOnlyFileItem(item.cloudFile!);
             }
             final file = item.localFile!;
-            final syncState = LocalStorageService.instance.getSyncState(file.path);
+            final syncState = _getSyncStateForFile(file);
             final isSelected = _selectedFiles.contains(file.path);
             return _buildLocalFileItem(file, syncState, isSelected, index: index);
           }
 
           // Folder mode: just local files
           final file = _files[index];
-          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final syncState = _getSyncStateForFile(file);
           final isSelected = _selectedFiles.contains(file.path);
           return _buildLocalFileItem(file, syncState, isSelected, index: index);
         },
@@ -1358,14 +1390,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               return _buildCloudOnlyGridItem(item.cloudFile!);
             }
             final file = item.localFile!;
-            final syncState = LocalStorageService.instance.getSyncState(file.path);
+            final syncState = _getSyncStateForFile(file);
             final isSelected = _selectedFiles.contains(file.path);
             return _buildGridItem(file, syncState, isSelected, index: index);
           }
 
           // Folder mode: just local files
           final file = _files[index];
-          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final syncState = _getSyncStateForFile(file);
           final isSelected = _selectedFiles.contains(file.path);
           return _buildGridItem(file, syncState, isSelected, index: index);
         },
@@ -1710,7 +1742,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           
           // File exists locally - show with thumbnail
           final file = item.localFile!;
-          final syncState = LocalStorageService.instance.getSyncState(file.path);
+          final syncState = _getSyncStateForFile(file);
           final isSelected = _selectedFiles.contains(file.path);
           return _buildLocalFileItem(file, syncState, isSelected);
         },
@@ -1796,176 +1828,186 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+      showDragHandle: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.7,
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 1.0,
+        minChildSize: 0.5,
+        maxChildSize: 1.0,
+        expand: false,
+        builder: (context, scrollController) => SafeArea(
+          child: ListView(
+            controller: scrollController,
+            shrinkWrap: true,
             children: [
               // Star/Unstar option
               ListTile(
-              leading: Icon(isStarred ? LucideIcons.starOff : LucideIcons.star),
-              title: Text(isStarred ? 'Remove from Starred' : 'Add to Starred'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await LocalStorageService.instance.toggleStar(file.path);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(isStarred ? 'Removed from starred' : 'Added to starred'),
-                    ),
-                  );
-                  // Refresh if in starred category
-                  if (widget.category == 'starred') {
-                    _loadCategoryFiles();
+                leading: Icon(isStarred ? LucideIcons.starOff : LucideIcons.star),
+                title: Text(isStarred ? 'Remove from Starred' : 'Add to Starred'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await LocalStorageService.instance.toggleStar(file.path);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(isStarred ? 'Removed from starred' : 'Added to starred'),
+                      ),
+                    );
+                    // Refresh if in starred category
+                    if (widget.category == 'starred') {
+                      _loadCategoryFiles();
+                    }
                   }
-                }
-              },
-            ),
-            const Divider(height: 1),
-            // Cloud actions - disabled if not logged in
-            ListTile(
-              leading: Icon(LucideIcons.upload, color: isLoggedIn ? null : Colors.grey),
-              title: Text('Upload to Cloud', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
-              subtitle: isLoggedIn ? null : const Text('Sign in required', style: TextStyle(fontSize: 12)),
-              onTap: isLoggedIn ? () {
-                Navigator.pop(ctx);
-                _uploadFile(file);
-              } : null,
-            ),
-            // Folder sync option - only for directories
-            if (file.isDirectory && isLoggedIn)
-              ListTile(
-                leading: Icon(
-                  _isFolderSyncEnabled(file.path) ? LucideIcons.checkCircle : LucideIcons.folderSync,
-                  color: _isFolderSyncEnabled(file.path) ? Colors.green : Colors.blue,
-                ),
-                title: Text(_isFolderSyncEnabled(file.path) ? 'Auto-Sync Enabled' : 'Enable Auto-Sync'),
-                subtitle: Text(_isFolderSyncEnabled(file.path) ? 'Tap to manage' : 'Auto-upload new files'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _showFolderSyncOptions(file);
                 },
               ),
-            // Share options - require file to be synced to cloud
-            Builder(builder: (context) {
-              final syncState = LocalStorageService.instance.getSyncState(file.path);
-              final isFileSynced = syncState != null && syncState.status == SyncStatus.synced;
-              final canShare = isLoggedIn && isFileSynced;
-              final shareDisabledReason = !isLoggedIn
-                  ? 'Sign in required'
-                  : !isFileSynced
-                      ? 'Upload to cloud first'
-                      : '';
-
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ListTile(
-                    leading: Icon(LucideIcons.link, color: canShare ? Colors.blue : Colors.grey),
-                    title: Text('Create Link', style: TextStyle(color: canShare ? null : Colors.grey)),
-                    subtitle: Text(canShare ? 'Anyone with link can view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
-                    onTap: canShare ? () {
-                      Navigator.pop(ctx);
-                      _createPublicLink(file);
-                    } : () {
-                      Navigator.pop(ctx);
-                      _showShareDisabledInfo(isLoggedIn);
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(LucideIcons.lock, color: canShare ? Colors.orange : Colors.grey),
-                    title: Text('Create Link with Password', style: TextStyle(color: canShare ? null : Colors.grey)),
-                    subtitle: Text(canShare ? 'Requires password to view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
-                    onTap: canShare ? () {
-                      Navigator.pop(ctx);
-                      _createPasswordLink(file);
-                    } : () {
-                      Navigator.pop(ctx);
-                      _showShareDisabledInfo(isLoggedIn);
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(LucideIcons.userPlus, color: canShare ? Colors.green : Colors.grey),
-                    title: Text('Create Link For...', style: TextStyle(color: canShare ? null : Colors.grey)),
-                    subtitle: Text(canShare ? 'Share with specific recipient' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
-                    onTap: canShare ? () {
-                      Navigator.pop(ctx);
-                      _createShareForRecipient(file);
-                    } : () {
-                      Navigator.pop(ctx);
-                      _showShareDisabledInfo(isLoggedIn);
-                    },
-                  ),
-                ],
-              );
-            }),
-            const Divider(height: 1),
-            // Archive actions - only for archive files
-            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
-              ListTile(
-                leading: const Icon(LucideIcons.folderOutput, color: Colors.orange),
-                title: const Text('Extract Here'),
-                subtitle: const Text('Unzip to current folder'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _extractArchive(file, null);
-                },
-              ),
-            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
-              ListTile(
-                leading: const Icon(LucideIcons.folderOpen, color: Colors.orange),
-                title: const Text('Extract to...'),
-                subtitle: const Text('Choose destination folder'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _extractArchiveToLocation(file);
-                },
-              ),
-            if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
               const Divider(height: 1),
-            // Local actions
-            if (!file.isDirectory) ListTile(
-              leading: const Icon(LucideIcons.externalLink),
-              title: const Text('Open with...'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _openWithExternalApp(file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(LucideIcons.share),
-              title: const Text('Share via...'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _shareFileViaNative(file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(LucideIcons.pencil),
-              title: const Text('Rename'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _renameFile(file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(LucideIcons.copy),
-              title: const Text('Copy'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _copyFile(file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(LucideIcons.folderInput),
-              title: const Text('Move'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _moveFile(file);
-              },
-            ),
-            // Delete options based on sync status
-            ..._buildDeleteOptions(ctx, file),
+              // Cloud actions - disabled if not logged in
+              ListTile(
+                leading: Icon(LucideIcons.upload, color: isLoggedIn ? null : Colors.grey),
+                title: Text('Upload to Cloud', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
+                subtitle: isLoggedIn ? null : const Text('Sign in required', style: TextStyle(fontSize: 12)),
+                onTap: isLoggedIn ? () {
+                  Navigator.pop(ctx);
+                  _uploadFile(file);
+                } : null,
+              ),
+              // Folder sync option - only for directories
+              if (file.isDirectory && isLoggedIn)
+                ListTile(
+                  leading: Icon(
+                    _isFolderSyncEnabled(file.path) ? LucideIcons.checkCircle : LucideIcons.folderSync,
+                    color: _isFolderSyncEnabled(file.path) ? Colors.green : Colors.blue,
+                  ),
+                  title: Text(_isFolderSyncEnabled(file.path) ? 'Auto-Sync Enabled' : 'Enable Auto-Sync'),
+                  subtitle: Text(_isFolderSyncEnabled(file.path) ? 'Tap to manage' : 'Auto-upload new files'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showFolderSyncOptions(file);
+                  },
+                ),
+              // Share options - require file to be synced to cloud
+              Builder(builder: (context) {
+                final syncState = _getSyncStateForFile(file);
+                final isFileSynced = syncState != null && syncState.status == SyncStatus.synced;
+                final canShare = isLoggedIn && isFileSynced;
+                final shareDisabledReason = !isLoggedIn
+                    ? 'Sign in required'
+                    : !isFileSynced
+                        ? 'Upload to cloud first'
+                        : '';
+
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      leading: Icon(LucideIcons.link, color: canShare ? Colors.blue : Colors.grey),
+                      title: Text('Create Link', style: TextStyle(color: canShare ? null : Colors.grey)),
+                      subtitle: Text(canShare ? 'Anyone with link can view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                      onTap: canShare ? () {
+                        Navigator.pop(ctx);
+                        _createPublicLink(file);
+                      } : () {
+                        Navigator.pop(ctx);
+                        _showShareDisabledInfo(isLoggedIn);
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(LucideIcons.lock, color: canShare ? Colors.orange : Colors.grey),
+                      title: Text('Create Link with Password', style: TextStyle(color: canShare ? null : Colors.grey)),
+                      subtitle: Text(canShare ? 'Requires password to view' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                      onTap: canShare ? () {
+                        Navigator.pop(ctx);
+                        _createPasswordLink(file);
+                      } : () {
+                        Navigator.pop(ctx);
+                        _showShareDisabledInfo(isLoggedIn);
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(LucideIcons.userPlus, color: canShare ? Colors.green : Colors.grey),
+                      title: Text('Create Link For...', style: TextStyle(color: canShare ? null : Colors.grey)),
+                      subtitle: Text(canShare ? 'Share with specific recipient' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                      onTap: canShare ? () {
+                        Navigator.pop(ctx);
+                        _createShareForRecipient(file);
+                      } : () {
+                        Navigator.pop(ctx);
+                        _showShareDisabledInfo(isLoggedIn);
+                      },
+                    ),
+                  ],
+                );
+              }),
+              const Divider(height: 1),
+              // Archive actions - only for archive files
+              if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+                ListTile(
+                  leading: const Icon(LucideIcons.folderOutput, color: Colors.orange),
+                  title: const Text('Extract Here'),
+                  subtitle: const Text('Unzip to current folder'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _extractArchive(file, null);
+                  },
+                ),
+              if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+                ListTile(
+                  leading: const Icon(LucideIcons.folderOpen, color: Colors.orange),
+                  title: const Text('Extract to...'),
+                  subtitle: const Text('Choose destination folder'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _extractArchiveToLocation(file);
+                  },
+                ),
+              if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
+                const Divider(height: 1),
+              // Local actions
+              if (!file.isDirectory)
+                ListTile(
+                  leading: const Icon(LucideIcons.externalLink),
+                  title: const Text('Open with...'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _openWithExternalApp(file);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(LucideIcons.share),
+                title: const Text('Share via...'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _shareFileViaNative(file);
+                },
+              ),
+              ListTile(
+                leading: const Icon(LucideIcons.pencil),
+                title: const Text('Rename'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _renameFile(file);
+                },
+              ),
+              ListTile(
+                leading: const Icon(LucideIcons.copy),
+                title: const Text('Copy'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _copyFile(file);
+                },
+              ),
+              ListTile(
+                leading: const Icon(LucideIcons.folderInput),
+                title: const Text('Move'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _moveFile(file);
+                },
+              ),
+              // Delete options based on sync status
+              ..._buildDeleteOptions(ctx, file),
             ],
           ),
         ),
@@ -1979,14 +2021,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         // Upload folder recursively
         await _uploadFolder(file);
       } else {
+        // For iOS PhotoKit files, get the actual file first
+        String uploadPath = file.path;
+        if (Platform.isIOS && file.iosAssetId != null) {
+          final actualFile = await MediaService.instance.getOriginalFile(file.iosAssetId!);
+          if (actualFile == null) {
+            throw Exception('Could not access file from Photos library');
+          }
+          uploadPath = actualFile.path;
+        }
+
         // Upload single file
-        final category = FileCategory.fromPath(file.path);
+        final category = FileCategory.fromPath(uploadPath);
         final bucket = category.bucketName;
-        
+
         await SyncService.instance.queueUpload(
-          localPath: file.path,
+          localPath: uploadPath,
           remoteBucket: bucket,
           remoteKey: file.name,
+          // For iOS, pass the virtual path for UI sync state lookup
+          displayPath: Platform.isIOS && file.iosAssetId != null ? file.path : null,
+          iosAssetId: file.iosAssetId,
         );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2089,6 +2144,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     
     showModalBottomSheet(
       context: context,
+      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2258,6 +2314,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     
     showModalBottomSheet(
       context: context,
+      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2951,6 +3008,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     
     showModalBottomSheet(
       context: context,
+      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -3176,7 +3234,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   List<Widget> _buildDeleteOptions(BuildContext ctx, LocalFile file) {
-    final syncState = LocalStorageService.instance.getSyncState(file.path);
+    final syncState = _getSyncStateForFile(file);
     final isOnCloud = syncState?.status == SyncStatus.synced;
     final isLoggedIn = AuthService.instance.isAuthenticated;
     

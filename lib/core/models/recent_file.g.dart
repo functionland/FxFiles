@@ -24,13 +24,14 @@ class RecentFileAdapter extends TypeAdapter<RecentFile> {
       accessedAt: fields[4] as DateTime,
       isRemote: fields[5] as bool,
       thumbnailPath: fields[6] as String?,
+      iosAssetId: fields[7] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, RecentFile obj) {
     writer
-      ..writeByte(7)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.path)
       ..writeByte(1)
@@ -44,7 +45,9 @@ class RecentFileAdapter extends TypeAdapter<RecentFile> {
       ..writeByte(5)
       ..write(obj.isRemote)
       ..writeByte(6)
-      ..write(obj.thumbnailPath);
+      ..write(obj.thumbnailPath)
+      ..writeByte(7)
+      ..write(obj.iosAssetId);
   }
 
   @override

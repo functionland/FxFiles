@@ -7,6 +7,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 
 enum AuthProvider { google }
 
@@ -19,7 +20,7 @@ enum AuthProvider { google }
 // 3. Configure OAuth consent screen
 //
 // Note: For Android, clientId is auto-detected from the signing config
-const String _googleClientIdIOS = ''; // iOS OAuth Client ID
+const String _googleClientIdIOS = '1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com'; // iOS OAuth Client ID
 const String _googleServerClientId = '1095513138272-ctte75q6u17pjusvk9nj607qhecd03qn.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
 
 class AuthUser {
@@ -116,6 +117,10 @@ class AuthService {
         await _deriveEncryptionKey();
         debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
         await _initializeFulaClient();
+        // Re-link cloud mappings for reinstall persistence (runs in background)
+        if (FulaApiService.instance.isConfigured) {
+          CloudSyncMappingService.instance.relinkMappings();
+        }
         return true;
       }
 
@@ -186,6 +191,10 @@ class AuthService {
 
     await _deriveEncryptionKey();
     await _initializeFulaClient();
+    // Re-link cloud mappings for reinstall persistence (runs in background)
+    if (FulaApiService.instance.isConfigured) {
+      CloudSyncMappingService.instance.relinkMappings();
+    }
   }
 
   /// Derive encryption key using PBKDF2 (same as before for compatibility)
@@ -414,6 +423,9 @@ class AuthService {
 
       // Clear sync queues and cached data for the old user
       await SyncService.instance.clearAll();
+
+      // Clear cached sync mappings
+      CloudSyncMappingService.instance.clear();
 
       // Reset FulaApiService
       FulaApiService.instance.reset();

@@ -8,6 +8,7 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
+import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 
 // Top-level function for isolate - reads file bytes
 Future<Uint8List> _readFileInIsolate(String path) async {
@@ -122,6 +123,8 @@ class SyncService {
     required String remoteBucket,
     required String remoteKey,
     bool encrypt = true,
+    String? displayPath, // Virtual path for iOS PhotoKit files (for UI lookup)
+    String? iosAssetId, // iOS PhotoKit asset ID for stable identification
   }) async {
     // Check if already queued to avoid duplicates
     if (_taskIdMap.containsKey(localPath)) {
@@ -157,6 +160,8 @@ class SyncService {
       remotePath: remoteKey,
       bucket: remoteBucket,
       status: SyncStatus.notSynced,
+      displayPath: displayPath, // Store virtual path for iOS UI lookup
+      iosAssetId: iosAssetId, // Store iOS asset ID for stable identification
     );
     // Don't await - let it write in background
     LocalStorageService.instance.addSyncState(state);
@@ -344,6 +349,10 @@ class SyncService {
           state.copyWith(status: SyncStatus.syncing),
         );
         _notifyListeners(task.localPath, SyncStatus.syncing);
+        // Also notify by displayPath for iOS UI refresh
+        if (state.displayPath != null && state.displayPath != task.localPath) {
+          _notifyListeners(state.displayPath!, SyncStatus.syncing);
+        }
       }
 
       _activeSync[task.localPath] = SyncProgress(
@@ -408,9 +417,23 @@ class SyncService {
           ),
         );
         _notifyListeners(task.localPath, SyncStatus.synced);
+        // Also notify by displayPath for iOS UI refresh
+        if (state.displayPath != null && state.displayPath != task.localPath) {
+          _notifyListeners(state.displayPath!, SyncStatus.synced);
+        }
 
         // Request storage refresh after upload (with 10s debounce)
         StorageRefreshService.instance.requestRefresh();
+
+        // Store mapping for reinstall persistence (both iOS and Android)
+        await CloudSyncMappingService.instance.addMapping(SyncMapping(
+          iosAssetId: state.iosAssetId, // iOS only
+          localPath: Platform.isAndroid ? task.localPath : null, // Android only
+          remoteKey: task.remoteKey,
+          bucket: task.remoteBucket,
+          etag: etag,
+          uploadedAt: DateTime.now(),
+        ));
       }
 
       // Remove completed task from persistent queue
@@ -452,6 +475,10 @@ class SyncService {
             ),
           );
           _notifyListeners(task.localPath, SyncStatus.syncing);
+          // Also notify by displayPath for iOS UI refresh
+          if (state.displayPath != null && state.displayPath != task.localPath) {
+            _notifyListeners(state.displayPath!, SyncStatus.syncing);
+          }
         }
 
         // Update persistent task retry count
@@ -485,6 +512,10 @@ class SyncService {
             ),
           );
           _notifyListeners(task.localPath, SyncStatus.error);
+          // Also notify by displayPath for iOS UI refresh
+          if (state.displayPath != null && state.displayPath != task.localPath) {
+            _notifyListeners(state.displayPath!, SyncStatus.error);
+          }
         }
 
         // Update persistent task status to permanently failed
@@ -619,6 +650,8 @@ class SyncService {
           localPath: state.localPath,
           remoteBucket: state.bucket!,
           remoteKey: state.remotePath!,
+          displayPath: state.displayPath,
+          iosAssetId: state.iosAssetId,
         );
       }
     }

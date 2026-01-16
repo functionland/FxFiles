@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/local_file.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/video_thumbnail_service.dart';
 
 class FileThumbnail extends StatelessWidget {
@@ -42,6 +43,15 @@ class FileThumbnail extends StatelessWidget {
 
     // Handle video files with thumbnails
     if (_isVideo && showVideoThumbnail) {
+      // iOS: Use native PhotoKit thumbnail for videos with asset ID
+      if (Platform.isIOS && file.iosAssetId != null) {
+        return _IOSVideoThumbnailWidget(
+          assetId: file.iosAssetId!,
+          size: size,
+          borderRadius: borderRadius,
+        );
+      }
+      // Android: Use video thumbnail service
       return _VideoThumbnailWidget(
         videoPath: file.path,
         size: size,
@@ -76,19 +86,33 @@ class FileThumbnail extends StatelessWidget {
   }
 
   Widget _buildImageThumbnail() {
+    // iOS: Use native PhotoKit thumbnail if asset ID available (much faster)
+    if (Platform.isIOS && file.iosAssetId != null) {
+      return _IOSThumbnailWidget(
+        assetId: file.iosAssetId!,
+        size: size,
+        borderRadius: borderRadius,
+      );
+    }
+
+    // Android and iOS without asset ID: Use sync file check
     final imageFile = File(file.path);
     if (!imageFile.existsSync()) {
       return _buildIconThumbnail(LucideIcons.image, Colors.green);
     }
+    return _buildImageWidget();
+  }
 
+  Widget _buildImageWidget() {
     return ClipRRect(
       borderRadius: borderRadius ?? BorderRadius.circular(8),
       child: Image.file(
-        imageFile,
+        File(file.path),
         width: size,
         height: size,
         fit: BoxFit.cover,
         cacheWidth: (size * 2).toInt(),
+        cacheHeight: (size * 2).toInt(),
         errorBuilder: (_, __, ___) => _buildIconThumbnail(LucideIcons.image, Colors.green),
       ),
     );
@@ -264,6 +288,290 @@ class _VideoThumbnailWidgetState extends State<_VideoThumbnailWidget> {
               width: widget.size,
               height: widget.size,
               color: Colors.red.withValues(alpha: 0.1),
+              child: Icon(
+                LucideIcons.video,
+                color: Colors.red,
+                size: widget.size * 0.5,
+              ),
+            ),
+          ),
+          // Play icon overlay
+          Container(
+            width: widget.size * 0.4,
+            height: widget.size * 0.4,
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              LucideIcons.play,
+              color: Colors.white,
+              size: widget.size * 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// iOS-optimized image thumbnail widget using native PhotoKit
+class _IOSThumbnailWidget extends StatefulWidget {
+  final String assetId;
+  final double size;
+  final BorderRadius? borderRadius;
+
+  const _IOSThumbnailWidget({
+    required this.assetId,
+    required this.size,
+    this.borderRadius,
+  });
+
+  @override
+  State<_IOSThumbnailWidget> createState() => _IOSThumbnailWidgetState();
+}
+
+class _IOSThumbnailWidgetState extends State<_IOSThumbnailWidget> {
+  Uint8List? _thumbnailData;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThumbnail();
+  }
+
+  @override
+  void didUpdateWidget(_IOSThumbnailWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.assetId != widget.assetId) {
+      _loadThumbnail();
+    }
+  }
+
+  Future<void> _loadThumbnail() async {
+    if (!mounted) return;
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final thumbnail = await MediaService.instance.getThumbnail(
+        widget.assetId,
+        width: (widget.size * 2).toInt(),
+        height: (widget.size * 2).toInt(),
+      );
+
+      if (mounted) {
+        setState(() {
+          _thumbnailData = thumbnail;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final borderRadius = widget.borderRadius ?? BorderRadius.circular(8);
+
+    if (_isLoading) {
+      return Container(
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          color: Colors.green.withValues(alpha: 0.1),
+          borderRadius: borderRadius,
+        ),
+        child: Icon(
+          LucideIcons.image,
+          color: Colors.green,
+          size: widget.size * 0.5,
+        ),
+      );
+    }
+
+    if (_thumbnailData == null) {
+      return Container(
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          color: Colors.green.withValues(alpha: 0.1),
+          borderRadius: borderRadius,
+        ),
+        child: Icon(
+          LucideIcons.image,
+          color: Colors.green,
+          size: widget.size * 0.5,
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: Image.memory(
+        _thumbnailData!,
+        width: widget.size,
+        height: widget.size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          width: widget.size,
+          height: widget.size,
+          decoration: BoxDecoration(
+            color: Colors.green.withValues(alpha: 0.1),
+            borderRadius: borderRadius,
+          ),
+          child: Icon(
+            LucideIcons.image,
+            color: Colors.green,
+            size: widget.size * 0.5,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// iOS-optimized video thumbnail widget using native PhotoKit
+class _IOSVideoThumbnailWidget extends StatefulWidget {
+  final String assetId;
+  final double size;
+  final BorderRadius? borderRadius;
+
+  const _IOSVideoThumbnailWidget({
+    required this.assetId,
+    required this.size,
+    this.borderRadius,
+  });
+
+  @override
+  State<_IOSVideoThumbnailWidget> createState() => _IOSVideoThumbnailWidgetState();
+}
+
+class _IOSVideoThumbnailWidgetState extends State<_IOSVideoThumbnailWidget> {
+  Uint8List? _thumbnailData;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThumbnail();
+  }
+
+  @override
+  void didUpdateWidget(_IOSVideoThumbnailWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.assetId != widget.assetId) {
+      _loadThumbnail();
+    }
+  }
+
+  Future<void> _loadThumbnail() async {
+    if (!mounted) return;
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final thumbnail = await MediaService.instance.getThumbnail(
+        widget.assetId,
+        width: (widget.size * 2).toInt(),
+        height: (widget.size * 2).toInt(),
+      );
+
+      if (mounted) {
+        setState(() {
+          _thumbnailData = thumbnail;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final borderRadius = widget.borderRadius ?? BorderRadius.circular(8);
+
+    if (_isLoading) {
+      return Container(
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          color: Colors.red.withValues(alpha: 0.1),
+          borderRadius: borderRadius,
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Icon(
+              LucideIcons.video,
+              color: Colors.red,
+              size: widget.size * 0.5,
+            ),
+            Positioned(
+              bottom: 4,
+              right: 4,
+              child: SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.red.withValues(alpha: 0.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_thumbnailData == null) {
+      return Container(
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          color: Colors.red.withValues(alpha: 0.1),
+          borderRadius: borderRadius,
+        ),
+        child: Icon(
+          LucideIcons.video,
+          color: Colors.red,
+          size: widget.size * 0.5,
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Image.memory(
+            _thumbnailData!,
+            width: widget.size,
+            height: widget.size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              width: widget.size,
+              height: widget.size,
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                borderRadius: borderRadius,
+              ),
               child: Icon(
                 LucideIcons.video,
                 color: Colors.red,

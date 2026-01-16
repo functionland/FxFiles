@@ -68,6 +68,13 @@ class LocalFile {
   }
 
   String get sizeFormatted {
+    // For iOS PhotoKit files, size is 0 (we skip expensive file.length())
+    if (size == 0) {
+      if (isImage) return 'Photo';
+      if (isVideo) return 'Video';
+      if (isAudio) return 'Audio';
+      return '—';
+    }
     if (size < 1024) return '$size B';
     if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
     if (size < 1024 * 1024 * 1024) return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';

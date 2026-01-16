@@ -66,6 +66,11 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
   // File info
   FileStat? _fileStat;
 
+  // Details panel scroll controller and drag tracking
+  final ScrollController _detailsScrollController = ScrollController();
+  double _detailsDragStartY = 0;
+  bool _isDismissingPanel = false; // True when dragging to dismiss (at top, moving down)
+
   // Animation controllers
   late AnimationController _detailsAnimController;
   late Animation<double> _detailsAnimation;
@@ -233,6 +238,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
     _pageController.dispose();
     _detailsAnimController.dispose();
     _controlsAnimController.dispose();
+    _detailsScrollController.dispose();
     for (final controller in _transformControllers.values) {
       controller.dispose();
     }
@@ -822,6 +828,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
         }
 
         final panelHeight = MediaQuery.of(context).size.height * 0.55;
+        final theme = Theme.of(context);
+        final isDark = theme.brightness == Brightness.dark;
 
         return Positioned(
           left: 0,
@@ -829,16 +837,39 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
           bottom: 0,
           child: Transform.translate(
             offset: Offset(0, panelHeight * (1 - _detailsAnimation.value)),
-            child: GestureDetector(
-              onVerticalDragEnd: (details) {
-                if (details.velocity.pixelsPerSecond.dy > 300) {
+            // Use Listener to capture pointer events before ScrollView
+            child: Listener(
+              onPointerDown: (event) {
+                _detailsDragStartY = event.position.dy;
+                _isDismissingPanel = false;
+              },
+              onPointerMove: (event) {
+                final delta = event.position.dy - _detailsDragStartY;
+                final isAtTop = !_detailsScrollController.hasClients ||
+                    _detailsScrollController.offset <= 0;
+
+                // If at top of scroll and dragging down, start dismiss
+                if (isAtTop && delta > 0) {
+                  _isDismissingPanel = true;
+                }
+
+                // If we're in dismiss mode and dragged enough, close
+                if (_isDismissingPanel && delta > 80) {
                   _hideDetailsPanel();
                 }
+              },
+              onPointerUp: (event) {
+                final delta = event.position.dy - _detailsDragStartY;
+                // Close if we were dismissing and dragged down enough
+                if (_isDismissingPanel && delta > 50) {
+                  _hideDetailsPanel();
+                }
+                _isDismissingPanel = false;
               },
               child: Container(
                 height: panelHeight,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).scaffoldBackgroundColor,
+                  color: theme.scaffoldBackgroundColor,
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
                   boxShadow: [
                     BoxShadow(
@@ -848,7 +879,33 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                     ),
                   ],
                 ),
-                child: _buildDetailsContent(),
+                child: Column(
+                  children: [
+                    // Drag handle area
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _hideDetailsPanel,
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                        child: Center(
+                          child: Container(
+                            width: 40,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: isDark ? Colors.white38 : Colors.black26,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Scrollable content
+                    Expanded(
+                      child: _buildDetailsContent(),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -866,26 +923,12 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
     final isDark = theme.brightness == Brightness.dark;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      controller: _detailsScrollController,
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Drag handle
-          Center(
-            child: GestureDetector(
-              onTap: _hideDetailsPanel,
-              child: Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.white38 : Colors.black26,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          ),
-
           // File name
           Text(
             fileName,

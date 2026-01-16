@@ -25,6 +25,9 @@ class RecentFile extends HiveObject {
   @HiveField(6)
   final String? thumbnailPath;
 
+  @HiveField(7)
+  final String? iosAssetId;
+
   RecentFile({
     required this.path,
     required this.name,
@@ -33,6 +36,7 @@ class RecentFile extends HiveObject {
     required this.accessedAt,
     this.isRemote = false,
     this.thumbnailPath,
+    this.iosAssetId,
   });
 
   String get extension {

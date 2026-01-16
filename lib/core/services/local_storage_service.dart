@@ -74,10 +74,55 @@ class LocalStorageService {
   // Sync States
   Future<void> addSyncState(SyncState state) async {
     await _syncStateBox.put(state.localPath, state);
+    // Also store by displayPath if provided (for iOS PhotoKit virtual path lookup)
+    // Create a new instance to avoid Hive's "same instance with two keys" error
+    if (state.displayPath != null && state.displayPath != state.localPath) {
+      final displayState = SyncState(
+        localPath: state.localPath,
+        remotePath: state.remotePath,
+        remoteKey: state.remoteKey,
+        bucket: state.bucket,
+        status: state.status,
+        lastSyncedAt: state.lastSyncedAt,
+        etag: state.etag,
+        localSize: state.localSize,
+        remoteSize: state.remoteSize,
+        errorMessage: state.errorMessage,
+        displayPath: state.displayPath,
+        iosAssetId: state.iosAssetId,
+      );
+      await _syncStateBox.put(state.displayPath!, displayState);
+    }
   }
 
   SyncState? getSyncState(String localPath) {
     return _syncStateBox.get(localPath);
+  }
+
+  /// Get sync state by path, also checking displayPath entries
+  /// This is useful for iOS where the display path differs from the actual file path
+  SyncState? getSyncStateByDisplayPath(String displayPath) {
+    // First try direct lookup
+    final direct = _syncStateBox.get(displayPath);
+    if (direct != null) return direct;
+
+    // Search all states for matching displayPath
+    for (final state in _syncStateBox.values) {
+      if (state.displayPath == displayPath) {
+        return state;
+      }
+    }
+    return null;
+  }
+
+  /// Get sync state by iOS asset ID (most reliable for iOS PhotoKit files)
+  SyncState? getSyncStateByIosAssetId(String iosAssetId) {
+    for (final state in _syncStateBox.values) {
+      if (state.iosAssetId == iosAssetId) {
+        return state;
+      }
+    }
+    return null;
   }
 
   List<SyncState> getAllSyncStates() {

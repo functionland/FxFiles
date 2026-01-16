@@ -62,8 +62,18 @@
 		<string>land.fx.files.sync</string>
 		<string>land.fx.files.refresh</string>
 	</array>
+	<key>GIDClientID</key>
+	<string>1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com</string>
 	<key>CFBundleURLTypes</key>
 	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1095513138272-41oj756pperrsh5aqumh3nktvankcdel</string>
+			</array>
+		</dict>
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>

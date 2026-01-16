@@ -209,7 +209,17 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
     }
 
     if (!_isInitialized) {
-      return const CircularProgressIndicator(color: Colors.white);
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const CircularProgressIndicator(color: Colors.white),
+          const SizedBox(height: 16),
+          Text(
+            'Loading video...',
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
+          ),
+        ],
+      );
     }
 
     return AspectRatio(

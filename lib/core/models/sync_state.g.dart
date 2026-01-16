@@ -76,13 +76,15 @@ class SyncStateAdapter extends TypeAdapter<SyncState> {
       localSize: fields[7] as int?,
       remoteSize: fields[8] as int?,
       errorMessage: fields[9] as String?,
+      displayPath: fields[10] as String?,
+      iosAssetId: fields[11] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, SyncState obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.localPath)
       ..writeByte(1)
@@ -102,7 +104,11 @@ class SyncStateAdapter extends TypeAdapter<SyncState> {
       ..writeByte(8)
       ..write(obj.remoteSize)
       ..writeByte(9)
-      ..write(obj.errorMessage);
+      ..write(obj.errorMessage)
+      ..writeByte(10)
+      ..write(obj.displayPath)
+      ..writeByte(11)
+      ..write(obj.iosAssetId);
   }
 
   @override

@@ -49,6 +49,12 @@ class SyncState extends HiveObject {
   @HiveField(9)
   final String? errorMessage;
 
+  @HiveField(10)
+  final String? displayPath; // Virtual path for iOS PhotoKit files (for UI lookup)
+
+  @HiveField(11)
+  final String? iosAssetId; // iOS PhotoKit asset ID for stable identification
+
   SyncState({
     required this.localPath,
     this.remotePath,
@@ -60,6 +66,8 @@ class SyncState extends HiveObject {
     this.localSize,
     this.remoteSize,
     this.errorMessage,
+    this.displayPath,
+    this.iosAssetId,
   });
 
   SyncState copyWith({
@@ -73,6 +81,8 @@ class SyncState extends HiveObject {
     int? localSize,
     int? remoteSize,
     String? errorMessage,
+    String? displayPath,
+    String? iosAssetId,
   }) {
     return SyncState(
       localPath: localPath ?? this.localPath,
@@ -85,6 +95,8 @@ class SyncState extends HiveObject {
       localSize: localSize ?? this.localSize,
       remoteSize: remoteSize ?? this.remoteSize,
       errorMessage: errorMessage ?? this.errorMessage,
+      displayPath: displayPath ?? this.displayPath,
+      iosAssetId: iosAssetId ?? this.iosAssetId,
     );
   }
 
