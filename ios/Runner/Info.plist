@@ -49,6 +49,8 @@
 	<string>FxFiles needs access to your photos and videos to browse, manage, and backup your media to the cloud.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>FxFiles needs permission to save photos and videos to your library.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FxFiles may need microphone access for audio recording features.</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
 	<true/>
 	<key>UIBackgroundModes</key>
