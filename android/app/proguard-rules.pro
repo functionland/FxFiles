@@ -136,3 +136,22 @@
 # Prevent stripping of classes used in method channels
 -keep class * implements io.flutter.plugin.common.MethodChannel$MethodCallHandler { *; }
 -keep class * implements io.flutter.plugin.common.EventChannel$StreamHandler { *; }
+
+# ============================================
+# Google Sign-In / Credential Manager
+# Required for Android 16+ authentication
+# ============================================
+-keep class com.google.android.gms.auth.** { *; }
+-keep class com.google.android.gms.auth.api.** { *; }
+-keep class com.google.android.gms.common.** { *; }
+-keep class com.google.android.gms.common.api.** { *; }
+
+# Android Credential Manager (Android 14+)
+-keep class android.credentials.** { *; }
+-keep class androidx.credentials.** { *; }
+-dontwarn android.credentials.**
+-dontwarn androidx.credentials.**
+
+# Google Identity Services
+-keep class com.google.android.gms.auth.api.identity.** { *; }
+-keep class com.google.android.gms.auth.api.signin.** { *; }

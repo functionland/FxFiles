@@ -42,7 +42,18 @@ void main() async {
   await DeepLinkService.instance.init();
 
   // Check for existing auth session (restores sign-in state)
-  await AuthService.instance.checkExistingSession();
+  // Use timeout to prevent hang on Android 16 with Credential Manager
+  try {
+    await AuthService.instance.checkExistingSession().timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        debugPrint('Auth session check timed out - continuing without restored session');
+        return false;
+      },
+    );
+  } catch (e) {
+    debugPrint('Auth session check error: $e');
+  }
 
   // Initialize face detection services (non-blocking)
   FaceStorageService.instance.init().then((_) {

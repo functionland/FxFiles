@@ -127,10 +127,21 @@ class AuthService {
       await _ensureGoogleInitialized();
       final result = _googleSignIn.attemptLightweightAuthentication();
       if (result != null) {
-        final account = await result;
-        if (account != null) {
-          await _handleGoogleSignIn(account);
-          return true;
+        try {
+          // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
+          final account = await result.timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
+              return null;
+            },
+          );
+          if (account != null) {
+            await _handleGoogleSignIn(account);
+            return true;
+          }
+        } catch (e) {
+          debugPrint('Lightweight auth failed: $e');
         }
       }
 
@@ -447,10 +458,21 @@ class AuthService {
       await _ensureGoogleInitialized();
       final result = _googleSignIn.attemptLightweightAuthentication();
       if (result != null) {
-        final account = await result;
-        if (account != null) {
-          await _handleGoogleSignIn(account);
-          return true;
+        try {
+          // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
+          final account = await result.timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              debugPrint('Google lightweight auth timed out in reauthenticate - likely Android 16 Credential Manager issue');
+              return null;
+            },
+          );
+          if (account != null) {
+            await _handleGoogleSignIn(account);
+            return true;
+          }
+        } catch (e) {
+          debugPrint('Reauthenticate lightweight auth failed: $e');
         }
       }
       return false;
