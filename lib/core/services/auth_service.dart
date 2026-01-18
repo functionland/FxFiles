@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:cryptography/cryptography.dart';
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -208,30 +208,33 @@ class AuthService {
     }
   }
 
-  /// Derive encryption key using PBKDF2 (same as before for compatibility)
+  /// Derive encryption key using Argon2id (memory-hard KDF) via fula_client
+  ///
+  /// Uses the standard fula.deriveKey() function to ensure cross-platform
+  /// compatibility between FxFiles (Flutter) and WebUI (WASM).
+  ///
+  /// Argon2id parameters:
+  /// - Memory: 64 MiB
+  /// - Iterations: 3
+  /// - Parallelism: 1
+  ///
+  /// Input format: "google:{userId}:{email}"
+  /// Context/Salt: "fula-files-v1"
   Future<void> _deriveEncryptionKey() async {
     if (_currentUser == null) return;
 
-    final combinedId = '${_currentUser!.provider.name}:${_currentUser!.id}';
+    // Combined input: "google:{userId}:{email}"
+    final input = '${_currentUser!.provider.name}:${_currentUser!.id}:${_currentUser!.email}';
 
-    // Use PBKDF2 with same parameters as before for key compatibility
-    // Salt: 'fula-files-v1:{email}'
-    // Iterations: 100,000
-    // Output: 256 bits (32 bytes)
-    final salt = 'fula-files-v1:${_currentUser!.email}';
-
-    final pbkdf2 = Pbkdf2(
-      macAlgorithm: Hmac.sha256(),
-      iterations: 100000,
-      bits: 256,
+    // Use Argon2id via fula_client for cross-platform consistency and brute-force resistance
+    // This produces identical keys on Flutter (native) and WebUI (WASM)
+    _encryptionKey = Uint8List.fromList(
+      await fula.deriveKey(context: 'fula-files-v1', input: utf8.encode(input)),
     );
 
-    final secretKey = await pbkdf2.deriveKey(
-      secretKey: SecretKey(utf8.encode(combinedId)),
-      nonce: utf8.encode(salt),
-    );
-
-    _encryptionKey = Uint8List.fromList(await secretKey.extractBytes());
+    debugPrint('AuthService: Derived key using Argon2id');
+    debugPrint('  Input: "$input"');
+    debugPrint('  Key first 4 bytes: ${_encryptionKey!.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
 
     await SecureStorageService.instance.write(
       SecureStorageKeys.encryptionKey,
@@ -269,6 +272,15 @@ class AuthService {
         );
         debugPrint('FulaApiService initialized successfully');
         debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
+
+        // Debug: Print public key for comparison with WebUI
+        try {
+          final pubKey = await FulaApiService.instance.getPublicKey();
+          debugPrint('AuthService: Public key (first 8 bytes): ${pubKey.sublist(0, 8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+          debugPrint('AuthService: Full public key (base64): ${base64Encode(pubKey)}');
+        } catch (e) {
+          debugPrint('AuthService: Could not get public key: $e');
+        }
       } else {
         debugPrint('FulaApiService not initialized: no endpoint configured');
       }
