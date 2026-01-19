@@ -21,6 +21,7 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
+import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
@@ -612,9 +613,23 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           }
           
           // Find files that are on cloud but not locally
+          // A file is cloud-only if:
+          // 1. Its key doesn't match any local file name, AND
+          // 2. There's no SyncState linking it to a local file, AND
+          // 3. There's no cloud mapping linking it to a local file (for reinstall persistence)
           final localFileNames = result.files.map((f) => f.name).toSet();
-          cloudOnlyFiles = cloudFiles.where((cf) => !localFileNames.contains(cf.key)).toList();
-          debugPrint('Cloud-only files: ${cloudOnlyFiles.length}');
+          final linkedRemoteKeys = LocalStorageService.instance.getLinkedRemoteKeys(bucketName);
+
+          // Also check cloud mappings (for reinstall persistence - mappings may exist before SyncStates are restored)
+          await CloudSyncMappingService.instance.ensureLoaded();
+          final mappedRemoteKeys = CloudSyncMappingService.instance.getMappedRemoteKeys(bucketName);
+
+          cloudOnlyFiles = cloudFiles.where((cf) =>
+            !localFileNames.contains(cf.key) &&
+            !linkedRemoteKeys.contains(cf.key) &&
+            !mappedRemoteKeys.contains(cf.key)
+          ).toList();
+          debugPrint('Cloud-only files: ${cloudOnlyFiles.length} (linked: ${linkedRemoteKeys.length}, mapped: ${mappedRemoteKeys.length})');
         } catch (e) {
           debugPrint('Error fetching cloud files: $e');
         }

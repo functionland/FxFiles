@@ -14,29 +14,12 @@ class FulaFilesApp extends ConsumerStatefulWidget {
 }
 
 class _FulaFilesAppState extends ConsumerState<FulaFilesApp> {
-  bool _tosAccepted = false;
-  bool _initialized = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // Check ToS acceptance after first frame
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkTosAcceptance();
-    });
-  }
-
-  void _checkTosAcceptance() {
-    final settings = ref.read(settingsProvider);
-    setState(() {
-      _tosAccepted = settings.tosAccepted;
-      _initialized = true;
-    });
-  }
+  // Track if user accepted ToS in this session (before async save completes)
+  bool _acceptedThisSession = false;
 
   void _onTosAccepted() {
     setState(() {
-      _tosAccepted = true;
+      _acceptedThisSession = true;
     });
   }
 
@@ -45,12 +28,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp> {
     final settings = ref.watch(settingsProvider);
     final router = ref.watch(routerProvider);
 
-    // Update tosAccepted when settings change (for initial load)
-    if (_initialized && settings.tosAccepted && !_tosAccepted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        setState(() => _tosAccepted = true);
-      });
-    }
+    // ToS is accepted if: saved in storage OR accepted this session
+    final tosAccepted = settings.tosAccepted || _acceptedThisSession;
 
     return MaterialApp.router(
       title: 'FxFiles',
@@ -61,7 +40,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp> {
       routerConfig: router,
       builder: (context, child) {
         // Show ToS screen if not accepted
-        if (!_tosAccepted) {
+        if (!tosAccepted) {
           return TermsOfServiceScreen(onAccepted: _onTosAccepted);
         }
 

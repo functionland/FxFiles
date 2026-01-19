@@ -90,6 +90,42 @@ class CloudSyncMappingService {
     _scheduleUpload();
   }
 
+  /// Check if a remote key has a mapping (meaning it was uploaded from a local file)
+  /// This can be used to avoid showing cloud files as "cloud-only" if they have local links
+  bool hasMapping(String remoteKey, String bucket) {
+    return _mappings.any((m) => m.remoteKey == remoteKey && m.bucket == bucket);
+  }
+
+  /// Get all remote keys that have mappings for a given bucket
+  /// Used for efficient cloud-only detection
+  Set<String> getMappedRemoteKeys(String bucket) {
+    return _mappings
+        .where((m) => m.bucket == bucket)
+        .map((m) => m.remoteKey)
+        .toSet();
+  }
+
+  /// Check if mappings have been loaded from cloud
+  bool get isLoaded => _isLoaded;
+
+  /// Ensure mappings are loaded (called before checking mappings)
+  /// If not loaded, attempts to download from cloud
+  Future<void> ensureLoaded() async {
+    if (_isLoaded) return;
+
+    try {
+      final mappings = await downloadMappings();
+      _mappings.clear();
+      _mappings.addAll(mappings);
+      _isLoaded = true;
+      debugPrint('CloudSyncMapping: Loaded ${mappings.length} mappings on demand');
+    } catch (e) {
+      debugPrint('CloudSyncMapping: Failed to load mappings on demand: $e');
+      // Mark as loaded even on failure to avoid repeated attempts
+      _isLoaded = true;
+    }
+  }
+
   /// Schedule a debounced upload to cloud
   void _scheduleUpload() {
     _uploadDebounceTimer?.cancel();

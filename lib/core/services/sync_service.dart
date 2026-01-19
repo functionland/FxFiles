@@ -358,7 +358,8 @@ class SyncService {
         msg.contains('no such bucket') ||
         msg.contains('entitytoolarge') ||
         msg.contains('invalid key') ||
-        msg.contains('file not found')) {
+        msg.contains('file not found') ||
+        msg.contains('accountproblem')) {  // Quota/billing issues
       return false;
     }
 
@@ -366,7 +367,8 @@ class SyncService {
     if (msg.contains('insufficient credit') ||
         msg.contains('quota exceeded') ||
         msg.contains('storage limit') ||
-        msg.contains('encryption key not available')) {
+        msg.contains('encryption key not available') ||
+        msg.contains('account problem')) {
       return false;
     }
 
@@ -569,12 +571,25 @@ class SyncService {
         // Max retries exceeded or permanent error - mark as failed
         debugPrint('Giving up on ${task.remoteKey} after $retryCount attempts (retryable: ${_isRetryableError(e)})');
 
+        // Create user-friendly error message
+        final errorStr = e.toString().toLowerCase();
+        String userMessage;
+        if (errorStr.contains('accountproblem') || errorStr.contains('quota')) {
+          userMessage = 'Storage quota exceeded. Please free up space or upgrade your plan.';
+        } else if (errorStr.contains('accessdenied') || errorStr.contains('unauthorized')) {
+          userMessage = 'Access denied. Please check your API key in Settings.';
+        } else if (errorStr.contains('nosuchbucket')) {
+          userMessage = 'Storage bucket not found. Please try again later.';
+        } else {
+          userMessage = e.toString();
+        }
+
         final state = LocalStorageService.instance.getSyncState(task.localPath);
         if (state != null) {
           await LocalStorageService.instance.addSyncState(
             state.copyWith(
               status: SyncStatus.error,
-              errorMessage: e.toString(),
+              errorMessage: userMessage,
             ),
           );
           _notifyListeners(task.localPath, SyncStatus.error);

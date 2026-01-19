@@ -521,35 +521,63 @@ class FaceStorageService {
   // S3 SYNC
   // ============================================================================
 
-  /// Ensure the face metadata bucket exists
+  /// Ensure the face metadata bucket exists, create if needed
   Future<bool> _ensureBucketExists() async {
-    if (_bucketChecked) return _bucketExists;
-    
+    if (_bucketChecked && _bucketExists) return true;
+
     try {
-      // Try to create the bucket (will fail silently if exists)
+      // Try to create the bucket (will succeed if doesn't exist, or return OK if exists)
       await FulaApiService.instance.createBucket(_faceMetadataBucket);
       _bucketExists = true;
+      _bucketChecked = true;
+      debugPrint('Face metadata bucket ready: $_faceMetadataBucket');
+      return true;
     } catch (e) {
-      // Check if bucket already exists by trying to list it
+      final errorStr = e.toString();
+
+      // Check if bucket already exists (some servers return error on create if exists)
+      if (errorStr.contains('BucketAlreadyExists') || errorStr.contains('BucketAlreadyOwnedByYou')) {
+        _bucketExists = true;
+        _bucketChecked = true;
+        return true;
+      }
+
+      // Try to verify bucket exists by listing
       try {
         await FulaApiService.instance.listObjects(_faceMetadataBucket);
         _bucketExists = true;
-      } catch (_) {
+        _bucketChecked = true;
+        return true;
+      } catch (listError) {
+        // Check for permanent errors (quota, permissions) vs transient
+        final listErrorStr = listError.toString();
+        if (listErrorStr.contains('AccountProblem') ||
+            listErrorStr.contains('AccessDenied') ||
+            listErrorStr.contains('QuotaExceeded')) {
+          debugPrint('Face metadata bucket not accessible (permanent error): $listError');
+          _bucketExists = false;
+          _bucketChecked = true; // Don't retry on permanent errors
+          return false;
+        }
+
+        // Transient error - allow retry next time
+        debugPrint('Face metadata bucket check failed (will retry): $listError');
         _bucketExists = false;
-        debugPrint('Face metadata bucket not available - S3 sync disabled');
+        _bucketChecked = false; // Allow retry
+        return false;
       }
     }
-    
-    _bucketChecked = true;
-    return _bucketExists;
   }
 
   /// Sync face metadata to S3 (encrypted)
   /// This is optional - faces are stored locally regardless of S3 sync success
   Future<void> syncFaceMetadataToS3(String imagePath, List<DetectedFace> faces) async {
+    // Early exit if sync is already disabled (prevents spam from concurrent calls)
+    if (_bucketChecked && !_bucketExists) return;
+
     if (!FulaApiService.instance.isConfigured) return;
     if (faces.isEmpty) return;
-    
+
     // Check if bucket is available (only check once per session)
     if (!await _ensureBucketExists()) return;
 
@@ -591,15 +619,33 @@ class FaceStorageService {
 
       debugPrint('Face metadata synced to S3 for: $imagePath');
     } catch (e) {
-      // Silently fail - S3 sync is optional, local storage is primary
-      // Only log once to avoid spam
-      if (_bucketExists) {
-        debugPrint('Failed to sync face metadata to S3: $e');
-        // Disable further attempts if bucket issue
-        if (e.toString().contains('NoSuchBucket')) {
+      // S3 sync is optional - local storage is primary
+      final errorStr = e.toString();
+
+      // Check for bucket not found - reset bucket check to allow recreation
+      if (errorStr.contains('NoSuchBucket') || errorStr.contains('bucket not found')) {
+        debugPrint('Face metadata bucket missing, will recreate on next attempt');
+        _bucketChecked = false;
+        _bucketExists = false;
+        return;
+      }
+
+      // Check for permanent errors (quota, permissions) - disable sync
+      final isPermanentError = errorStr.contains('AccountProblem') ||
+          errorStr.contains('QuotaExceeded') ||
+          errorStr.contains('AccessDenied') ||
+          errorStr.contains('InvalidAccessKeyId') ||
+          errorStr.contains('SignatureDoesNotMatch');
+
+      if (isPermanentError) {
+        // Log once and disable further attempts
+        if (_bucketExists) {
+          debugPrint('Face metadata S3 sync disabled (quota/permission error): $e');
           _bucketExists = false;
+          _bucketChecked = true; // Don't retry on permanent errors
         }
       }
+      // Don't log transient errors to avoid spam - they'll be retried
     }
   }
 

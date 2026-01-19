@@ -125,6 +125,28 @@ class LocalStorageService {
     return null;
   }
 
+  /// Get sync state by remote key and bucket (for checking if cloud file is linked to local)
+  SyncState? getSyncStateByRemoteKey(String remoteKey, String bucket) {
+    for (final state in _syncStateBox.values) {
+      if (state.remoteKey == remoteKey && state.bucket == bucket) {
+        return state;
+      }
+    }
+    return null;
+  }
+
+  /// Get a set of all remote keys that have sync states with local files
+  /// This is used for efficient cloud-only detection
+  Set<String> getLinkedRemoteKeys(String bucket) {
+    final keys = <String>{};
+    for (final state in _syncStateBox.values) {
+      if (state.bucket == bucket && state.remoteKey != null) {
+        keys.add(state.remoteKey!);
+      }
+    }
+    return keys;
+  }
+
   List<SyncState> getAllSyncStates() {
     return _syncStateBox.values.toList();
   }

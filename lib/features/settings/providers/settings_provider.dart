@@ -42,11 +42,12 @@ class AppSettings {
 class SettingsNotifier extends Notifier<AppSettings> {
   @override
   AppSettings build() {
-    _loadSettings();
-    return AppSettings();
+    // Load settings synchronously - Hive reads are sync once box is open
+    return _loadSettingsSync();
   }
 
-  Future<void> _loadSettings() async {
+  /// Load settings synchronously from Hive (box must already be open)
+  AppSettings _loadSettingsSync() {
     final themeModeIndex = LocalStorageService.instance.getSetting<int>('themeMode');
     final autoSync = LocalStorageService.instance.getSetting<bool>('autoSync');
     final wifiOnly = LocalStorageService.instance.getSetting<bool>('wifiOnly');
@@ -55,7 +56,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final storedOrgName = LocalStorageService.instance.getSetting<String>('orgName');
     final orgName = (storedOrgName != null && storedOrgName.isNotEmpty) ? storedOrgName : null;
 
-    state = AppSettings(
+    return AppSettings(
       themeMode: themeModeIndex != null
           ? ThemeMode.values[themeModeIndex]
           : ThemeMode.system,

@@ -103,7 +103,16 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           'The service is provided on an "as is" and "as available" basis without warranties of any kind.',
                         ),
                         _buildSection(
-                          '2. Service Termination',
+                          '2. Backup Storage Classification',
+                          'IMPORTANT: At this point, the Fula network and FxFiles backup storage should be considered either:\n\n'
+                          '- ARCHIVAL and SECONDARY backup, OR\n'
+                          '- SHORT-TERM and TEMPORARY backup\n\n'
+                          'until these terms are updated to mention otherwise.\n\n'
+                          'You should NOT rely on this service as your sole or primary backup solution. '
+                          'Always maintain independent backups of your important data.',
+                        ),
+                        _buildSection(
+                          '3. Service Termination',
                           'Functionland reserves the right to terminate, suspend, or modify the service at any time. '
                           'In the event of service termination, we will provide a minimum of TWO (2) WEEKS advance notice '
                           'via email or in-app notification.\n\n'
@@ -111,7 +120,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           'Functionland shall not be liable for any data loss resulting from service termination.',
                         ),
                         _buildSection(
-                          '3. Use at Your Own Risk',
+                          '4. Use at Your Own Risk',
                           'You use this App entirely AT YOUR OWN RISK. Functionland shall not be liable for any direct, '
                           'indirect, incidental, special, consequential, or exemplary damages, including but not limited to:\n\n'
                           '- Loss of data or files\n'
@@ -121,7 +130,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- Any other damages arising from your use of the App',
                         ),
                         _buildSection(
-                          '4. Encryption and Security',
+                          '5. Encryption and Security',
                           'Functionland employs industry-standard encryption algorithms to protect your data. However, '
                           'NO ENCRYPTION IS ABSOLUTELY SECURE.\n\n'
                           'You acknowledge and agree that:\n\n'
@@ -133,7 +142,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- You should not store extremely sensitive information solely relying on this encryption',
                         ),
                         _buildSection(
-                          '5. Private Keys and Account Access',
+                          '6. Private Keys and Account Access',
                           'IMPORTANT: Functionland does NOT store copies of your private encryption keys.\n\n'
                           'You acknowledge and understand that:\n\n'
                           '- Your encryption key is derived from your sign-in credentials (email/Google account)\n'
@@ -145,14 +154,14 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- Functionland cannot recover your data if you lose your private key',
                         ),
                         _buildSection(
-                          '6. Data Ownership and Responsibility',
+                          '7. Data Ownership and Responsibility',
                           'You retain ownership of all data you upload to the service. You are solely responsible for:\n\n'
                           '- Maintaining backups of your important data\n'
                           '- Ensuring you have legal rights to upload and store your content\n'
                           '- Any consequences of sharing your data with others',
                         ),
                         _buildSection(
-                          '7. Limitation of Liability',
+                          '8. Limitation of Liability',
                           'TO THE MAXIMUM EXTENT PERMITTED BY LAW, Functionland and its affiliates, officers, directors, '
                           'employees, and agents shall not be liable for any claims, damages, losses, or expenses arising '
                           'from or related to:\n\n'
@@ -164,7 +173,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- Any other matter relating to the service',
                         ),
                         _buildSection(
-                          '8. No Warranty',
+                          '9. No Warranty',
                           'THE APP IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO '
                           'WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.\n\n'
                           'We do not warrant that:\n'
@@ -173,17 +182,17 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- Any errors will be corrected',
                         ),
                         _buildSection(
-                          '9. Indemnification',
+                          '10. Indemnification',
                           'You agree to indemnify, defend, and hold harmless Functionland and its affiliates from any claims, '
                           'damages, losses, or expenses arising from your use of the App or violation of these terms.',
                         ),
                         _buildSection(
-                          '10. Changes to Terms',
+                          '11. Changes to Terms',
                           'We reserve the right to modify these terms at any time. Continued use of the App after changes '
                           'constitutes acceptance of the modified terms.',
                         ),
                         _buildSection(
-                          '11. Contact',
+                          '12. Contact',
                           'For questions about these Terms of Service, please contact us at support@fx.land',
                         ),
                         const SizedBox(height: 16),
