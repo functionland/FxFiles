@@ -1,6 +1,7 @@
 package land.fx.files.dev
 
 import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -8,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Rational
 import android.view.View
@@ -42,6 +44,7 @@ class MainActivity : AudioServiceActivity() {
     private val STORAGE_CHANNEL = "land.fx.files/storage"
     private val PIP_CHANNEL = "land.fx.files/pip"
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
+    private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
     private var pipEventSink: EventChannel.EventSink? = null
     private var isInPipMode = false
 
@@ -68,6 +71,52 @@ class MainActivity : AudioServiceActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("ERROR", "Could not open notification settings: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Battery optimization channel - for background sync
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BATTERY_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isIgnoringBatteryOptimizations" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                        result.success(powerManager.isIgnoringBatteryOptimizations(packageName))
+                    } else {
+                        // Battery optimization not applicable before Android 6.0
+                        result.success(true)
+                    }
+                }
+                "requestDisableBatteryOptimization" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("ERROR", "Could not request battery optimization exemption: ${e.message}", null)
+                        }
+                    } else {
+                        result.success(true)
+                    }
+                }
+                "openBatteryOptimizationSettings" -> {
+                    try {
+                        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        } else {
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Could not open battery settings: ${e.message}", null)
                     }
                 }
                 else -> result.notImplemented()

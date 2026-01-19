@@ -208,6 +208,51 @@ class BillingApiService {
       return body;
     }
   }
+
+  /// Get user info including organization name
+  /// This is called once when JWT is set/changed, not on every app load
+  /// Returns null on any error (network, 404, empty response) - caller should handle gracefully
+  Future<UserInfo?> getUserInfo() async {
+    final baseUrl = await _getBaseUrl();
+    final token = await _getJwtToken();
+
+    // Don't throw exceptions - just return null on any error
+    if (baseUrl == null || baseUrl.isEmpty || token == null || token.isEmpty) {
+      debugPrint('BillingApiService: getUserInfo - missing baseUrl or token');
+      return null;
+    }
+
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/v1/userinfo'),
+        headers: await _getHeaders(),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        return UserInfo.fromJson(json);
+      } else {
+        debugPrint('BillingApiService: getUserInfo failed: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      debugPrint('BillingApiService: getUserInfo error: $e');
+      return null;
+    }
+  }
+}
+
+/// User info response from /api/v1/userinfo
+class UserInfo {
+  final String? org;
+
+  const UserInfo({this.org});
+
+  factory UserInfo.fromJson(Map<String, dynamic> json) {
+    return UserInfo(
+      org: json['org'] as String?,
+    );
+  }
 }
 
 /// Response from GET /api/v1/wallets

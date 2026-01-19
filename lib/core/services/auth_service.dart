@@ -381,6 +381,13 @@ class AuthService {
     return getEncryptionKey();
   }
 
+  /// Get the encryption key as a base64 string for display/backup purposes
+  Future<String?> getEncryptionKeyBase64() async {
+    final key = await getEncryptionKey();
+    if (key == null) return null;
+    return base64Encode(key);
+  }
+
   Future<String?> getShareId() async {
     final key = await getPublicKey();
     if (key == null) return null;

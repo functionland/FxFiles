@@ -17,6 +17,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
 
+    <!-- Background sync permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+
     <!-- Notification permission for Android 13+ (API 33+) -->
     <!-- Required for media playback notification to appear in status bar and lock screen -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
@@ -89,6 +96,16 @@
             tools:ignore="Instantiatable">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Boot receiver for WorkManager to restart scheduled tasks -->
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxyUpdateReceiver"
+            android:exported="false"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
             </intent-filter>
         </receiver>
 

@@ -32,6 +32,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   bool _isEditingApi = false;
   bool _isLoading = false;
+  bool _showPrivateKey = false;
 
   @override
   void initState() {
@@ -298,6 +299,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ],
           ),
           _buildFaceDetectionSection(),
+          _buildSyncSection(settings),
+          _buildSecuritySection(),
           _buildSection(
             title: 'Display',
             children: [
@@ -725,6 +728,146 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             subtitle: Text('${FaceDetectionService.instance.queueLength} images in queue'),
           ),
       ],
+    );
+  }
+
+  Widget _buildSyncSection(AppSettings settings) {
+    return _buildSection(
+      title: 'Sync',
+      children: [
+        SwitchListTile(
+          secondary: const Icon(LucideIcons.wifi),
+          title: const Text('WiFi only'),
+          subtitle: const Text('Only sync when connected to WiFi'),
+          value: settings.wifiOnly,
+          onChanged: (value) {
+            ref.read(settingsProvider.notifier).setWifiOnly(value);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSecuritySection() {
+    if (!AuthService.instance.isAuthenticated) {
+      return _buildSection(
+        title: 'Security',
+        children: [
+          const ListTile(
+            leading: Icon(LucideIcons.keyRound),
+            title: Text('Encryption Key'),
+            subtitle: Text('Sign in to view your encryption key'),
+          ),
+        ],
+      );
+    }
+
+    return FutureBuilder<String?>(
+      future: AuthService.instance.getEncryptionKeyBase64(),
+      builder: (context, snapshot) {
+        final encryptionKey = snapshot.data;
+
+        return _buildSection(
+          title: 'Security',
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.keyRound),
+              title: const Text('Encryption Key'),
+              subtitle: const Text('Your private key for encrypting files'),
+            ),
+            if (encryptionKey != null)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(LucideIcons.alertTriangle, color: Colors.orange, size: 20),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Keep this key safe! You need it to decrypt your files.',
+                            style: TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: () => setState(() => _showPrivateKey = !_showPrivateKey),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surface,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _showPrivateKey ? encryptionKey : '••••••••••••••••••••••••••••••••••••••••••••',
+                                style: TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
+                                maxLines: _showPrivateKey ? null : 1,
+                                overflow: _showPrivateKey ? null : TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: Icon(
+                                _showPrivateKey ? LucideIcons.eyeOff : LucideIcons.eye,
+                                size: 20,
+                              ),
+                              onPressed: () => setState(() => _showPrivateKey = !_showPrivateKey),
+                              tooltip: _showPrivateKey ? 'Hide' : 'Reveal',
+                            ),
+                            IconButton(
+                              icon: const Icon(LucideIcons.copy, size: 20),
+                              onPressed: () => _copyEncryptionKey(encryptionKey),
+                              tooltip: 'Copy',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tap to ${_showPrivateKey ? 'hide' : 'reveal'} your encryption key',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _copyEncryptionKey(String key) {
+    Clipboard.setData(ClipboardData(text: key));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Encryption key copied to clipboard'),
+        duration: Duration(seconds: 2),
+      ),
     );
   }
 }

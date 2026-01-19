@@ -17,6 +17,7 @@ import 'package:fula_files/features/home/widgets/featured_section.dart';
 import 'package:fula_files/features/home/widgets/storage_section.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
+import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -34,12 +35,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isGettingApiKey = false;
   bool _isLinkingWallet = false;
   StreamSubscription<String>? _apiKeySubscription;
+  StreamSubscription<String>? _orgNameSubscription;
 
   @override
   void initState() {
     super.initState();
     _loadJwtToken();
     _setupApiKeyListener();
+    _setupOrgNameListener();
   }
 
   void _setupApiKeyListener() {
@@ -59,9 +62,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
+  void _setupOrgNameListener() {
+    _orgNameSubscription = DeepLinkService.instance.onOrgNameReceived.listen((orgName) {
+      if (mounted) {
+        // Update the settings provider with the new org name
+        ref.read(settingsProvider.notifier).setOrgName(orgName);
+      }
+    });
+  }
+
   @override
   void dispose() {
     _apiKeySubscription?.cancel();
+    _orgNameSubscription?.cancel();
     super.dispose();
   }
   
@@ -106,6 +119,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final isLoggedIn = AuthService.instance.isAuthenticated;
     final user = AuthService.instance.currentUser;
+
+    // Watch settings provider for org name
+    final settings = ref.watch(settingsProvider);
+    final appTitle = settings.orgName != null && settings.orgName!.isNotEmpty
+        ? 'FxFiles ${settings.orgName}'
+        : 'FxFiles';
 
     // Watch storage provider for wallet and storage info
     final storageState = ref.watch(storageProvider);
@@ -159,7 +178,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             tooltip: 'Profile',
             onPressed: () => _showProfileSheet(context),
           ),
-          title: const Text('FxFiles'),
+          title: Text(appTitle),
           actions: [
             TutorialShowcase(
               showcaseKey: TutorialService.instance.searchKey,

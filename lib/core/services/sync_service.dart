@@ -241,11 +241,30 @@ class SyncService {
     }
   }
 
-  /// Check if device has network connectivity
+  /// Check if device has network connectivity suitable for sync
+  /// Respects the wifiOnly setting from user preferences
   Future<bool> _hasNetworkConnection() async {
     try {
       final result = await Connectivity().checkConnectivity();
-      return !result.contains(ConnectivityResult.none);
+
+      // No connection at all
+      if (result.contains(ConnectivityResult.none)) {
+        return false;
+      }
+
+      // Check WiFi-only setting
+      final wifiOnly = LocalStorageService.instance.getSetting<bool>('wifiOnly') ?? true;
+      if (wifiOnly) {
+        // Only allow sync on WiFi or Ethernet
+        final hasWifi = result.contains(ConnectivityResult.wifi) ||
+                        result.contains(ConnectivityResult.ethernet);
+        if (!hasWifi) {
+          debugPrint('Sync paused: WiFi-only mode enabled, current connection is mobile data');
+          return false;
+        }
+      }
+
+      return true;
     } catch (e) {
       debugPrint('Error checking connectivity: $e');
       return true; // Assume connected if check fails
@@ -278,15 +297,50 @@ class SyncService {
   bool _isRetryableError(dynamic error) {
     final msg = error.toString().toLowerCase();
 
+    // FIRST: Check for explicitly retryable network/connectivity errors
+    // These should ALWAYS be retried regardless of other patterns in the message
+    if (msg.contains('dns error') ||
+        msg.contains('dns lookup') ||
+        msg.contains('no address associated') ||
+        msg.contains('name or service not known') ||
+        msg.contains('connection refused') ||
+        msg.contains('connection reset') ||
+        msg.contains('connection closed') ||
+        msg.contains('connection timed out') ||
+        msg.contains('network is unreachable') ||
+        msg.contains('network unreachable') ||
+        msg.contains('host unreachable') ||
+        msg.contains('no route to host') ||
+        msg.contains('socket closed') ||
+        msg.contains('socket exception') ||
+        msg.contains('client error (connect)') ||
+        msg.contains('error sending request') ||
+        msg.contains('failed to lookup address') ||
+        msg.contains('temporarily unavailable') ||
+        msg.contains('service unavailable') ||
+        msg.contains('bad gateway') ||
+        msg.contains('gateway timeout') ||
+        msg.contains('ssl handshake') ||
+        msg.contains('certificate') ||
+        msg.contains('broken pipe') ||
+        msg.contains('eof') ||
+        msg.contains('econnrefused') ||
+        msg.contains('econnreset') ||
+        msg.contains('etimedout') ||
+        msg.contains('ehostunreach') ||
+        msg.contains('enetunreach')) {
+      return true;
+    }
+
     // Permanent errors - don't retry
-    // HTTP status codes
-    if (msg.contains('401') ||  // Unauthorized
-        msg.contains('403') ||  // Forbidden
-        msg.contains('404') ||  // Not Found
-        msg.contains('409') ||  // Conflict
-        msg.contains('410') ||  // Gone
-        msg.contains('413') ||  // Payload Too Large
-        msg.contains('422')) {  // Unprocessable Entity
+    // HTTP status codes (use word boundaries to avoid matching in URLs/IDs)
+    if (RegExp(r'\b401\b').hasMatch(msg) ||  // Unauthorized
+        RegExp(r'\b403\b').hasMatch(msg) ||  // Forbidden
+        RegExp(r'\b404\b').hasMatch(msg) ||  // Not Found
+        RegExp(r'\b409\b').hasMatch(msg) ||  // Conflict
+        RegExp(r'\b410\b').hasMatch(msg) ||  // Gone
+        RegExp(r'\b413\b').hasMatch(msg) ||  // Payload Too Large
+        RegExp(r'\b422\b').hasMatch(msg)) {  // Unprocessable Entity
       return false;
     }
 
@@ -330,6 +384,18 @@ class SyncService {
   Future<void> _executeUpload(SyncTask task) async {
     debugPrint('Starting upload: ${task.localPath} -> ${task.remoteBucket}/${task.remoteKey}');
     try {
+      // Check network connectivity before attempting upload
+      // This prevents wasting resources when app is backgrounded without network
+      if (!await _hasNetworkConnection()) {
+        debugPrint('No network for upload, re-queueing: ${task.remoteKey}');
+        // Put task back in queue and pause
+        _uploadQueue.insert(0, task);
+        if (!_isPaused) {
+          _pauseQueue(const Duration(seconds: 30));
+        }
+        return;
+      }
+
       // Ensure FulaApiService is configured before upload
       if (!FulaApiService.instance.isConfigured) {
         debugPrint('SyncService: FulaApiService not configured, attempting to initialize...');

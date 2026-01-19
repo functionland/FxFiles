@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/billing_api_service.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class DeepLinkService {
@@ -16,6 +18,10 @@ class DeepLinkService {
   // Stream controller for API key received events
   final _apiKeyReceivedController = StreamController<String>.broadcast();
   Stream<String> get onApiKeyReceived => _apiKeyReceivedController.stream;
+
+  // Stream controller for org name received events
+  final _orgNameReceivedController = StreamController<String>.broadcast();
+  Stream<String> get onOrgNameReceived => _orgNameReceivedController.stream;
 
   // Default pinning service URL for get-key endpoint
   static const String _defaultPinningService = 'https://cloud.fx.land';
@@ -97,6 +103,9 @@ class DeepLinkService {
       await AuthService.instance.reinitializeFulaClient();
       debugPrint('DeepLinkService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
 
+      // Fetch organization name from userinfo API (non-blocking, errors ignored)
+      _fetchAndStoreOrgName();
+
       // Notify listeners that API key was received
       _apiKeyReceivedController.add(apiKey);
 
@@ -143,8 +152,31 @@ class DeepLinkService {
     }
   }
 
+  /// Fetch organization name from userinfo API and store it
+  /// This runs in the background and does not block - errors are silently ignored
+  Future<void> _fetchAndStoreOrgName() async {
+    try {
+      debugPrint('DeepLinkService: Fetching user info for org name...');
+      final userInfo = await BillingApiService.instance.getUserInfo();
+
+      if (userInfo?.org != null && userInfo!.org!.isNotEmpty) {
+        debugPrint('DeepLinkService: Got org name: ${userInfo.org}');
+        await LocalStorageService.instance.saveSetting('orgName', userInfo.org);
+        _orgNameReceivedController.add(userInfo.org!);
+      } else {
+        debugPrint('DeepLinkService: No org name in response');
+        // Clear any previously stored org name
+        await LocalStorageService.instance.saveSetting('orgName', '');
+      }
+    } catch (e) {
+      debugPrint('DeepLinkService: Error fetching org name (ignored): $e');
+      // Silently ignore errors - org name is optional
+    }
+  }
+
   void dispose() {
     _linkSubscription?.cancel();
     _apiKeyReceivedController.close();
+    _orgNameReceivedController.close();
   }
 }

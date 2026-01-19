@@ -7,12 +7,16 @@ class AppSettings {
   final bool autoSync;
   final bool wifiOnly;
   final bool thumbScrollEnabled;
+  final bool tosAccepted;
+  final String? orgName;
 
   AppSettings({
     this.themeMode = ThemeMode.system,
     this.autoSync = true,
     this.wifiOnly = true,
     this.thumbScrollEnabled = true,
+    this.tosAccepted = false,
+    this.orgName,
   });
 
   AppSettings copyWith({
@@ -20,12 +24,17 @@ class AppSettings {
     bool? autoSync,
     bool? wifiOnly,
     bool? thumbScrollEnabled,
+    bool? tosAccepted,
+    String? orgName,
+    bool clearOrgName = false,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
       autoSync: autoSync ?? this.autoSync,
       wifiOnly: wifiOnly ?? this.wifiOnly,
       thumbScrollEnabled: thumbScrollEnabled ?? this.thumbScrollEnabled,
+      tosAccepted: tosAccepted ?? this.tosAccepted,
+      orgName: clearOrgName ? null : (orgName ?? this.orgName),
     );
   }
 }
@@ -42,6 +51,9 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final autoSync = LocalStorageService.instance.getSetting<bool>('autoSync');
     final wifiOnly = LocalStorageService.instance.getSetting<bool>('wifiOnly');
     final thumbScrollEnabled = LocalStorageService.instance.getSetting<bool>('thumbScrollEnabled');
+    final tosAccepted = LocalStorageService.instance.getSetting<bool>('tosAccepted');
+    final storedOrgName = LocalStorageService.instance.getSetting<String>('orgName');
+    final orgName = (storedOrgName != null && storedOrgName.isNotEmpty) ? storedOrgName : null;
 
     state = AppSettings(
       themeMode: themeModeIndex != null
@@ -50,6 +62,8 @@ class SettingsNotifier extends Notifier<AppSettings> {
       autoSync: autoSync ?? true,
       wifiOnly: wifiOnly ?? true,
       thumbScrollEnabled: thumbScrollEnabled ?? true,
+      tosAccepted: tosAccepted ?? false,
+      orgName: orgName,
     );
   }
 
@@ -71,6 +85,21 @@ class SettingsNotifier extends Notifier<AppSettings> {
   Future<void> setThumbScrollEnabled(bool value) async {
     state = state.copyWith(thumbScrollEnabled: value);
     await LocalStorageService.instance.saveSetting('thumbScrollEnabled', value);
+  }
+
+  Future<void> setTosAccepted(bool value) async {
+    state = state.copyWith(tosAccepted: value);
+    await LocalStorageService.instance.saveSetting('tosAccepted', value);
+  }
+
+  Future<void> setOrgName(String? value) async {
+    if (value == null || value.isEmpty) {
+      state = state.copyWith(clearOrgName: true);
+      await LocalStorageService.instance.saveSetting('orgName', '');
+    } else {
+      state = state.copyWith(orgName: value);
+      await LocalStorageService.instance.saveSetting('orgName', value);
+    }
   }
 }
 

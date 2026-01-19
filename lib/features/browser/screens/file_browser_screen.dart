@@ -20,6 +20,7 @@ import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
+import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
@@ -2229,6 +2230,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _enableCategorySync(FileCategory category) async {
     try {
+      // Check battery optimization for background sync (Android)
+      if (Platform.isAndroid) {
+        await BatteryOptimizationService.instance.showBatteryOptimizationDialog(context);
+      }
+
       final syncPath = 'category:${widget.category}';
       await FolderWatchService.instance.enableFolderSync(
         path: syncPath,
@@ -2241,6 +2247,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           SnackBar(content: Text('Auto-sync enabled for ${_categoryTitle(widget.category!)}')),
         );
         setState(() {}); // Refresh UI
+
+        // Show WiFi-only setting info dialog
+        _showWifiOnlyInfoDialog();
       }
     } catch (e) {
       if (mounted) {
@@ -2380,6 +2389,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _enableFolderSync(LocalFile folder) async {
     try {
+      // Check battery optimization for background sync (Android)
+      if (Platform.isAndroid) {
+        await BatteryOptimizationService.instance.showBatteryOptimizationDialog(context);
+      }
+
       final category = FileCategory.fromPath(folder.path);
       await FolderWatchService.instance.enableFolderSync(
         path: folder.path,
@@ -2391,6 +2405,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           SnackBar(content: Text('Auto-sync enabled for "${folder.name}"')),
         );
         setState(() {});
+
+        // Show WiFi-only setting info dialog
+        _showWifiOnlyInfoDialog();
       }
     } catch (e) {
       if (mounted) {
@@ -2399,6 +2416,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         );
       }
     }
+  }
+
+  void _showWifiOnlyInfoDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sync Settings'),
+        content: const Text(
+          'Auto-sync is currently set to WiFi only to save mobile data.\n\n'
+          'If you want to sync over mobile data as well, you can change this in Settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              context.push('/settings');
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _disableFolderSync(LocalFile folder) async {
