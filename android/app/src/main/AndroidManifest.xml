@@ -21,8 +21,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
 
     <!-- Notification permission for Android 13+ (API 33+) -->
     <!-- Required for media playback notification to appear in status bar and lock screen -->
@@ -31,7 +29,7 @@
     <application
         android:requestLegacyExternalStorage="true"
         android:label="FxFiles"
-        android:name="${applicationName}"
+        android:name=".FxFilesApplication"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -88,6 +86,12 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Data sync foreground service for WorkManager -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
 
         <!-- Media button receiver for headset/bluetooth controls -->
         <receiver

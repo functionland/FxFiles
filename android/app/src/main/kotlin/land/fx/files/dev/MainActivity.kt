@@ -1,6 +1,11 @@
 package land.fx.files.dev
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import androidx.core.app.NotificationCompat
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -26,6 +31,25 @@ class MainActivity : AudioServiceActivity() {
         super.onCreate(savedInstanceState)
         // Enable edge-to-edge display for Android 15+ compatibility
         setupEdgeToEdge()
+        // Create notification channel for background sync
+        createSyncNotificationChannel()
+    }
+
+    private fun createSyncNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channelId = "fxfiles_sync_channel"
+            val channelName = "File Sync"
+            val channelDescription = "Shows progress when syncing files to cloud"
+            val importance = NotificationManager.IMPORTANCE_LOW // Low importance = no sound
+
+            val channel = NotificationChannel(channelId, channelName, importance).apply {
+                description = channelDescription
+                setShowBadge(false)
+            }
+
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
     }
 
     private fun setupEdgeToEdge() {
@@ -45,6 +69,9 @@ class MainActivity : AudioServiceActivity() {
     private val PIP_CHANNEL = "land.fx.files/pip"
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
     private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
+    private val SYNC_NOTIFICATION_CHANNEL = "land.fx.files/sync_notification"
+    private val SYNC_NOTIFICATION_ID = 9001
+    private val SYNC_CHANNEL_ID = "fxfiles_sync_channel"
     private var pipEventSink: EventChannel.EventSink? = null
     private var isInPipMode = false
 
@@ -71,6 +98,45 @@ class MainActivity : AudioServiceActivity() {
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("ERROR", "Could not open notification settings: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Sync notification channel - for showing sync progress in notification bar
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SYNC_NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "showSyncNotification" -> {
+                    try {
+                        val title = call.argument<String>("title") ?: "Syncing files"
+                        val body = call.argument<String>("body") ?: "Uploading files to cloud..."
+                        val progress = call.argument<Int>("progress") ?: -1
+                        val maxProgress = call.argument<Int>("maxProgress") ?: 100
+
+                        showSyncNotification(title, body, progress, maxProgress)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Failed to show notification: ${e.message}", null)
+                    }
+                }
+                "hideSyncNotification" -> {
+                    try {
+                        hideSyncNotification()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Failed to hide notification: ${e.message}", null)
+                    }
+                }
+                "showSyncCompleteNotification" -> {
+                    try {
+                        val title = call.argument<String>("title") ?: "Sync complete"
+                        val body = call.argument<String>("body") ?: "Files synced successfully"
+
+                        showSyncCompleteNotification(title, body)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Failed to show notification: ${e.message}", null)
                     }
                 }
                 else -> result.notImplemented()
@@ -237,5 +303,60 @@ class MainActivity : AudioServiceActivity() {
         super.onUserLeaveHint()
         // Auto-enter PiP when user presses home during video playback
         // This is handled by setAutoPip in Flutter when video is playing
+    }
+
+    private fun showSyncNotification(title: String, body: String, progress: Int, maxProgress: Int) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Create intent to open app when notification is tapped
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(this, SYNC_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true) // Can't be dismissed
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+
+        // Set progress if determinate
+        if (progress >= 0) {
+            builder.setProgress(maxProgress, progress, false)
+        } else {
+            builder.setProgress(0, 0, true) // Indeterminate
+        }
+
+        notificationManager.notify(SYNC_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun hideSyncNotification() {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(SYNC_NOTIFICATION_ID)
+    }
+
+    private fun showSyncCompleteNotification(title: String, body: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Create intent to open app when notification is tapped
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(this, SYNC_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true) // Dismiss when tapped
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+
+        notificationManager.notify(SYNC_NOTIFICATION_ID, builder.build())
     }
 }

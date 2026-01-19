@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/sync_notification_service.dart';
 
 // Top-level function for isolate - reads file bytes
 Future<Uint8List> _readFileInIsolate(String path) async {
@@ -194,11 +195,25 @@ class SyncService {
   }
 
   Future<void> processUploadQueue() async {
+    if (_uploadQueue.isEmpty) return;
+
+    // Track sync statistics for notification
+    final totalToSync = _uploadQueue.length;
+    int syncedCount = 0;
+    int errorCount = 0;
+
+    // Show sync notification (required for foreground service)
+    await SyncNotificationService.instance.showSyncNotification(
+      title: 'Syncing files',
+      body: 'Preparing to sync $totalToSync files...',
+    );
+
     // Process uploads with pause and network checks
     while (_uploadQueue.isNotEmpty) {
       // Check if paused due to consecutive failures
       if (_isPaused) {
-        debugPrint('Queue paused, waiting until ${_pausedUntil}');
+        debugPrint('Queue paused, waiting until $_pausedUntil');
+        await SyncNotificationService.instance.hideSyncNotification();
         return;
       }
 
@@ -206,6 +221,7 @@ class SyncService {
       if (!await _hasNetworkConnection()) {
         debugPrint('No network, pausing sync');
         _pauseQueue(const Duration(seconds: 30));
+        await SyncNotificationService.instance.hideSyncNotification();
         return;
       }
 
@@ -219,6 +235,14 @@ class SyncService {
       final task = _uploadQueue.removeAt(0);
       _activeUploads++;
 
+      // Update notification with progress
+      syncedCount++;
+      await SyncNotificationService.instance.updateSyncProgress(
+        current: syncedCount,
+        total: totalToSync,
+        currentFile: task.remoteKey.split('/').last,
+      );
+
       // Throttle upload starts - wait at least 10ms between starts
       final timeSinceLastStart = DateTime.now().difference(_lastUploadStart);
       if (timeSinceLastStart.inMilliseconds < 10) {
@@ -227,7 +251,11 @@ class SyncService {
       _lastUploadStart = DateTime.now();
 
       // Start upload without awaiting - let it run in background
-      _executeUpload(task).whenComplete(() {
+      _executeUpload(task).then((_) {
+        // Success - no increment needed
+      }).catchError((e) {
+        errorCount++;
+      }).whenComplete(() {
         _activeUploads--;
       });
 
@@ -239,6 +267,12 @@ class SyncService {
     while (_activeUploads > 0) {
       await Future.delayed(const Duration(milliseconds: 200));
     }
+
+    // Show completion notification
+    await SyncNotificationService.instance.showSyncCompleteNotification(
+      fileCount: syncedCount,
+      hasErrors: errorCount > 0,
+    );
   }
 
   /// Check if device has network connectivity suitable for sync
