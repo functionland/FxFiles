@@ -677,6 +677,7 @@ class SyncService {
   }
 
   /// Restore pending tasks from persistent storage (call on app start)
+  /// Uses batching and timeout to prevent blocking app startup
   Future<void> restoreQueue() async {
     if (_isRestoring) return;
     _isRestoring = true;
@@ -691,39 +692,32 @@ class SyncService {
 
       debugPrint('SyncService: Restoring ${pendingTasks.length} pending tasks');
 
-      for (final persistentTask in pendingTasks) {
-        // Skip if already in queue
-        if (_taskIdMap.containsKey(persistentTask.localPath)) continue;
+      // Process in batches with timeout to prevent blocking UI
+      const batchSize = 50;
+      const maxDuration = Duration(seconds: 5); // Don't block startup more than 5s
+      final stopwatch = Stopwatch()..start();
 
-        // Check if file still exists
-        final file = File(persistentTask.localPath);
-        if (!await file.exists()) {
-          // File no longer exists, remove from queue
-          await LocalStorageService.instance.removeSyncTask(persistentTask.id);
-          continue;
+      for (int i = 0; i < pendingTasks.length; i += batchSize) {
+        // Check timeout - defer remaining to background if exceeded
+        if (stopwatch.elapsed >= maxDuration) {
+          debugPrint('SyncService: restoreQueue timeout reached, deferring remaining ${pendingTasks.length - i} tasks');
+          final remainingTasks = pendingTasks.sublist(i);
+          // Schedule deferred restoration via microtask (after UI renders)
+          Future.microtask(() => _restoreRemainingTasks(remainingTasks));
+          break;
         }
 
-        // Add to in-memory queue
-        final task = SyncTask(
-          localPath: persistentTask.localPath,
-          remoteBucket: persistentTask.remoteBucket,
-          remoteKey: persistentTask.remoteKey,
-          direction: persistentTask.isUpload ? SyncDirection.upload : SyncDirection.download,
-          encrypt: persistentTask.encrypt,
-        );
+        final end = (i + batchSize < pendingTasks.length) ? i + batchSize : pendingTasks.length;
+        final batch = pendingTasks.sublist(i, end);
 
-        _uploadQueue.add(task);
-        _taskIdMap[persistentTask.localPath] = persistentTask.id;
+        await _restoreBatch(batch);
 
-        // Update persistent task status to pending (in case it was in_progress)
-        if (persistentTask.status == persistent.SyncTaskStatus.inProgress) {
-          await LocalStorageService.instance.updateSyncTask(
-            persistentTask.copyWith(status: persistent.SyncTaskStatus.pending),
-          );
-        }
+        // Yield to UI thread between batches
+        await Future.delayed(Duration.zero);
       }
 
-      debugPrint('SyncService: Restored ${_uploadQueue.length} tasks to queue');
+      stopwatch.stop();
+      debugPrint('SyncService: Restored ${_uploadQueue.length} tasks to queue in ${stopwatch.elapsedMilliseconds}ms');
 
       // Start processing if we have tasks
       if (_uploadQueue.isNotEmpty) {
@@ -731,6 +725,76 @@ class SyncService {
       }
     } finally {
       _isRestoring = false;
+    }
+  }
+
+  /// Process a batch of persistent tasks during queue restoration
+  Future<void> _restoreBatch(List<persistent.SyncTask> batch) async {
+    // Check file existence in parallel for the batch
+    final existenceChecks = await Future.wait(
+      batch.map((task) async {
+        if (_taskIdMap.containsKey(task.localPath)) {
+          return MapEntry(task, null); // Already in queue, skip
+        }
+        final file = File(task.localPath);
+        final exists = await file.exists();
+        return MapEntry(task, exists);
+      }),
+    );
+
+    for (final entry in existenceChecks) {
+      final persistentTask = entry.key;
+      final exists = entry.value;
+
+      if (exists == null) continue; // Already in queue
+
+      if (!exists) {
+        // File no longer exists, remove from queue (fire-and-forget)
+        LocalStorageService.instance.removeSyncTask(persistentTask.id);
+        continue;
+      }
+
+      // Add to in-memory queue
+      final task = SyncTask(
+        localPath: persistentTask.localPath,
+        remoteBucket: persistentTask.remoteBucket,
+        remoteKey: persistentTask.remoteKey,
+        direction: persistentTask.isUpload ? SyncDirection.upload : SyncDirection.download,
+        encrypt: persistentTask.encrypt,
+      );
+
+      _uploadQueue.add(task);
+      _taskIdMap[persistentTask.localPath] = persistentTask.id;
+
+      // Update persistent task status to pending if it was in_progress (fire-and-forget)
+      if (persistentTask.status == persistent.SyncTaskStatus.inProgress) {
+        LocalStorageService.instance.updateSyncTask(
+          persistentTask.copyWith(status: persistent.SyncTaskStatus.pending),
+        );
+      }
+    }
+  }
+
+  /// Restore remaining tasks in background (called when startup timeout is reached)
+  Future<void> _restoreRemainingTasks(List<persistent.SyncTask> remainingTasks) async {
+    debugPrint('SyncService: Restoring ${remainingTasks.length} deferred tasks in background');
+
+    const batchSize = 50;
+    for (int i = 0; i < remainingTasks.length; i += batchSize) {
+      final end = (i + batchSize < remainingTasks.length) ? i + batchSize : remainingTasks.length;
+      final batch = remainingTasks.sublist(i, end);
+
+      await _restoreBatch(batch);
+
+      // Yield to UI thread between batches
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+
+    debugPrint('SyncService: Deferred restoration complete, total queue: ${_uploadQueue.length}');
+
+    // Start processing if we have tasks and not already processing
+    if (_uploadQueue.isNotEmpty && !_isProcessingUpload) {
+      _processUploadQueueAsync();
     }
   }
 

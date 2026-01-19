@@ -170,11 +170,19 @@ class BackgroundSyncService {
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    // Initialize WorkManager for Android
+    // Initialize WorkManager for Android with timeout to prevent startup hang
     if (Platform.isAndroid) {
-      await Workmanager().initialize(
-        callbackDispatcher,
-      );
+      try {
+        await Workmanager().initialize(callbackDispatcher).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            debugPrint('WorkManager initialization timed out - continuing without background sync');
+          },
+        );
+      } catch (e) {
+        debugPrint('WorkManager initialization failed: $e');
+        // Continue without background sync rather than blocking startup
+      }
     }
 
     // Setup iOS method channel handler for background sync callbacks
