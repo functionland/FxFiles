@@ -69,9 +69,19 @@ Future<ProviderContainer> _initializeApp() async {
     // Continue - some features won't work but app can still run
   }
 
-  // Initialize services
-  await SecureStorageService.instance.init();
-  await LocalStorageService.instance.init();
+  // Initialize services with timeout protection (iOS 26+ can hang on storage init)
+  try {
+    await SecureStorageService.instance.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('SecureStorageService initialization failed: $e');
+  }
+
+  try {
+    await LocalStorageService.instance.init().timeout(const Duration(seconds: 5));
+  } catch (e) {
+    debugPrint('LocalStorageService initialization failed: $e');
+    // Continue - app can still run with limited functionality
+  }
 
   // Initialize deep link service (must be early to catch initial links)
   try {
@@ -81,7 +91,7 @@ Future<ProviderContainer> _initializeApp() async {
   }
 
   // Check for existing auth session (restores sign-in state)
-  // Use timeout to prevent hang on Android 16 with Credential Manager
+  // Use timeout to prevent hang on iOS 26+ and Android 16+ with Credential Manager
   try {
     await AuthService.instance.checkExistingSession().timeout(
       const Duration(seconds: 10),
@@ -103,14 +113,29 @@ Future<ProviderContainer> _initializeApp() async {
   VideoThumbnailService.instance.init();
   PipService.instance.init();
 
-  // Initialize playlist service (audio player service is initialized on-demand)
-  await PlaylistService.instance.init();
+  // Initialize playlist service with timeout (audio player service is initialized on-demand)
+  try {
+    await PlaylistService.instance.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('PlaylistService initialization failed: $e');
+  }
 
   // Initialize background sync (with internal timeout protection)
-  await BackgroundSyncService.instance.initialize();
+  try {
+    await BackgroundSyncService.instance.initialize().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('BackgroundSyncService initialization failed: $e');
+  }
 
   // Check if Fula API is configured and schedule sync
-  final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+  // Use timeout for keychain access which can hang on iOS 26+
+  String? jwtToken;
+  try {
+    jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken)
+        .timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('JWT token read failed: $e');
+  }
 
   if (FulaApiService.instance.isConfigured && jwtToken != null) {
     // Schedule periodic background sync (non-blocking)

@@ -58,18 +58,22 @@ jobs:
         sed -i 's/namespace = "land.fx.files.dev"/namespace = "land.fx.files"/' android/app/build.gradle.kts
         sed -i 's/applicationId = "land.fx.files.dev"/applicationId = "land.fx.files"/' android/app/build.gradle.kts
 
-        # Update MainActivity.kt package declaration
-        sed -i 's/^package land.fx.files.dev$/package land.fx.files/' android/app/src/main/kotlin/land/fx/files/dev/MainActivity.kt
+        # Update package declarations in all Kotlin files
+        for file in android/app/src/main/kotlin/land/fx/files/dev/*.kt; do
+          sed -i 's/^package land.fx.files.dev$/package land.fx.files/' "$file"
+          echo "Updated package in: $file"
+        done
 
-        # Move MainActivity.kt to production package directory
+        # Move all Kotlin files to production package directory
         mkdir -p android/app/src/main/kotlin/land/fx/files
-        mv android/app/src/main/kotlin/land/fx/files/dev/MainActivity.kt android/app/src/main/kotlin/land/fx/files/
-        rmdir android/app/src/main/kotlin/land/fx/files/dev
+        mv android/app/src/main/kotlin/land/fx/files/dev/*.kt android/app/src/main/kotlin/land/fx/files/
+        rm -rf android/app/src/main/kotlin/land/fx/files/dev
 
         echo "Package name updated to land.fx.files"
         echo "Verifying changes..."
         grep -n "namespace\|applicationId" android/app/build.gradle.kts
-        head -1 android/app/src/main/kotlin/land/fx/files/MainActivity.kt
+        ls -la android/app/src/main/kotlin/land/fx/files/
+        head -1 android/app/src/main/kotlin/land/fx/files/*.kt
 
     - name: Get Package Version
       run: |

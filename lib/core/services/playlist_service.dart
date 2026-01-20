@@ -14,7 +14,7 @@ class PlaylistService {
   static const String _playlistBucket = 'playlists';
   static const String _playlistPrefix = 'user-playlists/';
 
-  late Box<Playlist> _playlistBox;
+  Box<Playlist>? _playlistBox;
   bool _isInitialized = false;
 
   final _uuid = const Uuid();
@@ -32,9 +32,16 @@ class PlaylistService {
       Hive.registerAdapter(PlaylistAdapter());
     }
 
-    _playlistBox = await Hive.openBox<Playlist>('playlists');
+    // Open box with timeout (can hang on iOS 26+)
+    try {
+      _playlistBox = await Hive.openBox<Playlist>('playlists')
+          .timeout(const Duration(milliseconds: 1500));
+      debugPrint('PlaylistService initialized with ${_playlistBox?.length ?? 0} playlists');
+    } catch (e) {
+      debugPrint('PlaylistService failed to open playlists box: $e');
+    }
+
     _isInitialized = true;
-    debugPrint('PlaylistService initialized with ${_playlistBox.length} playlists');
   }
 
   // ============================================================================
@@ -42,12 +49,15 @@ class PlaylistService {
   // ============================================================================
 
   List<Playlist> getAllPlaylists() {
-    return _playlistBox.values.toList()
+    final box = _playlistBox;
+    if (box == null) return [];
+
+    return box.values.toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
   Playlist? getPlaylist(String id) {
-    return _playlistBox.get(id);
+    return _playlistBox?.get(id);
   }
 
   Future<Playlist> createPlaylist(String name, {List<AudioTrack>? tracks}) async {
@@ -56,7 +66,7 @@ class PlaylistService {
       name: name,
       tracks: tracks,
     );
-    await _playlistBox.put(playlist.id, playlist);
+    await _playlistBox?.put(playlist.id, playlist);
     debugPrint('Created playlist: ${playlist.name} with ${playlist.trackCount} tracks');
 
     // Auto-sync to cloud if configured
@@ -67,7 +77,7 @@ class PlaylistService {
 
   Future<void> updatePlaylist(Playlist playlist) async {
     playlist.updatedAt = DateTime.now();
-    await _playlistBox.put(playlist.id, playlist);
+    await _playlistBox?.put(playlist.id, playlist);
     debugPrint('Updated playlist: ${playlist.name}');
 
     // Auto-sync to cloud if configured
@@ -89,7 +99,10 @@ class PlaylistService {
   }
 
   Future<void> deletePlaylist(String id) async {
-    final playlist = _playlistBox.get(id);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(id);
     if (playlist != null) {
       // Delete from cloud if synced
       if (playlist.cloudKey != null && FulaApiService.instance.isConfigured) {
@@ -99,57 +112,72 @@ class PlaylistService {
           debugPrint('Error deleting playlist from cloud: $e');
         }
       }
-      await _playlistBox.delete(id);
+      await box.delete(id);
       debugPrint('Deleted playlist: ${playlist.name}');
     }
   }
 
   Future<void> renamePlaylist(String id, String newName) async {
-    final playlist = _playlistBox.get(id);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(id);
     if (playlist != null) {
       playlist.name = newName;
       playlist.updatedAt = DateTime.now();
-      await _playlistBox.put(id, playlist);
+      await box.put(id, playlist);
       debugPrint('Renamed playlist to: $newName');
       _autoSyncPlaylist(id);
     }
   }
 
   Future<void> addTrackToPlaylist(String playlistId, AudioTrack track) async {
-    final playlist = _playlistBox.get(playlistId);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(playlistId);
     if (playlist != null) {
       playlist.addTrack(track);
-      await _playlistBox.put(playlistId, playlist);
+      await box.put(playlistId, playlist);
       debugPrint('Added track to playlist: ${track.name}');
       _autoSyncPlaylist(playlistId);
     }
   }
 
   Future<void> addTracksToPlaylist(String playlistId, List<AudioTrack> tracks) async {
-    final playlist = _playlistBox.get(playlistId);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(playlistId);
     if (playlist != null) {
       playlist.addTracks(tracks);
-      await _playlistBox.put(playlistId, playlist);
+      await box.put(playlistId, playlist);
       debugPrint('Added ${tracks.length} tracks to playlist');
       _autoSyncPlaylist(playlistId);
     }
   }
 
   Future<void> removeTrackFromPlaylist(String playlistId, int trackIndex) async {
-    final playlist = _playlistBox.get(playlistId);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(playlistId);
     if (playlist != null) {
       playlist.removeTrackAt(trackIndex);
-      await _playlistBox.put(playlistId, playlist);
+      await box.put(playlistId, playlist);
       debugPrint('Removed track at index $trackIndex from playlist');
       _autoSyncPlaylist(playlistId);
     }
   }
 
   Future<void> reorderTrackInPlaylist(String playlistId, int oldIndex, int newIndex) async {
-    final playlist = _playlistBox.get(playlistId);
+    final box = _playlistBox;
+    if (box == null) return;
+
+    final playlist = box.get(playlistId);
     if (playlist != null) {
       playlist.reorderTrack(oldIndex, newIndex);
-      await _playlistBox.put(playlistId, playlist);
+      await box.put(playlistId, playlist);
       debugPrint('Reordered track from $oldIndex to $newIndex');
       _autoSyncPlaylist(playlistId);
     }
@@ -169,7 +197,7 @@ class PlaylistService {
       throw PlaylistServiceException('Cloud storage not configured');
     }
 
-    final playlist = _playlistBox.get(playlistId);
+    final playlist = _playlistBox?.get(playlistId);
     if (playlist == null) {
       throw PlaylistServiceException('Playlist not found');
     }
@@ -206,7 +234,7 @@ class PlaylistService {
       // Update local playlist with cloud info
       playlist.cloudKey = cloudKey;
       playlist.isSyncedToCloud = true;
-      await _playlistBox.put(playlistId, playlist);
+      await _playlistBox?.put(playlistId, playlist);
 
       debugPrint('Synced playlist to cloud: ${playlist.name}');
     } catch (e) {
@@ -286,18 +314,21 @@ class PlaylistService {
   }
 
   Future<void> restorePlaylistsFromCloud() async {
+    final box = _playlistBox;
+    if (box == null) return;
+
     final cloudPlaylists = await fetchPlaylistsFromCloud();
 
     for (final cloudPlaylist in cloudPlaylists) {
-      final localPlaylist = _playlistBox.get(cloudPlaylist.id);
+      final localPlaylist = box.get(cloudPlaylist.id);
 
       if (localPlaylist == null) {
         // New playlist from cloud
-        await _playlistBox.put(cloudPlaylist.id, cloudPlaylist);
+        await box.put(cloudPlaylist.id, cloudPlaylist);
         debugPrint('Restored playlist from cloud: ${cloudPlaylist.name}');
       } else if (cloudPlaylist.updatedAt.isAfter(localPlaylist.updatedAt)) {
         // Cloud version is newer
-        await _playlistBox.put(cloudPlaylist.id, cloudPlaylist);
+        await box.put(cloudPlaylist.id, cloudPlaylist);
         debugPrint('Updated playlist from cloud: ${cloudPlaylist.name}');
       }
     }
@@ -321,15 +352,18 @@ class PlaylistService {
   // ============================================================================
 
   bool playlistExists(String name) {
-    return _playlistBox.values.any(
+    final box = _playlistBox;
+    if (box == null) return false;
+
+    return box.values.any(
       (p) => p.name.toLowerCase() == name.toLowerCase(),
     );
   }
 
-  int get playlistCount => _playlistBox.length;
+  int get playlistCount => _playlistBox?.length ?? 0;
 
   Future<void> clearAllPlaylists() async {
-    await _playlistBox.clear();
+    await _playlistBox?.clear();
     debugPrint('Cleared all playlists');
   }
 }

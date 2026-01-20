@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/recent_file.dart';
@@ -9,18 +10,75 @@ class LocalStorageService {
   LocalStorageService._();
   static final LocalStorageService instance = LocalStorageService._();
 
-  late Box<dynamic> _settingsBox;
-  late Box<SyncState> _syncStateBox;
-  late Box<RecentFile> _recentFilesBox;
-  late Box<String> _starredFilesBox;
-  late Box<FolderSync> _folderSyncBox;
-  late Box<SyncTask> _syncQueueBox;
+  Box<dynamic>? _settingsBox;
+  Box<SyncState>? _syncStateBox;
+  Box<RecentFile>? _recentFilesBox;
+  Box<String>? _starredFilesBox;
+  Box<FolderSync>? _folderSyncBox;
+  Box<SyncTask>? _syncQueueBox;
+
+  bool _isInitialized = false;
+  bool get isInitialized => _isInitialized;
 
   Future<void> init() async {
-    await Hive.initFlutter();
-    
+    if (_isInitialized) return;
+
+    // Hive initialization with timeout (can hang on iOS 26+)
+    try {
+      await Hive.initFlutter().timeout(const Duration(seconds: 2));
+    } catch (e) {
+      debugPrint('Hive.initFlutter failed: $e');
+      return; // Can't proceed without Hive init
+    }
+
     // Register adapters (check if not already registered)
     // Type IDs: SyncStatus=0, SyncState=1, RecentFile=2, FolderSyncStatus=4, FolderSync=5, AudioTrack=6, Playlist=7
+    _registerAdapters();
+
+    // Open boxes with individual timeout protection
+    // This prevents one slow/hanging box from blocking the entire app
+    const boxTimeout = Duration(milliseconds: 1500);
+
+    try {
+      _settingsBox = await Hive.openBox('settings').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open settings box: $e');
+    }
+
+    try {
+      _syncStateBox = await Hive.openBox<SyncState>('sync_states').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open sync_states box: $e');
+    }
+
+    try {
+      _recentFilesBox = await Hive.openBox<RecentFile>('recent_files').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open recent_files box: $e');
+    }
+
+    try {
+      _starredFilesBox = await Hive.openBox<String>('starred_files').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open starred_files box: $e');
+    }
+
+    try {
+      _folderSyncBox = await Hive.openBox<FolderSync>('folder_syncs').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open folder_syncs box: $e');
+    }
+
+    try {
+      _syncQueueBox = await Hive.openBox<SyncTask>('sync_queue').timeout(boxTimeout);
+    } catch (e) {
+      debugPrint('Failed to open sync_queue box: $e');
+    }
+
+    _isInitialized = true;
+  }
+
+  void _registerAdapters() {
     if (!Hive.isAdapterRegistered(0)) {
       Hive.registerAdapter(SyncStatusAdapter());
     }
@@ -52,28 +110,23 @@ class LocalStorageService {
     if (!Hive.isAdapterRegistered(16)) {
       Hive.registerAdapter(SyncTaskAdapter());
     }
-
-    // Open boxes
-    _settingsBox = await Hive.openBox('settings');
-    _syncStateBox = await Hive.openBox<SyncState>('sync_states');
-    _recentFilesBox = await Hive.openBox<RecentFile>('recent_files');
-    _starredFilesBox = await Hive.openBox<String>('starred_files');
-    _folderSyncBox = await Hive.openBox<FolderSync>('folder_syncs');
-    _syncQueueBox = await Hive.openBox<SyncTask>('sync_queue');
   }
 
   // Settings
   Future<void> saveSetting(String key, dynamic value) async {
-    await _settingsBox.put(key, value);
+    await _settingsBox?.put(key, value);
   }
 
   T? getSetting<T>(String key, {T? defaultValue}) {
-    return _settingsBox.get(key, defaultValue: defaultValue) as T?;
+    return _settingsBox?.get(key, defaultValue: defaultValue) as T? ?? defaultValue;
   }
 
   // Sync States
   Future<void> addSyncState(SyncState state) async {
-    await _syncStateBox.put(state.localPath, state);
+    final box = _syncStateBox;
+    if (box == null) return;
+
+    await box.put(state.localPath, state);
     // Also store by displayPath if provided (for iOS PhotoKit virtual path lookup)
     // Create a new instance to avoid Hive's "same instance with two keys" error
     if (state.displayPath != null && state.displayPath != state.localPath) {
@@ -91,23 +144,26 @@ class LocalStorageService {
         displayPath: state.displayPath,
         iosAssetId: state.iosAssetId,
       );
-      await _syncStateBox.put(state.displayPath!, displayState);
+      await box.put(state.displayPath!, displayState);
     }
   }
 
   SyncState? getSyncState(String localPath) {
-    return _syncStateBox.get(localPath);
+    return _syncStateBox?.get(localPath);
   }
 
   /// Get sync state by path, also checking displayPath entries
   /// This is useful for iOS where the display path differs from the actual file path
   SyncState? getSyncStateByDisplayPath(String displayPath) {
+    final box = _syncStateBox;
+    if (box == null) return null;
+
     // First try direct lookup
-    final direct = _syncStateBox.get(displayPath);
+    final direct = box.get(displayPath);
     if (direct != null) return direct;
 
     // Search all states for matching displayPath
-    for (final state in _syncStateBox.values) {
+    for (final state in box.values) {
       if (state.displayPath == displayPath) {
         return state;
       }
@@ -117,7 +173,10 @@ class LocalStorageService {
 
   /// Get sync state by iOS asset ID (most reliable for iOS PhotoKit files)
   SyncState? getSyncStateByIosAssetId(String iosAssetId) {
-    for (final state in _syncStateBox.values) {
+    final box = _syncStateBox;
+    if (box == null) return null;
+
+    for (final state in box.values) {
       if (state.iosAssetId == iosAssetId) {
         return state;
       }
@@ -127,7 +186,10 @@ class LocalStorageService {
 
   /// Get sync state by remote key and bucket (for checking if cloud file is linked to local)
   SyncState? getSyncStateByRemoteKey(String remoteKey, String bucket) {
-    for (final state in _syncStateBox.values) {
+    final box = _syncStateBox;
+    if (box == null) return null;
+
+    for (final state in box.values) {
       if (state.remoteKey == remoteKey && state.bucket == bucket) {
         return state;
       }
@@ -138,8 +200,11 @@ class LocalStorageService {
   /// Get a set of all remote keys that have sync states with local files
   /// This is used for efficient cloud-only detection
   Set<String> getLinkedRemoteKeys(String bucket) {
+    final box = _syncStateBox;
+    if (box == null) return {};
+
     final keys = <String>{};
-    for (final state in _syncStateBox.values) {
+    for (final state in box.values) {
       if (state.bucket == bucket && state.remoteKey != null) {
         keys.add(state.remoteKey!);
       }
@@ -148,67 +213,79 @@ class LocalStorageService {
   }
 
   List<SyncState> getAllSyncStates() {
-    return _syncStateBox.values.toList();
+    return _syncStateBox?.values.toList() ?? [];
   }
 
   Future<void> deleteSyncState(String localPath) async {
-    await _syncStateBox.delete(localPath);
+    await _syncStateBox?.delete(localPath);
   }
 
   Future<void> clearAllSyncStates() async {
-    await _syncStateBox.clear();
+    await _syncStateBox?.clear();
   }
 
   // Recent Files
   Future<void> addRecentFile(RecentFile file) async {
+    final box = _recentFilesBox;
+    if (box == null) return;
+
     // Remove if already exists
-    final existing = _recentFilesBox.values.where((f) => f.path == file.path);
+    final existing = box.values.where((f) => f.path == file.path);
     for (final f in existing) {
       await f.delete();
     }
-    
+
     // Add new
-    await _recentFilesBox.add(file);
-    
+    await box.add(file);
+
     // Keep only last 30
-    if (_recentFilesBox.length > 30) {
-      final toDelete = _recentFilesBox.values.toList()
+    if (box.length > 30) {
+      final toDelete = box.values.toList()
         ..sort((a, b) => a.accessedAt.compareTo(b.accessedAt));
-      for (var i = 0; i < _recentFilesBox.length - 30; i++) {
+      for (var i = 0; i < box.length - 30; i++) {
         await toDelete[i].delete();
       }
     }
   }
 
   List<RecentFile> getRecentFiles({int limit = 30}) {
-    final files = _recentFilesBox.values.toList()
+    final box = _recentFilesBox;
+    if (box == null) return [];
+
+    final files = box.values.toList()
       ..sort((a, b) => b.accessedAt.compareTo(a.accessedAt));
     return files.take(limit).toList();
   }
 
   Future<void> clearRecentFiles() async {
-    await _recentFilesBox.clear();
+    await _recentFilesBox?.clear();
   }
 
   // Starred Files
   Future<void> starFile(String path) async {
-    if (!_starredFilesBox.values.contains(path)) {
-      await _starredFilesBox.add(path);
+    final box = _starredFilesBox;
+    if (box == null) return;
+
+    if (!box.values.contains(path)) {
+      await box.add(path);
     }
   }
 
   Future<void> unstarFile(String path) async {
-    final key = _starredFilesBox.keys.firstWhere(
-      (k) => _starredFilesBox.get(k) == path,
+    final box = _starredFilesBox;
+    if (box == null) return;
+
+    final key = box.keys.firstWhere(
+      (k) => box.get(k) == path,
       orElse: () => null,
     );
     if (key != null) {
-      await _starredFilesBox.delete(key);
+      await box.delete(key);
     }
   }
 
   bool isStarred(String path) {
-    return _starredFilesBox.values.contains(path);
+    return _starredFilesBox?.values.contains(path) ?? false;
   }
 
   Future<void> toggleStar(String path) async {
@@ -220,28 +297,31 @@ class LocalStorageService {
   }
 
   List<String> getStarredFiles() {
-    return _starredFilesBox.values.toList();
+    return _starredFilesBox?.values.toList() ?? [];
   }
 
   Future<void> clearStarredFiles() async {
-    await _starredFilesBox.clear();
+    await _starredFilesBox?.clear();
   }
 
   // Folder Sync
   Future<void> addFolderSync(FolderSync folderSync) async {
-    await _folderSyncBox.put(folderSync.path, folderSync);
+    await _folderSyncBox?.put(folderSync.path, folderSync);
   }
 
   FolderSync? getFolderSync(String path) {
-    return _folderSyncBox.get(path);
+    return _folderSyncBox?.get(path);
   }
 
   List<FolderSync> getAllFolderSyncs() {
-    return _folderSyncBox.values.toList();
+    return _folderSyncBox?.values.toList() ?? [];
   }
 
   List<FolderSync> getEnabledFolderSyncs() {
-    return _folderSyncBox.values
+    final box = _folderSyncBox;
+    if (box == null) return [];
+
+    return box.values
         .where((fs) => fs.status != FolderSyncStatus.disabled)
         .toList();
   }
@@ -251,9 +331,12 @@ class LocalStorageService {
     int? syncedFiles,
     String? errorMessage,
   }) async {
-    final existing = _folderSyncBox.get(path);
+    final box = _folderSyncBox;
+    if (box == null) return;
+
+    final existing = box.get(path);
     if (existing != null) {
-      await _folderSyncBox.put(path, existing.copyWith(
+      await box.put(path, existing.copyWith(
         status: status,
         totalFiles: totalFiles,
         syncedFiles: syncedFiles,
@@ -264,29 +347,32 @@ class LocalStorageService {
   }
 
   Future<void> deleteFolderSync(String path) async {
-    await _folderSyncBox.delete(path);
+    await _folderSyncBox?.delete(path);
   }
 
   bool isFolderSyncEnabled(String path) {
-    final sync = _folderSyncBox.get(path);
+    final sync = _folderSyncBox?.get(path);
     return sync != null && sync.isEnabled;
   }
 
   // Sync Queue (persistent upload/download queue)
   Future<void> addToSyncQueue(SyncTask task) async {
-    await _syncQueueBox.put(task.id, task);
+    await _syncQueueBox?.put(task.id, task);
   }
 
   Future<void> updateSyncTask(SyncTask task) async {
-    await _syncQueueBox.put(task.id, task);
+    await _syncQueueBox?.put(task.id, task);
   }
 
   SyncTask? getSyncTask(String id) {
-    return _syncQueueBox.get(id);
+    return _syncQueueBox?.get(id);
   }
 
   List<SyncTask> getPendingSyncTasks() {
-    return _syncQueueBox.values
+    final box = _syncQueueBox;
+    if (box == null) return [];
+
+    return box.values
         .where((task) => task.status == SyncTaskStatus.pending ||
                          task.status == SyncTaskStatus.inProgress)
         .toList()
@@ -294,34 +380,43 @@ class LocalStorageService {
   }
 
   List<SyncTask> getFailedSyncTasks() {
-    return _syncQueueBox.values
+    final box = _syncQueueBox;
+    if (box == null) return [];
+
+    return box.values
         .where((task) => task.status == SyncTaskStatus.failed)
         .toList();
   }
 
   List<SyncTask> getAllSyncTasks() {
-    return _syncQueueBox.values.toList();
+    return _syncQueueBox?.values.toList() ?? [];
   }
 
   Future<void> removeSyncTask(String id) async {
-    await _syncQueueBox.delete(id);
+    await _syncQueueBox?.delete(id);
   }
 
   Future<void> clearCompletedSyncTasks() async {
-    final completed = _syncQueueBox.values
+    final box = _syncQueueBox;
+    if (box == null) return;
+
+    final completed = box.values
         .where((task) => task.status == SyncTaskStatus.completed)
         .toList();
     for (final task in completed) {
-      await _syncQueueBox.delete(task.id);
+      await box.delete(task.id);
     }
   }
 
   Future<void> clearSyncQueue() async {
-    await _syncQueueBox.clear();
+    await _syncQueueBox?.clear();
   }
 
   int get pendingSyncTaskCount {
-    return _syncQueueBox.values
+    final box = _syncQueueBox;
+    if (box == null) return 0;
+
+    return box.values
         .where((task) => task.status == SyncTaskStatus.pending ||
                          task.status == SyncTaskStatus.inProgress)
         .length;
@@ -329,11 +424,11 @@ class LocalStorageService {
 
   // Cleanup
   Future<void> clearAll() async {
-    await _settingsBox.clear();
-    await _syncStateBox.clear();
-    await _recentFilesBox.clear();
-    await _starredFilesBox.clear();
-    await _folderSyncBox.clear();
-    await _syncQueueBox.clear();
+    await _settingsBox?.clear();
+    await _syncStateBox?.clear();
+    await _recentFilesBox?.clear();
+    await _starredFilesBox?.clear();
+    await _folderSyncBox?.clear();
+    await _syncQueueBox?.clear();
   }
 }
