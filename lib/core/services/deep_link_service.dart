@@ -134,9 +134,14 @@ class DeepLinkService {
       }
     }
 
-    // Construct the get-key URL with redirect
+    // Construct the get-key URL with redirect and platform
     final redirectUrl = Uri.encodeComponent('fxfiles://auth-callback');
-    final getKeyUrl = Uri.parse('$baseUrl/get-key?redirect=$redirectUrl');
+
+    // Get the auth provider to pass as platform parameter
+    final authProvider = AuthService.instance.currentUser?.provider;
+    final platformParam = authProvider != null ? '&platform=${authProvider.name}' : '';
+
+    final getKeyUrl = Uri.parse('$baseUrl/get-key?redirect=$redirectUrl$platformParam');
 
     debugPrint('DeepLinkService: Opening get-key URL: $getKeyUrl');
 
