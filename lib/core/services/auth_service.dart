@@ -3,13 +3,14 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 
-enum AuthProvider { google }
+enum AuthProvider { google, apple }
 
 // Google OAuth Configuration
 // See: https://console.cloud.google.com/apis/credentials
@@ -198,6 +199,104 @@ class AuthService {
     await SecureStorageService.instance.write(
       SecureStorageKeys.authProvider,
       AuthProvider.google.name,
+    );
+
+    await _deriveEncryptionKey();
+    await _initializeFulaClient();
+    // Re-link cloud mappings for reinstall persistence (runs in background)
+    if (FulaApiService.instance.isConfigured) {
+      CloudSyncMappingService.instance.relinkMappings();
+    }
+  }
+
+  /// Check if Sign in with Apple is available (iOS 13+ or macOS 10.15+)
+  Future<bool> get isAppleSignInAvailable async {
+    if (!Platform.isIOS && !Platform.isMacOS) return false;
+    return await SignInWithApple.isAvailable();
+  }
+
+  Future<AuthUser?> signInWithApple() async {
+    try {
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+
+      // Apple only provides email and name on first sign-in
+      // After that, we need to use stored values
+      String? email = credential.email;
+      String? displayName;
+
+      if (credential.givenName != null || credential.familyName != null) {
+        displayName = [credential.givenName, credential.familyName]
+            .where((n) => n != null && n.isNotEmpty)
+            .join(' ');
+        if (displayName.isEmpty) displayName = null;
+      }
+
+      // If email is null (not first sign-in), try to get from stored user
+      if (email == null) {
+        final storedUser = await SecureStorageService.instance.readJson(
+          SecureStorageKeys.userCredentials,
+        );
+        if (storedUser != null && storedUser['provider'] == 'apple') {
+          email = storedUser['email'];
+          displayName ??= storedUser['displayName'];
+        }
+      }
+
+      // Use userIdentifier as the unique ID (stable across sign-ins)
+      final userId = credential.userIdentifier;
+      if (userId == null) {
+        throw Exception('Apple Sign-In failed: No user identifier received');
+      }
+
+      // If still no email, use a placeholder based on user ID
+      // This can happen if user chose to hide their email
+      email ??= '$userId@privaterelay.appleid.com';
+
+      await _handleAppleSignIn(
+        userId: userId,
+        email: email,
+        displayName: displayName,
+      );
+
+      return _currentUser;
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) {
+        return null; // User cancelled, not an error
+      }
+      debugPrint('Apple Sign-In error: ${e.code} - ${e.message}');
+      throw Exception('Apple Sign-In failed: ${e.message}');
+    } catch (e) {
+      debugPrint('Apple Sign-In error: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _handleAppleSignIn({
+    required String userId,
+    required String email,
+    String? displayName,
+  }) async {
+    _currentUser = AuthUser(
+      id: userId,
+      email: email,
+      displayName: displayName,
+      photoUrl: null, // Apple doesn't provide profile photos
+      provider: AuthProvider.apple,
+    );
+
+    await SecureStorageService.instance.writeJson(
+      SecureStorageKeys.userCredentials,
+      _currentUser!.toJson(),
+    );
+
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.authProvider,
+      AuthProvider.apple.name,
     );
 
     await _deriveEncryptionKey();
