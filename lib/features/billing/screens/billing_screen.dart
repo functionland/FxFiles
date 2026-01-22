@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -126,48 +128,82 @@ class _BillingScreenState extends ConsumerState<BillingScreen> {
                           ),
                   ),
 
-                  // Get Storage Section
-                  _buildSection(
-                    context,
-                    title: 'Get Storage',
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Select Network',
-                            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                ),
-                          ),
-                          const SizedBox(height: 8),
-                          ChainSelector(
-                            selectedChain: state.selectedChain,
-                            onChainSelected: (chain) {
-                              ref.read(billingProvider.notifier).selectChain(chain);
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            child: FilledButton.icon(
-                              onPressed: () => _showPurchaseDialog(),
-                              icon: const Icon(LucideIcons.hardDrive),
-                              label: const Text('Get Storage'),
+                  // Get Storage Section (hidden on iOS for App Store compliance)
+                  if (!Platform.isIOS)
+                    _buildSection(
+                      context,
+                      title: 'Get Storage',
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Select Network',
+                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Connect wallet, select amount, and confirm transfer',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                ),
-                          ),
-                        ],
+                            const SizedBox(height: 8),
+                            ChainSelector(
+                              selectedChain: state.selectedChain,
+                              onChainSelected: (chain) {
+                                ref.read(billingProvider.notifier).selectChain(chain);
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: () => _showPurchaseDialog(),
+                                icon: const Icon(LucideIcons.hardDrive),
+                                label: const Text('Get Storage'),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Connect wallet, select amount, and confirm transfer',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    _buildSection(
+                      context,
+                      title: 'Get Storage',
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            Icon(
+                              LucideIcons.externalLink,
+                              size: 48,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Manage your storage at fula.network',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: Theme.of(context).colorScheme.onSurface,
+                                  ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Storage capacity can be acquired through the Fula Network web platform',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
 
                   // Credit History Section
                   _buildSection(
