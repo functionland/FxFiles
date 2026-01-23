@@ -80,6 +80,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Future<void> _openProfileForDeletion() async {
+    final billingServer = _billingServerController.text.isNotEmpty
+        ? _billingServerController.text
+        : _defaultBillingServer;
+    final uri = Uri.parse('$billingServer/login?returnTo=%2Fprofile');
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open profile'))),
+        );
+      }
+    }
+  }
+
   Future<void> _pasteJwtFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.isNotEmpty) {
@@ -279,6 +295,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         child: const Text('Sign In'),
                       ),
               ),
+              if (AuthService.instance.isAuthenticated)
+                ListTile(
+                  leading: const Icon(LucideIcons.userX),
+                  title: const Text('Delete Account'),
+                  subtitle: const Text('Visit profile to delete account'),
+                  trailing: const Icon(LucideIcons.externalLink),
+                  onTap: _openProfileForDeletion,
+                ),
             ],
           ),
           _buildSection(
