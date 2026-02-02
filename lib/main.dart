@@ -19,6 +19,9 @@ import 'package:fula_files/core/services/pip_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/sync_notification_service.dart';
+import 'package:fula_files/core/services/upload_speed_tracker.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
@@ -109,6 +112,9 @@ Future<ProviderContainer> _initializeApp() async {
     FaceDetectionService.instance.init();
   });
 
+  // Initialize tag storage service (non-blocking)
+  TagStorageService.instance.init();
+
   // Initialize video services (non-blocking)
   VideoThumbnailService.instance.init();
   PipService.instance.init();
@@ -120,12 +126,19 @@ Future<ProviderContainer> _initializeApp() async {
     debugPrint('PlaylistService initialization failed: $e');
   }
 
+  // Initialize upload speed tracker for progress estimation
+  UploadSpeedTracker.instance.initialize();
+
   // Initialize background sync (with internal timeout protection)
   try {
     await BackgroundSyncService.instance.initialize().timeout(const Duration(seconds: 3));
   } catch (e) {
     debugPrint('BackgroundSyncService initialization failed: $e');
   }
+
+  // Request notification permission early for sync notifications (Android 13+)
+  // This is non-blocking and will show the permission dialog on first sync
+  SyncNotificationService.instance.requestNotificationPermission();
 
   // Check if Fula API is configured and schedule sync
   // Use timeout for keychain access which can hang on iOS 26+

@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/sync_state.dart';
+import 'package:fula_files/features/sync/providers/upload_progress_provider.dart';
+import 'package:fula_files/features/tags/providers/tag_provider.dart';
+import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 
-class FileListItem extends StatelessWidget {
+class FileListItem extends ConsumerWidget {
   final LocalFile file;
   final SyncState? syncState;
   final VoidCallback? onTap;
@@ -23,7 +27,7 @@ class FileListItem extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return ListTile(
       selected: selected,
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
@@ -38,25 +42,32 @@ class FileListItem extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Row(
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            file.isDirectory ? 'Folder' : _formatSize(file.size),
-            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          Row(
+            children: [
+              Text(
+                file.isDirectory ? 'Folder' : _formatSize(file.size),
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              if (file.modifiedAt case final modified) ...[
+                Text(' - ', style: TextStyle(color: Colors.grey[600])),
+                Text(
+                  _formatDate(modified),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
+            ],
           ),
-          if (file.modifiedAt case final modified) ...[
-            Text(' • ', style: TextStyle(color: Colors.grey[600])),
-            Text(
-              _formatDate(modified),
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-          ],
+          _buildTagsRow(ref),
         ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (syncState != null) _buildSyncStatusIcon(),
+          if (syncState != null) _buildSyncStatusIcon(ref),
           if (onMorePressed != null)
             IconButton(
               icon: const Icon(LucideIcons.moreVertical),
@@ -72,10 +83,10 @@ class FileListItem extends StatelessWidget {
 
   Widget _buildSyncBadge() {
     if (syncState == null) return const SizedBox.shrink();
-    
+
     Color badgeColor;
     IconData badgeIcon;
-    
+
     switch (syncState!.status) {
       case SyncStatus.synced:
         badgeColor = Colors.green;
@@ -94,7 +105,7 @@ class FileListItem extends StatelessWidget {
         badgeIcon = LucideIcons.alertCircle;
         break;
     }
-    
+
     return Positioned(
       right: 0,
       bottom: 0,
@@ -111,13 +122,41 @@ class FileListItem extends StatelessWidget {
     );
   }
 
-  Widget _buildSyncStatusIcon() {
+  Widget _buildSyncStatusIcon(WidgetRef ref) {
     if (syncState == null) return const SizedBox.shrink();
-    
+
     switch (syncState!.status) {
       case SyncStatus.synced:
         return const Icon(LucideIcons.cloud, size: 16, color: Colors.green);
       case SyncStatus.syncing:
+        // Check if we have progress data for this file
+        final progress = ref.watch(fileUploadProgressProvider(file.path));
+        if (progress != null) {
+          // Show circular progress with percentage text next to it
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  value: progress.percentage / 100,
+                  strokeWidth: 2,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '${progress.percentage.round()}%',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.blue,
+                ),
+              ),
+            ],
+          );
+        }
+        // Fallback to indeterminate spinner
         return const SizedBox(
           width: 16,
           height: 16,
@@ -140,7 +179,7 @@ class FileListItem extends StatelessWidget {
   String _formatDate(DateTime date) {
     final now = DateTime.now();
     final diff = now.difference(date);
-    
+
     if (diff.inDays == 0) {
       if (diff.inHours == 0) {
         return '${diff.inMinutes}m ago';
@@ -151,5 +190,20 @@ class FileListItem extends StatelessWidget {
     } else {
       return '${date.day}/${date.month}/${date.year}';
     }
+  }
+
+  Widget _buildTagsRow(WidgetRef ref) {
+    final tagsAsync = ref.watch(fileTagsProvider(FileTagQuery(localPath: file.path)));
+    return tagsAsync.when(
+      data: (tags) {
+        if (tags.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: TagChipRow(tags: tags, maxVisible: 2, compact: true),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
   }
 }

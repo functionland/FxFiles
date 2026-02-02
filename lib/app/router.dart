@@ -12,6 +12,9 @@ import 'package:fula_files/features/viewer/screens/text_viewer_screen.dart';
 import 'package:fula_files/features/viewer/screens/audio_player_screen.dart';
 import 'package:fula_files/features/audio/screens/playlists_screen.dart';
 import 'package:fula_files/features/audio/screens/playlist_detail_screen.dart';
+import 'package:fula_files/features/tags/screens/tags_browser_screen.dart';
+import 'package:fula_files/features/tags/screens/tagged_files_screen.dart';
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
@@ -106,6 +109,18 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final playlistId = state.pathParameters['id']!;
           return PlaylistDetailScreen(playlistId: playlistId);
+        },
+      ),
+      GoRoute(
+        path: '/tags',
+        builder: (context, state) => const TagsBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/tags/:id',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          final tag = state.extra as FileTag?;
+          return TaggedFilesScreen(tagId: tagId, tag: tag);
         },
       ),
     ],

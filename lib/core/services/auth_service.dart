@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 
 enum AuthProvider { google, apple }
 
@@ -118,9 +119,10 @@ class AuthService {
         await _deriveEncryptionKey();
         debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
         await _initializeFulaClient();
-        // Re-link cloud mappings for reinstall persistence (runs in background)
+        // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
         if (FulaApiService.instance.isConfigured) {
           CloudSyncMappingService.instance.relinkMappings();
+          TagStorageService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -203,9 +205,10 @@ class AuthService {
 
     await _deriveEncryptionKey();
     await _initializeFulaClient();
-    // Re-link cloud mappings for reinstall persistence (runs in background)
+    // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
     if (FulaApiService.instance.isConfigured) {
       CloudSyncMappingService.instance.relinkMappings();
+      TagStorageService.instance.restoreFromCloud();
     }
   }
 
@@ -301,9 +304,10 @@ class AuthService {
 
     await _deriveEncryptionKey();
     await _initializeFulaClient();
-    // Re-link cloud mappings for reinstall persistence (runs in background)
+    // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
     if (FulaApiService.instance.isConfigured) {
       CloudSyncMappingService.instance.relinkMappings();
+      TagStorageService.instance.restoreFromCloud();
     }
   }
 

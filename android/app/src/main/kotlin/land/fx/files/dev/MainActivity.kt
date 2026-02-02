@@ -113,8 +113,9 @@ class MainActivity : AudioServiceActivity() {
                         val body = call.argument<String>("body") ?: "Uploading files to cloud..."
                         val progress = call.argument<Int>("progress") ?: -1
                         val maxProgress = call.argument<Int>("maxProgress") ?: 100
+                        val eta = call.argument<String>("eta")
 
-                        showSyncNotification(title, body, progress, maxProgress)
+                        showSyncNotification(title, body, progress, maxProgress, eta)
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("ERROR", "Failed to show notification: ${e.message}", null)
@@ -305,7 +306,7 @@ class MainActivity : AudioServiceActivity() {
         // This is handled by setAutoPip in Flutter when video is playing
     }
 
-    private fun showSyncNotification(title: String, body: String, progress: Int, maxProgress: Int) {
+    private fun showSyncNotification(title: String, body: String, progress: Int, maxProgress: Int, eta: String? = null) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         // Create intent to open app when notification is tapped
@@ -315,18 +316,28 @@ class MainActivity : AudioServiceActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Build content text with ETA if available
+        val contentText = if (eta != null && progress >= 0) {
+            "$body\n$eta remaining"
+        } else {
+            body
+        }
+
         val builder = NotificationCompat.Builder(this, SYNC_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(title)
-            .setContentText(body)
+            .setContentText(contentText)
             .setContentIntent(pendingIntent)
             .setOngoing(true) // Can't be dismissed
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
 
         // Set progress if determinate
         if (progress >= 0) {
             builder.setProgress(maxProgress, progress, false)
+            // Add subtext showing percentage
+            builder.setSubText("$progress%")
         } else {
             builder.setProgress(0, 0, true) // Indeterminate
         }

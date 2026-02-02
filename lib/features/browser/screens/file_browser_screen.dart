@@ -30,9 +30,13 @@ import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:fula_files/shared/widgets/sync_progress_indicator.dart';
 import 'package:fula_files/shared/widgets/thumb_scroll.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
+import 'package:fula_files/features/tags/widgets/tag_selector_dialog.dart';
+import 'package:fula_files/features/tags/providers/tag_provider.dart';
+import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
@@ -1488,7 +1492,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                           ),
                           child: isFolderSynced
                               ? const Icon(LucideIcons.folderSync, size: 14, color: Colors.green)
-                              : _buildSyncStatusIcon(syncState!.status),
+                              : SyncProgressIndicator(
+                                  status: syncState!.status,
+                                  localPath: file.path,
+                                  size: 14,
+                                  showPercentage: false,
+                                ),
                         ),
                       ),
                   ],
@@ -1519,6 +1528,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                         color: Theme.of(context).colorScheme.outline,
                       ),
                     ),
+                    // Show tags for files (not directories) in large grid
+                    if (!file.isDirectory) _buildFileTags(file.path),
                   ],
                 ],
               ),
@@ -1876,6 +1887,16 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                       _loadCategoryFiles();
                     }
                   }
+                },
+              ),
+              // Tag option
+              ListTile(
+                leading: const Icon(LucideIcons.tag),
+                title: const Text('Tags'),
+                subtitle: const Text('Add or manage tags'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _showTagSelector(file);
                 },
               ),
               const Divider(height: 1),
@@ -2942,24 +2963,36 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
       leading: FileThumbnail(file: file, size: 48),
       title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Row(
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
-          Text(
-            ' • $dateFormatted',
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+          Row(
+            children: [
+              Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
+              Text(
+                ' • $dateFormatted',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              // Show auto-sync indicator for folders with sync enabled
+              if (isFolderSynced) ...[
+                const SizedBox(width: 8),
+                const Icon(LucideIcons.folderSync, size: 14, color: Colors.green),
+              ],
+              if (syncState != null) ...[
+                const SizedBox(width: 8),
+                SyncProgressIndicator(
+                  status: syncState.status,
+                  localPath: file.path,
+                  size: 14,
+                ),
+              ],
+            ],
           ),
-          // Show auto-sync indicator for folders with sync enabled
-          if (isFolderSynced) ...[
-            const SizedBox(width: 8),
-            const Icon(LucideIcons.folderSync, size: 14, color: Colors.green),
-          ],
-          if (syncState != null) ...[
-            const SizedBox(width: 8),
-            _buildSyncStatusIcon(syncState.status),
-          ],
+          // Show tags for files (not directories)
+          if (!file.isDirectory) _buildFileTags(file.path),
         ],
       ),
       trailing: menuButton,
@@ -3002,21 +3035,19 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
-  Widget _buildSyncStatusIcon(SyncStatus status) {
-    switch (status) {
-      case SyncStatus.notSynced:
-        return Icon(LucideIcons.cloud, size: 14, color: Colors.grey.shade400);
-      case SyncStatus.syncing:
-        return const SizedBox(
-          width: 14,
-          height: 14,
-          child: CircularProgressIndicator(strokeWidth: 2),
+  Widget _buildFileTags(String filePath) {
+    final tagsAsync = ref.watch(fileTagsProvider(FileTagQuery(localPath: filePath)));
+    return tagsAsync.when(
+      data: (tags) {
+        if (tags.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: TagChipRow(tags: tags, maxVisible: 2, compact: true),
         );
-      case SyncStatus.synced:
-        return const Icon(LucideIcons.checkCircle, size: 14, color: Colors.green);
-      case SyncStatus.error:
-        return const Icon(LucideIcons.cloudOff, size: 14, color: Colors.red);
-    }
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
   }
 
   Widget _buildCloudOnlyFileItem(FulaObject cloudFile) {
@@ -3184,8 +3215,26 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     // Use Download folder as base
     final basePath = directories.first.path;
     final downloadDir = '$basePath/Download';
-    
+
     return '$downloadDir/$fileName';
+  }
+
+  Future<void> _showTagSelector(LocalFile file) async {
+    // Get sync state for cloud key reference
+    final syncState = _getSyncStateForFile(file);
+
+    await showTagSelectorDialog(
+      context,
+      localPath: file.path,
+      remoteKey: syncState?.remotePath,
+      iosAssetId: syncState?.iosAssetId,
+      fileName: file.name,
+    );
+
+    // Refresh the file list to show updated tags
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _renameFile(LocalFile file) async {

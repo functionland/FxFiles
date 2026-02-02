@@ -80,6 +80,26 @@ class FeaturedSection extends StatelessWidget {
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: _FeaturedCard(
+                  icon: LucideIcons.tags,
+                  label: 'Tags',
+                  color: Colors.purple,
+                  onTap: () => context.push('/tags'),
+                ),
+              ),
+              // Empty spacers to maintain consistent card width
+              const Expanded(child: SizedBox()),
+              const Expanded(child: SizedBox()),
+              const Expanded(child: SizedBox()),
+            ],
+          ),
+        ),
       ],
     );
   }

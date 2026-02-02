@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
+import 'package:fula_files/core/services/upload_progress_manager.dart';
 
 // Top-level function for isolate - reads file bytes
 Future<Uint8List> _readFileInIsolate(String path) async {
@@ -201,6 +202,25 @@ class SyncService {
     final totalToSync = _uploadQueue.length;
     int syncedCount = 0;
     int errorCount = 0;
+
+    // Calculate total bytes for progress tracking
+    int totalBytes = 0;
+    for (final task in _uploadQueue) {
+      try {
+        final file = File(task.localPath);
+        if (await file.exists()) {
+          totalBytes += await file.length();
+        }
+      } catch (e) {
+        debugPrint('Error getting file size for ${task.localPath}: $e');
+      }
+    }
+
+    // Start batch progress tracking
+    UploadProgressManager.instance.startBatch(
+      totalFiles: totalToSync,
+      totalBytes: totalBytes,
+    );
 
     // Show sync notification (required for foreground service)
     await SyncNotificationService.instance.showSyncNotification(
@@ -419,6 +439,8 @@ class SyncService {
 
   Future<void> _executeUpload(SyncTask task) async {
     debugPrint('Starting upload: ${task.localPath} -> ${task.remoteBucket}/${task.remoteKey}');
+    final uploadStartTime = DateTime.now();
+
     try {
       // Check network connectivity before attempting upload
       // This prevents wasting resources when app is backgrounded without network
@@ -444,7 +466,7 @@ class SyncService {
 
       // Ensure bucket exists before upload
       await _ensureBucketExists(task.remoteBucket);
-      
+
       final state = LocalStorageService.instance.getSyncState(task.localPath);
       if (state != null) {
         await LocalStorageService.instance.addSyncState(
@@ -467,8 +489,15 @@ class SyncService {
 
       // Read file in isolate to avoid blocking UI thread
       final data = await compute(_readFileInIsolate, task.localPath);
-      
+
       _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
+        totalBytes: data.length,
+      );
+
+      // Start tracking this upload in progress manager
+      UploadProgressManager.instance.startUpload(
+        localPath: task.localPath,
+        remoteKey: task.remoteKey,
         totalBytes: data.length,
       );
 
@@ -505,6 +534,13 @@ class SyncService {
       }
 
       debugPrint('Upload completed: ${task.remoteKey}, etag: $etag');
+
+      // Record upload completion for speed tracking and progress
+      final uploadDuration = DateTime.now().difference(uploadStartTime);
+      UploadProgressManager.instance.completeUpload(
+        localPath: task.localPath,
+        actualDuration: uploadDuration,
+      );
 
       // Reset consecutive failures on success
       _consecutiveFailures = 0;
@@ -604,6 +640,9 @@ class SyncService {
       } else {
         // Max retries exceeded or permanent error - mark as failed
         debugPrint('Giving up on ${task.remoteKey} after $retryCount attempts (retryable: ${_isRetryableError(e)})');
+
+        // Track failed upload in progress manager
+        UploadProgressManager.instance.failUpload(task.localPath);
 
         // Create user-friendly error message
         final errorStr = e.toString().toLowerCase();

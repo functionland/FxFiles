@@ -1,12 +1,14 @@
 import Flutter
 import UIKit
 import BackgroundTasks
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
     private static let syncTaskIdentifier = "land.fx.files.sync"
     private static let refreshTaskIdentifier = "land.fx.files.refresh"
     private var methodChannel: FlutterMethodChannel?
+    private var notificationChannel: FlutterMethodChannel?
 
     override func application(
         _ application: UIApplication,
@@ -33,6 +35,39 @@ import BackgroundTasks
                     result(FlutterMethodNotImplemented)
                 }
             }
+
+            // Setup notification channel for sync progress
+            notificationChannel = FlutterMethodChannel(
+                name: "land.fx.files/ios_notification",
+                binaryMessenger: controller.binaryMessenger
+            )
+
+            notificationChannel?.setMethodCallHandler { [weak self] call, result in
+                switch call.method {
+                case "updateBadge":
+                    if let args = call.arguments as? [String: Any],
+                       let badge = args["badge"] as? Int {
+                        self?.updateAppBadge(badge)
+                        result(true)
+                    } else {
+                        result(FlutterError(code: "INVALID_ARGS", message: "Badge number required", details: nil))
+                    }
+                case "showSyncComplete":
+                    if let args = call.arguments as? [String: Any],
+                       let fileCount = args["fileCount"] as? Int {
+                        let hasErrors = args["hasErrors"] as? Bool ?? false
+                        self?.showSyncCompleteNotification(fileCount: fileCount, hasErrors: hasErrors)
+                        result(true)
+                    } else {
+                        result(FlutterError(code: "INVALID_ARGS", message: "File count required", details: nil))
+                    }
+                default:
+                    result(FlutterMethodNotImplemented)
+                }
+            }
+
+            // Request notification permission for sync progress
+            requestNotificationPermission()
         }
 
         // Register background tasks
@@ -152,5 +187,47 @@ import BackgroundTasks
     override func applicationDidEnterBackground(_ application: UIApplication) {
         // Schedule sync when app goes to background
         scheduleBackgroundSync()
+    }
+
+    // MARK: - Notification Support
+
+    private func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+            if let error = error {
+                debugPrint("Notification permission error: \(error)")
+            }
+            debugPrint("Notification permission granted: \(granted)")
+        }
+    }
+
+    private func updateAppBadge(_ badge: Int) {
+        DispatchQueue.main.async {
+            UIApplication.shared.applicationIconBadgeNumber = badge
+        }
+    }
+
+    private func showSyncCompleteNotification(fileCount: Int, hasErrors: Bool) {
+        // Clear badge
+        updateAppBadge(0)
+
+        // Show local notification
+        let content = UNMutableNotificationContent()
+        content.title = hasErrors ? "Sync completed with errors" : "Sync complete"
+        content.body = hasErrors
+            ? "Synced \(fileCount) files. Some files failed to sync."
+            : "Successfully synced \(fileCount) files"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "sync_complete",
+            content: content,
+            trigger: nil  // Show immediately
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                debugPrint("Failed to show sync complete notification: \(error)")
+            }
+        }
     }
 }

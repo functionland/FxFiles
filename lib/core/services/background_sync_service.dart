@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/upload_speed_tracker.dart';
 
 const String periodicSyncTask = 'periodicSync';
 const String uploadTask = 'uploadTask';
@@ -25,7 +26,10 @@ void callbackDispatcher() {
 
       await SecureStorageService.instance.init();
       await LocalStorageService.instance.init();
-      
+
+      // Initialize upload speed tracker for progress estimation
+      UploadSpeedTracker.instance.initialize();
+
       // Restore auth session which initializes FulaApiService
       final hasSession = await AuthService.instance.checkExistingSession();
 
@@ -233,6 +237,9 @@ class BackgroundSyncService {
 
     await SecureStorageService.instance.init();
     await LocalStorageService.instance.init();
+
+    // Initialize upload speed tracker for progress estimation
+    UploadSpeedTracker.instance.initialize();
 
     // Restore auth session which initializes FulaApiService
     await AuthService.instance.checkExistingSession();
