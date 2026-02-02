@@ -73,6 +73,33 @@ class AuthService {
   bool get isAuthenticated => _currentUser != null;
   Uint8List? get encryptionKey => _encryptionKey;
 
+  /// Quickly verify if we have stored credentials (doesn't initialize services)
+  /// This is useful for UI checks when isAuthenticated might return false
+  /// due to async initialization not completing
+  Future<bool> hasStoredCredentials() async {
+    if (_currentUser != null) return true;
+    try {
+      final userJson = await SecureStorageService.instance.readJson(
+        SecureStorageKeys.userCredentials,
+      ).timeout(const Duration(seconds: 2));
+      return userJson != null;
+    } catch (e) {
+      debugPrint('hasStoredCredentials check failed: $e');
+      return false;
+    }
+  }
+
+  /// Ensure auth state is restored if we have stored credentials
+  /// Call this before showing auth-dependent UI if isAuthenticated returns false
+  Future<void> ensureAuthRestored() async {
+    if (_currentUser != null) return;
+    try {
+      await checkExistingSession().timeout(const Duration(seconds: 3));
+    } catch (e) {
+      debugPrint('ensureAuthRestored failed: $e');
+    }
+  }
+
   Future<void> _ensureGoogleInitialized() async {
     if (_googleInitialized) return;
 
@@ -203,12 +230,20 @@ class AuthService {
       AuthProvider.google.name,
     );
 
-    await _deriveEncryptionKey();
-    await _initializeFulaClient();
-    // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
-    if (FulaApiService.instance.isConfigured) {
-      CloudSyncMappingService.instance.relinkMappings();
-      TagStorageService.instance.restoreFromCloud();
+    // Encryption key derivation and Fula client initialization depend on RustLib
+    // If these fail (e.g., RustLib not initialized), sign-in still succeeds
+    // but cloud sync features won't work until app is restarted with proper RustLib init
+    try {
+      await _deriveEncryptionKey();
+      await _initializeFulaClient();
+      // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
+      if (FulaApiService.instance.isConfigured) {
+        CloudSyncMappingService.instance.relinkMappings();
+        TagStorageService.instance.restoreFromCloud();
+      }
+    } catch (e) {
+      debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
+      // Sign-in succeeded, but Fula features won't work until RustLib is properly initialized
     }
   }
 
@@ -302,12 +337,20 @@ class AuthService {
       AuthProvider.apple.name,
     );
 
-    await _deriveEncryptionKey();
-    await _initializeFulaClient();
-    // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
-    if (FulaApiService.instance.isConfigured) {
-      CloudSyncMappingService.instance.relinkMappings();
-      TagStorageService.instance.restoreFromCloud();
+    // Encryption key derivation and Fula client initialization depend on RustLib
+    // If these fail (e.g., RustLib not initialized), sign-in still succeeds
+    // but cloud sync features won't work until app is restarted with proper RustLib init
+    try {
+      await _deriveEncryptionKey();
+      await _initializeFulaClient();
+      // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
+      if (FulaApiService.instance.isConfigured) {
+        CloudSyncMappingService.instance.relinkMappings();
+        TagStorageService.instance.restoreFromCloud();
+      }
+    } catch (e) {
+      debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
+      // Sign-in succeeded, but Fula features won't work until RustLib is properly initialized
     }
   }
 
@@ -539,11 +582,21 @@ class AuthService {
         SecureStorageKeys.authProvider,
       );
 
+      // Handle provider-specific sign out
       if (provider == AuthProvider.google.name) {
-        await _ensureGoogleInitialized();
-        await _googleSignIn.disconnect();
+        try {
+          await _ensureGoogleInitialized();
+          await _googleSignIn.disconnect();
+        } catch (e) {
+          // Google disconnect may fail if not properly initialized or user already disconnected
+          // Continue with local sign out
+          debugPrint('Google disconnect failed (continuing): $e');
+        }
       }
+      // Note: Apple Sign-In doesn't have a disconnect API - credentials are managed by the system
+      // Users can revoke access from their Apple ID settings
 
+      // Clear all stored credentials - do this regardless of provider disconnect success
       await SecureStorageService.instance.delete(SecureStorageKeys.userCredentials);
       await SecureStorageService.instance.delete(SecureStorageKeys.authProvider);
       await SecureStorageService.instance.delete(SecureStorageKeys.encryptionKey);
@@ -563,10 +616,14 @@ class AuthService {
       // Reset FulaApiService
       FulaApiService.instance.reset();
 
+      // Always clear internal state last
       _currentUser = null;
       _encryptionKey = null;
     } catch (e) {
       debugPrint('Sign out error: $e');
+      // Still clear internal state even on error to ensure UI updates
+      _currentUser = null;
+      _encryptionKey = null;
       rethrow;
     }
   }
