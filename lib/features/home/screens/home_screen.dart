@@ -613,12 +613,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _showProfileSheet(BuildContext context) {
-    final isLoggedIn = AuthService.instance.isAuthenticated;
-    final user = AuthService.instance.currentUser;
-    
     showModalBottomSheet(
       context: context,
-      builder: (ctx) => SafeArea(
+      builder: (ctx) {
+        // Read auth state inside builder to ensure we get latest state
+        final isLoggedIn = AuthService.instance.isAuthenticated;
+        final user = AuthService.instance.currentUser;
+
+        return SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -665,17 +667,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   leading: const Icon(LucideIcons.logOut, color: Colors.red),
                   title: const Text('Sign Out', style: TextStyle(color: Colors.red)),
                   onTap: () async {
-                    Navigator.pop(ctx);
-                    await AuthService.instance.signOut();
-                    // Clear storage provider state (wallet info, etc.)
-                    ref.read(storageProvider.notifier).clear();
-                    if (mounted) {
-                      setState(() {
-                        _jwtToken = null;
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Signed out')),
-                      );
+                    // Close the modal first
+                    if (ctx.mounted) Navigator.pop(ctx);
+
+                    try {
+                      await AuthService.instance.signOut();
+                      // Clear storage provider state (wallet info, etc.)
+                      ref.read(storageProvider.notifier).clear();
+                      if (mounted) {
+                        setState(() {
+                          _jwtToken = null;
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Signed out')),
+                        );
+                      }
+                    } catch (e) {
+                      // Sign out failed - still clear local state
+                      ref.read(storageProvider.notifier).clear();
+                      if (mounted) {
+                        setState(() {
+                          _jwtToken = null;
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Signed out (with warning: ${e.toString()})'),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
+                      }
                     }
                   },
                 ),
@@ -750,7 +770,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ),
-      ),
+      );
+      },
     );
   }
 }
