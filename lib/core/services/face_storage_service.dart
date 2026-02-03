@@ -607,13 +607,13 @@ class FaceStorageService {
       // Generate key from image path
       final metadataKey = _generateMetadataKey(imagePath);
 
-      // Upload encrypted metadata
+      // Upload metadata (key must match what downloadAndDecrypt uses)
       await FulaApiService.instance.encryptAndUpload(
         _faceMetadataBucket,
         metadataKey,
         data,
         encryptionKey,
-        originalFilename: 'face_metadata.json',
+        // NOTE: Don't pass originalFilename - it overrides the key path!
         contentType: 'application/json',
       );
 

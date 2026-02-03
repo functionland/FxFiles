@@ -221,13 +221,13 @@ class PlaylistService {
       // Generate cloud key if not exists
       final cloudKey = playlist.cloudKey ?? '$_playlistPrefix${playlist.id}.json';
 
-      // Encrypt and upload
+      // Upload playlist (key must match what downloadAndDecrypt uses)
       await FulaApiService.instance.encryptAndUpload(
         _playlistBucket,
         cloudKey,
         data,
         encryptionKey,
-        originalFilename: '${playlist.name}.json',
+        // NOTE: Don't pass originalFilename - it overrides the key path!
         contentType: 'application/json',
       );
 

@@ -418,6 +418,13 @@ class AuthService {
       debugPrint('AuthService: After getEncryptionKey(), _encryptionKey is ${_encryptionKey == null ? "null" : "set"}');
     }
     await _initializeFulaClient();
+
+    // Restore cloud data after Fula client is configured
+    if (FulaApiService.instance.isConfigured) {
+      debugPrint('AuthService: Restoring cloud data after reinitialize...');
+      CloudSyncMappingService.instance.relinkMappings();
+      TagStorageService.instance.restoreFromCloud();
+    }
   }
 
   Future<Uint8List?> getEncryptionKey() async {

@@ -6,7 +6,6 @@ import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
-import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// Service for storing and managing file tags locally and in S3
 class TagStorageService {
@@ -359,6 +358,8 @@ class TagStorageService {
   Future<bool> _ensureBucketExists() async {
     if (_bucketChecked && _bucketExists) return true;
 
+    debugPrint('TagStorageService: ensuring bucket exists: $_tagMetadataBucket');
+
     try {
       await FulaApiService.instance.createBucket(_tagMetadataBucket);
       _bucketExists = true;
@@ -366,10 +367,12 @@ class TagStorageService {
       debugPrint('Tag metadata bucket ready: $_tagMetadataBucket');
       return true;
     } catch (e) {
+      debugPrint('TagStorageService: createBucket error: $e');
       final errorStr = e.toString();
 
       if (errorStr.contains('BucketAlreadyExists') ||
           errorStr.contains('BucketAlreadyOwnedByYou')) {
+        debugPrint('TagStorageService: bucket already exists, continuing...');
         _bucketExists = true;
         _bucketChecked = true;
         return true;
@@ -401,11 +404,21 @@ class TagStorageService {
   /// Get user ID for cloud storage key
   Future<String?> _getUserId() async {
     try {
-      final publicKey = await SecureStorageService.instance.read(SecureStorageKeys.userPublicKey);
-      if (publicKey == null || publicKey.isEmpty) return null;
+      // Use AuthService to get the public key string (same as CloudSyncMappingService)
+      final publicKey = await AuthService.instance.getPublicKeyString();
+      if (publicKey == null || publicKey.isEmpty) {
+        debugPrint('TagStorageService._getUserId: publicKey is NULL/empty from AuthService');
+        return null;
+      }
+
+      debugPrint('TagStorageService._getUserId: publicKey available (${publicKey.length} chars)');
+
       // Generate user ID from public key hash (same as CloudSyncMappingService)
-      final hash = sha256.convert(utf8.encode(publicKey)).toString();
-      return hash.substring(0, 16);
+      final bytes = utf8.encode(publicKey);
+      final hash = sha256.convert(bytes);
+      final userId = hash.toString().substring(0, 16);
+      debugPrint('TagStorageService._getUserId: derived userId=$userId');
+      return userId;
     } catch (e) {
       debugPrint('Failed to get user ID: $e');
       return null;
@@ -414,25 +427,46 @@ class TagStorageService {
 
   /// Sync all tags and tagged files to S3
   Future<void> syncToCloud() async {
-    if (_bucketChecked && !_bucketExists) return;
-    if (!FulaApiService.instance.isConfigured) return;
+    debugPrint('TagStorageService.syncToCloud() called');
+
+    if (_bucketChecked && !_bucketExists) {
+      debugPrint('Tag sync skipped: bucket does not exist');
+      return;
+    }
+    if (!FulaApiService.instance.isConfigured) {
+      debugPrint('Tag sync skipped: FulaApiService not configured');
+      return;
+    }
 
     // Debounce
     final now = DateTime.now();
     if (_lastSyncTime != null &&
         now.difference(_lastSyncTime!) < const Duration(seconds: 2)) {
+      debugPrint('Tag sync skipped: debounce');
       return;
     }
     _lastSyncTime = now;
 
-    if (!await _ensureBucketExists()) return;
+    if (!await _ensureBucketExists()) {
+      debugPrint('Tag sync skipped: failed to ensure bucket exists');
+      return;
+    }
+    debugPrint('TagStorageService: bucket check passed, proceeding with sync');
 
     try {
       final encryptionKey = await AuthService.instance.getEncryptionKey();
-      if (encryptionKey == null) return;
+      debugPrint('TagStorageService: encryption key is ${encryptionKey != null ? "available" : "NULL"}');
+      if (encryptionKey == null) {
+        debugPrint('Tag sync skipped: no encryption key');
+        return;
+      }
 
       final userId = await _getUserId();
-      if (userId == null) return;
+      debugPrint('TagStorageService: user ID is ${userId ?? "NULL"}');
+      if (userId == null) {
+        debugPrint('Tag sync skipped: no user ID');
+        return;
+      }
 
       // Create metadata
       final metadata = TagCloudMetadata(
@@ -446,19 +480,21 @@ class TagStorageService {
       final jsonStr = jsonEncode(metadata.toJson());
       final data = Uint8List.fromList(utf8.encode(jsonStr));
 
-      // Upload encrypted metadata
+      // Upload metadata (key must match what downloadAndDecrypt uses)
       final key = '.fula/tags/$userId.json';
+      debugPrint('TagStorageService: uploading to bucket=$_tagMetadataBucket, key=$key, dataSize=${data.length}');
       await FulaApiService.instance.encryptAndUpload(
         _tagMetadataBucket,
         key,
         data,
         encryptionKey,
-        originalFilename: 'tags.json',
+        // NOTE: Don't pass originalFilename - it overrides the key path!
         contentType: 'application/json',
       );
 
-      debugPrint('Tags synced to cloud: ${_tagsBox.length} tags, ${_taggedFilesBox.length} files');
+      debugPrint('Tags synced to cloud successfully: ${_tagsBox.length} tags, ${_taggedFilesBox.length} files');
     } catch (e) {
+      debugPrint('TagStorageService: syncToCloud error: $e');
       final errorStr = e.toString();
 
       if (errorStr.contains('NoSuchBucket') || errorStr.contains('bucket not found')) {
@@ -483,16 +519,31 @@ class TagStorageService {
 
   /// Restore tags from cloud after reinstall
   Future<void> restoreFromCloud() async {
-    if (!FulaApiService.instance.isConfigured) return;
+    debugPrint('TagStorageService.restoreFromCloud() called');
+    debugPrint('TagStorageService: current local tags=${_tagsBox.length}, taggedFiles=${_taggedFilesBox.length}');
+
+    if (!FulaApiService.instance.isConfigured) {
+      debugPrint('Tag restore skipped: FulaApiService not configured');
+      return;
+    }
 
     try {
       final encryptionKey = await AuthService.instance.getEncryptionKey();
-      if (encryptionKey == null) return;
+      debugPrint('TagStorageService restore: encryption key is ${encryptionKey != null ? "available" : "NULL"}');
+      if (encryptionKey == null) {
+        debugPrint('Tag restore skipped: no encryption key');
+        return;
+      }
 
       final userId = await _getUserId();
-      if (userId == null) return;
+      debugPrint('TagStorageService restore: user ID is ${userId ?? "NULL"}');
+      if (userId == null) {
+        debugPrint('Tag restore skipped: no user ID');
+        return;
+      }
 
       final key = '.fula/tags/$userId.json';
+      debugPrint('TagStorageService: attempting to download from bucket=$_tagMetadataBucket, key=$key');
 
       final data = await FulaApiService.instance.downloadAndDecrypt(
         _tagMetadataBucket,
@@ -500,11 +551,15 @@ class TagStorageService {
         encryptionKey,
       );
 
+      debugPrint('TagStorageService: downloaded ${data.length} bytes from cloud');
+
       final jsonStr = utf8.decode(data);
       final json = jsonDecode(jsonStr) as Map<String, dynamic>;
       final metadata = TagCloudMetadata.fromJson(json);
 
-      // Only restore if local is empty or cloud is newer
+      debugPrint('TagStorageService: parsed metadata with ${metadata.tags.length} tags and ${metadata.taggedFiles.length} tagged files');
+
+      // Only restore if local is empty or cloud has data
       if (_tagsBox.isEmpty || metadata.tags.isNotEmpty) {
         // Clear existing data
         await _tagsBox.clear();
@@ -522,10 +577,15 @@ class TagStorageService {
 
         debugPrint('Restored ${metadata.tags.length} tags and ${metadata.taggedFiles.length} tagged files from cloud');
         _notifyListeners();
+      } else {
+        debugPrint('TagStorageService: skipped restore - local has ${_tagsBox.length} tags, cloud has ${metadata.tags.length}');
       }
     } catch (e) {
+      final errorStr = e.toString();
       // NoSuchKey is expected for new users
-      if (!e.toString().contains('NoSuchKey')) {
+      if (errorStr.contains('NoSuchKey') || errorStr.contains('Object not found') || errorStr.contains('404')) {
+        debugPrint('Tag restore: no cloud data found (new user or never synced)');
+      } else {
         debugPrint('Failed to restore tags from cloud: $e');
       }
     }
