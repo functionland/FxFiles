@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -665,9 +667,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Sign in with Apple (iOS only)
+            if (Platform.isIOS) ...[
+              SignInWithAppleButton(
+                onPressed: () async {
+                  Navigator.pop(dialogContext);
+                  try {
+                    final user = await AuthService.instance.signInWithApple();
+                    if (user != null) {
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('Signed in as ${user.email}')),
+                      );
+                    }
+                  } catch (e) {
+                    messenger.showSnackBar(
+                      SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
+                    );
+                  }
+                  if (mounted) setState(() {});
+                },
+              ),
+              const SizedBox(height: 12),
+            ],
             ListTile(
               leading: const Icon(LucideIcons.chrome),
-              title: const Text('Google'),
+              title: const Text('Sign in with Google'),
               onTap: () async {
                 Navigator.pop(dialogContext);
                 try {
