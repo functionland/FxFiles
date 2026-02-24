@@ -2338,13 +2338,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void _queueImagesForFaceDetection(List<LocalFile> files) {
     // Queue images for face detection in background
     // This runs asynchronously and doesn't block the UI
-    final imagePaths = files
+    final images = files
         .where((f) => f.isImage && !f.isDirectory)
-        .map((f) => f.path)
+        .map((f) => (path: f.path, iosAssetId: f.iosAssetId))
         .toList();
-    
-    if (imagePaths.isNotEmpty) {
-      FaceDetectionService.instance.queueImagesForProcessing(imagePaths);
+
+    if (images.isNotEmpty) {
+      FaceDetectionService.instance.queueImagesForProcessing(images);
     }
   }
 

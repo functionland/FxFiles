@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:io' show Directory, File, Platform;
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/core/services/face_embedding_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 
 /// Service for detecting faces in images using ML Kit
 class FaceDetectionService {
@@ -22,8 +23,8 @@ class FaceDetectionService {
   final _uuid = const Uuid();
   String? _thumbnailDir;
   
-  // Queue for background processing
-  final List<String> _processingQueue = [];
+  // Queue for background processing (records carry optional iOS asset ID)
+  final List<({String path, String? iosAssetId})> _processingQueue = [];
   bool _isQueueProcessing = false;
   
   // Callbacks for progress updates
@@ -101,33 +102,33 @@ class FaceDetectionService {
   }
 
   /// Queue an image for background face detection
-  Future<void> queueImageForProcessing(String imagePath) async {
+  Future<void> queueImageForProcessing(String imagePath, {String? iosAssetId}) async {
     if (!isEnabled) return;
-    
+
     // Check if already processed
     if (await isImageProcessed(imagePath)) return;
-    
+
     // Check if already in queue
-    if (_processingQueue.contains(imagePath)) return;
-    
+    if (_processingQueue.any((item) => item.path == imagePath)) return;
+
     // Check if it's an image file
     if (!_isImageFile(imagePath)) return;
-    
-    _processingQueue.add(imagePath);
+
+    _processingQueue.add((path: imagePath, iosAssetId: iosAssetId));
     _startQueueProcessing();
   }
 
   /// Queue multiple images for processing
-  Future<void> queueImagesForProcessing(List<String> imagePaths) async {
+  Future<void> queueImagesForProcessing(List<({String path, String? iosAssetId})> images) async {
     if (!isEnabled) return;
-    
-    for (final path in imagePaths) {
-      if (!_isImageFile(path)) continue;
-      if (await isImageProcessed(path)) continue;
-      if (_processingQueue.contains(path)) continue;
-      _processingQueue.add(path);
+
+    for (final image in images) {
+      if (!_isImageFile(image.path)) continue;
+      if (await isImageProcessed(image.path)) continue;
+      if (_processingQueue.any((item) => item.path == image.path)) continue;
+      _processingQueue.add(image);
     }
-    
+
     _startQueueProcessing();
   }
 
@@ -148,23 +149,23 @@ class FaceDetectionService {
       return;
     }
 
-    final imagePath = _processingQueue.removeAt(0);
-    
+    final item = _processingQueue.removeAt(0);
+
     try {
-      await processImage(imagePath);
+      await processImage(item.path, iosAssetId: item.iosAssetId);
     } catch (e) {
-      debugPrint('Error processing image $imagePath: $e');
+      debugPrint('Error processing image ${item.path}: $e');
     }
 
     // Small delay to avoid blocking UI
     await Future.delayed(const Duration(milliseconds: 100));
-    
+
     // Process next
     _processNextInQueue();
   }
 
   /// Process a single image for face detection
-  Future<List<DetectedFace>> processImage(String imagePath) async {
+  Future<List<DetectedFace>> processImage(String imagePath, {String? iosAssetId}) async {
     if (!isEnabled) return [];
     if (!_isInitialized) await init();
     if (_faceDetector == null) return [];
@@ -177,21 +178,38 @@ class FaceDetectionService {
       );
 
       final file = File(imagePath);
+      File? actualFile;
+
       if (!await file.exists()) {
-        await FaceStorageService.instance.updateProcessingState(
-          imagePath,
-          FaceProcessingStatus.failed,
-          errorMessage: 'File not found',
-        );
-        return [];
+        // On iOS, virtual PhotoKit paths don't exist on filesystem
+        // Try to get the real file via asset ID
+        if (Platform.isIOS) {
+          final assetId = iosAssetId ??
+              LocalStorageService.instance.getSyncStateByDisplayPath(imagePath)?.iosAssetId;
+
+          if (assetId != null) {
+            actualFile = await MediaService.instance.getOriginalFile(assetId);
+          }
+        }
+
+        if (actualFile == null || !await actualFile.exists()) {
+          await FaceStorageService.instance.updateProcessingState(
+            imagePath,
+            FaceProcessingStatus.failed,
+            errorMessage: 'File not found',
+          );
+          return [];
+        }
+      } else {
+        actualFile = file;
       }
 
-      // Create input image
-      final inputImage = InputImage.fromFilePath(imagePath);
-      
+      // Create input image from the actual file on disk
+      final inputImage = InputImage.fromFilePath(actualFile.path);
+
       // Detect faces
       final faces = await _faceDetector!.processImage(inputImage);
-      
+
       if (faces.isEmpty) {
         await FaceStorageService.instance.updateProcessingState(
           imagePath,
@@ -202,7 +220,7 @@ class FaceDetectionService {
       }
 
       // Load image for cropping faces
-      final imageBytes = await file.readAsBytes();
+      final imageBytes = await actualFile.readAsBytes();
       final decodedImage = await _decodeImage(imageBytes);
       
       if (decodedImage == null) {
