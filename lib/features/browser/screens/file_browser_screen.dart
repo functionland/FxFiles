@@ -518,15 +518,16 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         return;
       }
       
-      // On iOS, use MediaService for media categories (images, videos, audio)
+      // On iOS, use MediaService for media categories (images, videos)
       // This uses PhotoKit to access the device's photo library
+      // Note: audio is excluded because PhotoKit doesn't support audio files
       final isMediaCategory = category == FileCategory.images ||
-                              category == FileCategory.videos ||
-                              category == FileCategory.audio;
+                              category == FileCategory.videos;
 
-      // On iOS, documents/archives come from imported files only
+      // On iOS, documents/archives/audio come from imported files only
       final isDocumentsCategory = category == FileCategory.documents ||
-                                  category == FileCategory.archives;
+                                  category == FileCategory.archives ||
+                                  category == FileCategory.audio;
 
       final MediaResult result;
       if (Platform.isIOS && isMediaCategory) {
@@ -772,13 +773,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
-  /// Check if current category is a media category (images, videos, audio)
+  /// Check if current category is a media category (images, videos)
   bool _isMediaCategory() {
     if (widget.category == null) return false;
     final category = _categoryFromString(widget.category!);
-    return category == FileCategory.images || 
-           category == FileCategory.videos || 
-           category == FileCategory.audio;
+    return category == FileCategory.images ||
+           category == FileCategory.videos;
   }
 
   /// Get icon for current view mode
@@ -1186,7 +1186,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   bool _isDocumentsCategory() {
     if (widget.category == null) return false;
     final category = _categoryFromString(widget.category!);
-    return category == FileCategory.documents || category == FileCategory.archives;
+    return category == FileCategory.documents || category == FileCategory.archives || category == FileCategory.audio;
   }
 
   /// Get file extensions for a category

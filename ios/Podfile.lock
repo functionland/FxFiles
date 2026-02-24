@@ -70,7 +70,7 @@ PODS:
   - flutter_secure_storage_darwin (10.0.0):
     - Flutter
     - FlutterMacOS
-  - fula_client (0.2.23):
+  - fula_client (0.2.25):
     - Flutter
   - google_mlkit_commons (0.9.0):
     - Flutter
@@ -349,7 +349,7 @@ SPEC CHECKSUMS:
   flutter_native_splash: c32d145d68aeda5502d5f543ee38c192065986cf
   flutter_pdfview: 32bf27bda6fd85b9dd2c09628a824df5081246cf
   flutter_secure_storage_darwin: acdb3f316ed05a3e68f856e0353b133eec373a23
-  fula_client: 5f6bb3fb004f61a947c0e5242176fa7e0cbec16b
+  fula_client: 182bcae0ea7e4839aea041dcf44158884e61ff82
   google_mlkit_commons: 92c769cc2e0a2bfdeb3c38091a36e8a9cc8c63d4
   google_mlkit_face_detection: 76f493a9ffcb1aeb0ad4abd13ea58403e092ab84
   google_sign_in_ios: 00dfa94252eb10278b64828c81bcb7158a81a53a

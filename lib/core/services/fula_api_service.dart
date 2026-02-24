@@ -368,8 +368,7 @@ class FulaApiService {
     String? contentType,
     void Function(UploadProgress)? onProgress,
   }) async {
-    final path = originalFilename ?? key;
-    return uploadLargeFile(bucket, path, data, onProgress: onProgress);
+    return uploadLargeFile(bucket, key, data, onProgress: onProgress);
   }
 
   // ============================================================================
