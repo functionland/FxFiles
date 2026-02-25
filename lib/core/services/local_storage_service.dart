@@ -229,10 +229,18 @@ class LocalStorageService {
     final box = _recentFilesBox;
     if (box == null) return;
 
-    // Remove if already exists
-    final existing = box.values.where((f) => f.path == file.path);
+    // Remove if already exists (by path)
+    final existing = box.values.where((f) => f.path == file.path).toList();
     for (final f in existing) {
       await f.delete();
+    }
+
+    // Also remove by iosAssetId to prevent duplicates on iOS
+    if (file.iosAssetId != null) {
+      final byAssetId = box.values.where((f) => f.iosAssetId == file.iosAssetId).toList();
+      for (final f in byAssetId) {
+        await f.delete();
+      }
     }
 
     // Add new

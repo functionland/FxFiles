@@ -250,13 +250,31 @@ class _RecentFileCardState extends State<_RecentFileCard> {
     return Colors.grey;
   }
 
-  void _openFile(BuildContext context) {
+  Future<void> _openFile(BuildContext context) async {
+    String filePath = file.path;
+
+    if (Platform.isIOS && file.iosAssetId != null) {
+      final actualFile = await MediaService.instance.getOriginalFile(file.iosAssetId!);
+      if (actualFile != null) {
+        filePath = actualFile.path;
+      } else if (!File(filePath).existsSync()) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not access file from Photos library')),
+          );
+        }
+        return;
+      }
+    }
+
+    if (!context.mounted) return;
+
     if (file.isImage) {
-      context.push('/viewer/image', extra: file.path);
+      context.push('/viewer/image', extra: filePath);
     } else if (file.isVideo) {
-      context.push('/viewer/video', extra: file.path);
+      context.push('/viewer/video', extra: filePath);
     } else if (file.extension == 'txt' || file.extension == 'md' || file.extension == 'json') {
-      context.push('/viewer/text', extra: file.path);
+      context.push('/viewer/text', extra: filePath);
     }
   }
 }

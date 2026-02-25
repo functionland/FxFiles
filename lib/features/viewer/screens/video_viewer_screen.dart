@@ -67,6 +67,11 @@ class _VideoViewerScreenState extends State<VideoViewerScreen> with WidgetsBindi
   }
 
   Future<void> _trackRecentFile() async {
+    // On iOS, the file browser already tracks recent files with the correct
+    // virtual path and iosAssetId. The viewer only has the temp path which
+    // would create a duplicate entry that breaks after app restart.
+    if (Platform.isIOS) return;
+
     final file = File(widget.filePath);
     if (await file.exists()) {
       final stat = await file.stat();

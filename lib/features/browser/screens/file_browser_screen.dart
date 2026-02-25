@@ -880,7 +880,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     // Track as recent file
     await LocalStorageService.instance.addRecentFile(RecentFile(
-      path: filePath,
+      path: file.path,
       name: file.name,
       mimeType: file.mimeType,
       size: file.size,
