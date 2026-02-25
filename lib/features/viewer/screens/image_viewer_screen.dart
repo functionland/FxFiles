@@ -135,6 +135,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
         if (entity is File) {
           final ext = p.extension(entity.path).toLowerCase().replaceFirst('.', '');
           if (imageExtensions.contains(ext)) {
+            // Skip face detection temp artifacts on iOS
+            if (Platform.isIOS && entity.path.endsWith('_clean.jpg')) continue;
             images.add(entity.path);
           }
         }
@@ -198,13 +200,33 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
 
   Future<void> _loadFaces() async {
     if (_images.isEmpty) return;
-    final currentPath = _images[_currentIndex];
-    final faces = await FaceStorageService.instance.getFacesForImage(currentPath);
-    if (mounted) {
-      setState(() {
-        _faces = faces;
-        _facesLoaded = true;
-      });
+    String currentPath = _images[_currentIndex];
+
+    try {
+      // On iOS, resolve temp path to virtual path for consistent face lookup
+      if (Platform.isIOS) {
+        final fileName = p.basename(currentPath).toLowerCase();
+        for (final state in LocalStorageService.instance.getAllSyncStates()) {
+          if (p.basename(state.localPath).toLowerCase() == fileName &&
+              state.displayPath != null) {
+            currentPath = state.displayPath!;
+            break;
+          }
+        }
+      }
+
+      final faces = await FaceStorageService.instance.getFacesForImage(currentPath);
+      if (mounted) {
+        setState(() {
+          _faces = faces;
+          _facesLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('[FaceLoad] Error loading faces: $e');
+      if (mounted) {
+        setState(() => _facesLoaded = true);
+      }
     }
   }
 
@@ -318,7 +340,25 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
     setState(() => _isDetectingFaces = true);
 
     try {
-      final faces = await FaceDetectionService.instance.processImage(currentPath);
+      String detectPath = currentPath;
+      String? iosAssetId;
+
+      // On iOS, resolve temp path to virtual path so faces persist across sessions
+      if (Platform.isIOS) {
+        final fileName = p.basename(currentPath).toLowerCase();
+        for (final state in LocalStorageService.instance.getAllSyncStates()) {
+          if (p.basename(state.localPath).toLowerCase() == fileName && state.iosAssetId != null) {
+            detectPath = state.displayPath ?? state.localPath;
+            iosAssetId = state.iosAssetId;
+            break;
+          }
+        }
+      }
+
+      final faces = await FaceDetectionService.instance.processImage(
+        detectPath,
+        iosAssetId: iosAssetId,
+      );
 
       if (mounted) {
         setState(() {
@@ -1098,11 +1138,14 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
           : Future.value(null),
       builder: (context, snapshot) {
         final person = snapshot.data;
-        final thumbnailFile = face.thumbnailPath != null
-            ? File(face.thumbnailPath!)
-            : null;
 
-        return GestureDetector(
+        return FutureBuilder<String?>(
+          future: FaceDetectionService.resolveThumbnailPath(face.thumbnailPath),
+          builder: (context, thumbSnapshot) {
+            final resolvedPath = thumbSnapshot.data;
+            final thumbnailFile = resolvedPath != null ? File(resolvedPath) : null;
+
+            return GestureDetector(
           onTap: isUnknown ? () => _showTagFaceDialog(face) : null,
           child: Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -1181,6 +1224,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
               ],
             ),
           ),
+            );
+          },
         );
       },
     );

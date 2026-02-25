@@ -63,7 +63,20 @@ class FaceStorageService {
   /// Get all faces for an image
   Future<List<DetectedFace>> getFacesForImage(String imagePath) async {
     if (!_isInitialized) await init();
-    return _facesBox.values.where((f) => f.imagePath == imagePath).toList();
+    final faces = _facesBox.values.where((f) => f.imagePath == imagePath).toList();
+
+    // On iOS, file paths are ephemeral temp paths that change each session.
+    // Face data is stored under virtual PhotoKit paths. Fall back to filename matching.
+    if (faces.isEmpty && Platform.isIOS) {
+      final fileName = imagePath.split('/').last.toLowerCase();
+      if (fileName.isNotEmpty) {
+        return _facesBox.values
+            .where((f) => f.imagePath.split('/').last.toLowerCase() == fileName)
+            .toList();
+      }
+    }
+
+    return faces;
   }
 
   /// Get all faces for a person
@@ -481,7 +494,21 @@ class FaceStorageService {
   /// Get processing state for an image
   Future<FaceProcessingState?> getProcessingState(String imagePath) async {
     if (!_isInitialized) await init();
-    return _processingStateBox.get(imagePath);
+    final state = _processingStateBox.get(imagePath);
+
+    // On iOS, try filename-based fallback (temp paths change between sessions)
+    if (state == null && Platform.isIOS) {
+      final fileName = imagePath.split('/').last.toLowerCase();
+      if (fileName.isNotEmpty) {
+        for (final s in _processingStateBox.values) {
+          if (s.imagePath.split('/').last.toLowerCase() == fileName) {
+            return s;
+          }
+        }
+      }
+    }
+
+    return state;
   }
 
   /// Update processing state

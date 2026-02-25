@@ -353,13 +353,24 @@ class FaceDetectionService {
     return Uint8List.fromList(img.encodeJpg(image, quality: 95));
   }
 
+  /// Resolve a thumbnail path (relative or absolute) to an absolute path
+  static Future<String?> resolveThumbnailPath(String? thumbnailPath) async {
+    if (thumbnailPath == null) return null;
+    // Already absolute
+    if (thumbnailPath.startsWith('/')) return thumbnailPath;
+    // Relative — resolve against documents directory
+    final appDir = await getApplicationDocumentsDirectory();
+    return p.join(appDir.path, thumbnailPath);
+  }
+
   /// Save face thumbnail to disk
   Future<String?> _saveFaceThumbnail(img.Image faceImage, String faceId) async {
     try {
       final thumbnailPath = p.join(_thumbnailDir!, '$faceId.jpg');
       final jpegBytes = img.encodeJpg(faceImage, quality: 85);
       await File(thumbnailPath).writeAsBytes(jpegBytes);
-      return thumbnailPath;
+      // Store relative path so it survives container path changes on iOS
+      return 'face_thumbnails/$faceId.jpg';
     } catch (e) {
       debugPrint('Failed to save face thumbnail: $e');
       return null;
