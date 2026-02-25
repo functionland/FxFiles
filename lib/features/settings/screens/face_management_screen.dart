@@ -7,6 +7,28 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
+Widget _buildResolvedThumbnail({
+  required String? thumbnailPath,
+  required Widget fallback,
+  double? radius,
+  BoxFit fit = BoxFit.cover,
+  bool isCircle = true,
+}) {
+  return FutureBuilder<String?>(
+    future: FaceDetectionService.resolveThumbnailPath(thumbnailPath),
+    builder: (context, snapshot) {
+      final path = snapshot.data;
+      if (path != null && File(path).existsSync()) {
+        if (isCircle) {
+          return CircleAvatar(radius: radius ?? 24, backgroundImage: FileImage(File(path)));
+        }
+        return Image.file(File(path), fit: fit);
+      }
+      return fallback;
+    },
+  );
+}
+
 class FaceManagementScreen extends StatefulWidget {
   const FaceManagementScreen({super.key});
 
@@ -529,24 +551,17 @@ class _PersonTile extends StatelessWidget {
   }
 
   Widget _buildThumbnail(BuildContext context) {
-    if (person.thumbnailPath != null) {
-      final file = File(person.thumbnailPath!);
-      if (file.existsSync()) {
-        return CircleAvatar(
-          radius: 24,
-          backgroundImage: FileImage(file),
-        );
-      }
-    }
-    
-    return CircleAvatar(
-      radius: 24,
-      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      child: Text(
-        person.name.isNotEmpty ? person.name[0].toUpperCase() : '?',
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.onPrimaryContainer,
-          fontWeight: FontWeight.bold,
+    return _buildResolvedThumbnail(
+      thumbnailPath: person.thumbnailPath,
+      fallback: CircleAvatar(
+        radius: 24,
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        child: Text(
+          person.name.isNotEmpty ? person.name[0].toUpperCase() : '?',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onPrimaryContainer,
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
     );
@@ -633,9 +648,10 @@ class _MergePersonDialogState extends State<_MergePersonDialog> {
                       itemBuilder: (ctx, index) {
                         final p = _filteredPersons[index];
                         return ListTile(
-                          leading: p.thumbnailPath != null && File(p.thumbnailPath!).existsSync()
-                              ? CircleAvatar(backgroundImage: FileImage(File(p.thumbnailPath!)))
-                              : CircleAvatar(child: Text(p.name.isNotEmpty ? p.name[0] : '?')),
+                          leading: _buildResolvedThumbnail(
+                            thumbnailPath: p.thumbnailPath,
+                            fallback: CircleAvatar(child: Text(p.name.isNotEmpty ? p.name[0] : '?')),
+                          ),
                           title: Text(p.name),
                           subtitle: Text('${p.faceCount} face${p.faceCount == 1 ? '' : 's'}'),
                           onTap: () => Navigator.pop(context, p),
@@ -845,9 +861,10 @@ class _MoveFaceDialogState extends State<_MoveFaceDialog> {
                           itemBuilder: (ctx, index) {
                             final p = _filteredPersons[index];
                             return ListTile(
-                              leading: p.thumbnailPath != null && File(p.thumbnailPath!).existsSync()
-                                  ? CircleAvatar(backgroundImage: FileImage(File(p.thumbnailPath!)))
-                                  : CircleAvatar(child: Text(p.name.isNotEmpty ? p.name[0] : '?')),
+                              leading: _buildResolvedThumbnail(
+                                thumbnailPath: p.thumbnailPath,
+                                fallback: CircleAvatar(child: Text(p.name.isNotEmpty ? p.name[0] : '?')),
+                              ),
                               title: Text(p.name),
                               subtitle: Text('${p.faceCount} photo${p.faceCount == 1 ? '' : 's'}'),
                               onTap: () => Navigator.pop(context, p),
@@ -1705,10 +1722,7 @@ class _PersonDetailScreenState extends State<_PersonDetailScreen> {
                   itemCount: _faces.length,
                   itemBuilder: (ctx, index) {
                     final face = _faces[index];
-                    final thumbnailFile = face.thumbnailPath != null 
-                        ? File(face.thumbnailPath!) 
-                        : null;
-                    
+
                     return Card(
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
@@ -1717,12 +1731,14 @@ class _PersonDetailScreenState extends State<_PersonDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Expanded(
-                              child: thumbnailFile != null && thumbnailFile.existsSync()
-                                  ? Image.file(thumbnailFile, fit: BoxFit.cover)
-                                  : Container(
-                                      color: Colors.grey[300],
-                                      child: const Icon(LucideIcons.user, size: 40),
-                                    ),
+                              child: _buildResolvedThumbnail(
+                                thumbnailPath: face.thumbnailPath,
+                                isCircle: false,
+                                fallback: Container(
+                                    color: Colors.grey[300],
+                                    child: const Icon(LucideIcons.user, size: 40),
+                                ),
+                              ),
                             ),
                             Container(
                               color: Colors.black54,
@@ -1777,10 +1793,7 @@ class _AddFacesDialogState extends State<_AddFacesDialog> {
           itemBuilder: (ctx, index) {
             final face = widget.unnamedFaces[index];
             final isSelected = _selectedIds.contains(face.id);
-            final thumbnailFile = face.thumbnailPath != null 
-                ? File(face.thumbnailPath!) 
-                : null;
-            
+
             return GestureDetector(
               onTap: () {
                 setState(() {
@@ -1803,12 +1816,14 @@ class _AddFacesDialogState extends State<_AddFacesDialog> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      thumbnailFile != null && thumbnailFile.existsSync()
-                          ? Image.file(thumbnailFile, fit: BoxFit.cover)
-                          : Container(
-                              color: Colors.grey[300],
-                              child: const Icon(LucideIcons.user),
-                            ),
+                      _buildResolvedThumbnail(
+                        thumbnailPath: face.thumbnailPath,
+                        isCircle: false,
+                        fallback: Container(
+                            color: Colors.grey[300],
+                            child: const Icon(LucideIcons.user),
+                        ),
+                      ),
                       if (isSelected)
                         Container(
                           color: Theme.of(context).colorScheme.primary.withOpacity(0.3),

@@ -182,16 +182,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
           title: Text(appTitle),
           actions: [
-            TutorialShowcase(
-              showcaseKey: TutorialService.instance.searchKey,
-              stepIndex: 10,
-              targetShapeBorder: const CircleBorder(),
-              child: IconButton(
-                icon: const Icon(LucideIcons.search),
-                tooltip: 'Search',
-                onPressed: () => context.push('/search'),
+            if (!Platform.isIOS)
+              TutorialShowcase(
+                showcaseKey: TutorialService.instance.searchKey,
+                stepIndex: 10,
+                targetShapeBorder: const CircleBorder(),
+                child: IconButton(
+                  icon: const Icon(LucideIcons.search),
+                  tooltip: 'Search',
+                  onPressed: () => context.push('/search'),
+                ),
               ),
-            ),
             IconButton(
               icon: Icon(
                 LucideIcons.helpCircle,
