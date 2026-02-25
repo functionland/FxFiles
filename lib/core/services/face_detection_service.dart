@@ -209,11 +209,37 @@ class FaceDetectionService {
 
       // Create input image from the actual file on disk
       debugPrint('[FaceDetection] Processing file: ${actualFile.path}');
-      final inputImage = InputImage.fromFilePath(actualFile.path);
+
+      // On iOS, pre-decode and re-encode as clean JPEG to guarantee UIImage compatibility
+      // and fix EXIF orientation before ML Kit sees it
+      img.Image? preDecodedImage;
+      File fileForMlKit = actualFile;
+
+      if (Platform.isIOS) {
+        final bytes = await actualFile.readAsBytes();
+        debugPrint('[FaceDetection] iOS file size: ${bytes.length} bytes');
+        preDecodedImage = await _decodeImage(bytes);
+        if (preDecodedImage != null) {
+          debugPrint('[FaceDetection] Decoded: ${preDecodedImage.width}x${preDecodedImage.height}');
+          final cleanJpg = await compute(_encodeJpgIsolate, preDecodedImage);
+          final cleanPath = '${actualFile.path}_clean.jpg';
+          await File(cleanPath).writeAsBytes(cleanJpg);
+          fileForMlKit = File(cleanPath);
+        } else {
+          debugPrint('[FaceDetection] iOS: Failed to pre-decode image, passing original to ML Kit');
+        }
+      }
+
+      final inputImage = InputImage.fromFilePath(fileForMlKit.path);
 
       // Detect faces
       final faces = await _faceDetector!.processImage(inputImage);
       debugPrint('[FaceDetection] ML Kit result for $imagePath: ${faces.length} face(s) found');
+
+      // Clean up iOS temp clean file
+      if (Platform.isIOS && fileForMlKit != actualFile) {
+        fileForMlKit.delete().ignore();
+      }
 
       if (faces.isEmpty) {
         await FaceStorageService.instance.updateProcessingState(
@@ -224,9 +250,8 @@ class FaceDetectionService {
         return [];
       }
 
-      // Load image for cropping faces
-      final imageBytes = await actualFile.readAsBytes();
-      final decodedImage = await _decodeImage(imageBytes);
+      // Use pre-decoded image if available (iOS), otherwise decode from file
+      final decodedImage = preDecodedImage ?? await _decodeImage(await actualFile.readAsBytes());
       
       if (decodedImage == null) {
         await FaceStorageService.instance.updateProcessingState(
@@ -316,10 +341,16 @@ class FaceDetectionService {
 
   static img.Image? _decodeImageIsolate(Uint8List bytes) {
     try {
-      return img.decodeImage(bytes);
+      final image = img.decodeImage(bytes);
+      if (image == null) return null;
+      return img.bakeOrientation(image);
     } catch (e) {
       return null;
     }
+  }
+
+  static Uint8List _encodeJpgIsolate(img.Image image) {
+    return Uint8List.fromList(img.encodeJpg(image, quality: 95));
   }
 
   /// Save face thumbnail to disk
