@@ -134,7 +134,7 @@ class FaceDetectionService {
 
   bool _isImageFile(String path) {
     final ext = p.extension(path).toLowerCase();
-    return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'].contains(ext);
+    return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.heic', '.heif'].contains(ext);
   }
 
   void _startQueueProcessing() {
@@ -181,6 +181,7 @@ class FaceDetectionService {
       File? actualFile;
 
       if (!await file.exists()) {
+        debugPrint('[FaceDetection] File does not exist at path: $imagePath — attempting iOS asset resolution');
         // On iOS, virtual PhotoKit paths don't exist on filesystem
         // Try to get the real file via asset ID
         if (Platform.isIOS) {
@@ -189,10 +190,12 @@ class FaceDetectionService {
 
           if (assetId != null) {
             actualFile = await MediaService.instance.getOriginalFile(assetId);
+            debugPrint('[FaceDetection] Resolved iOS asset to: ${actualFile?.path}');
           }
         }
 
         if (actualFile == null || !await actualFile.exists()) {
+          debugPrint('[FaceDetection] File not found after resolution for: $imagePath');
           await FaceStorageService.instance.updateProcessingState(
             imagePath,
             FaceProcessingStatus.failed,
@@ -205,10 +208,12 @@ class FaceDetectionService {
       }
 
       // Create input image from the actual file on disk
+      debugPrint('[FaceDetection] Processing file: ${actualFile.path}');
       final inputImage = InputImage.fromFilePath(actualFile.path);
 
       // Detect faces
       final faces = await _faceDetector!.processImage(inputImage);
+      debugPrint('[FaceDetection] ML Kit result for $imagePath: ${faces.length} face(s) found');
 
       if (faces.isEmpty) {
         await FaceStorageService.instance.updateProcessingState(

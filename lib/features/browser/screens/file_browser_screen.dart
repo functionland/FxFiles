@@ -670,7 +670,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       
       // Queue images for face detection in background (only for images category)
       // Skip on iOS to avoid memory issues with PhotoKit images
-      if (category == FileCategory.images && !Platform.isIOS) {
+      if (category == FileCategory.images) {
         _queueImagesForFaceDetection(result.files);
       }
     } catch (e) {
