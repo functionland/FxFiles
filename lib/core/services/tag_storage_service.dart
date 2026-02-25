@@ -520,6 +520,7 @@ class TagStorageService {
   /// Restore tags from cloud after reinstall
   Future<void> restoreFromCloud() async {
     debugPrint('TagStorageService.restoreFromCloud() called');
+    if (!_isInitialized) await init();
     debugPrint('TagStorageService: current local tags=${_tagsBox.length}, taggedFiles=${_taggedFilesBox.length}');
 
     if (!FulaApiService.instance.isConfigured) {
