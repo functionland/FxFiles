@@ -72,13 +72,22 @@ PODS:
     - FlutterMacOS
   - fula_client (0.2.25):
     - Flutter
-  - google_mlkit_commons (0.9.0):
+  - google_mlkit_commons (0.11.1):
     - Flutter
-    - MLKitVision
-  - google_mlkit_face_detection (0.12.0):
+    - MLKitVision (~> 10.0.0)
+  - google_mlkit_face_detection (0.13.2):
     - Flutter
     - google_mlkit_commons
-    - GoogleMLKit/FaceDetection (~> 7.0.0)
+    - GoogleMLKit/FaceDetection (~> 9.0.0)
+  - google_mlkit_image_labeling (0.14.2):
+    - Flutter
+    - google_mlkit_commons
+    - GoogleMLKit/ImageLabeling (~> 9.0.0)
+    - GoogleMLKit/ImageLabelingCustom (~> 9.0.0)
+  - google_mlkit_text_recognition (0.15.1):
+    - Flutter
+    - google_mlkit_commons
+    - GoogleMLKit/TextRecognition (~> 9.0.0)
   - google_sign_in_ios (0.0.1):
     - Flutter
     - FlutterMacOS
@@ -87,11 +96,20 @@ PODS:
   - GoogleDataTransport (10.1.0):
     - nanopb (~> 3.30910.0)
     - PromisesObjC (~> 2.4)
-  - GoogleMLKit/FaceDetection (7.0.0):
+  - GoogleMLKit/FaceDetection (9.0.0):
     - GoogleMLKit/MLKitCore
-    - MLKitFaceDetection (~> 6.0.0)
-  - GoogleMLKit/MLKitCore (7.0.0):
-    - MLKitCommon (~> 12.0.0)
+    - MLKitFaceDetection (~> 8.0.0)
+  - GoogleMLKit/ImageLabeling (9.0.0):
+    - GoogleMLKit/MLKitCore
+    - MLKitImageLabeling (~> 8.0.0)
+  - GoogleMLKit/ImageLabelingCustom (9.0.0):
+    - GoogleMLKit/MLKitCore
+    - MLKitImageLabelingCustom (~> 8.0.0)
+  - GoogleMLKit/MLKitCore (9.0.0):
+    - MLKitCommon (~> 14.0.0)
+  - GoogleMLKit/TextRecognition (9.0.0):
+    - GoogleMLKit/MLKitCore
+    - MLKitTextRecognition (~> 7.0.0)
   - GoogleSignIn (9.1.0):
     - AppAuth (~> 2.0)
     - AppCheckCore (~> 11.0)
@@ -137,23 +155,51 @@ PODS:
   - libwebp/sharpyuv (1.5.0)
   - libwebp/webp (1.5.0):
     - libwebp/sharpyuv
-  - MLImage (1.0.0-beta6)
-  - MLKitCommon (12.0.0):
+  - MLImage (1.0.0-beta8)
+  - MLKitCommon (14.0.0):
     - GoogleDataTransport (~> 10.0)
     - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
     - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
     - GoogleUtilities/Logger (~> 8.0)
     - GoogleUtilities/UserDefaults (~> 8.0)
     - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-  - MLKitFaceDetection (6.0.0):
-    - MLKitCommon (~> 12.0)
-    - MLKitVision (~> 8.0)
-  - MLKitVision (8.0.0):
+  - MLKitFaceDetection (8.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitVision (~> 10.0)
+  - MLKitImageLabeling (8.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitImageLabelingCommon (~> 10.0)
+    - MLKitVision (~> 10.0)
+    - MLKitVisionKit (~> 11.0)
+  - MLKitImageLabelingCommon (10.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitVision (~> 10.0)
+  - MLKitImageLabelingCustom (8.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitImageLabelingCommon (~> 10.0)
+    - MLKitVision (~> 10.0)
+    - MLKitVisionKit (~> 11.0)
+  - MLKitObjectDetectionCommon (10.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitVision (~> 10.0)
+  - MLKitTextRecognition (7.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitTextRecognitionCommon (= 6.0.0)
+    - MLKitVision (~> 10.0)
+  - MLKitTextRecognitionCommon (6.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitVision (~> 10.0)
+  - MLKitVision (10.0.0):
     - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
     - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
     - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-    - MLImage (= 1.0.0-beta6)
-    - MLKitCommon (~> 12.0)
+    - MLImage (= 1.0.0-beta8)
+    - MLKitCommon (~> 14.0)
+  - MLKitVisionKit (11.0.0):
+    - MLKitCommon (~> 14.0)
+    - MLKitImageLabelingCommon (~> 10.0)
+    - MLKitObjectDetectionCommon (~> 10.0)
+    - MLKitVision (~> 10.0)
   - nanopb (3.30910.0):
     - nanopb/decode (= 3.30910.0)
     - nanopb/encode (= 3.30910.0)
@@ -219,6 +265,8 @@ DEPENDENCIES:
   - fula_client (from `.symlinks/plugins/fula_client/ios`)
   - google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)
   - google_mlkit_face_detection (from `.symlinks/plugins/google_mlkit_face_detection/ios`)
+  - google_mlkit_image_labeling (from `.symlinks/plugins/google_mlkit_image_labeling/ios`)
+  - google_mlkit_text_recognition (from `.symlinks/plugins/google_mlkit_text_recognition/ios`)
   - google_sign_in_ios (from `.symlinks/plugins/google_sign_in_ios/darwin`)
   - image_cropper (from `.symlinks/plugins/image_cropper/ios`)
   - just_audio (from `.symlinks/plugins/just_audio/darwin`)
@@ -256,7 +304,14 @@ SPEC REPOS:
     - MLImage
     - MLKitCommon
     - MLKitFaceDetection
+    - MLKitImageLabeling
+    - MLKitImageLabelingCommon
+    - MLKitImageLabelingCustom
+    - MLKitObjectDetectionCommon
+    - MLKitTextRecognition
+    - MLKitTextRecognitionCommon
     - MLKitVision
+    - MLKitVisionKit
     - nanopb
     - PromisesObjC
     - SDWebImage
@@ -294,6 +349,10 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/google_mlkit_commons/ios"
   google_mlkit_face_detection:
     :path: ".symlinks/plugins/google_mlkit_face_detection/ios"
+  google_mlkit_image_labeling:
+    :path: ".symlinks/plugins/google_mlkit_image_labeling/ios"
+  google_mlkit_text_recognition:
+    :path: ".symlinks/plugins/google_mlkit_text_recognition/ios"
   google_sign_in_ios:
     :path: ".symlinks/plugins/google_sign_in_ios/darwin"
   image_cropper:
@@ -350,11 +409,13 @@ SPEC CHECKSUMS:
   flutter_pdfview: 32bf27bda6fd85b9dd2c09628a824df5081246cf
   flutter_secure_storage_darwin: acdb3f316ed05a3e68f856e0353b133eec373a23
   fula_client: 182bcae0ea7e4839aea041dcf44158884e61ff82
-  google_mlkit_commons: 92c769cc2e0a2bfdeb3c38091a36e8a9cc8c63d4
-  google_mlkit_face_detection: 76f493a9ffcb1aeb0ad4abd13ea58403e092ab84
+  google_mlkit_commons: a5e4ffae5bc59ea4c7b9025dc72cb6cb79dc1166
+  google_mlkit_face_detection: ee4b72cfae062b4c972204be955d83055a4bfd36
+  google_mlkit_image_labeling: 6f6fdb11c14600e01898e59a8c4413b255ede272
+  google_mlkit_text_recognition: b3de5adb786ad7a0fe8e13618387b8d2df0f3c70
   google_sign_in_ios: 00dfa94252eb10278b64828c81bcb7158a81a53a
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
-  GoogleMLKit: eff9e23ec1d90ea4157a1ee2e32a4f610c5b3318
+  GoogleMLKit: b1eee21a41c57704fe72483b15c85cb2c0cd7444
   GoogleSignIn: fcee2257188d5eda57a5e2b6a715550ffff9206d
   GoogleToolboxForMac: d1a2cbf009c453f4d6ded37c105e2f67a32206d8
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
@@ -363,10 +424,17 @@ SPEC CHECKSUMS:
   image_cropper: 5f162dcf988100dc1513f9c6b7eb42cd6fbf9156
   just_audio: 4e391f57b79cad2b0674030a00453ca5ce817eed
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
-  MLImage: 0ad1c5f50edd027672d8b26b0fee78a8b4a0fc56
-  MLKitCommon: 07c2c33ae5640e5380beaaa6e4b9c249a205542d
-  MLKitFaceDetection: 2a593db4837db503ad3426b565e7aab045cefea5
-  MLKitVision: 45e79d68845a2de77e2dd4d7f07947f0ed157b0e
+  MLImage: 0de5c6c2bf9e93b80ef752e2797f0836f03b58c0
+  MLKitCommon: 47d47b50a031d00db62f1b0efe5a1d8b09a3b2e6
+  MLKitFaceDetection: 32549f1e70e6e7731261bf9cea2b74095e2531cb
+  MLKitImageLabeling: 739591b1b69ebab735e97fa1b4ce37cea8361bb7
+  MLKitImageLabelingCommon: 616b0c69b3e302720cfb65903da50dc2e697b915
+  MLKitImageLabelingCustom: 43cf5d49fb762adb93e3108cb55c81a8ec005d57
+  MLKitObjectDetectionCommon: 0639341c7cbb44327dac9a23c473d2484d3169dd
+  MLKitTextRecognition: c0ad24510481dfc8893ad15dfcb8a5f05ed9e826
+  MLKitTextRecognitionCommon: 234ceb1cfdfb5fceb4fd664943046609a2961cc2
+  MLKitVision: 39a5a812db83c4a0794445088e567f3631c11961
+  MLKitVisionKit: 316cd349468797ef4e7fd785bf658ca838984de3
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   open_filex: 432f3cd11432da3e39f47fcc0df2b1603854eff1
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499

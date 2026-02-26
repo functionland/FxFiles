@@ -348,10 +348,11 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
 
         await File(file.path!).copy(destPath);
 
-        // Tag the file
+        // Tag the file — store relative path on iOS to survive sandbox UUID changes
+        final storedPath = Platform.isIOS ? 'Imported/$destName' : destPath;
         await ref.tagFile(
           tagId: widget.tagId,
-          localPath: destPath,
+          localPath: storedPath,
           fileName: destName,
         );
         imported++;
@@ -472,6 +473,32 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
 }
 
 // ============================================================================
+// PATH RESOLUTION
+// ============================================================================
+
+/// Resolves a stored file path to a valid absolute path.
+/// Handles relative paths (new iOS imports) and stale absolute paths
+/// (old iOS imports where the sandbox UUID has changed).
+Future<String> _resolveFilePath(String path) async {
+  if (path.startsWith('/')) {
+    if (File(path).existsSync()) return path; // absolute and valid
+    // Try to recover: extract relative portion after "Documents/"
+    final docsMarker = 'Documents/';
+    final idx = path.indexOf(docsMarker);
+    if (idx != -1) {
+      final relativePart = path.substring(idx + docsMarker.length);
+      final appDir = await getApplicationDocumentsDirectory();
+      final resolved = p.join(appDir.path, relativePart);
+      if (File(resolved).existsSync()) return resolved;
+    }
+    return path; // can't resolve, return original
+  }
+  // Relative path — resolve against documents dir
+  final appDir = await getApplicationDocumentsDirectory();
+  return p.join(appDir.path, path);
+}
+
+// ============================================================================
 // ASSET TILE WIDGET
 // ============================================================================
 
@@ -509,16 +536,22 @@ class _AssetTile extends StatelessWidget {
     final path = taggedFile.localPath;
     if (path == null) return _placeholder();
 
-    final file = File(path);
-    if (!file.existsSync()) return _placeholder();
-
-    try {
-      final stat = file.statSync();
-      final localFile = LocalFile.fromFileSystemEntity(file, stat);
-      return FileThumbnail(file: localFile, size: 48);
-    } catch (_) {
-      return _placeholder();
-    }
+    return FutureBuilder<String>(
+      future: _resolveFilePath(path),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return _placeholder();
+        final resolvedPath = snapshot.data!;
+        final file = File(resolvedPath);
+        if (!file.existsSync()) return _placeholder();
+        try {
+          final stat = file.statSync();
+          final localFile = LocalFile.fromFileSystemEntity(file, stat);
+          return FileThumbnail(file: localFile, size: 48);
+        } catch (_) {
+          return _placeholder();
+        }
+      },
+    );
   }
 
   Widget _placeholder() {
