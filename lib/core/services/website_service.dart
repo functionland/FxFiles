@@ -14,8 +14,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
+import 'package:crypto/crypto.dart';
+
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 
@@ -33,8 +37,16 @@ class WebsiteService {
 
   static const _uuid = Uuid();
   static const String _assetBucket = 'website-assets';
+  static const String _websiteMetadataBucket = 'website-metadata';
   static const int _maxFileSizeBytes = 50 * 1024 * 1024; // 50MB per file
   static const int _maxParsedContentBytes = 100000; // 100KB backend limit
+
+  // Cloud sync state
+  bool _metaBucketChecked = false;
+  bool _metaBucketExists = false;
+  DateTime? _lastSyncTime;
+  bool _syncScheduled = false;
+  static const Duration _syncDebounce = Duration(seconds: 5);
 
   // Default endpoints (used when nothing is configured in SecureStorage)
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
@@ -60,6 +72,7 @@ Hosting constraints (IPFS — static only):
 Design:
 - Mobile-responsive layout with clean typography.
 - Visually appealing with good use of whitespace and color.
+- The user will provide a "Website Name" and "Category" at the start of their request. Use the website name as the site title/heading. Tailor the layout, color scheme, and content structure to fit the specified category.
 === END SYSTEM CONSTRAINTS ===
 
 User request:
@@ -305,6 +318,9 @@ User request:
     generation.updatedAt = DateTime.now();
     await _generationsBox.put(generation.id, generation);
     _statusController.add(generation);
+
+    // Sync completed generation to cloud
+    _scheduleSyncToCloud();
   }
 
   // ============================================================================
@@ -690,6 +706,189 @@ User request:
         .take(10)
         .map((l) => '${l.label} (${(l.confidence * 100).toInt()}%)')
         .join(', ');
+  }
+
+  // ============================================================================
+  // CLOUD SYNC
+  // ============================================================================
+
+  void _scheduleSyncToCloud() {
+    if (_syncScheduled) return;
+    _syncScheduled = true;
+
+    Future.delayed(_syncDebounce, () async {
+      _syncScheduled = false;
+      await syncToCloud();
+    });
+  }
+
+  /// Ensure the website metadata bucket exists
+  Future<bool> _ensureMetadataBucketExists() async {
+    if (_metaBucketChecked && _metaBucketExists) return true;
+
+    try {
+      await FulaApiService.instance.createBucket(_websiteMetadataBucket);
+      _metaBucketExists = true;
+      _metaBucketChecked = true;
+      return true;
+    } catch (e) {
+      final errorStr = e.toString();
+
+      if (errorStr.contains('BucketAlreadyExists') ||
+          errorStr.contains('BucketAlreadyOwnedByYou')) {
+        _metaBucketExists = true;
+        _metaBucketChecked = true;
+        return true;
+      }
+
+      try {
+        await FulaApiService.instance.listObjects(_websiteMetadataBucket);
+        _metaBucketExists = true;
+        _metaBucketChecked = true;
+        return true;
+      } catch (listError) {
+        final listErrorStr = listError.toString();
+        if (listErrorStr.contains('AccountProblem') ||
+            listErrorStr.contains('AccessDenied') ||
+            listErrorStr.contains('QuotaExceeded')) {
+          _metaBucketExists = false;
+          _metaBucketChecked = true;
+          return false;
+        }
+
+        _metaBucketExists = false;
+        _metaBucketChecked = false;
+        return false;
+      }
+    }
+  }
+
+  /// Get user ID for cloud storage key
+  Future<String?> _getUserId() async {
+    try {
+      final publicKey = await AuthService.instance.getPublicKeyString();
+      if (publicKey == null || publicKey.isEmpty) return null;
+
+      final bytes = utf8.encode(publicKey);
+      final hash = sha256.convert(bytes);
+      return hash.toString().substring(0, 16);
+    } catch (e) {
+      debugPrint('WebsiteService: Failed to get user ID: $e');
+      return null;
+    }
+  }
+
+  /// Sync all completed generations to cloud
+  Future<void> syncToCloud() async {
+    if (_metaBucketChecked && !_metaBucketExists) return;
+    if (!FulaApiService.instance.isConfigured) return;
+
+    final now = DateTime.now();
+    if (_lastSyncTime != null &&
+        now.difference(_lastSyncTime!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _lastSyncTime = now;
+
+    if (!await _ensureMetadataBucketExists()) return;
+
+    try {
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      if (encryptionKey == null) return;
+
+      final userId = await _getUserId();
+      if (userId == null) return;
+
+      // Only sync completed generations
+      final completed = _generationsBox.values
+          .where((g) => g.status == WebsiteGenStatus.completed)
+          .map((g) => g.toJson())
+          .toList();
+
+      final jsonStr = jsonEncode({'generations': completed, 'updatedAt': DateTime.now().toIso8601String()});
+      final data = Uint8List.fromList(utf8.encode(jsonStr));
+
+      final key = '.fula/websites/$userId.json';
+      await FulaApiService.instance.encryptAndUpload(
+        _websiteMetadataBucket,
+        key,
+        data,
+        encryptionKey,
+        contentType: 'application/json',
+      );
+
+      debugPrint('Website generations synced to cloud: ${completed.length} generations');
+    } catch (e) {
+      debugPrint('WebsiteService: syncToCloud error: $e');
+      final errorStr = e.toString();
+
+      if (errorStr.contains('NoSuchBucket') || errorStr.contains('bucket not found')) {
+        _metaBucketChecked = false;
+        _metaBucketExists = false;
+        return;
+      }
+
+      if (errorStr.contains('AccountProblem') ||
+          errorStr.contains('QuotaExceeded') ||
+          errorStr.contains('AccessDenied')) {
+        _metaBucketExists = false;
+        _metaBucketChecked = true;
+      }
+    }
+  }
+
+  /// Restore generations from cloud after reinstall
+  Future<void> restoreFromCloud() async {
+    if (!_isInitialized) await init();
+    if (!FulaApiService.instance.isConfigured) return;
+
+    try {
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      if (encryptionKey == null) return;
+
+      final userId = await _getUserId();
+      if (userId == null) return;
+
+      final key = '.fula/websites/$userId.json';
+      final data = await FulaApiService.instance.downloadAndDecrypt(
+        _websiteMetadataBucket,
+        key,
+        encryptionKey,
+      );
+
+      final jsonStr = utf8.decode(data);
+      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final generationsList = json['generations'] as List<dynamic>? ?? [];
+
+      if (_generationsBox.isEmpty || generationsList.isNotEmpty) {
+        // Preserve any in-progress local generations
+        final localInProgress = _generationsBox.values
+            .where((g) => g.status != WebsiteGenStatus.completed)
+            .toList();
+
+        await _generationsBox.clear();
+
+        // Restore completed generations from cloud
+        for (final genJson in generationsList) {
+          final gen = WebsiteGeneration.fromJson(genJson as Map<String, dynamic>);
+          await _generationsBox.put(gen.id, gen);
+        }
+
+        // Re-add local in-progress generations
+        for (final gen in localInProgress) {
+          await _generationsBox.put(gen.id, gen);
+        }
+
+        debugPrint('Restored ${generationsList.length} website generations from cloud');
+      }
+    } catch (e) {
+      final errorStr = e.toString();
+      if (errorStr.contains('NoSuchKey') || errorStr.contains('Object not found') || errorStr.contains('404')) {
+        debugPrint('Website restore: no cloud data found (new user or never synced)');
+      } else {
+        debugPrint('Failed to restore website generations from cloud: $e');
+      }
+    }
   }
 
   /// Dispose resources

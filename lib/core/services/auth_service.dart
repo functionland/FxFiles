@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
+import 'package:fula_files/core/services/website_service.dart';
 
 enum AuthProvider { google, apple }
 
@@ -150,6 +151,7 @@ class AuthService {
         if (FulaApiService.instance.isConfigured) {
           CloudSyncMappingService.instance.relinkMappings();
           TagStorageService.instance.restoreFromCloud();
+          WebsiteService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -240,6 +242,7 @@ class AuthService {
       if (FulaApiService.instance.isConfigured) {
         CloudSyncMappingService.instance.relinkMappings();
         TagStorageService.instance.restoreFromCloud();
+        WebsiteService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -347,6 +350,7 @@ class AuthService {
       if (FulaApiService.instance.isConfigured) {
         CloudSyncMappingService.instance.relinkMappings();
         TagStorageService.instance.restoreFromCloud();
+        WebsiteService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -467,6 +471,7 @@ class AuthService {
       debugPrint('AuthService: Restoring cloud data after reinitialize...');
       CloudSyncMappingService.instance.relinkMappings();
       TagStorageService.instance.restoreFromCloud();
+      WebsiteService.instance.restoreFromCloud();
     }
   }
 

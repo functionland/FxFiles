@@ -160,6 +160,19 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
               );
             }
 
+            // Build fallback URL map from generation assets
+            final generations = ref.watch(websiteGenerationsProvider(widget.tagId));
+            final fallbackUrls = <String, String>{};
+            generations.whenData((gens) {
+              for (final gen in gens) {
+                for (final asset in gen.assets) {
+                  if (asset.gatewayUrl != null && asset.gatewayUrl!.isNotEmpty) {
+                    fallbackUrls[asset.fileName] = asset.gatewayUrl!;
+                  }
+                }
+              }
+            });
+
             return ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -168,6 +181,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
                 final file = files[index];
                 return _AssetTile(
                   taggedFile: file,
+                  fallbackImageUrl: fallbackUrls[file.fileName],
                   onRemove: () => _removeAsset(file),
                 );
               },
@@ -390,17 +404,19 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     final accepted = await showLegalDisclaimerDialog(context);
     if (accepted != true || !mounted) return;
 
-    // Step 2: Prompt input
-    final prompt = await _showPromptDialog(context);
-    if (prompt == null || prompt.trim().isEmpty || !mounted) return;
-
-    // Step 3: Start generation
+    // Step 2: Prompt input (with website name + category)
     final displayName =
         (currentTag?.name ?? 'website').replaceFirst('websites-', '');
+    final result = await _showPromptDialog(context, displayName);
+    if (result == null || !mounted) return;
+
+    // Step 3: Build enriched prompt and start generation
+    final enrichedPrompt =
+        'Website Name: ${result.websiteName}\nCategory: ${result.category}\n\n${result.prompt}';
     await ref.read(websiteProvider.notifier).startGeneration(
           tagId: widget.tagId,
           tagName: displayName,
-          prompt: prompt.trim(),
+          prompt: enrichedPrompt.trim(),
           files: files,
         );
 
@@ -411,48 +427,105 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     }
   }
 
-  Future<String?> _showPromptDialog(BuildContext context) async {
+  static const _categoryOptions = [
+    'Personal',
+    'Real Estate',
+    'Automotives',
+    'Shop',
+    'Corporation',
+    'Technology',
+    'Other',
+  ];
+
+  Future<({String websiteName, String category, String prompt})?>
+      _showPromptDialog(BuildContext context, String defaultName) async {
+    final nameController = TextEditingController(text: defaultName);
     final promptController = TextEditingController(
-      text: 'Create a clean, modern portfolio website showcasing these assets with a gallery layout.',
+      text:
+          'Create a clean, modern portfolio website showcasing these assets with a gallery layout.',
     );
 
-    return showDialog<String>(
+    return showDialog<({String websiteName, String category, String prompt})>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Generate Website'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: promptController,
-              maxLines: 4,
-              maxLength: 9000,
-              decoration: const InputDecoration(
-                labelText: 'Your creative direction',
-                hintText: 'e.g. "A photography portfolio with dark theme and grid layout"',
-                border: OutlineInputBorder(),
+      builder: (ctx) {
+        var selectedCategory = _categoryOptions.first;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final nameEmpty = nameController.text.trim().isEmpty;
+            return AlertDialog(
+              title: const Text('Generate Website'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      maxLength: 60,
+                      decoration: const InputDecoration(
+                        labelText: 'Website Name',
+                        hintText: 'e.g. "My Portfolio"',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: selectedCategory,
+                      decoration: const InputDecoration(
+                        labelText: 'Category',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _categoryOptions
+                          .map((c) =>
+                              DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) {
+                          setDialogState(() => selectedCategory = v);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: promptController,
+                      maxLines: 4,
+                      maxLength: 9000,
+                      decoration: const InputDecoration(
+                        labelText: 'Your creative direction',
+                        hintText:
+                            'e.g. "A photography portfolio with dark theme and grid layout"',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.of(ctx).pop(promptController.text),
-            child: const Text('Publish'),
-          ),
-        ],
-      ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: nameEmpty
+                      ? null
+                      : () => Navigator.of(ctx).pop((
+                            websiteName: nameController.text.trim(),
+                            category: selectedCategory,
+                            prompt: promptController.text.trim(),
+                          )),
+                  child: const Text('Publish'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -504,10 +577,12 @@ Future<String> _resolveFilePath(String path) async {
 
 class _AssetTile extends StatelessWidget {
   final TaggedFile taggedFile;
+  final String? fallbackImageUrl;
   final VoidCallback onRemove;
 
   const _AssetTile({
     required this.taggedFile,
+    this.fallbackImageUrl,
     required this.onRemove,
   });
 
@@ -534,24 +609,41 @@ class _AssetTile extends StatelessWidget {
 
   Widget _buildThumbnail() {
     final path = taggedFile.localPath;
-    if (path == null) return _placeholder();
+    if (path == null) return _fallbackOrPlaceholder();
 
     return FutureBuilder<String>(
       future: _resolveFilePath(path),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return _placeholder();
+        if (!snapshot.hasData) return _fallbackOrPlaceholder();
         final resolvedPath = snapshot.data!;
         final file = File(resolvedPath);
-        if (!file.existsSync()) return _placeholder();
+        if (!file.existsSync()) return _fallbackOrPlaceholder();
         try {
           final stat = file.statSync();
           final localFile = LocalFile.fromFileSystemEntity(file, stat);
           return FileThumbnail(file: localFile, size: 48);
         } catch (_) {
-          return _placeholder();
+          return _fallbackOrPlaceholder();
         }
       },
     );
+  }
+
+  /// Try IPFS gateway URL fallback, otherwise show generic placeholder
+  Widget _fallbackOrPlaceholder() {
+    if (fallbackImageUrl != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.network(
+          fallbackImageUrl!,
+          width: 48,
+          height: 48,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _placeholder(),
+        ),
+      );
+    }
+    return _placeholder();
   }
 
   Widget _placeholder() {

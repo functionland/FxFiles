@@ -51,6 +51,18 @@ class WebsiteAsset extends HiveObject {
     this.uploaded = false,
   });
 
+  factory WebsiteAsset.fromJson(Map<String, dynamic> json) {
+    return WebsiteAsset(
+      localPath: json['localPath'] as String? ?? '',
+      fileName: json['fileName'] as String? ?? '',
+      type: json['type'] as String? ?? 'image',
+      cid: json['cid'] as String?,
+      gatewayUrl: json['gatewayUrl'] as String?,
+      parsedContent: json['parsedContent'] as String?,
+      uploaded: json['uploaded'] as bool? ?? false,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'localPath': localPath,
@@ -135,6 +147,28 @@ class WebsiteGeneration extends HiveObject {
     this.uploadedAssets = 0,
     this.assets = const [],
   });
+
+  factory WebsiteGeneration.fromJson(Map<String, dynamic> json) {
+    return WebsiteGeneration(
+      id: json['id'] as String,
+      tagId: json['tagId'] as String,
+      tagName: json['tagName'] as String? ?? '',
+      prompt: json['prompt'] as String? ?? '',
+      status: WebsiteGenStatus.values[json['status'] as int? ?? 3],
+      statusMessage: json['statusMessage'] as String?,
+      resultCid: json['resultCid'] as String?,
+      resultGatewayUrl: json['resultGatewayUrl'] as String?,
+      errorMessage: json['errorMessage'] as String?,
+      createdAt: DateTime.parse(json['createdAt'] as String),
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      totalAssets: json['totalAssets'] as int? ?? 0,
+      uploadedAssets: json['uploadedAssets'] as int? ?? 0,
+      assets: (json['assets'] as List<dynamic>?)
+              ?.map((a) => WebsiteAsset.fromJson(a as Map<String, dynamic>))
+              .toList() ??
+          [],
+    );
+  }
 
   /// Gateway URL for the completed website
   String? get gatewayUrl {
