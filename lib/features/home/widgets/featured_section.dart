@@ -5,7 +5,9 @@ import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 
 class FeaturedSection extends StatelessWidget {
-  const FeaturedSection({super.key});
+  final bool isWebsiteEnabled;
+
+  const FeaturedSection({super.key, this.isWebsiteEnabled = false});
 
   @override
   Widget build(BuildContext context) {
@@ -98,7 +100,20 @@ class FeaturedSection extends StatelessWidget {
                   icon: LucideIcons.globe,
                   label: 'Websites',
                   color: Colors.indigo,
-                  onTap: () => context.push('/websites'),
+                  enabled: isWebsiteEnabled,
+                  onTap: () {
+                    if (!isWebsiteEnabled) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Please sign in and add an API Key in Settings first.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    context.push('/websites');
+                  },
                 ),
               ),
               // Empty spacers to maintain consistent card width
@@ -116,41 +131,48 @@ class _FeaturedCard extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
+  final bool enabled;
   final VoidCallback onTap;
 
   const _FeaturedCard({
     required this.icon,
     required this.label,
     required this.color,
+    this.enabled = true,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.all(AppTheme.spacing4),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppTheme.radiusS),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: AppTheme.spacing16, horizontal: AppTheme.spacing8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(AppTheme.spacing12),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(AppTheme.radiusM),
+    final effectiveColor = enabled ? color : Colors.grey;
+
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.5,
+      child: Card(
+        margin: const EdgeInsets.all(AppTheme.spacing4),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(AppTheme.radiusS),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: AppTheme.spacing16, horizontal: AppTheme.spacing8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(AppTheme.spacing12),
+                  decoration: BoxDecoration(
+                    color: effectiveColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(AppTheme.radiusM),
+                  ),
+                  child: Icon(icon, color: effectiveColor, size: 24),
                 ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(height: AppTheme.spacing8),
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-            ],
+                const SizedBox(height: AppTheme.spacing8),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ],
+            ),
           ),
         ),
       ),

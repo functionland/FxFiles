@@ -246,7 +246,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 8),
             const CategoriesSection(),
             const SizedBox(height: 8),
-            const FeaturedSection(),
+            FeaturedSection(isWebsiteEnabled: isLoggedIn && hasJwt),
             const SizedBox(height: 8),
             const StorageSection(),
             const SizedBox(height: 16),
