@@ -155,3 +155,13 @@
 # Google Identity Services
 -keep class com.google.android.gms.auth.api.identity.** { *; }
 -keep class com.google.android.gms.auth.api.signin.** { *; }
+
+# ============================================
+# Google ML Kit Text Recognition
+# Optional language-specific recognizers referenced by the plugin
+# but not bundled unless explicitly added as dependencies
+# ============================================
+-dontwarn com.google.mlkit.vision.text.chinese.**
+-dontwarn com.google.mlkit.vision.text.devanagari.**
+-dontwarn com.google.mlkit.vision.text.japanese.**
+-dontwarn com.google.mlkit.vision.text.korean.**
