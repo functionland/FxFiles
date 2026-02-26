@@ -93,8 +93,15 @@ class FeaturedSection extends StatelessWidget {
                   onTap: () => context.push('/tags'),
                 ),
               ),
+              Expanded(
+                child: _FeaturedCard(
+                  icon: LucideIcons.globe,
+                  label: 'Websites',
+                  color: Colors.indigo,
+                  onTap: () => context.push('/websites'),
+                ),
+              ),
               // Empty spacers to maintain consistent card width
-              const Expanded(child: SizedBox()),
               const Expanded(child: SizedBox()),
               const Expanded(child: SizedBox()),
             ],

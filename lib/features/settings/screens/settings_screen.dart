@@ -30,6 +30,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _apiGatewayController = TextEditingController();
   final _ipfsServerController = TextEditingController();
   final _billingServerController = TextEditingController();
+  final _aiEndpointController = TextEditingController();
+  final _ipfsGatewayController = TextEditingController();
   final _jwtTokenController = TextEditingController();
 
   bool _isEditingApi = false;
@@ -45,17 +47,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
   static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
   static const String _defaultBillingServer = 'https://cloud.fx.land';
+  static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
+  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
 
   Future<void> _loadSettings() async {
     final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
     final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
     final billingServer = await SecureStorageService.instance.read(SecureStorageKeys.billingServerUrl);
+    final aiEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.aiEndpointUrl);
+    final ipfsGateway = await SecureStorageService.instance.read(SecureStorageKeys.ipfsGatewayUrl);
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
 
     setState(() {
       _apiGatewayController.text = apiGateway ?? _defaultApiGateway;
       _ipfsServerController.text = ipfsServer ?? _defaultIpfsServer;
       _billingServerController.text = billingServer ?? _defaultBillingServer;
+      _aiEndpointController.text = aiEndpoint ?? _defaultAiEndpoint;
+      _ipfsGatewayController.text = ipfsGateway ?? _defaultIpfsGateway;
       _jwtTokenController.text = jwtToken ?? '';
     });
   }
@@ -65,6 +73,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _apiGatewayController.dispose();
     _ipfsServerController.dispose();
     _billingServerController.dispose();
+    _aiEndpointController.dispose();
+    _ipfsGatewayController.dispose();
     _jwtTokenController.dispose();
     super.dispose();
   }
@@ -178,6 +188,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                 ),
                 ListTile(
+                  leading: const Icon(LucideIcons.brain),
+                  title: const Text('AI Endpoint'),
+                  subtitle: Text(
+                    _aiEndpointController.text.isEmpty
+                        ? 'Not configured'
+                        : _aiEndpointController.text,
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(LucideIcons.link),
+                  title: const Text('IPFS Gateway'),
+                  subtitle: Text(
+                    _ipfsGatewayController.text.isEmpty
+                        ? 'Not configured'
+                        : _ipfsGatewayController.text,
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(LucideIcons.key),
                   title: const Text('API Key'),
                   subtitle: Text(
@@ -216,6 +244,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           labelText: 'Billing Server URL',
                           hintText: 'https://cloud.fx.land',
                           prefixIcon: Icon(LucideIcons.wallet),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _aiEndpointController,
+                        decoration: const InputDecoration(
+                          labelText: 'AI Endpoint URL',
+                          hintText: 'https://ai.cloud.fx.land',
+                          prefixIcon: Icon(LucideIcons.brain),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _ipfsGatewayController,
+                        decoration: const InputDecoration(
+                          labelText: 'IPFS Gateway URL',
+                          hintText: 'https://ipfs.cloud.fx.land/gateway/',
+                          prefixIcon: Icon(LucideIcons.link),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -627,6 +673,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await SecureStorageService.instance.write(
         SecureStorageKeys.billingServerUrl,
         _billingServerController.text,
+      );
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.aiEndpointUrl,
+        _aiEndpointController.text,
+      );
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.ipfsGatewayUrl,
+        _ipfsGatewayController.text,
       );
       await SecureStorageService.instance.write(
         SecureStorageKeys.jwtToken,

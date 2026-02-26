@@ -14,6 +14,8 @@ import 'package:fula_files/features/audio/screens/playlists_screen.dart';
 import 'package:fula_files/features/audio/screens/playlist_detail_screen.dart';
 import 'package:fula_files/features/tags/screens/tags_browser_screen.dart';
 import 'package:fula_files/features/tags/screens/tagged_files_screen.dart';
+import 'package:fula_files/features/websites/screens/websites_browser_screen.dart';
+import 'package:fula_files/features/websites/screens/website_detail_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 
@@ -121,6 +123,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           final tag = state.extra as FileTag?;
           return TaggedFilesScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/websites',
+        builder: (context, state) => const WebsitesBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/websites/:id',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          final tag = state.extra as FileTag?;
+          return WebsiteDetailScreen(tagId: tagId, tag: tag);
         },
       ),
     ],

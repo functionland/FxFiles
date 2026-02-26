@@ -79,4 +79,8 @@ class SecureStorageKeys {
   // Sharing keys (X25519 key pair)
   static const String userPublicKey = 'user_public_key';
   static const String userPrivateKey = 'user_private_key';
+
+  // Website builder keys
+  static const String aiEndpointUrl = 'ai_endpoint_url';
+  static const String ipfsGatewayUrl = 'ipfs_gateway_url';
 }

@@ -22,6 +22,7 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
+import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
@@ -114,6 +115,9 @@ Future<ProviderContainer> _initializeApp() async {
 
   // Initialize tag storage service (non-blocking)
   TagStorageService.instance.init();
+
+  // Initialize website service (non-blocking)
+  WebsiteService.instance.init();
 
   // Initialize video services (non-blocking)
   VideoThumbnailService.instance.init();
