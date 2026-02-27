@@ -620,14 +620,31 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // Find files that are on cloud but not locally
           // A file is cloud-only if:
           // 1. Its key doesn't match any local file name, AND
-          // 2. There's no SyncState linking it to a local file, AND
-          // 3. There's no cloud mapping linking it to a local file (for reinstall persistence)
+          // 2. There's no SyncState linking it to a local file that still exists on disk, AND
+          // 3. There's no cloud mapping linking it to a local file that still exists on disk
           final localFileNames = result.files.map((f) => f.name).toSet();
-          final linkedRemoteKeys = LocalStorageService.instance.getLinkedRemoteKeys(bucketName);
 
-          // Also check cloud mappings (for reinstall persistence - mappings may exist before SyncStates are restored)
+          // Get linked remote keys, but only for sync states where the local file still exists
+          final allLinkedRemoteKeys = LocalStorageService.instance.getLinkedRemoteKeysWithPaths(bucketName);
+          final linkedRemoteKeys = <String>{};
+          for (final entry in allLinkedRemoteKeys.entries) {
+            if (await File(entry.value).exists()) {
+              linkedRemoteKeys.add(entry.key);
+            } else {
+              // Clean up stale sync state (local file deleted but sync state remains)
+              LocalStorageService.instance.deleteSyncState(entry.value);
+            }
+          }
+
+          // Also check cloud mappings, but only for mappings where the local file still exists
           await CloudSyncMappingService.instance.ensureLoaded();
-          final mappedRemoteKeys = CloudSyncMappingService.instance.getMappedRemoteKeys(bucketName);
+          final allMappedRemoteKeys = CloudSyncMappingService.instance.getMappedRemoteKeysWithPaths(bucketName);
+          final mappedRemoteKeys = <String>{};
+          for (final entry in allMappedRemoteKeys.entries) {
+            if (await File(entry.value).exists()) {
+              mappedRemoteKeys.add(entry.key);
+            }
+          }
 
           cloudOnlyFiles = cloudFiles.where((cf) =>
             !localFileNames.contains(cf.key) &&

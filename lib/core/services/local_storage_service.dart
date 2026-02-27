@@ -212,6 +212,20 @@ class LocalStorageService {
     return keys;
   }
 
+  /// Get remote keys mapped to their local paths for existence checking
+  Map<String, String> getLinkedRemoteKeysWithPaths(String bucket) {
+    final box = _syncStateBox;
+    if (box == null) return {};
+    final map = <String, String>{};
+    for (final entry in box.toMap().entries) {
+      final state = entry.value;
+      if (state.bucket == bucket && state.remoteKey != null) {
+        map[state.remoteKey!] = entry.key as String; // key is localPath
+      }
+    }
+    return map;
+  }
+
   List<SyncState> getAllSyncStates() {
     return _syncStateBox?.values.toList() ?? [];
   }

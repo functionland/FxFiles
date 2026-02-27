@@ -105,6 +105,17 @@ class CloudSyncMappingService {
         .toSet();
   }
 
+  /// Get remote keys mapped to their local paths for existence checking
+  Map<String, String> getMappedRemoteKeysWithPaths(String bucket) {
+    final map = <String, String>{};
+    for (final m in _mappings) {
+      if (m.bucket == bucket && m.localPath != null) {
+        map[m.remoteKey] = m.localPath!;
+      }
+    }
+    return map;
+  }
+
   /// Check if mappings have been loaded from cloud
   bool get isLoaded => _isLoaded;
 
