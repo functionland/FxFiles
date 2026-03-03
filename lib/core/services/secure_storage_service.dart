@@ -83,4 +83,12 @@ class SecureStorageKeys {
   // Website builder keys
   static const String aiEndpointUrl = 'ai_endpoint_url';
   static const String ipfsGatewayUrl = 'ipfs_gateway_url';
+
+  // Blox pairing keys (for local-first retrieval)
+  static const String bloxPairingSecret = 'blox_pairing_secret';
+  static const String bloxHardwareId = 'blox_hardware_id';
+  static const String bloxPeerId = 'blox_peer_id';
+  static const String bloxName = 'blox_name';
+  static const String bloxIpOverride = 'blox_ip_override';
+  static const String bloxLastKnownIp = 'blox_last_known_ip';
 }

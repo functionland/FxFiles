@@ -292,7 +292,6 @@ class CloudSyncMappingService {
         // Check if sync state already exists
         final existing = LocalStorageService.instance.getSyncStateByIosAssetId(mapping.iosAssetId!);
         if (existing != null) {
-          debugPrint('CloudSyncMapping: iOS asset ${mapping.iosAssetId} already has sync state');
           return true;
         }
 
@@ -330,7 +329,6 @@ class CloudSyncMappingService {
         // Check if sync state already exists
         final existing = LocalStorageService.instance.getSyncState(mapping.localPath!);
         if (existing != null) {
-          debugPrint('CloudSyncMapping: Android file ${mapping.localPath} already has sync state');
           return true;
         }
 

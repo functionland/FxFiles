@@ -132,7 +132,7 @@ class AuthService {
     return false;
   }
 
-  Future<bool> checkExistingSession() async {
+  Future<bool> checkExistingSession({bool skipHeavyOperations = false}) async {
     debugPrint('AuthService: checkExistingSession called');
     try {
       final userJson = await SecureStorageService.instance.readJson(
@@ -148,7 +148,7 @@ class AuthService {
         debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
         await _initializeFulaClient();
         // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
-        if (FulaApiService.instance.isConfigured) {
+        if (FulaApiService.instance.isConfigured && !skipHeavyOperations) {
           CloudSyncMappingService.instance.relinkMappings();
           TagStorageService.instance.restoreFromCloud();
           WebsiteService.instance.restoreFromCloud();

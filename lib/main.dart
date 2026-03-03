@@ -23,6 +23,7 @@ import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
@@ -108,6 +109,9 @@ Future<ProviderContainer> _initializeApp() async {
     debugPrint('Auth session check error: $e');
   }
 
+  // Initialize blox discovery service with saved pairing info (non-blocking)
+  _initBloxDiscovery();
+
   // Initialize face detection services (non-blocking)
   FaceStorageService.instance.init().then((_) {
     FaceDetectionService.instance.init();
@@ -179,6 +183,54 @@ Future<ProviderContainer> _initializeApp() async {
   }
 
   return container;
+}
+
+/// Initialize BloxDiscoveryService with saved pairing state (non-blocking).
+/// This ensures pairedBlox is available throughout the app without needing
+/// to visit the pairing screen first.
+void _initBloxDiscovery() {
+  Future(() async {
+    try {
+      final secret = await SecureStorageService.instance.read(SecureStorageKeys.bloxPairingSecret);
+      if (secret == null || secret.isEmpty) return;
+
+      final hwId = await SecureStorageService.instance.read(SecureStorageKeys.bloxHardwareId);
+      final peerId = await SecureStorageService.instance.read(SecureStorageKeys.bloxPeerId);
+      final ipOverride = await SecureStorageService.instance.read(SecureStorageKeys.bloxIpOverride);
+      final lastKnownIp = await SecureStorageService.instance.read(SecureStorageKeys.bloxLastKnownIp);
+
+      BloxDiscoveryService.instance.setPairedBlox(
+        hardwareId: hwId,
+        peerId: peerId,
+        pairingSecret: secret,
+      );
+
+      if (ipOverride != null) {
+        BloxDiscoveryService.instance.setManualIp(ipOverride);
+      }
+      if (lastKnownIp != null) {
+        BloxDiscoveryService.instance.setLastKnownIp(lastKnownIp);
+      }
+
+      debugPrint('BloxDiscovery: initialized pairing state at startup');
+
+      // Initialize local download client if blox is reachable
+      if (FulaApiService.instance.isConfigured) {
+        final reachable = await BloxDiscoveryService.instance.quickHealthCheck();
+        if (reachable) {
+          final blox = BloxDiscoveryService.instance.pairedBlox;
+          if (blox != null) {
+            await FulaApiService.instance.initializeLocalClient(
+              endpoint: blox.s3Url,
+              accessToken: secret,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('BloxDiscovery: startup init failed: $e');
+    }
+  });
 }
 
 /// Error recovery app shown when startup fails

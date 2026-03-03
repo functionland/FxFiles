@@ -94,6 +94,9 @@ dependencies:
   # Deep Links
   app_links: ^6.4.0
 
+  # Network Service Discovery (mDNS/Bonjour for blox discovery)
+  nsd: ^4.1.0
+
   # Wallet/Web3
   reown_appkit: ^1.6.0
 

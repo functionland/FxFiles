@@ -17,6 +17,7 @@ import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
+import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -370,6 +371,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          _buildDevicesSection(),
           _buildFaceDetectionSection(),
           _buildSyncSection(settings),
           _buildSecuritySection(),
@@ -778,6 +780,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _clearCache() async {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Cache cleared')),
+    );
+  }
+
+  Widget _buildDevicesSection() {
+    return _buildSection(
+      title: 'Devices',
+      children: [
+        ListTile(
+          leading: const Icon(LucideIcons.hardDrive),
+          title: const Text('My Devices'),
+          subtitle: const Text('Pair a Blox for local-first file access'),
+          trailing: const Icon(LucideIcons.chevronRight),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BloxPairingScreen()),
+            );
+          },
+        ),
+      ],
     );
   }
 

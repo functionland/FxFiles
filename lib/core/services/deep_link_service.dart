@@ -23,6 +23,10 @@ class DeepLinkService {
   final _orgNameReceivedController = StreamController<String>.broadcast();
   Stream<String> get onOrgNameReceived => _orgNameReceivedController.stream;
 
+  // Stream controller for blox pairing completion (from FxBlox deeplink return)
+  final _bloxPairingController = StreamController<Map<String, String?>>.broadcast();
+  Stream<Map<String, String?>> get onBloxPairingComplete => _bloxPairingController.stream;
+
   // Default pinning service URL for get-key endpoint
   static const String _defaultPinningService = 'https://cloud.fx.land';
 
@@ -61,12 +65,53 @@ class DeepLinkService {
       return;
     }
 
+    // Route by host/path
+    final host = uri.host;
+
+    if (host == 'autopin-complete') {
+      debugPrint('DeepLinkService: Blox pairing complete deeplink received');
+      await _handleAutoPinComplete(uri);
+      return;
+    }
+
     // Check for API key in query parameters
     final apiKey = uri.queryParameters['key'];
     if (apiKey != null && apiKey.isNotEmpty) {
       debugPrint('DeepLinkService: API key received');
       await _storeApiKey(apiKey);
     }
+  }
+
+  Future<void> _handleAutoPinComplete(Uri uri) async {
+    final params = <String, String?>{
+      'secret': uri.queryParameters['secret'],
+      'hardwareId': uri.queryParameters['hardwareId'],
+      'bloxPeerId': uri.queryParameters['bloxPeerId'],
+      'bloxName': uri.queryParameters['bloxName'],
+    };
+
+    final secret = params['secret'];
+    if (secret == null || secret.isEmpty) {
+      debugPrint('DeepLinkService: autopin-complete missing secret');
+      return;
+    }
+
+    // Store pairing credentials
+    await SecureStorageService.instance.write(SecureStorageKeys.bloxPairingSecret, secret);
+    if (params['hardwareId'] != null) {
+      await SecureStorageService.instance.write(SecureStorageKeys.bloxHardwareId, params['hardwareId']!);
+    }
+    if (params['bloxPeerId'] != null) {
+      await SecureStorageService.instance.write(SecureStorageKeys.bloxPeerId, params['bloxPeerId']!);
+    }
+    if (params['bloxName'] != null) {
+      await SecureStorageService.instance.write(SecureStorageKeys.bloxName, params['bloxName']!);
+    }
+
+    // Notify listeners
+    _bloxPairingController.add(params);
+
+    debugPrint('DeepLinkService: Blox pairing stored successfully');
   }
 
   Future<void> _storeApiKey(String apiKey) async {
@@ -183,5 +228,6 @@ class DeepLinkService {
     _linkSubscription?.cancel();
     _apiKeyReceivedController.close();
     _orgNameReceivedController.close();
+    _bloxPairingController.close();
   }
 }

@@ -31,7 +31,8 @@ void callbackDispatcher() {
       UploadSpeedTracker.instance.initialize();
 
       // Restore auth session which initializes FulaApiService
-      final hasSession = await AuthService.instance.checkExistingSession();
+      // Skip heavy operations (relinkMappings, restoreFromCloud) — main app handles those
+      final hasSession = await AuthService.instance.checkExistingSession(skipHeavyOperations: true);
 
       if (!hasSession || !FulaApiService.instance.isConfigured) {
         debugPrint('Background task: Not configured (session: $hasSession, fula: ${FulaApiService.instance.isConfigured})');

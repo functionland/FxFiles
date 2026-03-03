@@ -18,6 +18,7 @@ import 'package:fula_files/features/websites/screens/websites_browser_screen.dar
 import 'package:fula_files/features/websites/screens/website_detail_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -123,6 +124,17 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           final tag = state.extra as FileTag?;
           return TaggedFilesScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/blox-pairing',
+        builder: (context, state) {
+          return BloxPairingScreen(
+            pairingSecret: state.uri.queryParameters['secret'],
+            hardwareId: state.uri.queryParameters['hardwareId'],
+            bloxPeerId: state.uri.queryParameters['bloxPeerId'],
+            bloxName: state.uri.queryParameters['bloxName'],
+          );
         },
       ),
       GoRoute(

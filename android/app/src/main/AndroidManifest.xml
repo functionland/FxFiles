@@ -25,6 +25,9 @@
     <!-- Notification permission for Android 13+ (API 33+) -->
     <!-- Required for media playback notification to appear in status bar and lock screen -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Network permissions for mDNS/NSD blox discovery -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     
     <application
         android:requestLegacyExternalStorage="true"
