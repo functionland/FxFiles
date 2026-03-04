@@ -214,18 +214,15 @@ void _initBloxDiscovery() {
 
       debugPrint('BloxDiscovery: initialized pairing state at startup');
 
-      // Try to initialize local client (with longer timeout than default 2s)
+      // Try to initialize local client using saved/last-known IP
       if (await _tryInitLocalClient(secret, timeout: const Duration(seconds: 5))) {
         return; // Success — done
       }
 
-      // First attempt failed — schedule retry after mDNS has had time to warm up
-      debugPrint('BloxDiscovery: initial local client setup failed, scheduling retry');
-      Future.delayed(const Duration(seconds: 15), () async {
-        if (FulaApiService.instance.hasLocalClient) return; // Already initialized
-        debugPrint('BloxDiscovery: retrying local client initialization');
-        await _tryInitLocalClient(secret, timeout: const Duration(seconds: 10));
-      });
+      // Saved IP didn't work (stale IP, mDNS not ready, etc.)
+      // Run NSD discovery in background to find device's current IP
+      debugPrint('BloxDiscovery: saved IP unreachable, running background NSD discovery');
+      _runDiscoveryAndInit(secret);
     } catch (e) {
       debugPrint('BloxDiscovery: startup init failed: $e');
     }
@@ -268,6 +265,33 @@ Future<bool> _tryInitLocalClient(String secret, {required Duration timeout}) asy
   }
 
   return true;
+}
+
+/// Run a one-shot NSD scan in the background, then attempt to init local client.
+/// Non-blocking — fires and forgets so the caller is not delayed.
+void _runDiscoveryAndInit(String secret) {
+  Future(() async {
+    try {
+      BloxDiscoveryService.instance.stopScanning();
+      BloxDiscoveryService.instance.startScanning(
+        interval: const Duration(seconds: 30),
+      );
+      // NSD scan runs for ~8s; wait 10s to include buffer
+      await Future.delayed(const Duration(seconds: 10));
+      BloxDiscoveryService.instance.stopScanning();
+
+      // Skip if local client was already initialized (e.g. user visited My Devices)
+      if (FulaApiService.instance.hasLocalClient) return;
+
+      if (await _tryInitLocalClient(secret, timeout: const Duration(seconds: 5))) {
+        debugPrint('BloxDiscovery: local client initialized after NSD discovery');
+      } else {
+        debugPrint('BloxDiscovery: device not found after NSD scan — not on same network');
+      }
+    } catch (e) {
+      debugPrint('BloxDiscovery: NSD discovery failed: $e');
+    }
+  });
 }
 
 /// Error recovery app shown when startup fails
