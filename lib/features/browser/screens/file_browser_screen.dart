@@ -3168,13 +3168,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
       Uint8List data;
       if (encryptionKey != null) {
-        // Download and decrypt if we have an encryption key
-        data = await FulaApiService.instance.downloadAndDecrypt(
+        // Download with local blox fallback to cloud
+        data = await FulaApiService.instance.downloadWithLocalFallback(
           bucket,
           cloudFile.key,
-          encryptionKey,
         );
-        debugPrint('Downloaded and decrypted ${cloudFile.key}');
       } else {
         // Fallback to plain download if no encryption key
         data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);

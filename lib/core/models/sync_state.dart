@@ -55,6 +55,9 @@ class SyncState extends HiveObject {
   @HiveField(11)
   final String? iosAssetId; // iOS PhotoKit asset ID for stable identification
 
+  @HiveField(12)
+  final String? contentCid; // IPFS CID for local-first retrieval from paired blox
+
   SyncState({
     required this.localPath,
     this.remotePath,
@@ -68,6 +71,7 @@ class SyncState extends HiveObject {
     this.errorMessage,
     this.displayPath,
     this.iosAssetId,
+    this.contentCid,
   });
 
   SyncState copyWith({
@@ -83,6 +87,7 @@ class SyncState extends HiveObject {
     String? errorMessage,
     String? displayPath,
     String? iosAssetId,
+    String? contentCid,
   }) {
     return SyncState(
       localPath: localPath ?? this.localPath,
@@ -97,6 +102,7 @@ class SyncState extends HiveObject {
       errorMessage: errorMessage ?? this.errorMessage,
       displayPath: displayPath ?? this.displayPath,
       iosAssetId: iosAssetId ?? this.iosAssetId,
+      contentCid: contentCid ?? this.contentCid,
     );
   }
 

@@ -24,7 +24,20 @@ class FulaApiService {
   // Track which buckets have had their forest loaded
   final Set<String> _loadedForests = {};
 
+  // Saved credentials for endpoint switching
+  Uint8List? _currentSecretKey;
+  String? _cloudEndpoint;
+  String? _cloudAccessToken;
+  bool _isLocalEndpoint = false;
+
+  // Local blox client for download-only (LAN-first reads)
+  fula.EncryptedClientHandle? _localClient;
+  String? _localEndpoint;
+  final Set<String> _localLoadedForests = {};
+
   bool get isConfigured => _isConfigured;
+  bool get isLocalEndpoint => _isLocalEndpoint;
+  bool get hasLocalClient => _localClient != null;
   String? get defaultBucket => _defaultBucket;
   fula.EncryptedClientHandle? get client => _client;
 
@@ -58,11 +71,56 @@ class FulaApiService {
       _defaultBucket = defaultBucket;
       _isConfigured = true;
       _loadedForests.clear();
+      _currentSecretKey = secretKey;
 
       debugPrint('FulaApiService initialized with FlatNamespace encryption');
     } catch (e) {
       throw FulaApiException('Failed to initialize FulaApiService: $e');
     }
+  }
+
+  /// Switch to local blox S3 gateway when on LAN.
+  /// Preserves cloud credentials for fallback.
+  Future<void> switchToLocalGateway(String localUrl, String pairingSecret) async {
+    if (_currentSecretKey == null) {
+      debugPrint('Cannot switch to local gateway: not initialized');
+      return;
+    }
+    // Save cloud credentials on first switch
+    if (!_isLocalEndpoint && _cloudEndpoint == null) {
+      // Read current endpoint from client config before switching
+      _cloudEndpoint = null; // Will be set by caller or from current state
+      _cloudAccessToken = null;
+    }
+    _isLocalEndpoint = true;
+    _loadedForests.clear();
+    await initialize(
+      endpoint: localUrl,
+      secretKey: _currentSecretKey!,
+      accessToken: pairingSecret,
+      defaultBucket: _defaultBucket,
+    );
+    debugPrint('Switched to local S3 gateway: $localUrl');
+  }
+
+  /// Switch back to cloud gateway
+  Future<void> switchToCloudGateway({
+    required String endpoint,
+    String? accessToken,
+  }) async {
+    if (_currentSecretKey == null) {
+      debugPrint('Cannot switch to cloud gateway: not initialized');
+      return;
+    }
+    _isLocalEndpoint = false;
+    _loadedForests.clear();
+    await initialize(
+      endpoint: endpoint,
+      secretKey: _currentSecretKey!,
+      accessToken: accessToken,
+      defaultBucket: _defaultBucket,
+    );
+    debugPrint('Switched to cloud S3 gateway: $endpoint');
   }
 
   /// Legacy configure method - redirects to initialize
@@ -239,8 +297,9 @@ class FulaApiService {
     }
   }
 
-  /// Download and decrypt a file by its path
-  Future<Uint8List> downloadObject(String bucket, String key) async {
+  /// Download and decrypt a file by its path.
+  /// The endpoint (local or cloud) is already set by the switching logic.
+  Future<Uint8List> downloadObject(String bucket, String key, {String? contentCid}) async {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -251,8 +310,90 @@ class FulaApiService {
     }
   }
 
-  /// Upload and encrypt a file
-  Future<String> uploadObject(
+  // ============================================================================
+  // LOCAL BLOX CLIENT (download-only, LAN-first reads)
+  // ============================================================================
+
+  /// Initialize a second encrypted client pointed at the local blox S3.
+  /// Used exclusively for reads — uploads always go through the cloud [_client].
+  Future<void> initializeLocalClient({
+    required String endpoint,
+    required String accessToken,
+  }) async {
+    if (_currentSecretKey == null) {
+      debugPrint('FulaApiService: Cannot init local client — not logged in');
+      return;
+    }
+    // Skip if already pointing at the same endpoint
+    if (_localClient != null && _localEndpoint == endpoint) return;
+
+    try {
+      final config = fula.FulaConfig(
+        endpoint: endpoint,
+        accessToken: accessToken,
+        timeoutSeconds: BigInt.from(3),
+        maxRetries: 1,
+      );
+
+      final encConfig = fula.EncryptionConfig(
+        secretKey: _currentSecretKey!,
+        enableMetadataPrivacy: true,
+        obfuscationMode: fula.ObfuscationMode.flatNamespace,
+      );
+
+      _localClient = await fula.createEncryptedClient(config: config, encryption: encConfig);
+      _localEndpoint = endpoint;
+      _localLoadedForests.clear();
+      debugPrint('FulaApiService: local blox client ready at $endpoint');
+    } catch (e) {
+      debugPrint('FulaApiService: local client init failed: $e');
+      _localClient = null;
+      _localEndpoint = null;
+    }
+  }
+
+  /// Download from the local blox first; fall back to cloud on failure.
+  /// Zero overhead when no local client is configured.
+  Future<Uint8List> downloadWithLocalFallback(String bucket, String key) async {
+    _ensureConfigured();
+
+    // Fast path: no local client → straight to cloud
+    if (_localClient == null) {
+      return downloadObject(bucket, key);
+    }
+
+    // Try local blox first
+    try {
+      // Lazy per-bucket forest load on the local client
+      if (!_localLoadedForests.contains(bucket)) {
+        await fula.loadForest(client: _localClient!, bucket: bucket);
+        _localLoadedForests.add(bucket);
+      }
+
+      final data = await fula.getFlat(client: _localClient!, bucket: bucket, path: key);
+      debugPrint('Downloaded from local blox: $key');
+      return Uint8List.fromList(data);
+    } catch (e) {
+      // Clear bucket so forest reloads next attempt (may have been updated)
+      _localLoadedForests.remove(bucket);
+      debugPrint('Local download failed for $key, falling back to cloud: $e');
+    }
+
+    // Cloud fallback
+    return downloadObject(bucket, key);
+  }
+
+  /// Dispose the local blox client (e.g. on unpair or blox goes offline).
+  void disposeLocalClient() {
+    _localClient = null;
+    _localEndpoint = null;
+    _localLoadedForests.clear();
+    debugPrint('FulaApiService: local blox client disposed');
+  }
+
+  /// Upload and encrypt a file.
+  /// Returns an [UploadResult] with etag and optional content CID.
+  Future<UploadResult> uploadObject(
     String bucket,
     String key,
     Uint8List data, {
@@ -269,7 +410,7 @@ class FulaApiService {
         data: data.toList(),
         contentType: contentType,
       );
-      return result.etag;
+      return UploadResult(etag: result.etag);
     } catch (e) {
       throw FulaApiException('Failed to upload object: $e');
     }
@@ -314,7 +455,8 @@ class FulaApiService {
   }) async {
     // Use the originalFilename as the key if provided, otherwise use key
     final path = originalFilename ?? key;
-    return uploadObject(bucket, path, data, contentType: contentType);
+    final result = await uploadObject(bucket, path, data, contentType: contentType);
+    return result.etag;
   }
 
   // ============================================================================
@@ -544,12 +686,24 @@ class FulaApiService {
     _defaultBucket = null;
     _isConfigured = false;
     _loadedForests.clear();
+    _currentSecretKey = null;
+    _cloudEndpoint = null;
+    _cloudAccessToken = null;
+    _isLocalEndpoint = false;
+    disposeLocalClient();
   }
 }
 
 // ============================================================================
 // HELPER CLASSES
 // ============================================================================
+
+class UploadResult {
+  final String etag;
+  final String? contentCid;
+
+  UploadResult({required this.etag, this.contentCid});
+}
 
 class UploadProgress {
   final int bytesUploaded;

@@ -23,6 +23,7 @@ import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
@@ -108,6 +109,9 @@ Future<ProviderContainer> _initializeApp() async {
     debugPrint('Auth session check error: $e');
   }
 
+  // Initialize blox discovery service with saved pairing info (non-blocking)
+  _initBloxDiscovery();
+
   // Initialize face detection services (non-blocking)
   FaceStorageService.instance.init().then((_) {
     FaceDetectionService.instance.init();
@@ -179,6 +183,115 @@ Future<ProviderContainer> _initializeApp() async {
   }
 
   return container;
+}
+
+/// Initialize BloxDiscoveryService with saved pairing state (non-blocking).
+/// This ensures pairedBlox is available throughout the app without needing
+/// to visit the pairing screen first.
+void _initBloxDiscovery() {
+  Future(() async {
+    try {
+      final secret = await SecureStorageService.instance.read(SecureStorageKeys.bloxPairingSecret);
+      if (secret == null || secret.isEmpty) return;
+
+      final hwId = await SecureStorageService.instance.read(SecureStorageKeys.bloxHardwareId);
+      final peerId = await SecureStorageService.instance.read(SecureStorageKeys.bloxPeerId);
+      final ipOverride = await SecureStorageService.instance.read(SecureStorageKeys.bloxIpOverride);
+      final lastKnownIp = await SecureStorageService.instance.read(SecureStorageKeys.bloxLastKnownIp);
+
+      BloxDiscoveryService.instance.setPairedBlox(
+        hardwareId: hwId,
+        peerId: peerId,
+        pairingSecret: secret,
+      );
+
+      if (ipOverride != null) {
+        BloxDiscoveryService.instance.setManualIp(ipOverride);
+      }
+      if (lastKnownIp != null) {
+        BloxDiscoveryService.instance.setLastKnownIp(lastKnownIp);
+      }
+
+      debugPrint('BloxDiscovery: initialized pairing state at startup');
+
+      // Try to initialize local client using saved/last-known IP
+      if (await _tryInitLocalClient(secret, timeout: const Duration(seconds: 5))) {
+        return; // Success — done
+      }
+
+      // Saved IP didn't work (stale IP, mDNS not ready, etc.)
+      // Run NSD discovery in background to find device's current IP
+      debugPrint('BloxDiscovery: saved IP unreachable, running background NSD discovery');
+      _runDiscoveryAndInit(secret);
+    } catch (e) {
+      debugPrint('BloxDiscovery: startup init failed: $e');
+    }
+  });
+}
+
+/// Attempt to initialize the local Blox download client.
+/// Returns true if successful, false otherwise.
+Future<bool> _tryInitLocalClient(String secret, {required Duration timeout}) async {
+  if (!FulaApiService.instance.isConfigured) {
+    debugPrint('BloxDiscovery: FulaApiService not configured, skipping local client');
+    return false;
+  }
+
+  final blox = BloxDiscoveryService.instance.pairedBlox;
+  if (blox == null) {
+    debugPrint('BloxDiscovery: no paired blox IP available');
+    return false;
+  }
+
+  final reachable = await BloxDiscoveryService.instance.quickHealthCheck(timeout: timeout);
+  if (!reachable) {
+    debugPrint('BloxDiscovery: health check failed (timeout: ${timeout.inSeconds}s)');
+    return false;
+  }
+
+  await FulaApiService.instance.initializeLocalClient(
+    endpoint: blox.s3Url,
+    accessToken: secret,
+  );
+  debugPrint('BloxDiscovery: local client initialized at startup');
+
+  // Persist last known IP for faster startup next time
+  if (BloxDiscoveryService.instance.manualIp == null) {
+    BloxDiscoveryService.instance.setLastKnownIp(blox.ip);
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.bloxLastKnownIp,
+      blox.ip,
+    );
+  }
+
+  return true;
+}
+
+/// Run a one-shot NSD scan in the background, then attempt to init local client.
+/// Non-blocking — fires and forgets so the caller is not delayed.
+void _runDiscoveryAndInit(String secret) {
+  Future(() async {
+    try {
+      BloxDiscoveryService.instance.stopScanning();
+      BloxDiscoveryService.instance.startScanning(
+        interval: const Duration(seconds: 30),
+      );
+      // NSD scan runs for ~8s; wait 10s to include buffer
+      await Future.delayed(const Duration(seconds: 10));
+      BloxDiscoveryService.instance.stopScanning();
+
+      // Skip if local client was already initialized (e.g. user visited My Devices)
+      if (FulaApiService.instance.hasLocalClient) return;
+
+      if (await _tryInitLocalClient(secret, timeout: const Duration(seconds: 5))) {
+        debugPrint('BloxDiscovery: local client initialized after NSD discovery');
+      } else {
+        debugPrint('BloxDiscovery: device not found after NSD scan — not on same network');
+      }
+    } catch (e) {
+      debugPrint('BloxDiscovery: NSD discovery failed: $e');
+    }
+  });
 }
 
 /// Error recovery app shown when startup fails

@@ -108,9 +108,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           backgroundColor: Colors.red,
         ),
       );
+      return;
     }
-    // Note: _isGettingApiKey will be set to false when the API key is received
-    // via the deep link callback, or we can add a timeout
+
+    // Auto-cancel after 180 seconds if no deep link callback received
+    // (user may need time to log in, verify email, etc.)
+    Future.delayed(const Duration(seconds: 180), () {
+      if (mounted && _isGettingApiKey) {
+        setState(() => _isGettingApiKey = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('API Key request timed out. Please try again.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    });
   }
 
   void _cancelGettingApiKey() {
