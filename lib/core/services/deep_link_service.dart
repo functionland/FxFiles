@@ -116,48 +116,61 @@ class DeepLinkService {
 
   Future<void> _storeApiKey(String apiKey) async {
     try {
-      // Store the API key
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.jwtToken,
-        apiKey,
-      );
+      // Store the API key with timeout protection — keychain can hang on some iOS versions
+      await Future.any([
+        _performApiKeySetup(apiKey),
+        Future.delayed(const Duration(seconds: 15)),
+      ]);
 
-      // Also set default API gateway and IPFS server if not already set
-      final existingGateway = await SecureStorageService.instance.read(
-        SecureStorageKeys.apiGatewayUrl,
-      );
-      if (existingGateway == null || existingGateway.isEmpty) {
-        await SecureStorageService.instance.write(
-          SecureStorageKeys.apiGatewayUrl,
-          'https://s3.cloud.fx.land',
-        );
-      }
-
-      final existingIpfs = await SecureStorageService.instance.read(
-        SecureStorageKeys.ipfsServerUrl,
-      );
-      if (existingIpfs == null || existingIpfs.isEmpty) {
-        await SecureStorageService.instance.write(
-          SecureStorageKeys.ipfsServerUrl,
-          'https://api.cloud.fx.land',
-        );
-      }
-
-      // Reinitialize FulaApiService with the new settings
-      debugPrint('DeepLinkService: Calling reinitializeFulaClient...');
-      await AuthService.instance.reinitializeFulaClient();
-      debugPrint('DeepLinkService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
-
-      // Fetch organization name from userinfo API (non-blocking, errors ignored)
-      _fetchAndStoreOrgName();
-
-      // Notify listeners that API key was received
+      // Always notify listeners, even if setup partially failed.
+      // The key is stored first, so even if reinitialize hangs,
+      // the key is persisted for next app launch.
       _apiKeyReceivedController.add(apiKey);
 
       debugPrint('DeepLinkService: API key stored and configured successfully');
     } catch (e) {
       debugPrint('DeepLinkService: Error storing API key: $e');
+      // Still try to notify — the key write may have succeeded
+      _apiKeyReceivedController.add(apiKey);
     }
+  }
+
+  /// Performs the actual API key setup steps. Called with a timeout wrapper.
+  Future<void> _performApiKeySetup(String apiKey) async {
+    // Store the API key (critical — do this first)
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.jwtToken,
+      apiKey,
+    );
+
+    // Set defaults if not already configured
+    final existingGateway = await SecureStorageService.instance.read(
+      SecureStorageKeys.apiGatewayUrl,
+    );
+    if (existingGateway == null || existingGateway.isEmpty) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.apiGatewayUrl,
+        'https://s3.cloud.fx.land',
+      );
+    }
+
+    final existingIpfs = await SecureStorageService.instance.read(
+      SecureStorageKeys.ipfsServerUrl,
+    );
+    if (existingIpfs == null || existingIpfs.isEmpty) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.ipfsServerUrl,
+        'https://api.cloud.fx.land',
+      );
+    }
+
+    // Reinitialize FulaApiService with the new settings
+    debugPrint('DeepLinkService: Calling reinitializeFulaClient...');
+    await AuthService.instance.reinitializeFulaClient();
+    debugPrint('DeepLinkService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
+
+    // Fetch organization name from userinfo API (non-blocking, errors ignored)
+    _fetchAndStoreOrgName();
   }
 
   /// Opens the browser to get an API key from the Fula pinning service
