@@ -132,6 +132,14 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       setState(() => _bloxReachable = reachable);
     }
     if (reachable) {
+      // Persist last known IP for startup (same as _quickCheckBlox)
+      if (_manualIpOverride == null) {
+        BloxDiscoveryService.instance.setLastKnownIp(blox.ip);
+        await SecureStorageService.instance.write(
+          SecureStorageKeys.bloxLastKnownIp,
+          blox.ip,
+        );
+      }
       // Initialize local download client if fula is ready
       final secret = BloxDiscoveryService.instance.pairingSecret;
       if (secret != null && FulaApiService.instance.isConfigured) {

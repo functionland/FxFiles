@@ -214,23 +214,60 @@ void _initBloxDiscovery() {
 
       debugPrint('BloxDiscovery: initialized pairing state at startup');
 
-      // Initialize local download client if blox is reachable
-      if (FulaApiService.instance.isConfigured) {
-        final reachable = await BloxDiscoveryService.instance.quickHealthCheck();
-        if (reachable) {
-          final blox = BloxDiscoveryService.instance.pairedBlox;
-          if (blox != null) {
-            await FulaApiService.instance.initializeLocalClient(
-              endpoint: blox.s3Url,
-              accessToken: secret,
-            );
-          }
-        }
+      // Try to initialize local client (with longer timeout than default 2s)
+      if (await _tryInitLocalClient(secret, timeout: const Duration(seconds: 5))) {
+        return; // Success — done
       }
+
+      // First attempt failed — schedule retry after mDNS has had time to warm up
+      debugPrint('BloxDiscovery: initial local client setup failed, scheduling retry');
+      Future.delayed(const Duration(seconds: 15), () async {
+        if (FulaApiService.instance.hasLocalClient) return; // Already initialized
+        debugPrint('BloxDiscovery: retrying local client initialization');
+        await _tryInitLocalClient(secret, timeout: const Duration(seconds: 10));
+      });
     } catch (e) {
       debugPrint('BloxDiscovery: startup init failed: $e');
     }
   });
+}
+
+/// Attempt to initialize the local Blox download client.
+/// Returns true if successful, false otherwise.
+Future<bool> _tryInitLocalClient(String secret, {required Duration timeout}) async {
+  if (!FulaApiService.instance.isConfigured) {
+    debugPrint('BloxDiscovery: FulaApiService not configured, skipping local client');
+    return false;
+  }
+
+  final blox = BloxDiscoveryService.instance.pairedBlox;
+  if (blox == null) {
+    debugPrint('BloxDiscovery: no paired blox IP available');
+    return false;
+  }
+
+  final reachable = await BloxDiscoveryService.instance.quickHealthCheck(timeout: timeout);
+  if (!reachable) {
+    debugPrint('BloxDiscovery: health check failed (timeout: ${timeout.inSeconds}s)');
+    return false;
+  }
+
+  await FulaApiService.instance.initializeLocalClient(
+    endpoint: blox.s3Url,
+    accessToken: secret,
+  );
+  debugPrint('BloxDiscovery: local client initialized at startup');
+
+  // Persist last known IP for faster startup next time
+  if (BloxDiscoveryService.instance.manualIp == null) {
+    BloxDiscoveryService.instance.setLastKnownIp(blox.ip);
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.bloxLastKnownIp,
+      blox.ip,
+    );
+  }
+
+  return true;
 }
 
 /// Error recovery app shown when startup fails
