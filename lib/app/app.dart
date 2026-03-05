@@ -61,7 +61,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       }
     });
     final query = queryParts.isNotEmpty ? '?${queryParts.join('&')}' : '';
-    ref.read(routerProvider).go('/blox-pairing$query');
+    ref.read(routerProvider).push('/blox-pairing$query');
   }
 
   @override
