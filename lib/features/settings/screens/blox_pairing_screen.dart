@@ -90,6 +90,10 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       }
       // Use fast healthz check instead of triggering NSD scan
       await _quickCheckBlox();
+      // If quick check failed, auto-trigger NSD scan (fire-and-forget)
+      if (_bloxReachable == false) {
+        _handleRescan();
+      }
     }
   }
 

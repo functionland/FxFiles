@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/app/router.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
+import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
@@ -21,16 +24,44 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   // Track if user accepted ToS in this session (before async save completes)
   bool _acceptedThisSession = false;
 
+  StreamSubscription<Map<String, String?>>? _bloxPairingSubscription;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // Listen for blox pairing deep links while app is running (warm return)
+    _bloxPairingSubscription =
+        DeepLinkService.instance.onBloxPairingComplete.listen(_navigateToBloxPairing);
+
+    // Check for pending pairing params from cold-start deep link
+    // (router not ready during initState, so defer to next frame)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pending = DeepLinkService.instance.consumePendingBloxPairing();
+      if (pending != null) {
+        _navigateToBloxPairing(pending);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _bloxPairingSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// Navigate to BloxPairingScreen with the pairing params from the deep link.
+  void _navigateToBloxPairing(Map<String, String?> params) {
+    final queryParts = <String>[];
+    params.forEach((key, value) {
+      if (value != null && value.isNotEmpty) {
+        queryParts.add('$key=${Uri.encodeComponent(value)}');
+      }
+    });
+    final query = queryParts.isNotEmpty ? '?${queryParts.join('&')}' : '';
+    ref.read(routerProvider).go('/blox-pairing$query');
   }
 
   @override

@@ -27,6 +27,18 @@ class DeepLinkService {
   final _bloxPairingController = StreamController<Map<String, String?>>.broadcast();
   Stream<Map<String, String?>> get onBloxPairingComplete => _bloxPairingController.stream;
 
+  // Pending pairing params — survives until consumed (handles cold start where
+  // no listener is attached when the deep link fires).
+  Map<String, String?>? _pendingBloxPairing;
+  Map<String, String?>? get pendingBloxPairing => _pendingBloxPairing;
+
+  /// Returns and clears any pending blox pairing params (atomic read-and-clear).
+  Map<String, String?>? consumePendingBloxPairing() {
+    final params = _pendingBloxPairing;
+    _pendingBloxPairing = null;
+    return params;
+  }
+
   // Default pinning service URL for get-key endpoint
   static const String _defaultPinningService = 'https://cloud.fx.land';
 
@@ -107,6 +119,9 @@ class DeepLinkService {
     if (params['bloxName'] != null) {
       await SecureStorageService.instance.write(SecureStorageKeys.bloxName, params['bloxName']!);
     }
+
+    // Store as pending (consumed by app.dart on next frame / init)
+    _pendingBloxPairing = params;
 
     // Notify listeners
     _bloxPairingController.add(params);
