@@ -8,7 +8,8 @@ import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 /// Manages the desktop system tray icon, tooltip, and context menu.
 /// Shows sync progress in the tray like OneDrive / Dropbox.
-class TrayService with TrayListener {
+/// Intercepts window close to minimize to tray instead of quitting.
+class TrayService with TrayListener, WindowListener {
   TrayService._();
   static final TrayService instance = TrayService._();
 
@@ -36,6 +37,10 @@ class TrayService with TrayListener {
       trayManager.addListener(this);
       await _rebuildMenu();
 
+      // Intercept window close to minimize to tray instead of quitting
+      await windowManager.setPreventClose(true);
+      windowManager.addListener(this);
+
       // Listen for sync progress changes
       UploadProgressManager.instance.addListener(_onProgressUpdate);
 
@@ -58,6 +63,16 @@ class TrayService with TrayListener {
   @override
   void onTrayIconRightMouseDown() {
     trayManager.popUpContextMenu();
+  }
+
+  // ---------------------------------------------------------------------------
+  // WindowListener — minimize to tray on close
+  // ---------------------------------------------------------------------------
+
+  @override
+  void onWindowClose() async {
+    // Hide to tray instead of quitting
+    await windowManager.hide();
   }
 
   // ---------------------------------------------------------------------------
@@ -125,6 +140,7 @@ class TrayService with TrayListener {
     items.add(MenuItem(
       label: 'Quit',
       onClick: (_) async {
+        await windowManager.setPreventClose(false);
         await windowManager.destroy();
       },
     ));
@@ -144,6 +160,7 @@ class TrayService with TrayListener {
   void dispose() {
     if (_isInitialized) {
       UploadProgressManager.instance.removeListener(_onProgressUpdate);
+      windowManager.removeListener(this);
       trayManager.removeListener(this);
       trayManager.destroy();
     }
