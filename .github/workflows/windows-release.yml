@@ -26,13 +26,13 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Create Store MSIX (unsigned, for Microsoft Store)
-        run: dart run msix:create --store
+      - name: Create Store MSIX bundle (unsigned, for Microsoft Store)
+        run: dart run msix:create --store --build-msixbundle
 
-      - name: Save Store MSIX
+      - name: Save Store MSIX bundle
         run: |
           mkdir store
-          move build\windows\x64\runner\Release\*.msix store\FxFiles-store.msix
+          move build\windows\x64\runner\Release\*.msixbundle store\FxFiles-store.msixbundle
         shell: cmd
 
       - name: Create sideload MSIX (signed, for direct download)
@@ -44,11 +44,11 @@ jobs:
           move build\windows\x64\runner\Release\*.msix sideload\FxFiles.msix
         shell: cmd
 
-      - name: Upload Store MSIX artifact
+      - name: Upload Store MSIX bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: fxfiles-msix-store
-          path: store/FxFiles-store.msix
+          path: store/FxFiles-store.msixbundle
           retention-days: 30
 
       - name: Upload sideload MSIX artifact
