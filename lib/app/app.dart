@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/onboarding/screens/terms_of_service_screen.dart';
+import 'package:fula_files/shared/widgets/keyboard_shortcuts.dart';
 import 'package:fula_files/shared/widgets/mini_player.dart';
 
 class FulaFilesApp extends ConsumerStatefulWidget {
@@ -172,11 +173,13 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
           return TermsOfServiceScreen(onAccepted: _onTosAccepted);
         }
 
-        return Column(
-          children: [
-            Expanded(child: child ?? const SizedBox()),
-            const MiniPlayer(),
-          ],
+        return DesktopKeyboardShortcuts(
+          child: Column(
+            children: [
+              Expanded(child: child ?? const SizedBox()),
+              const MiniPlayer(),
+            ],
+          ),
         );
       },
     );

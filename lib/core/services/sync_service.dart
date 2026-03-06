@@ -513,7 +513,7 @@ class SyncService {
           task.remoteKey,
           data,
           encryptionKey,
-          originalFilename: task.localPath.split('/').last,
+          originalFilename: task.localPath.split(RegExp(r'[/\\]')).last,
           onProgress: (UploadProgress progress) {
             _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
               bytesTransferred: progress.bytesUploaded,
@@ -566,7 +566,7 @@ class SyncService {
         // Store mapping for reinstall persistence (both iOS and Android)
         await CloudSyncMappingService.instance.addMapping(SyncMapping(
           iosAssetId: state.iosAssetId, // iOS only
-          localPath: Platform.isAndroid ? task.localPath : null, // Android only
+          localPath: !Platform.isIOS ? task.localPath : null, // Android + Desktop
           remoteKey: task.remoteKey,
           bucket: task.remoteBucket,
           etag: etag,
@@ -954,46 +954,52 @@ class SyncService {
 
   /// Process queue with a timeout (for background tasks with limited execution time)
   Future<void> processQueueWithTimeout(Duration timeout) async {
-    final stopwatch = Stopwatch()..start();
+    if (_isProcessingUpload) return;
+    _isProcessingUpload = true;
+    try {
+      final stopwatch = Stopwatch()..start();
 
-    debugPrint('SyncService: Processing queue with ${timeout.inMinutes}min timeout');
+      debugPrint('SyncService: Processing queue with ${timeout.inMinutes}min timeout');
 
-    while (_uploadQueue.isNotEmpty && stopwatch.elapsed < timeout) {
-      // Check if we can start a new upload
-      if (_activeUploads >= maxParallelUploads) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        continue;
+      while (_uploadQueue.isNotEmpty && stopwatch.elapsed < timeout) {
+        // Check if we can start a new upload
+        if (_activeUploads >= maxParallelUploads) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          continue;
+        }
+
+        final task = _uploadQueue.removeAt(0);
+        _activeUploads++;
+
+        // Start upload without awaiting
+        _executeUpload(task).whenComplete(() {
+          _activeUploads--;
+        });
+
+        // Small delay between starting uploads
+        await Future.delayed(const Duration(milliseconds: 10));
+
+        // Check remaining time
+        final remainingTime = timeout - stopwatch.elapsed;
+        if (remainingTime < const Duration(seconds: 30)) {
+          debugPrint('SyncService: Less than 30s remaining, stopping new uploads');
+          break;
+        }
       }
 
-      final task = _uploadQueue.removeAt(0);
-      _activeUploads++;
-
-      // Start upload without awaiting
-      _executeUpload(task).whenComplete(() {
-        _activeUploads--;
-      });
-
-      // Small delay between starting uploads
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      // Check remaining time
-      final remainingTime = timeout - stopwatch.elapsed;
-      if (remainingTime < const Duration(seconds: 30)) {
-        debugPrint('SyncService: Less than 30s remaining, stopping new uploads');
-        break;
+      // Wait for active uploads to complete (up to remaining time)
+      while (_activeUploads > 0 && stopwatch.elapsed < timeout) {
+        await Future.delayed(const Duration(milliseconds: 200));
       }
-    }
 
-    // Wait for active uploads to complete (up to remaining time)
-    while (_activeUploads > 0 && stopwatch.elapsed < timeout) {
-      await Future.delayed(const Duration(milliseconds: 200));
+      stopwatch.stop();
+      debugPrint('SyncService: Timeout processing complete. '
+          'Elapsed: ${stopwatch.elapsed.inSeconds}s, '
+          'Remaining in queue: ${_uploadQueue.length}, '
+          'Active: $_activeUploads');
+    } finally {
+      _isProcessingUpload = false;
     }
-
-    stopwatch.stop();
-    debugPrint('SyncService: Timeout processing complete. '
-        'Elapsed: ${stopwatch.elapsed.inSeconds}s, '
-        'Remaining in queue: ${_uploadQueue.length}, '
-        'Active: $_activeUploads');
   }
 
   /// Get count of pending tasks (in-memory + persistent)

@@ -22,6 +22,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 /// Service that orchestrates the website generation pipeline:
 /// upload assets (unencrypted) → parse content (ML Kit) → call AI → store result
@@ -413,6 +414,11 @@ User request:
 
   /// Parse image: use ImageLabeler for content description + TextRecognizer for any text
   Future<String?> _parseImage(String localPath) async {
+    // ML Kit is only available on mobile platforms
+    if (!PlatformCapabilities.isMobile) {
+      return 'Image: ${p.basename(localPath)}';
+    }
+
     final results = <String>[];
 
     try {
@@ -471,7 +477,7 @@ User request:
       }
 
       // For other document types with embedded images (docx etc.), try text recognition on first page
-      if (['.png', '.jpg', '.jpeg', '.bmp', '.webp'].contains(ext)) {
+      if (PlatformCapabilities.isMobile && ['.png', '.jpg', '.jpeg', '.bmp', '.webp'].contains(ext)) {
         final inputImage = InputImage.fromFilePath(localPath);
         final textRecognizer = TextRecognizer();
         try {
@@ -495,6 +501,11 @@ User request:
 
   /// Parse video: extract a thumbnail frame and label it
   Future<String?> _parseVideo(String localPath) async {
+    // ML Kit labeling is only available on mobile
+    if (!PlatformCapabilities.isMobile) {
+      return 'Video: ${p.basename(localPath)}';
+    }
+
     try {
       // Extract thumbnail frame
       final thumbnailBytes = await VideoThumbnail.thumbnailData(

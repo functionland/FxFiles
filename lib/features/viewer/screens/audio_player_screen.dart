@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/shared/widgets/audio_visualizer.dart';
 import 'package:fula_files/shared/widgets/audio_equalizer.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 class AudioPlayerScreen extends StatefulWidget {
   final String filePath;
@@ -656,7 +657,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
 
     if (!mounted) return;
 
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       builder: (context) => Column(
         mainAxisSize: MainAxisSize.min,

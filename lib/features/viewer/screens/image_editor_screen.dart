@@ -9,6 +9,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:image/image.dart' as img;
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 enum EditMode { none, adjust, text }
@@ -394,6 +395,15 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
   }
 
   Future<void> _cropImage() async {
+    if (!PlatformCapabilities.isMobile) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Image crop is not available on desktop')),
+        );
+      }
+      return;
+    }
+
     setState(() => _isProcessing = true);
 
     try {

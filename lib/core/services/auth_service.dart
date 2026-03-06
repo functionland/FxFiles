@@ -113,6 +113,10 @@ class AuthService {
     } else if (Platform.isIOS) {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+    } else {
+      // Desktop (Windows/macOS/Linux): use server client ID for browser-based OAuth
+      clientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
 
     await _googleSignIn.initialize(
@@ -129,7 +133,8 @@ class AuthService {
     } else if (Platform.isIOS) {
       return _googleClientIdIOS.isNotEmpty;
     }
-    return false;
+    // Desktop: use server client ID
+    return _googleServerClientId.isNotEmpty;
   }
 
   Future<bool> checkExistingSession({bool skipHeavyOperations = false}) async {

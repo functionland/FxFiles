@@ -1,0 +1,91 @@
+name: Windows MSIX Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.38.0'
+
+jobs:
+  build-windows-msix:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-windows-fxfiles
+
+      - name: Install flutter_rust_bridge_codegen
+        run: cargo install flutter_rust_bridge_codegen
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Generate Dart bindings
+        run: flutter_rust_bridge_codegen generate
+
+      - name: Build fula_flutter DLL
+        run: cargo build -p fula-flutter --release
+
+      - name: Copy DLL to windows directory
+        run: copy target\release\fula_flutter.dll windows\fula_flutter.dll
+        shell: cmd
+
+      - name: Install MSIX tooling
+        run: dart pub add --dev msix
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Create MSIX installer
+        run: dart run msix:create
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxfiles-msix
+          path: build/windows/x64/runner/Release/*.msix
+          retention-days: 5
+
+  attach-to-release:
+    needs: build-windows-msix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download MSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fxfiles-msix
+          path: msix/
+
+      - name: Upload MSIX to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: msix/*.msix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

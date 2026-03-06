@@ -435,14 +435,17 @@ class FileService {
     }
   }
 
-  Future<Directory> getDownloadsDirectory() async {
+  Future<Directory> getDownloadsDir() async {
     if (Platform.isAndroid) {
       return Directory('/storage/emulated/0/Download');
     } else if (Platform.isIOS) {
       return await getApplicationDocumentsDirectory();
-    } else if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-      final downloads = await getDownloadsDirectory();
-      return downloads;
+    } else if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'] ?? r'C:\Users\Default';
+      return Directory('$userProfile\\Downloads');
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/';
+      return Directory('$home/Downloads');
     }
     return await getApplicationDocumentsDirectory();
   }
@@ -500,6 +503,40 @@ class FileService {
           return Directory('/storage/emulated/0/Download');
         default:
           return Directory('/storage/emulated/0');
+      }
+    }
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'] ?? r'C:\Users\Default';
+      switch (category) {
+        case FileCategory.images:
+          return Directory('$userProfile\\Pictures');
+        case FileCategory.videos:
+          return Directory('$userProfile\\Videos');
+        case FileCategory.audio:
+          return Directory('$userProfile\\Music');
+        case FileCategory.documents:
+          return Directory('$userProfile\\Documents');
+        case FileCategory.downloads:
+          return Directory('$userProfile\\Downloads');
+        default:
+          return Directory(userProfile);
+      }
+    }
+    if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/';
+      switch (category) {
+        case FileCategory.images:
+          return Directory('$home/Pictures');
+        case FileCategory.videos:
+          return Directory('$home/Videos');
+        case FileCategory.audio:
+          return Directory('$home/Music');
+        case FileCategory.documents:
+          return Directory('$home/Documents');
+        case FileCategory.downloads:
+          return Directory('$home/Downloads');
+        default:
+          return Directory(home);
       }
     }
     return await getApplicationDocumentsDirectory();

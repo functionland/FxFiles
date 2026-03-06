@@ -11,6 +11,7 @@ import 'package:showcaseview/showcaseview.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
@@ -715,9 +716,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   void _showSortOptions() {
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
-      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1392,51 +1392,64 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     return listView;
   }
 
+  int _getGridColumns(double width) {
+    if (width > 1400) return 8;
+    if (width > 1000) return 6;
+    if (width > 800) return 4;
+    if (width > 600) return 3;
+    return 2;
+  }
+
   Widget _buildGridView() {
     final settings = ref.watch(settingsProvider);
     final thumbScrollItems = _buildThumbScrollItems();
-    final crossAxisCount = _viewMode == ViewMode.largeGrid ? 2 : 4;
     final itemCount = _isCategoryMode
         ? _combinedFiles.length + (_hasMore ? 1 : 0)
         : _files.length + (_hasMore ? 1 : 0);
 
     final gridView = RefreshIndicator(
       onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
-      child: GridView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.all(8),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: crossAxisCount,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8,
-          childAspectRatio: _viewMode == ViewMode.largeGrid ? 0.85 : 0.9,
-        ),
-        itemCount: itemCount,
-        itemBuilder: (context, index) {
-          final fileCount = _isCategoryMode ? _combinedFiles.length : _files.length;
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final baseCols = _viewMode == ViewMode.largeGrid ? 2 : 4;
+          final crossAxisCount = _getGridColumns(constraints.maxWidth).clamp(baseCols, 12);
+          return GridView.builder(
+            controller: _scrollController,
+            padding: const EdgeInsets.all(8),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: _viewMode == ViewMode.largeGrid ? 0.85 : 0.9,
+            ),
+            itemCount: itemCount,
+            itemBuilder: (context, index) {
+              final fileCount = _isCategoryMode ? _combinedFiles.length : _files.length;
 
-          // Loading indicator at bottom
-          if (index >= fileCount) {
-            return const Center(child: CircularProgressIndicator());
-          }
+              // Loading indicator at bottom
+              if (index >= fileCount) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-          // Category mode: use combined sorted list
-          if (_isCategoryMode) {
-            final item = _combinedFiles[index];
-            if (item.isCloudOnly) {
-              return _buildCloudOnlyGridItem(item.cloudFile!);
-            }
-            final file = item.localFile!;
-            final syncState = _getSyncStateForFile(file);
-            final isSelected = _selectedFiles.contains(file.path);
-            return _buildGridItem(file, syncState, isSelected, index: index);
-          }
+              // Category mode: use combined sorted list
+              if (_isCategoryMode) {
+                final item = _combinedFiles[index];
+                if (item.isCloudOnly) {
+                  return _buildCloudOnlyGridItem(item.cloudFile!);
+                }
+                final file = item.localFile!;
+                final syncState = _getSyncStateForFile(file);
+                final isSelected = _selectedFiles.contains(file.path);
+                return _buildGridItem(file, syncState, isSelected, index: index);
+              }
 
-          // Folder mode: just local files
-          final file = _files[index];
-          final syncState = _getSyncStateForFile(file);
-          final isSelected = _selectedFiles.contains(file.path);
-          return _buildGridItem(file, syncState, isSelected, index: index);
+              // Folder mode: just local files
+              final file = _files[index];
+              final syncState = _getSyncStateForFile(file);
+              final isSelected = _selectedFiles.contains(file.path);
+              return _buildGridItem(file, syncState, isSelected, index: index);
+            },
+          );
         },
       ),
     );
@@ -1466,6 +1479,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           ? () => _toggleSelection(file)
           : () => _navigateTo(file),
       onLongPress: () => _toggleSelection(file),
+      onSecondaryTapUp: (details) => _showFileOptions(file),
       child: Container(
         decoration: BoxDecoration(
           color: isSelected
@@ -1609,6 +1623,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     
     return GestureDetector(
       onTap: () => _showCloudFileOptions(cloudFile),
+      onSecondaryTapUp: (details) => _showCloudFileOptions(cloudFile),
       child: Container(
         decoration: BoxDecoration(
           color: Colors.blue.withValues(alpha: 0.1),
@@ -1869,13 +1884,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final isLoggedIn = AuthService.instance.isAuthenticated;
     final isStarred = LocalStorageService.instance.isStarred(file.path);
     
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       isScrollControlled: true,
-      showDragHandle: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.7,
-      ),
       builder: (ctx) => DraggableScrollableSheet(
         initialChildSize: 1.0,
         minChildSize: 0.5,
@@ -2195,10 +2206,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final syncPath = 'category:${widget.category}';
     final folderSync = FolderWatchService.instance.getFolderSync(syncPath);
     final isEnabled = folderSync?.isEnabled ?? false;
-    
-    showModalBottomSheet(
+
+    showAdaptiveSheet(
       context: context,
-      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2373,10 +2383,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   void _showFolderSyncOptions(LocalFile folder) {
     final folderSync = FolderWatchService.instance.getFolderSync(folder.path);
     final isEnabled = folderSync?.isEnabled ?? false;
-    
-    showModalBottomSheet(
+
+    showAdaptiveSheet(
       context: context,
-      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2975,48 +2984,51 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
 
     // Build the list tile
-    Widget listTile = ListTile(
-      selected: isSelected,
-      selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
-      leading: FileThumbnail(file: file, size: 48),
-      title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
-              Text(
-                ' • $dateFormatted',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+    Widget listTile = GestureDetector(
+      onSecondaryTapUp: (details) => _showFileOptions(file),
+      child: ListTile(
+        selected: isSelected,
+        selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+        leading: FileThumbnail(file: file, size: 48),
+        title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Text(file.isDirectory ? 'Folder' : file.sizeFormatted),
+                Text(
+                  ' • $dateFormatted',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              // Show auto-sync indicator for folders with sync enabled
-              if (isFolderSynced) ...[
-                const SizedBox(width: 8),
-                const Icon(LucideIcons.folderSync, size: 14, color: Colors.green),
+                // Show auto-sync indicator for folders with sync enabled
+                if (isFolderSynced) ...[
+                  const SizedBox(width: 8),
+                  const Icon(LucideIcons.folderSync, size: 14, color: Colors.green),
+                ],
+                if (syncState != null) ...[
+                  const SizedBox(width: 8),
+                  SyncProgressIndicator(
+                    status: syncState.status,
+                    localPath: file.path,
+                    size: 14,
+                  ),
+                ],
               ],
-              if (syncState != null) ...[
-                const SizedBox(width: 8),
-                SyncProgressIndicator(
-                  status: syncState.status,
-                  localPath: file.path,
-                  size: 14,
-                ),
-              ],
-            ],
-          ),
-          // Show tags for files (not directories)
-          if (!file.isDirectory) _buildFileTags(file.path),
-        ],
+            ),
+            // Show tags for files (not directories)
+            if (!file.isDirectory) _buildFileTags(file.path),
+          ],
+        ),
+        trailing: menuButton,
+        onTap: _selectionMode
+            ? () => _toggleSelection(file)
+            : () => _navigateTo(file),
+        onLongPress: () => _toggleSelection(file),
       ),
-      trailing: menuButton,
-      onTap: _selectionMode
-          ? () => _toggleSelection(file)
-          : () => _navigateTo(file),
-      onLongPress: () => _toggleSelection(file),
     );
 
     // Wrap first item with showcase for the item itself
@@ -3072,36 +3084,39 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ? _formatFileDate(cloudFile.lastModified!)
         : null;
 
-    return ListTile(
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Colors.blue.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(8),
+    return GestureDetector(
+      onSecondaryTapUp: (details) => _showCloudFileOptions(cloudFile),
+      child: ListTile(
+        leading: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: Colors.blue.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(LucideIcons.cloud, color: Colors.blue),
         ),
-        child: const Icon(LucideIcons.cloud, color: Colors.blue),
-      ),
-      title: Text(cloudFile.key, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Row(
-        children: [
-          Text(_formatFileSize(cloudFile.size)),
-          if (dateFormatted != null)
-            Text(
-              ' • $dateFormatted',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+        title: Text(cloudFile.key, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Row(
+          children: [
+            Text(_formatFileSize(cloudFile.size)),
+            if (dateFormatted != null)
+              Text(
+                ' • $dateFormatted',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-            ),
-          const SizedBox(width: 8),
-          const Icon(LucideIcons.download, size: 14, color: Colors.blue),
-          const SizedBox(width: 4),
-          Text('Cloud only', style: TextStyle(color: Colors.blue.shade700, fontSize: 12)),
-        ],
-      ),
-      trailing: IconButton(
-        icon: const Icon(LucideIcons.moreVertical),
-        onPressed: () => _showCloudFileOptions(cloudFile),
+            const SizedBox(width: 8),
+            const Icon(LucideIcons.download, size: 14, color: Colors.blue),
+            const SizedBox(width: 4),
+            Text('Cloud only', style: TextStyle(color: Colors.blue.shade700, fontSize: 12)),
+          ],
+        ),
+        trailing: IconButton(
+          icon: const Icon(LucideIcons.moreVertical),
+          onPressed: () => _showCloudFileOptions(cloudFile),
+        ),
       ),
     );
   }
@@ -3112,9 +3127,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ? _currentBucket!
         : _categoryFromString(widget.category!).bucketName;
     
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
-      showDragHandle: true,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,

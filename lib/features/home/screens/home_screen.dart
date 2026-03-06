@@ -21,6 +21,8 @@ import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -627,7 +629,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _showProfileSheet(BuildContext context) {
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       builder: (ctx) {
         // Read auth state inside builder to ensure we get latest state

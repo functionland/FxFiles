@@ -28,7 +28,11 @@ class FileListItem extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return ListTile(
+    return GestureDetector(
+      onSecondaryTapUp: onMorePressed != null
+          ? (details) => onMorePressed!()
+          : null,
+      child: ListTile(
       selected: selected,
       selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
       leading: Stack(
@@ -78,6 +82,7 @@ class FileListItem extends ConsumerWidget {
       ),
       onTap: onTap,
       onLongPress: onLongPress,
+    ),
     );
   }
 

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:fula_client/fula_client.dart' show RustLib;
+import 'package:fula_files/core/utils/platform_capabilities.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:fula_files/app/app.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
@@ -28,6 +30,21 @@ import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Desktop window management
+  if (PlatformCapabilities.isDesktop) {
+    await windowManager.ensureInitialized();
+    final windowOptions = WindowOptions(
+      size: Size(1200, 800),
+      minimumSize: Size(400, 600),
+      title: 'FxFiles',
+      center: true,
+    );
+    await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
 
   // Global startup timeout to prevent app from hanging indefinitely
   const startupTimeout = Duration(seconds: 15);
