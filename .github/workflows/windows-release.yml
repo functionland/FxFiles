@@ -26,14 +26,36 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Create MSIX installer
-        run: dart run msix:create
+      - name: Create Store MSIX (unsigned, for Microsoft Store)
+        run: dart run msix:create --store
 
-      - name: Upload MSIX artifact
+      - name: Save Store MSIX
+        run: |
+          mkdir store
+          move build\windows\x64\runner\Release\*.msix store\FxFiles-store.msix
+        shell: cmd
+
+      - name: Create sideload MSIX (signed, for direct download)
+        run: dart run msix:create --install-certificate false
+
+      - name: Save sideload MSIX
+        run: |
+          mkdir sideload
+          move build\windows\x64\runner\Release\*.msix sideload\FxFiles.msix
+        shell: cmd
+
+      - name: Upload Store MSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fxfiles-msix
-          path: build/windows/x64/runner/Release/*.msix
+          name: fxfiles-msix-store
+          path: store/FxFiles-store.msix
+          retention-days: 30
+
+      - name: Upload sideload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxfiles-msix-sideload
+          path: sideload/FxFiles.msix
           retention-days: 5
 
   attach-to-release:
@@ -52,16 +74,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download MSIX artifact
+      - name: Download sideload MSIX
         uses: actions/download-artifact@v4
         with:
-          name: fxfiles-msix
+          name: fxfiles-msix-sideload
           path: msix/
 
       - name: Upload MSIX to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: msix/*.msix
+          files: msix/FxFiles.msix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
