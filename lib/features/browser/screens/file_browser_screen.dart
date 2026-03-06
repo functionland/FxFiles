@@ -3235,17 +3235,17 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<String> _getDownloadPath(FileCategory category, String fileName) async {
-    // Get external storage directory
-    final directories = await FileService.instance.getStorageRoots();
-    if (directories.isEmpty) {
-      throw Exception('No storage available');
-    }
-    
-    // Use Download folder as base
-    final basePath = directories.first.path;
-    final downloadDir = '$basePath/Download';
+    // Always download to the platform's Downloads directory
+    final dir = await FileService.instance.getCategoryDirectory(FileCategory.downloads);
+    final dirPath = dir.path;
 
-    return '$downloadDir/$fileName';
+    // Ensure directory exists
+    final directory = Directory(dirPath);
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
+    }
+
+    return '$dirPath${Platform.pathSeparator}$fileName';
   }
 
   Future<void> _showTagSelector(LocalFile file) async {

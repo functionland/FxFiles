@@ -152,8 +152,12 @@ class FileService {
       for (var i = 67; i <= 90; i++) {
         final driveLetter = String.fromCharCode(i);
         final drive = Directory('$driveLetter:\\');
-        if (await drive.exists()) {
-          roots.add(drive);
+        try {
+          if (await drive.exists()) {
+            roots.add(drive);
+          }
+        } catch (e) {
+          debugPrint('Drive $driveLetter:\\ not accessible: $e');
         }
       }
     } else if (Platform.isMacOS) {
@@ -545,11 +549,15 @@ class FileService {
   // Directories to skip during recursive scanning
   static const _restrictedDirs = {
     'Android/data',
-    'Android/obb', 
+    'Android/obb',
     'Android/media',
     '.thumbnails',
     '.cache',
     '.trash',
+    // Windows system/hidden directories
+    r'$Recycle.Bin',
+    'AppData',
+    'node_modules',
   };
 
   bool _shouldSkipDirectory(String path) {
@@ -600,13 +608,22 @@ class FileService {
 
   Future<List<LocalFile>> _scanForCategoryFiles(FileCategory category) async {
     final results = <LocalFile>[];
-    final roots = await getStorageRoots();
     final extensions = _getCategoryExtensions(category);
-    
-    for (final root in roots) {
-      await _scanDirectoryForFiles(root, extensions, results);
+
+    // On desktop, scan only the category-specific directory (e.g. ~/Pictures)
+    // instead of all storage roots — recursing entire drives would take forever.
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      final categoryDir = await getCategoryDirectory(category);
+      if (await categoryDir.exists()) {
+        await _scanDirectoryForFiles(categoryDir, extensions, results);
+      }
+    } else {
+      final roots = await getStorageRoots();
+      for (final root in roots) {
+        await _scanDirectoryForFiles(root, extensions, results);
+      }
     }
-    
+
     return results;
   }
 

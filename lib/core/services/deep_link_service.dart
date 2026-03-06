@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -45,6 +46,11 @@ class DeepLinkService {
   Future<void> init() async {
     _appLinks = AppLinks();
 
+    // On Windows, register the fxfiles:// URI scheme so the OS knows to launch this app
+    if (Platform.isWindows) {
+      _registerWindowsUriScheme();
+    }
+
     // Handle initial link if app was opened via deep link
     try {
       final initialLink = await _appLinks.getInitialLink();
@@ -84,6 +90,25 @@ class DeepLinkService {
       debugPrint('DeepLinkService: Blox pairing complete deeplink received');
       await _handleAutoPinComplete(uri);
       return;
+    }
+
+    // Extract identity params (included by server when user is signed in)
+    final email = uri.queryParameters['email'];
+    final name = uri.queryParameters['name'];
+    final id = uri.queryParameters['id'];
+    final provider = uri.queryParameters['provider'];
+    final picture = uri.queryParameters['picture'];
+
+    // If identity included, create/update user session
+    if (email != null && email.isNotEmpty && id != null && id.isNotEmpty) {
+      debugPrint('DeepLinkService: User identity received ($email)');
+      await AuthService.instance.handleBrowserSignIn(
+        id: id,
+        email: email,
+        displayName: name,
+        photoUrl: picture,
+        provider: provider == 'apple' ? AuthProvider.apple : AuthProvider.google,
+      );
     }
 
     // Check for API key in query parameters
@@ -249,6 +274,25 @@ class DeepLinkService {
     } catch (e) {
       debugPrint('DeepLinkService: Error fetching org name (ignored): $e');
       // Silently ignore errors - org name is optional
+    }
+  }
+
+  /// Register fxfiles:// URI scheme in the Windows registry for debug/unpackaged builds.
+  /// MSIX builds use protocol_activation in pubspec.yaml instead.
+  void _registerWindowsUriScheme() {
+    try {
+      final exePath = Platform.resolvedExecutable;
+      final commands = [
+        ['reg', 'add', r'HKCU\Software\Classes\fxfiles', '/ve', '/d', 'URL:FxFiles Protocol', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\fxfiles', '/v', 'URL Protocol', '/d', '', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\fxfiles\shell\open\command', '/ve', '/d', '"$exePath" "%1"', '/f'],
+      ];
+      for (final cmd in commands) {
+        Process.run(cmd.first, cmd.sublist(1));
+      }
+      debugPrint('DeepLinkService: Windows URI scheme registered for $exePath');
+    } catch (e) {
+      debugPrint('DeepLinkService: Failed to register URI scheme: $e');
     }
   }
 

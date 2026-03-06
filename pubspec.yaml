@@ -141,6 +141,7 @@ msix_config:
   msix_version: 1.4.1.0
   logo_path: assets/icons/icon.png
   capabilities: internetClient, internetClientServer
+  protocol_activation: fxfiles
 
 flutter:
   uses-material-design: true

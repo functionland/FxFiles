@@ -755,33 +755,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                   const SizedBox(height: 12),
                 ],
-                ListTile(
-                  leading: Image.asset(
-                    'assets/icons/google.png',
-                    width: 24,
-                    height: 24,
-                    errorBuilder: (_, __, ___) => const Icon(LucideIcons.mail),
+                if (!PlatformCapabilities.isDesktop) ...[
+                  ListTile(
+                    leading: Image.asset(
+                      'assets/icons/google.png',
+                      width: 24,
+                      height: 24,
+                      errorBuilder: (_, __, ___) => const Icon(LucideIcons.mail),
+                    ),
+                    title: const Text('Sign in with Google'),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      try {
+                        final user = await AuthService.instance.signInWithGoogle();
+                        if (user != null && mounted) {
+                          setState(() {});
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Signed in as ${user.email}')),
+                          );
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
+                          );
+                        }
+                      }
+                    },
                   ),
-                  title: const Text('Sign in with Google'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    try {
-                      final user = await AuthService.instance.signInWithGoogle();
-                      if (user != null && mounted) {
-                        setState(() {});
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Signed in as ${user.email}')),
-                        );
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                        );
-                      }
-                    }
-                  },
-                ),
+                ],
+                if (PlatformCapabilities.isDesktop) ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'On desktop, use "Get API Key" below to sign in via your browser.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+                    ),
+                  ),
+                ],
               ],
             ],
           ),
