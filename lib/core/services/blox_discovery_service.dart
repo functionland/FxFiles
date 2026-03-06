@@ -169,6 +169,7 @@ class BloxDiscoveryService {
     try {
       final discovery = await startDiscovery('_fulatower._tcp',
         autoResolve: true,
+        ipLookupType: IpLookupType.v4,
       );
       _discovery = discovery;
 
@@ -245,8 +246,14 @@ class BloxDiscoveryService {
       return null;
     }
 
+    // Prefer resolved IP address over hostname
+    final addresses = service.addresses;
+    final ip = (addresses != null && addresses.isNotEmpty)
+        ? addresses.first.address
+        : host;
+
     return BloxDevice(
-      ip: host,
+      ip: ip,
       port: port,
       peerId: peerId,
       hardwareId: hardwareId,

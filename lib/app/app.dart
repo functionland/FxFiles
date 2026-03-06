@@ -79,6 +79,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         final secret = BloxDiscoveryService.instance.pairingSecret;
         if (secret == null) return; // Not paired
         if (!FulaApiService.instance.isConfigured) return;
+        if (BloxDiscoveryService.instance.isScanning) return; // Already scanning (e.g. pairing in progress)
 
         // Quick health check on current/last-known IP
         if (await BloxDiscoveryService.instance.quickHealthCheck(

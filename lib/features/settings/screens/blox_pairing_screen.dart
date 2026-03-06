@@ -193,6 +193,7 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       _pairedHardwareId = widget.hardwareId;
       _pairedBloxName = widget.bloxName;
       _isLoading = false;
+      _isScanning = true;
     });
 
     if (mounted) {
@@ -202,6 +203,12 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
     }
 
     await _rescanAndRefresh();
+    // mDNS/NSD may not be ready immediately after returning from another app.
+    // Retry once automatically if the first scan didn't find the device.
+    if (_bloxReachable != true && mounted) {
+      await _rescanAndRefresh();
+    }
+    if (mounted) setState(() => _isScanning = false);
   }
 
   Future<void> _handleRescan() async {
