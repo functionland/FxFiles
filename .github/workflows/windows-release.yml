@@ -27,13 +27,16 @@ jobs:
         run: flutter build windows --release
 
       - name: Create Store MSIX bundle (unsigned, for Microsoft Store)
-        run: dart run msix:create --store --build-msixbundle
+        run: dart run msix:create --store
 
-      - name: Save Store MSIX bundle
+      - name: Bundle MSIX into msixbundle
+        shell: pwsh
         run: |
           mkdir store
-          move build\windows\x64\runner\Release\*.msixbundle store\FxFiles-store.msixbundle
-        shell: cmd
+          mkdir bundle
+          Copy-Item build\windows\x64\runner\Release\*.msix bundle\
+          $sdkTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\MakeAppx.exe" | Sort-Object -Descending | Select-Object -First 1
+          & $sdkTool bundle /d bundle /p store\FxFiles-store.msixbundle
 
       - name: Create sideload MSIX (signed, for direct download)
         run: dart run msix:create --install-certificate false
