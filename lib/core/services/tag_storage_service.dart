@@ -292,6 +292,36 @@ class TagStorageService {
     return tags..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   }
 
+  /// Get tags for multiple files in a single pass over the tagged files box.
+  /// Returns a map of localPath -> list of tags for that file.
+  Map<String, List<FileTag>> getTagsForFiles(List<String> localPaths) {
+    if (!_isInitialized || localPaths.isEmpty) return {};
+
+    final pathSet = localPaths.toSet();
+    // Single scan: group tag IDs by local path
+    final pathToTagIds = <String, Set<String>>{};
+    for (final tf in _taggedFilesBox.values) {
+      if (tf.localPath != null && pathSet.contains(tf.localPath)) {
+        (pathToTagIds[tf.localPath!] ??= <String>{}).add(tf.tagId);
+      }
+    }
+
+    // Resolve tag IDs to FileTag objects
+    final result = <String, List<FileTag>>{};
+    for (final entry in pathToTagIds.entries) {
+      final tags = <FileTag>[];
+      for (final tagId in entry.value) {
+        final tag = _tagsBox.get(tagId);
+        if (tag != null) tags.add(tag);
+      }
+      if (tags.isNotEmpty) {
+        tags.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        result[entry.key] = tags;
+      }
+    }
+    return result;
+  }
+
   /// Get all files with a specific tag
   Future<List<TaggedFile>> getFilesWithTag(String tagId) async {
     if (!_isInitialized) await init();

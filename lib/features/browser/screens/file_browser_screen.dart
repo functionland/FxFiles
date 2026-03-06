@@ -18,12 +18,14 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/sync_state.dart';
@@ -36,7 +38,6 @@ import 'package:fula_files/shared/widgets/thumb_scroll.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/widgets/tag_selector_dialog.dart';
-import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
@@ -110,6 +111,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   
   // View mode state
   ViewMode _viewMode = ViewMode.list;
+
+  // Pre-computed tags map to avoid per-item provider watches during scroll
+  Map<String, List<FileTag>> _fileTags = {};
 
   // iOS-specific state
   bool _isIOSLimitedAccess = false;
@@ -508,10 +512,16 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           return _sortAscending ? comparison : -comparison;
         });
         if (!mounted) return;
+        final starredPaths = files
+            .where((f) => !f.isDirectory)
+            .map((f) => f.path)
+            .toList();
+        final starredTags = TagStorageService.instance.getTagsForFiles(starredPaths);
         setState(() {
           _files = files;
           // Category mode uses _combinedFiles for rendering
           _combinedFiles = files.map((f) => _FileListItem.local(f)).toList();
+          _fileTags = starredTags;
           _totalCount = files.length;
           _hasMore = false;
           _isLoading = false;
@@ -625,27 +635,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // 3. There's no cloud mapping linking it to a local file that still exists on disk
           final localFileNames = result.files.map((f) => f.name).toSet();
 
-          // Get linked remote keys, but only for sync states where the local file still exists
+          // Use all linked/mapped remote keys without blocking on file existence checks.
+          // Stale entries are cleaned up in a deferred background pass after render.
           final allLinkedRemoteKeys = LocalStorageService.instance.getLinkedRemoteKeysWithPaths(bucketName);
-          final linkedRemoteKeys = <String>{};
-          for (final entry in allLinkedRemoteKeys.entries) {
-            if (await File(entry.value).exists()) {
-              linkedRemoteKeys.add(entry.key);
-            } else {
-              // Clean up stale sync state (local file deleted but sync state remains)
-              LocalStorageService.instance.deleteSyncState(entry.value);
-            }
-          }
+          final linkedRemoteKeys = allLinkedRemoteKeys.keys.toSet();
 
-          // Also check cloud mappings, but only for mappings where the local file still exists
           await CloudSyncMappingService.instance.ensureLoaded();
           final allMappedRemoteKeys = CloudSyncMappingService.instance.getMappedRemoteKeysWithPaths(bucketName);
-          final mappedRemoteKeys = <String>{};
-          for (final entry in allMappedRemoteKeys.entries) {
-            if (await File(entry.value).exists()) {
-              mappedRemoteKeys.add(entry.key);
-            }
-          }
+          final mappedRemoteKeys = allMappedRemoteKeys.keys.toSet();
 
           cloudOnlyFiles = cloudFiles.where((cf) =>
             !localFileNames.contains(cf.key) &&
@@ -677,19 +674,33 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         return _sortAscending ? comparison : -comparison;
       });
       
+      // Pre-compute tags for all files in a single Hive scan
+      final allPaths = result.files
+          .where((f) => !f.isDirectory)
+          .map((f) => f.path)
+          .toList();
+      final precomputedTags = TagStorageService.instance.getTagsForFiles(allPaths);
+
       setState(() {
         _files = result.files;
         _combinedFiles = combined;
+        _fileTags = precomputedTags;
         _totalCount = result.totalCount;
         _hasMore = result.hasMore;
         _currentOffset = result.files.length;
         _isLoading = false;
       });
-      
+
       // Queue images for face detection in background (only for images category)
       // Skip on iOS to avoid memory issues with PhotoKit images
       if (category == FileCategory.images) {
         _queueImagesForFaceDetection(result.files);
+      }
+
+      // Deferred cleanup: verify linked/mapped file existence in background
+      // and update cloud-only list if stale entries are found
+      if (FulaApiService.instance.isConfigured && AuthService.instance.isAuthenticated) {
+        _deferredCloudExistenceCheck(category.bucketName, result.files, cloudOnlyFiles);
       }
     } catch (e) {
       if (!mounted) return;
@@ -698,6 +709,21 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: $e')),
         );
+      }
+    }
+  }
+
+  /// Cleans up stale sync states in background (local files that were deleted).
+  /// This runs after initial render so it doesn't block the UI.
+  Future<void> _deferredCloudExistenceCheck(
+    String bucketName,
+    List<LocalFile> localFiles,
+    List<FulaObject> initialCloudOnly,
+  ) async {
+    final allLinkedRemoteKeys = LocalStorageService.instance.getLinkedRemoteKeysWithPaths(bucketName);
+    for (final entry in allLinkedRemoteKeys.entries) {
+      if (!await File(entry.value).exists()) {
+        LocalStorageService.instance.deleteSyncState(entry.value);
       }
     }
   }
@@ -848,8 +874,15 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         sortBy: _sortBy,
         ascending: _sortAscending,
       );
+      // Pre-compute tags for all files in a single Hive scan
+      final allPaths = files
+          .where((f) => !f.isDirectory)
+          .map((f) => f.path)
+          .toList();
+      final precomputedTags = TagStorageService.instance.getTagsForFiles(allPaths);
       setState(() {
         _files = files;
+        _fileTags = precomputedTags;
         _totalCount = files.length;
         _hasMore = false; // Directory listing doesn't paginate
         _isLoading = false;
@@ -1523,7 +1556,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                           ),
                           child: isFolderSynced
                               ? const Icon(LucideIcons.folderSync, size: 14, color: Colors.green)
-                              : SyncProgressIndicator(
+                              : SyncProgressIndicator.icon(syncState!.status, size: 14) ??
+                                SyncProgressIndicator(
                                   status: syncState!.status,
                                   localPath: file.path,
                                   size: 14,
@@ -3011,11 +3045,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                 ],
                 if (syncState != null) ...[
                   const SizedBox(width: 8),
-                  SyncProgressIndicator(
-                    status: syncState.status,
-                    localPath: file.path,
-                    size: 14,
-                  ),
+                  SyncProgressIndicator.icon(syncState.status, size: 14) ??
+                    SyncProgressIndicator(
+                      status: syncState.status,
+                      localPath: file.path,
+                      size: 14,
+                    ),
                 ],
               ],
             ),
@@ -3065,17 +3100,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Widget _buildFileTags(String filePath) {
-    final tagsAsync = ref.watch(fileTagsProvider(FileTagQuery(localPath: filePath)));
-    return tagsAsync.when(
-      data: (tags) {
-        if (tags.isEmpty) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: TagChipRow(tags: tags, maxVisible: 2, compact: true),
-        );
-      },
-      loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+    final tags = _fileTags[filePath];
+    if (tags == null || tags.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: TagChipRow(tags: tags, maxVisible: 2, compact: true),
     );
   }
 

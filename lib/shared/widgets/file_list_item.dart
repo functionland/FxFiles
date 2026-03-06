@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/features/sync/providers/upload_progress_provider.dart';
@@ -15,6 +16,7 @@ class FileListItem extends ConsumerWidget {
   final VoidCallback? onLongPress;
   final VoidCallback? onMorePressed;
   final bool selected;
+  final List<FileTag>? tags;
 
   const FileListItem({
     super.key,
@@ -24,6 +26,7 @@ class FileListItem extends ConsumerWidget {
     this.onLongPress,
     this.onMorePressed,
     this.selected = false,
+    this.tags,
   });
 
   @override
@@ -198,6 +201,14 @@ class FileListItem extends ConsumerWidget {
   }
 
   Widget _buildTagsRow(WidgetRef ref) {
+    // Use pre-computed tags if provided, avoiding per-item provider watches
+    if (tags != null) {
+      if (tags!.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: TagChipRow(tags: tags!, maxVisible: 2, compact: true),
+      );
+    }
     final tagsAsync = ref.watch(fileTagsProvider(FileTagQuery(localPath: file.path)));
     return tagsAsync.when(
       data: (tags) {
