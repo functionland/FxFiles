@@ -20,32 +20,8 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-windows-fxfiles
-
-      - name: Install flutter_rust_bridge_codegen
-        run: cargo install flutter_rust_bridge_codegen
-
       - name: Get Flutter dependencies
         run: flutter pub get
-
-      - name: Generate Dart bindings
-        run: flutter_rust_bridge_codegen generate
-
-      - name: Build fula_flutter DLL
-        run: cargo build -p fula-flutter --release
-
-      - name: Copy DLL to windows directory
-        run: copy target\release\fula_flutter.dll windows\fula_flutter.dll
-        shell: cmd
-
-      - name: Install MSIX tooling
-        run: dart pub add --dev msix
 
       - name: Build Windows release
         run: flutter build windows --release
