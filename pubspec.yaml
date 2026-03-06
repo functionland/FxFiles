@@ -90,9 +90,11 @@ dependencies:
   
   # Icons
   lucide_icons: ^0.257.0
+  qr_flutter: ^4.1.0
 
   # Desktop Window Management
   window_manager: ^0.4.3
+  tray_manager: ^0.2.1
 
   # Deep Links
   app_links: ^6.4.0

@@ -134,9 +134,9 @@ class BloxDiscoveryService {
   void startScanning({Duration interval = const Duration(seconds: 30)}) {
     if (_isScanning) return;
 
-    // NSD/mDNS scanning is only reliably supported on mobile platforms
-    if (!Platform.isAndroid && !Platform.isIOS) {
-      debugPrint('BloxDiscovery: NSD scanning not supported on this platform, use manual IP');
+    // NSD/mDNS scanning is supported on Android, iOS, macOS, and Windows — not Linux
+    if (Platform.isLinux) {
+      debugPrint('BloxDiscovery: NSD scanning not supported on Linux, use manual IP');
       return;
     }
 

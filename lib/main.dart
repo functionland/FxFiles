@@ -22,6 +22,7 @@ import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
+import 'package:fula_files/core/services/tray_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
@@ -164,6 +165,11 @@ Future<ProviderContainer> _initializeApp() async {
   // Request notification permission early for sync notifications (Android 13+)
   // This is non-blocking and will show the permission dialog on first sync
   SyncNotificationService.instance.requestNotificationPermission();
+
+  // Initialize system tray for desktop (shows sync progress like OneDrive)
+  if (PlatformCapabilities.isDesktop) {
+    TrayService.instance.init();
+  }
 
   // Check if Fula API is configured and schedule sync
   // Use timeout for keychain access which can hang on iOS 26+
