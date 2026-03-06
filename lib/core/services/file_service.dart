@@ -610,12 +610,19 @@ class FileService {
     final results = <LocalFile>[];
     final extensions = _getCategoryExtensions(category);
 
-    // On desktop, scan only the category-specific directory (e.g. ~/Pictures)
-    // instead of all storage roots — recursing entire drives would take forever.
+    // On desktop, scan the category-specific directory (e.g. ~/Pictures)
+    // plus the Downloads folder for matching files — cloud downloads land there.
     if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
       final categoryDir = await getCategoryDirectory(category);
       if (await categoryDir.exists()) {
         await _scanDirectoryForFiles(categoryDir, extensions, results);
+      }
+      // Also scan Downloads for files matching this category's extensions
+      if (category != FileCategory.downloads) {
+        final downloadsDir = await getCategoryDirectory(FileCategory.downloads);
+        if (await downloadsDir.exists() && downloadsDir.path != categoryDir.path) {
+          await _scanDirectoryForFiles(downloadsDir, extensions, results);
+        }
       }
     } else {
       final roots = await getStorageRoots();
