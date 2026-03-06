@@ -125,6 +125,11 @@ class VideoThumbnailService {
     required int maxHeight,
   }) async {
     try {
+      // video_thumbnail plugin is only available on Android and iOS
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        return null;
+      }
+
       // Check if video file exists
       final videoFile = File(videoPath);
       if (!await videoFile.exists()) {

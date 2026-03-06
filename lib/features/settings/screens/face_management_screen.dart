@@ -4,6 +4,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
 
@@ -313,6 +314,35 @@ class _FaceManagementScreenState extends State<FaceManagementScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!PlatformCapabilities.isMobile) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Face Recognition')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(LucideIcons.scanFace, size: 64, color: Colors.grey[400]),
+                const SizedBox(height: 16),
+                Text(
+                  'Face detection requires a mobile device',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'This feature uses ML Kit which is only available on Android and iOS.',
+                  style: TextStyle(color: Colors.grey[600]),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Face Recognition'),

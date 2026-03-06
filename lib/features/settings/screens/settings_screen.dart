@@ -18,6 +18,7 @@ import 'package:fula_files/features/settings/screens/face_management_screen.dart
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -745,26 +746,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const SizedBox(height: 12),
             ],
-            ListTile(
-              leading: const Icon(LucideIcons.chrome),
-              title: const Text('Sign in with Google'),
-              onTap: () async {
-                Navigator.pop(dialogContext);
-                try {
-                  final user = await AuthService.instance.signInWithGoogle();
-                  if (user != null) {
+            if (!PlatformCapabilities.isDesktop) ...[
+              ListTile(
+                leading: const Icon(LucideIcons.chrome),
+                title: const Text('Sign in with Google'),
+                onTap: () async {
+                  Navigator.pop(dialogContext);
+                  try {
+                    final user = await AuthService.instance.signInWithGoogle();
+                    if (user != null) {
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('Signed in as ${user.email}')),
+                      );
+                    }
+                  } catch (e) {
                     messenger.showSnackBar(
-                      SnackBar(content: Text('Signed in as ${user.email}')),
+                      SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
                     );
                   }
-                } catch (e) {
-                  messenger.showSnackBar(
-                    SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                  );
-                }
-                if (mounted) setState(() {});
-              },
-            ),
+                  if (mounted) setState(() {});
+                },
+              ),
+            ],
+            if (PlatformCapabilities.isDesktop) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  'On desktop, use "Get API Key" below to sign in via your browser.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+                ),
+              ),
+            ],
           ],
         ),
       ),

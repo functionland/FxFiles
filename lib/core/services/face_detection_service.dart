@@ -12,6 +12,7 @@ import 'package:fula_files/core/services/face_embedding_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 /// Service for detecting faces in images using ML Kit
 class FaceDetectionService {
@@ -38,7 +39,14 @@ class FaceDetectionService {
   /// Initialize the face detector
   Future<void> init() async {
     if (_isInitialized) return;
-    
+
+    // ML Kit face detection is only available on mobile platforms
+    if (!PlatformCapabilities.isMobile) {
+      _isInitialized = true;
+      debugPrint('FaceDetectionService: skipped on desktop (no ML Kit)');
+      return;
+    }
+
     try {
       final options = FaceDetectorOptions(
         enableContours: false,
@@ -167,6 +175,7 @@ class FaceDetectionService {
   /// Process a single image for face detection
   Future<List<DetectedFace>> processImage(String imagePath, {String? iosAssetId}) async {
     if (!isEnabled) return [];
+    if (!PlatformCapabilities.isMobile) return [];
     if (!_isInitialized) await init();
     if (_faceDetector == null) return [];
 

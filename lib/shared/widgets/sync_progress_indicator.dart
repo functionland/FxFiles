@@ -8,6 +8,9 @@ import 'package:fula_files/features/sync/providers/upload_progress_provider.dart
 
 /// A widget that displays sync status with animated progress indicator.
 /// Uses its own Consumer to properly watch progress updates and animate smoothly.
+///
+/// For non-syncing states, prefer [SyncProgressIndicator.icon] to avoid
+/// creating a StatefulWidget with an AnimationController unnecessarily.
 class SyncProgressIndicator extends ConsumerStatefulWidget {
   final SyncStatus status;
   final String? localPath;
@@ -21,6 +24,22 @@ class SyncProgressIndicator extends ConsumerStatefulWidget {
     this.size = 14,
     this.showPercentage = true,
   });
+
+  /// Returns a simple Icon for non-syncing states, avoiding the overhead of
+  /// a StatefulWidget with AnimationController. Returns null for syncing status
+  /// (use the full widget for that).
+  static Widget? icon(SyncStatus status, {double size = 14}) {
+    switch (status) {
+      case SyncStatus.notSynced:
+        return Icon(LucideIcons.cloud, size: size, color: Colors.grey.shade400);
+      case SyncStatus.synced:
+        return Icon(LucideIcons.checkCircle, size: size, color: Colors.green);
+      case SyncStatus.error:
+        return Icon(LucideIcons.cloudOff, size: size, color: Colors.red);
+      case SyncStatus.syncing:
+        return null;
+    }
+  }
 
   @override
   ConsumerState<SyncProgressIndicator> createState() => _SyncProgressIndicatorState();

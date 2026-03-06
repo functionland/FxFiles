@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
 
@@ -113,6 +114,10 @@ class AuthService {
     } else if (Platform.isIOS) {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+    } else {
+      // Desktop (Windows/macOS/Linux): use server client ID for browser-based OAuth
+      clientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
 
     await _googleSignIn.initialize(
@@ -129,7 +134,8 @@ class AuthService {
     } else if (Platform.isIOS) {
       return _googleClientIdIOS.isNotEmpty;
     }
-    return false;
+    // Desktop: use server client ID
+    return _googleServerClientId.isNotEmpty;
   }
 
   Future<bool> checkExistingSession({bool skipHeavyOperations = false}) async {
@@ -156,24 +162,27 @@ class AuthService {
         return true;
       }
 
-      await _ensureGoogleInitialized();
-      final result = _googleSignIn.attemptLightweightAuthentication();
-      if (result != null) {
-        try {
-          // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
-          final account = await result.timeout(
-            const Duration(seconds: 5),
-            onTimeout: () {
-              debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
-              return null;
-            },
-          );
-          if (account != null) {
-            await _handleGoogleSignIn(account);
-            return true;
+      // Google lightweight auth is not available on desktop
+      if (!PlatformCapabilities.isDesktop) {
+        await _ensureGoogleInitialized();
+        final result = _googleSignIn.attemptLightweightAuthentication();
+        if (result != null) {
+          try {
+            // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
+            final account = await result.timeout(
+              const Duration(seconds: 5),
+              onTimeout: () {
+                debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
+                return null;
+              },
+            );
+            if (account != null) {
+              await _handleGoogleSignIn(account);
+              return true;
+            }
+          } catch (e) {
+            debugPrint('Lightweight auth failed: $e');
           }
-        } catch (e) {
-          debugPrint('Lightweight auth failed: $e');
         }
       }
 
@@ -186,6 +195,10 @@ class AuthService {
 
   Future<AuthUser?> signInWithGoogle() async {
     try {
+      if (PlatformCapabilities.isDesktop) {
+        throw Exception('Google Sign-In is not available on desktop. Please use "Get API Key" to connect your account.');
+      }
+
       await _ensureGoogleInitialized();
 
       if (!_googleSignIn.supportsAuthenticate()) {
@@ -355,6 +368,46 @@ class AuthService {
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
       // Sign-in succeeded, but Fula features won't work until RustLib is properly initialized
+    }
+  }
+
+  /// Handle sign-in via browser callback (Get API Key flow).
+  /// Creates a user session from identity params passed in the redirect URL.
+  Future<void> handleBrowserSignIn({
+    required String id,
+    required String email,
+    String? displayName,
+    String? photoUrl,
+    required AuthProvider provider,
+  }) async {
+    _currentUser = AuthUser(
+      id: id,
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
+      provider: provider,
+    );
+
+    await SecureStorageService.instance.writeJson(
+      SecureStorageKeys.userCredentials,
+      _currentUser!.toJson(),
+    );
+
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.authProvider,
+      provider.name,
+    );
+
+    try {
+      await _deriveEncryptionKey();
+      await _initializeFulaClient();
+      if (FulaApiService.instance.isConfigured) {
+        CloudSyncMappingService.instance.relinkMappings();
+        TagStorageService.instance.restoreFromCloud();
+        WebsiteService.instance.restoreFromCloud();
+      }
+    } catch (e) {
+      debugPrint('Browser sign-in post-setup error: $e');
     }
   }
 
@@ -641,6 +694,8 @@ class AuthService {
   }
 
   Future<bool> reauthenticate() async {
+    if (PlatformCapabilities.isDesktop) return false;
+
     final provider = await SecureStorageService.instance.read(
       SecureStorageKeys.authProvider,
     );

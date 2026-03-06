@@ -44,6 +44,9 @@ class SyncNotificationService {
   }
 
   Future<void> _updateNotificationWithProgress(BatchUploadProgress progress) async {
+    // Desktop uses TrayService — skip native notification channels
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+
     // Use file-count based percentage when time-based is 0
     var percentage = progress.percentage.round();
     if (percentage == 0 && progress.totalFiles > 0) {
