@@ -6,8 +6,13 @@ import 'package:fula_files/core/services/tutorial_service.dart';
 
 class FeaturedSection extends StatelessWidget {
   final bool isWebsiteEnabled;
+  final bool isNftEnabled;
 
-  const FeaturedSection({super.key, this.isWebsiteEnabled = false});
+  const FeaturedSection({
+    super.key,
+    this.isWebsiteEnabled = false,
+    this.isNftEnabled = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -116,8 +121,27 @@ class FeaturedSection extends StatelessWidget {
                   },
                 ),
               ),
-              // Empty spacers to maintain consistent card width
-              const Expanded(child: SizedBox()),
+              Expanded(
+                child: _FeaturedCard(
+                  icon: LucideIcons.gem,
+                  label: 'NFTs',
+                  color: Colors.pink,
+                  enabled: isNftEnabled,
+                  onTap: () {
+                    if (!isNftEnabled) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Please sign in, add an API Key, and link a wallet first.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    context.push('/nfts');
+                  },
+                ),
+              ),
               const Expanded(child: SizedBox()),
             ],
           ),

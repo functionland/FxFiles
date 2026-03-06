@@ -84,6 +84,9 @@ class SecureStorageKeys {
   static const String aiEndpointUrl = 'ai_endpoint_url';
   static const String ipfsGatewayUrl = 'ipfs_gateway_url';
 
+  // NFT wallet keys
+  static const String nftWalletPrivateKey = 'nft_wallet_private_key';
+
   // Blox pairing keys (for local-first retrieval)
   static const String bloxPairingSecret = 'blox_pairing_secret';
   static const String bloxHardwareId = 'blox_hardware_id';

@@ -27,15 +27,30 @@ class DeepLinkService {
   final _bloxPairingController = StreamController<Map<String, String?>>.broadcast();
   Stream<Map<String, String?>> get onBloxPairingComplete => _bloxPairingController.stream;
 
+  // Stream controller for NFT claim deep links
+  final _nftClaimController = StreamController<Map<String, String?>>.broadcast();
+  Stream<Map<String, String?>> get onNftClaimReceived => _nftClaimController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
   Map<String, String?>? get pendingBloxPairing => _pendingBloxPairing;
 
+  // Pending NFT claim params
+  Map<String, String?>? _pendingNftClaim;
+  Map<String, String?>? get pendingNftClaim => _pendingNftClaim;
+
   /// Returns and clears any pending blox pairing params (atomic read-and-clear).
   Map<String, String?>? consumePendingBloxPairing() {
     final params = _pendingBloxPairing;
     _pendingBloxPairing = null;
+    return params;
+  }
+
+  /// Returns and clears any pending NFT claim params (atomic read-and-clear).
+  Map<String, String?>? consumePendingNftClaim() {
+    final params = _pendingNftClaim;
+    _pendingNftClaim = null;
     return params;
   }
 
@@ -83,6 +98,12 @@ class DeepLinkService {
     if (host == 'autopin-complete') {
       debugPrint('DeepLinkService: Blox pairing complete deeplink received');
       await _handleAutoPinComplete(uri);
+      return;
+    }
+
+    if (host == 'nft-claim') {
+      debugPrint('DeepLinkService: NFT claim deeplink received');
+      _handleNftClaim(uri);
       return;
     }
 
@@ -252,10 +273,25 @@ class DeepLinkService {
     }
   }
 
+  void _handleNftClaim(Uri uri) {
+    final params = <String, String?>{
+      'chain': uri.queryParameters['chain'],
+      'contract': uri.queryParameters['contract'],
+      'token': uri.queryParameters['token'],
+      'hash': uri.queryParameters['hash'],
+    };
+
+    _pendingNftClaim = params;
+    _nftClaimController.add(params);
+
+    debugPrint('DeepLinkService: NFT claim params stored');
+  }
+
   void dispose() {
     _linkSubscription?.cancel();
     _apiKeyReceivedController.close();
     _orgNameReceivedController.close();
     _bloxPairingController.close();
+    _nftClaimController.close();
   }
 }
