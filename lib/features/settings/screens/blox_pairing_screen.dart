@@ -218,7 +218,77 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
   Future<void> _handleRescan() async {
     setState(() => _isScanning = true);
     await _rescanAndRefresh();
+    await _maybePickDiscoveredDevice();
     if (mounted) setState(() => _isScanning = false);
+  }
+
+  /// On desktop, if NSD found devices but pairedBlox is null (no hwId/peerId match),
+  /// show a picker so the user can select their Blox from the discovered list.
+  Future<void> _maybePickDiscoveredDevice() async {
+    if (!PlatformCapabilities.isDesktop || !mounted) return;
+
+    final discovery = BloxDiscoveryService.instance;
+    // Already matched — nothing to do
+    if (discovery.pairedBlox != null) return;
+
+    final devices = discovery.devices;
+    if (devices.isEmpty) return;
+
+    // Auto-select if only one device found
+    final BloxDevice selected;
+    if (devices.length == 1) {
+      selected = devices.first;
+    } else {
+      final picked = await showDialog<BloxDevice>(
+        context: context,
+        builder: (ctx) => _DevicePickerDialog(devices: devices),
+      );
+      if (picked == null || !mounted) return;
+      selected = picked;
+    }
+
+    // Save selected device's identity so pairedBlox matches it
+    discovery.setPairedBlox(
+      hardwareId: selected.hardwareId,
+      peerId: selected.peerId,
+      pairingSecret: discovery.pairingSecret,
+    );
+
+    if (selected.hardwareId != null) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.bloxHardwareId,
+        selected.hardwareId!,
+      );
+    }
+    if (selected.peerId != null) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.bloxPeerId,
+        selected.peerId!,
+      );
+    }
+    if (selected.name != null) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.bloxName,
+        selected.name!,
+      );
+    }
+
+    // Persist the discovered IP
+    discovery.setLastKnownIp(selected.ip);
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.bloxLastKnownIp,
+      selected.ip,
+    );
+
+    if (mounted) {
+      setState(() {
+        _pairedHardwareId = selected.hardwareId;
+        _pairedBloxName = selected.name ?? _pairedBloxName;
+      });
+    }
+
+    // Now that pairedBlox will resolve, do health check
+    await _checkBloxReachable();
   }
 
   Future<void> _rescanAndRefresh() async {
@@ -643,6 +713,8 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       // Wait for NSD scan to complete
       await Future.delayed(const Duration(seconds: 10));
       if (mounted) setState(() {});
+      // On desktop, let user pick from discovered devices if no hwId/peerId match
+      await _maybePickDiscoveredDevice();
       await _checkBloxReachable();
     }
 
@@ -1075,6 +1147,46 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
             border: OutlineInputBorder(),
             prefixIcon: Icon(LucideIcons.radio),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DevicePickerDialog extends StatelessWidget {
+  final List<BloxDevice> devices;
+  const _DevicePickerDialog({required this.devices});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Select Blox Device'),
+      content: SizedBox(
+        width: 400,
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: devices.length,
+          itemBuilder: (ctx, i) {
+            final d = devices[i];
+            return ListTile(
+              leading: const Icon(LucideIcons.hardDrive),
+              title: Text(d.name ?? 'Blox Device'),
+              subtitle: Text(d.ip),
+              trailing: d.hardwareId != null
+                  ? Text(
+                      '${d.hardwareId!.substring(0, 8)}...',
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    )
+                  : null,
+              onTap: () => Navigator.pop(ctx, d),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
         ),
       ],
     );
