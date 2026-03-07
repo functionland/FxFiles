@@ -63,7 +63,9 @@ post_install do |installer|
 
   runner_target.build_configurations.each do |config|
     # Preserve global symbols that dlsym() needs (default strips all in Release)
-    config.build_settings['STRIP_STYLE'] = 'non-global-symbols'
+    # Use 'debugging' (strip -S) instead of 'non-global-symbols' (strip -x) to avoid
+    # "symbols referenced by indirect symbol table entries that can't be stripped" error
+    config.build_settings['STRIP_STYLE'] = 'debugging'
 
     # Force-load all symbols from the Rust static archive
     flags = config.build_settings['OTHER_LDFLAGS'] || ['$(inherited)']
