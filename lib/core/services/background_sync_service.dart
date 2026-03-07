@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -24,7 +25,13 @@ void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     try {
       // Initialize RustLib in background isolate (required for fula_client FFI)
-      await RustLib.init();
+      if (Platform.isIOS) {
+        await RustLib.init(
+          externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+        );
+      } else {
+        await RustLib.init();
+      }
 
       await SecureStorageService.instance.init();
       await LocalStorageService.instance.init();
@@ -237,7 +244,15 @@ class BackgroundSyncService {
   /// Initialize services needed for background operations
   Future<void> _initializeServicesForBackground() async {
     // Initialize RustLib in background isolate (required for fula_client FFI)
-    await RustLib.init();
+    // On iOS, the Rust library is statically linked into the executable,
+    // so we need to use DynamicLibrary.process() instead of loading a framework
+    if (Platform.isIOS) {
+      await RustLib.init(
+        externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+      );
+    } else {
+      await RustLib.init();
+    }
 
     await SecureStorageService.instance.init();
     await LocalStorageService.instance.init();

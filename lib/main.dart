@@ -83,13 +83,15 @@ Future<ProviderContainer> _initializeApp() async {
     if (Platform.isIOS) {
       await RustLib.init(
         externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 10));
     } else {
-      await RustLib.init().timeout(const Duration(seconds: 5));
+      await RustLib.init().timeout(const Duration(seconds: 10));
     }
+    AuthService.markRustLibInitialized();
   } catch (e) {
     debugPrint('RustLib initialization failed: $e');
-    // Continue - some features won't work but app can still run
+    // Continue - AuthService.ensureRustLibInitialized() will retry lazily
+    // before any fula_client operations
   }
 
   // Initialize services with timeout protection (iOS 26+ can hang on storage init)

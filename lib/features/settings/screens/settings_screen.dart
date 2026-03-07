@@ -454,7 +454,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (context, snapshot) {
         final shareId = snapshot.data;
         final isAuthenticated = AuthService.instance.isAuthenticated;
-        
+        final isDone = snapshot.connectionState == ConnectionState.done;
+
         return _buildSection(
           title: 'Your Share ID',
           children: [
@@ -463,6 +464,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 leading: Icon(LucideIcons.userX),
                 title: Text('Sign in to get your Share ID'),
                 subtitle: Text('Required for receiving shared files'),
+              )
+            else if (snapshot.hasError || (isDone && shareId == null))
+              ListTile(
+                leading: const Icon(LucideIcons.alertTriangle, color: Colors.orange),
+                title: const Text('Could not generate Share ID'),
+                subtitle: const Text('Cloud service not initialized. Try configuring API Gateway in settings and restarting the app.'),
+                trailing: IconButton(
+                  icon: const Icon(LucideIcons.refreshCw),
+                  onPressed: () => setState(() {}),
+                  tooltip: 'Retry',
+                ),
               )
             else if (shareId == null)
               const ListTile(

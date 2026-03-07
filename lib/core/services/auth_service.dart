@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
+import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -411,6 +413,36 @@ class AuthService {
     }
   }
 
+  /// Track whether RustLib has been successfully initialized.
+  /// Set to true in main.dart after successful init, or by lazy init here.
+  static bool _rustLibInitialized = false;
+
+  /// Mark RustLib as initialized (called from main.dart after successful init)
+  static void markRustLibInitialized() => _rustLibInitialized = true;
+
+  /// Ensure RustLib (flutter_rust_bridge) is initialized.
+  /// RustLib.init() may fail at startup (e.g. timeout, linking issues) but succeed
+  /// on retry. This method allows lazy re-initialization before any fula_client call.
+  static Future<void> ensureRustLibInitialized() async {
+    if (_rustLibInitialized) return;
+
+    debugPrint('AuthService: RustLib not initialized, attempting lazy init...');
+    try {
+      if (Platform.isIOS) {
+        await RustLib.init(
+          externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+        );
+      } else {
+        await RustLib.init();
+      }
+      _rustLibInitialized = true;
+      debugPrint('AuthService: RustLib initialized successfully on retry');
+    } catch (e) {
+      debugPrint('AuthService: RustLib init retry failed: $e');
+      rethrow;
+    }
+  }
+
   /// Derive encryption key using Argon2id (memory-hard KDF) via fula_client
   ///
   /// Uses the standard fula.deriveKey() function to ensure cross-platform
@@ -425,6 +457,9 @@ class AuthService {
   /// Context/Salt: "fula-files-v1"
   Future<void> _deriveEncryptionKey() async {
     if (_currentUser == null) return;
+
+    // Ensure RustLib is initialized (may have failed at startup)
+    await ensureRustLibInitialized();
 
     // Combined input: "google:{userId}:{email}"
     final input = '${_currentUser!.provider.name}:${_currentUser!.id}:${_currentUser!.email}';
