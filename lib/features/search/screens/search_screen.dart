@@ -7,6 +7,7 @@ import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/face_data.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -234,7 +235,7 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
     
     if (!mounted) return;
     
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       isScrollControlled: true,
       builder: (ctx) => DraggableScrollableSheet(

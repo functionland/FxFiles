@@ -94,6 +94,11 @@ dependencies:
   
   # Icons
   lucide_icons: ^0.257.0
+  qr_flutter: ^4.1.0
+
+  # Desktop Window Management
+  window_manager: ^0.4.3
+  tray_manager: ^0.2.1
 
   # Deep Links
   app_links: ^6.4.0
@@ -111,6 +116,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
   flutter_native_splash: ^2.4.4
+  msix: ^3.16.13
 
 # Temporary override until reown_appkit supports flutter_secure_storage 10.x
 # Monitor: https://github.com/reown-com/reown_flutter/issues
@@ -134,6 +140,16 @@ flutter_native_splash:
   android_12:
     color: "#151718"
     image: "assets/icons/icon.png"
+
+msix_config:
+  display_name: FxFiles
+  publisher_display_name: Functionland
+  publisher: CN=E9FEC2DC-DBBE-45BA-A112-26EFEA253DB5
+  identity_name: Functionland.FxFiles
+  msix_version: 1.4.3.0
+  logo_path: assets/icons/icon.png
+  capabilities: internetClient, internetClientServer
+  protocol_activation: fxfiles
 
 flutter:
   uses-material-design: true

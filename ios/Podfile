@@ -28,7 +28,7 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
+  use_frameworks! :linkage => :static
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
@@ -47,5 +47,47 @@ post_install do |installer|
         'AUDIO_SESSION_MICROPHONE=0'
       ]
     end
+  end
+
+  # Fix fula_client Rust FFI symbol linking for Release builds.
+  # Rust FFI symbols accessed via dlsym() at runtime are stripped because:
+  #   1) The linker only pulls in referenced symbols from static archives
+  #   2) The post-link strip removes global symbols
+  # xcconfig-level OTHER_LDFLAGS changes are silently ignored (verified in build logs),
+  # so we set flags directly on the Runner target in project.pbxproj (highest priority).
+  force_load_path = '"${PODS_ROOT}/../.symlinks/plugins/fula_client/ios/Frameworks/FulaFlutter.xcframework/ios-arm64/libfula_flutter.a"'
+
+  runner_project_path = File.join(installer.sandbox.root, '..', 'Runner.xcodeproj')
+  runner_project = Xcodeproj::Project.open(runner_project_path)
+  runner_target = runner_project.targets.find { |t| t.name == 'Runner' }
+
+  runner_target.build_configurations.each do |config|
+    # Preserve global symbols that dlsym() needs (default strips all in Release)
+    # Use 'debugging' (strip -S) instead of 'non-global-symbols' (strip -x) to avoid
+    # "symbols referenced by indirect symbol table entries that can't be stripped" error
+    config.build_settings['STRIP_STYLE'] = 'debugging'
+
+    # Force-load all symbols from the Rust static archive
+    flags = config.build_settings['OTHER_LDFLAGS'] || ['$(inherited)']
+    flags = [flags] if flags.is_a?(String)
+    unless flags.any? { |f| f.to_s.include?('force_load') }
+      flags.push('-force_load')
+      flags.push(force_load_path)
+    end
+    config.build_settings['OTHER_LDFLAGS'] = flags
+  end
+
+  runner_project.save
+
+  # Also clean up broken conditioned lines from xcconfigs (previous fix attempts)
+  ['debug', 'profile', 'release'].each do |config_name|
+    xcconfig_path = "#{installer.sandbox.root}/Target Support Files/Pods-Runner/Pods-Runner.#{config_name}.xcconfig"
+    next unless File.exist?(xcconfig_path)
+
+    content = File.read(xcconfig_path)
+    changed = false
+    changed = true if content.gsub!(/^OTHER_LDFLAGS\[sdk=.*\].*\n?/, '')
+    changed = true if content.gsub!(/^FULA_FLUTTER_LIB\[sdk=.*\].*\n?/, '')
+    File.write(xcconfig_path, content) if changed
   end
 end

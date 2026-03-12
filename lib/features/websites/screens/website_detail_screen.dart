@@ -14,6 +14,7 @@ import 'package:fula_files/features/websites/providers/website_provider.dart';
 import 'package:fula_files/features/websites/widgets/generation_status_card.dart';
 import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 /// Detail screen for a single website: shows assets + generation history
 class WebsiteDetailScreen extends ConsumerStatefulWidget {
@@ -246,7 +247,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
   // ============================================================================
 
   void _showImportSheet(BuildContext context) {
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(

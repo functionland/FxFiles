@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/services/audio_player_service.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 class PlaylistDetailScreen extends StatefulWidget {
   final String playlistId;
@@ -393,7 +394,7 @@ class _TrackListItem extends StatelessWidget {
   }
 
   void _showTrackMenu(BuildContext context) {
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       builder: (context) => Column(
         mainAxisSize: MainAxisSize.min,
@@ -434,7 +435,7 @@ class _TrackListItem extends StatelessWidget {
 
     if (!context.mounted) return;
 
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       builder: (context) => Column(
         mainAxisSize: MainAxisSize.min,

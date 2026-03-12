@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -10,6 +12,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String periodicSyncTask = 'periodicSync';
 const String uploadTask = 'uploadTask';
@@ -22,7 +25,13 @@ void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     try {
       // Initialize RustLib in background isolate (required for fula_client FFI)
-      await RustLib.init();
+      if (Platform.isIOS) {
+        await RustLib.init(
+          externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+        );
+      } else {
+        await RustLib.init();
+      }
 
       await SecureStorageService.instance.init();
       await LocalStorageService.instance.init();
@@ -171,6 +180,7 @@ class BackgroundSyncService {
 
   bool _isInitialized = false;
   static const MethodChannel _iosChannel = MethodChannel('land.fx.files/background_sync');
+  Timer? _desktopSyncTimer;
 
   Future<void> initialize() async {
     if (_isInitialized) return;
@@ -234,7 +244,15 @@ class BackgroundSyncService {
   /// Initialize services needed for background operations
   Future<void> _initializeServicesForBackground() async {
     // Initialize RustLib in background isolate (required for fula_client FFI)
-    await RustLib.init();
+    // On iOS, the Rust library is statically linked into the executable,
+    // so we need to use DynamicLibrary.process() instead of loading a framework
+    if (Platform.isIOS) {
+      await RustLib.init(
+        externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+      );
+    } else {
+      await RustLib.init();
+    }
 
     await SecureStorageService.instance.init();
     await LocalStorageService.instance.init();
@@ -269,7 +287,30 @@ class BackgroundSyncService {
       } catch (e) {
         debugPrint('Failed to schedule iOS background sync: $e');
       }
+    } else if (PlatformCapabilities.isDesktop) {
+      _startDesktopPeriodicSync(interval: frequency);
     }
+  }
+
+  /// Start a chained Timer fallback for desktop platforms (no Workmanager).
+  /// Uses single-shot timers to prevent overlap when a sync cycle exceeds the interval.
+  void _startDesktopPeriodicSync({Duration interval = const Duration(minutes: 15)}) {
+    _desktopSyncTimer?.cancel();
+    void scheduleNext() {
+      _desktopSyncTimer = Timer(interval, () async {
+        try {
+          if (!FulaApiService.instance.isConfigured) return;
+          final connectivity = await Connectivity().checkConnectivity();
+          if (connectivity.contains(ConnectivityResult.none)) return;
+          await SyncService.instance.restoreQueue();
+          await SyncService.instance.processQueueWithTimeout(const Duration(minutes: 9));
+        } finally {
+          scheduleNext();
+        }
+      });
+    }
+    scheduleNext();
+    debugPrint('Desktop periodic sync started (interval: ${interval.inMinutes}min)');
   }
 
   Future<void> scheduleUpload({
@@ -279,8 +320,19 @@ class BackgroundSyncService {
     bool encrypt = true,
     bool useMultipart = false,
   }) async {
+    if (PlatformCapabilities.isDesktop) {
+      await SyncService.instance.queueUpload(
+        localPath: localPath,
+        remoteBucket: bucket,
+        remoteKey: key,
+        encrypt: encrypt,
+      );
+      SyncService.instance.processQueueWithTimeout(const Duration(minutes: 9));
+      return;
+    }
+    if (!PlatformCapabilities.isMobile) return;
     final uniqueId = 'upload-${DateTime.now().millisecondsSinceEpoch}';
-    
+
     await Workmanager().registerOneOffTask(
       uniqueId,
       uploadTask,
@@ -303,8 +355,19 @@ class BackgroundSyncService {
     required String localPath,
     bool decrypt = true,
   }) async {
+    if (PlatformCapabilities.isDesktop) {
+      await SyncService.instance.queueDownload(
+        remoteBucket: bucket,
+        remoteKey: key,
+        localPath: localPath,
+        decrypt: decrypt,
+      );
+      SyncService.instance.processQueueWithTimeout(const Duration(minutes: 9));
+      return;
+    }
+    if (!PlatformCapabilities.isMobile) return;
     final uniqueId = 'download-${DateTime.now().millisecondsSinceEpoch}';
-    
+
     await Workmanager().registerOneOffTask(
       uniqueId,
       downloadTask,
@@ -321,6 +384,13 @@ class BackgroundSyncService {
   }
 
   Future<void> scheduleRetryFailed() async {
+    if (PlatformCapabilities.isDesktop) {
+      await SyncService.instance.restoreQueue();
+      await SyncService.instance.retryFailed();
+      SyncService.instance.processQueueWithTimeout(const Duration(minutes: 9));
+      return;
+    }
+    if (!PlatformCapabilities.isMobile) return;
     await Workmanager().registerOneOffTask(
       'retry-failed',
       retryFailedTask,
@@ -332,6 +402,11 @@ class BackgroundSyncService {
   }
 
   Future<void> scheduleCleanupIncomplete() async {
+    if (PlatformCapabilities.isDesktop) {
+      _executeCleanupIncomplete();
+      return;
+    }
+    if (!PlatformCapabilities.isMobile) return;
     await Workmanager().registerOneOffTask(
       'cleanup-incomplete',
       cleanupTask,
@@ -351,10 +426,15 @@ class BackgroundSyncService {
       } catch (e) {
         debugPrint('Failed to cancel iOS background sync: $e');
       }
+    } else if (PlatformCapabilities.isDesktop) {
+      _desktopSyncTimer?.cancel();
+      _desktopSyncTimer = null;
     }
   }
 
   Future<void> cancelByUniqueName(String uniqueName) async {
+    if (PlatformCapabilities.isDesktop) return;
+    if (!PlatformCapabilities.isMobile) return;
     await Workmanager().cancelByUniqueName(uniqueName);
   }
 }

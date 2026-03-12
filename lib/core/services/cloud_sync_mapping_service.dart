@@ -263,8 +263,8 @@ class CloudSyncMappingService {
         if (Platform.isIOS && mapping.iosAssetId != null) {
           // iOS: Try to find asset by PhotoKit ID
           linked = await _relinkIosAsset(mapping);
-        } else if (Platform.isAndroid && mapping.localPath != null) {
-          // Android: Check if file still exists at path
+        } else if (!Platform.isIOS && mapping.localPath != null) {
+          // Android/Desktop: Check if file still exists at path
           linked = await _relinkAndroidFile(mapping);
         }
 

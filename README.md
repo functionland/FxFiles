@@ -84,6 +84,52 @@ flutter pub get
 flutter run
 ```
 
+### Windows Build
+
+#### Prerequisites
+
+- Flutter SDK 3.38.0+
+- Rust (install from [rustup.rs](https://rustup.rs))
+- `flutter_rust_bridge_codegen`: `cargo install flutter_rust_bridge_codegen`
+
+#### Build and Run
+
+```powershell
+# 1. Get dependencies
+flutter pub get
+
+# 2. Generate Dart/Rust bindings (from repo root of fula-api)
+flutter_rust_bridge_codegen generate
+
+# 3. Build the native DLL (from repo root of fula-api)
+cargo build -p fula-flutter --release
+
+# 4. Copy DLL to the FxFiles windows directory
+copy path\to\fula-api\target\release\fula_flutter.dll windows\fula_flutter.dll
+
+# 5. Run the app
+flutter run -d windows
+```
+
+The CMakeLists.txt automatically copies `fula_flutter.dll` from `windows/` to the build output directory.
+
+#### Build MSIX Installer
+
+```powershell
+# 1. Ensure fula_flutter.dll is in windows/ (see steps above)
+
+# 2. Add msix dev dependency (if not already added)
+dart pub add --dev msix
+
+# 3. Build Windows release
+flutter build windows --release
+
+# 4. Create MSIX installer
+dart run msix:create
+```
+
+The MSIX installer will be at `build/windows/x64/runner/Release/fula_files.msix`. Double-click to install.
+
 ### Configuration
 
 #### Fula API Setup
@@ -799,7 +845,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] NFT wallet picker: Choose internal or connected wallet before every operation (NFT)
 - [ X ] NFT cloud sync: Encrypted metadata sync to S3 for cross-device recovery (NFT)
 - [ X ] NFT retry logic: Resume failed mints from last checkpoint (NFT)
-- [ ] Deploy FulaFileNFT contract and update SupportedChain addresses (NFT)
-- [ ] Implement proper error handling for background sync
-- [ ] Add unit tests for all services
-- [ ] Add AI features that interact with blox
+- [ X ] Deploy FulaFileNFT contract and update SupportedChain addresses (NFT)
+- [ X ] Implement proper error handling for background sync
+- [ X ] Add unit tests for all services
+- [ X ] Add AI features that interact with blox

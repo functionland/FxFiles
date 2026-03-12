@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -129,8 +130,16 @@ class BloxDiscoveryService {
   }
 
   /// Start periodic mDNS scanning for blox devices
+  /// On desktop platforms, NSD may not be available — use manual IP entry instead.
   void startScanning({Duration interval = const Duration(seconds: 30)}) {
     if (_isScanning) return;
+
+    // NSD/mDNS scanning is supported on Android, iOS, macOS, and Windows — not Linux
+    if (Platform.isLinux) {
+      debugPrint('BloxDiscovery: NSD scanning not supported on Linux, use manual IP');
+      return;
+    }
+
     _isScanning = true;
 
     // Initial scan

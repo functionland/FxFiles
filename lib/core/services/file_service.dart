@@ -152,8 +152,12 @@ class FileService {
       for (var i = 67; i <= 90; i++) {
         final driveLetter = String.fromCharCode(i);
         final drive = Directory('$driveLetter:\\');
-        if (await drive.exists()) {
-          roots.add(drive);
+        try {
+          if (await drive.exists()) {
+            roots.add(drive);
+          }
+        } catch (e) {
+          debugPrint('Drive $driveLetter:\\ not accessible: $e');
         }
       }
     } else if (Platform.isMacOS) {
@@ -435,14 +439,17 @@ class FileService {
     }
   }
 
-  Future<Directory> getDownloadsDirectory() async {
+  Future<Directory> getDownloadsDir() async {
     if (Platform.isAndroid) {
       return Directory('/storage/emulated/0/Download');
     } else if (Platform.isIOS) {
       return await getApplicationDocumentsDirectory();
-    } else if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-      final downloads = await getDownloadsDirectory();
-      return downloads;
+    } else if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'] ?? r'C:\Users\Default';
+      return Directory('$userProfile\\Downloads');
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/';
+      return Directory('$home/Downloads');
     }
     return await getApplicationDocumentsDirectory();
   }
@@ -502,17 +509,55 @@ class FileService {
           return Directory('/storage/emulated/0');
       }
     }
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'] ?? r'C:\Users\Default';
+      switch (category) {
+        case FileCategory.images:
+          return Directory('$userProfile\\Pictures');
+        case FileCategory.videos:
+          return Directory('$userProfile\\Videos');
+        case FileCategory.audio:
+          return Directory('$userProfile\\Music');
+        case FileCategory.documents:
+          return Directory('$userProfile\\Documents');
+        case FileCategory.downloads:
+          return Directory('$userProfile\\Downloads');
+        default:
+          return Directory(userProfile);
+      }
+    }
+    if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/';
+      switch (category) {
+        case FileCategory.images:
+          return Directory('$home/Pictures');
+        case FileCategory.videos:
+          return Directory('$home/Videos');
+        case FileCategory.audio:
+          return Directory('$home/Music');
+        case FileCategory.documents:
+          return Directory('$home/Documents');
+        case FileCategory.downloads:
+          return Directory('$home/Downloads');
+        default:
+          return Directory(home);
+      }
+    }
     return await getApplicationDocumentsDirectory();
   }
 
   // Directories to skip during recursive scanning
   static const _restrictedDirs = {
     'Android/data',
-    'Android/obb', 
+    'Android/obb',
     'Android/media',
     '.thumbnails',
     '.cache',
     '.trash',
+    // Windows system/hidden directories
+    r'$Recycle.Bin',
+    'AppData',
+    'node_modules',
   };
 
   bool _shouldSkipDirectory(String path) {
@@ -563,13 +608,29 @@ class FileService {
 
   Future<List<LocalFile>> _scanForCategoryFiles(FileCategory category) async {
     final results = <LocalFile>[];
-    final roots = await getStorageRoots();
     final extensions = _getCategoryExtensions(category);
-    
-    for (final root in roots) {
-      await _scanDirectoryForFiles(root, extensions, results);
+
+    // On desktop, scan the category-specific directory (e.g. ~/Pictures)
+    // plus the Downloads folder for matching files — cloud downloads land there.
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      final categoryDir = await getCategoryDirectory(category);
+      if (await categoryDir.exists()) {
+        await _scanDirectoryForFiles(categoryDir, extensions, results);
+      }
+      // Also scan Downloads for files matching this category's extensions
+      if (category != FileCategory.downloads) {
+        final downloadsDir = await getCategoryDirectory(FileCategory.downloads);
+        if (await downloadsDir.exists() && downloadsDir.path != categoryDir.path) {
+          await _scanDirectoryForFiles(downloadsDir, extensions, results);
+        }
+      }
+    } else {
+      final roots = await getStorageRoots();
+      for (final root in roots) {
+        await _scanDirectoryForFiles(root, extensions, results);
+      }
     }
-    
+
     return results;
   }
 

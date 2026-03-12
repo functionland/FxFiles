@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:fula_client/fula_client.dart' show RustLib;
+import 'package:fula_files/core/utils/platform_capabilities.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:fula_files/app/app.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
@@ -20,6 +22,7 @@ import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
+import 'package:fula_files/core/services/tray_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
@@ -30,6 +33,21 @@ import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Desktop window management
+  if (PlatformCapabilities.isDesktop) {
+    await windowManager.ensureInitialized();
+    final windowOptions = WindowOptions(
+      size: Size(1200, 800),
+      minimumSize: Size(400, 600),
+      title: 'FxFiles',
+      center: true,
+    );
+    await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
 
   // Global startup timeout to prevent app from hanging indefinitely
   const startupTimeout = Duration(seconds: 15);
@@ -67,13 +85,15 @@ Future<ProviderContainer> _initializeApp() async {
     if (Platform.isIOS) {
       await RustLib.init(
         externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 10));
     } else {
-      await RustLib.init().timeout(const Duration(seconds: 5));
+      await RustLib.init().timeout(const Duration(seconds: 10));
     }
+    AuthService.markRustLibInitialized();
   } catch (e) {
     debugPrint('RustLib initialization failed: $e');
-    // Continue - some features won't work but app can still run
+    // Continue - AuthService.ensureRustLibInitialized() will retry lazily
+    // before any fula_client operations
   }
 
   // Initialize services with timeout protection (iOS 26+ can hang on storage init)
@@ -153,6 +173,11 @@ Future<ProviderContainer> _initializeApp() async {
   // Request notification permission early for sync notifications (Android 13+)
   // This is non-blocking and will show the permission dialog on first sync
   SyncNotificationService.instance.requestNotificationPermission();
+
+  // Initialize system tray for desktop (shows sync progress like OneDrive)
+  if (PlatformCapabilities.isDesktop) {
+    TrayService.instance.init();
+  }
 
   // Check if Fula API is configured and schedule sync
   // Use timeout for keychain access which can hang on iOS 26+

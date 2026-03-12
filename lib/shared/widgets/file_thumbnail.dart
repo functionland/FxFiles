@@ -63,11 +63,6 @@ class FileThumbnail extends StatelessWidget {
   }
 
   Widget _buildSvgThumbnail() {
-    final svgFile = File(file.path);
-    if (!svgFile.existsSync()) {
-      return _buildIconThumbnail(LucideIcons.image, Colors.green);
-    }
-
     return ClipRRect(
       borderRadius: borderRadius ?? BorderRadius.circular(8),
       child: Container(
@@ -75,7 +70,7 @@ class FileThumbnail extends StatelessWidget {
         height: size,
         color: Colors.white,
         child: SvgPicture.file(
-          svgFile,
+          File(file.path),
           width: size,
           height: size,
           fit: BoxFit.contain,
@@ -95,11 +90,7 @@ class FileThumbnail extends StatelessWidget {
       );
     }
 
-    // Android and iOS without asset ID: Use sync file check
-    final imageFile = File(file.path);
-    if (!imageFile.existsSync()) {
-      return _buildIconThumbnail(LucideIcons.image, Colors.green);
-    }
+    // Image.file() errorBuilder handles missing files gracefully
     return _buildImageWidget();
   }
 

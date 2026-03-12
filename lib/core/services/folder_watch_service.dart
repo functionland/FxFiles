@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String folderSyncTaskName = 'com.functionland.fxfiles.folderSync';
 const String folderSyncPeriodicTaskName = 'com.functionland.fxfiles.folderSyncPeriodic';
@@ -48,11 +49,13 @@ class FolderWatchService {
 
   Future<void> init() async {
     if (_isInitialized) return;
-    
-    // Initialize workmanager for background tasks
-    await Workmanager().initialize(
-      callbackDispatcher,
-    );
+
+    // Initialize workmanager for background tasks (mobile only)
+    if (PlatformCapabilities.isMobile) {
+      await Workmanager().initialize(
+        callbackDispatcher,
+      );
+    }
     
     // Start watching all enabled folder syncs
     final enabledSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
@@ -518,6 +521,7 @@ class FolderWatchService {
   }
 
   Future<void> _registerPeriodicSync() async {
+    if (!PlatformCapabilities.isMobile) return;
     await Workmanager().registerPeriodicTask(
       folderSyncPeriodicTaskName,
       folderSyncTaskName,
@@ -531,6 +535,7 @@ class FolderWatchService {
   }
 
   Future<void> cancelPeriodicSync() async {
+    if (!PlatformCapabilities.isMobile) return;
     await Workmanager().cancelByUniqueName(folderSyncPeriodicTaskName);
     debugPrint('Cancelled periodic folder sync task');
   }

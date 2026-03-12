@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/audio_player_service.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 class AudioEqualizer extends StatelessWidget {
   const AudioEqualizer({super.key});
@@ -271,13 +272,9 @@ class EqualizerButton extends StatelessWidget {
   }
 
   void _showEqualizerDialog(BuildContext context) {
-    showModalBottomSheet(
+    showAdaptiveSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
       builder: (context) => DraggableScrollableSheet(
         initialChildSize: 0.5,
         minChildSize: 0.3,

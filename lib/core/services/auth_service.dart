@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
+import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -12,6 +14,7 @@ import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
 
@@ -114,6 +117,10 @@ class AuthService {
     } else if (Platform.isIOS) {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
       serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+    } else {
+      // Desktop (Windows/macOS/Linux): use server client ID for browser-based OAuth
+      clientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
 
     await _googleSignIn.initialize(
@@ -130,7 +137,8 @@ class AuthService {
     } else if (Platform.isIOS) {
       return _googleClientIdIOS.isNotEmpty;
     }
-    return false;
+    // Desktop: use server client ID
+    return _googleServerClientId.isNotEmpty;
   }
 
   Future<bool> checkExistingSession({bool skipHeavyOperations = false}) async {
@@ -158,24 +166,27 @@ class AuthService {
         return true;
       }
 
-      await _ensureGoogleInitialized();
-      final result = _googleSignIn.attemptLightweightAuthentication();
-      if (result != null) {
-        try {
-          // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
-          final account = await result.timeout(
-            const Duration(seconds: 5),
-            onTimeout: () {
-              debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
-              return null;
-            },
-          );
-          if (account != null) {
-            await _handleGoogleSignIn(account);
-            return true;
+      // Google lightweight auth is not available on desktop
+      if (!PlatformCapabilities.isDesktop) {
+        await _ensureGoogleInitialized();
+        final result = _googleSignIn.attemptLightweightAuthentication();
+        if (result != null) {
+          try {
+            // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
+            final account = await result.timeout(
+              const Duration(seconds: 5),
+              onTimeout: () {
+                debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
+                return null;
+              },
+            );
+            if (account != null) {
+              await _handleGoogleSignIn(account);
+              return true;
+            }
+          } catch (e) {
+            debugPrint('Lightweight auth failed: $e');
           }
-        } catch (e) {
-          debugPrint('Lightweight auth failed: $e');
         }
       }
 
@@ -188,6 +199,10 @@ class AuthService {
 
   Future<AuthUser?> signInWithGoogle() async {
     try {
+      if (PlatformCapabilities.isDesktop) {
+        throw Exception('Google Sign-In is not available on desktop. Please use "Get API Key" to connect your account.');
+      }
+
       await _ensureGoogleInitialized();
 
       if (!_googleSignIn.supportsAuthenticate()) {
@@ -362,6 +377,76 @@ class AuthService {
     }
   }
 
+  /// Handle sign-in via browser callback (Get API Key flow).
+  /// Creates a user session from identity params passed in the redirect URL.
+  Future<void> handleBrowserSignIn({
+    required String id,
+    required String email,
+    String? displayName,
+    String? photoUrl,
+    required AuthProvider provider,
+  }) async {
+    _currentUser = AuthUser(
+      id: id,
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
+      provider: provider,
+    );
+
+    await SecureStorageService.instance.writeJson(
+      SecureStorageKeys.userCredentials,
+      _currentUser!.toJson(),
+    );
+
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.authProvider,
+      provider.name,
+    );
+
+    try {
+      await _deriveEncryptionKey();
+      await _initializeFulaClient();
+      if (FulaApiService.instance.isConfigured) {
+        CloudSyncMappingService.instance.relinkMappings();
+        TagStorageService.instance.restoreFromCloud();
+        WebsiteService.instance.restoreFromCloud();
+      }
+    } catch (e) {
+      debugPrint('Browser sign-in post-setup error: $e');
+    }
+  }
+
+  /// Track whether RustLib has been successfully initialized.
+  /// Set to true in main.dart after successful init, or by lazy init here.
+  static bool _rustLibInitialized = false;
+
+  /// Mark RustLib as initialized (called from main.dart after successful init)
+  static void markRustLibInitialized() => _rustLibInitialized = true;
+
+  /// Ensure RustLib (flutter_rust_bridge) is initialized.
+  /// RustLib.init() may fail at startup (e.g. timeout, linking issues) but succeed
+  /// on retry. This method allows lazy re-initialization before any fula_client call.
+  static Future<void> ensureRustLibInitialized() async {
+    if (_rustLibInitialized) return;
+
+    debugPrint('AuthService: RustLib not initialized, attempting lazy init...');
+    try {
+      if (Platform.isIOS) {
+        await RustLib.init(
+          externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
+        );
+      } else {
+        await RustLib.init();
+      }
+      _rustLibInitialized = true;
+      debugPrint('AuthService: RustLib initialized successfully on retry');
+    } catch (e) {
+      debugPrint('AuthService: RustLib init retry failed: $e');
+      rethrow;
+    }
+  }
+
   /// Derive encryption key using Argon2id (memory-hard KDF) via fula_client
   ///
   /// Uses the standard fula.deriveKey() function to ensure cross-platform
@@ -376,6 +461,9 @@ class AuthService {
   /// Context/Salt: "fula-files-v1"
   Future<void> _deriveEncryptionKey() async {
     if (_currentUser == null) return;
+
+    // Ensure RustLib is initialized (may have failed at startup)
+    await ensureRustLibInitialized();
 
     // Combined input: "google:{userId}:{email}"
     final input = '${_currentUser!.provider.name}:${_currentUser!.id}:${_currentUser!.email}';
@@ -646,6 +734,8 @@ class AuthService {
   }
 
   Future<bool> reauthenticate() async {
+    if (PlatformCapabilities.isDesktop) return false;
+
     final provider = await SecureStorageService.instance.read(
       SecureStorageKeys.authProvider,
     );

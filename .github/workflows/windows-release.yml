@@ -1,0 +1,92 @@
+name: Windows MSIX Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.38.0'
+
+jobs:
+  build-windows-msix:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Create Store MSIX bundle (unsigned, for Microsoft Store)
+        run: dart run msix:create --store
+
+      - name: Bundle MSIX into msixbundle
+        shell: pwsh
+        run: |
+          mkdir store
+          mkdir bundle
+          Copy-Item build\windows\x64\runner\Release\*.msix bundle\
+          $sdkTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\MakeAppx.exe" | Sort-Object -Descending | Select-Object -First 1
+          & $sdkTool bundle /d bundle /p store\FxFiles-store.msixbundle
+
+      - name: Create sideload MSIX (signed, for direct download)
+        run: dart run msix:create --install-certificate false
+
+      - name: Save sideload MSIX
+        run: |
+          mkdir sideload
+          move build\windows\x64\runner\Release\*.msix sideload\FxFiles.msix
+        shell: cmd
+
+      - name: Upload Store MSIX bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxfiles-msix-store
+          path: store/FxFiles-store.msixbundle
+          retention-days: 30
+
+      - name: Upload sideload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxfiles-msix-sideload
+          path: sideload/FxFiles.msix
+          retention-days: 5
+
+  attach-to-release:
+    needs: build-windows-msix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download sideload MSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: fxfiles-msix-sideload
+          path: msix/
+
+      - name: Upload MSIX to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: msix/FxFiles.msix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
