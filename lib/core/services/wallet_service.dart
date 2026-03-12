@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:reown_appkit/reown_appkit.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
@@ -372,6 +373,64 @@ Timestamp: $timestamp''';
     return '0x$selector$addressHex$amountHex';
   }
 
+  /// Send a generic contract transaction (approve, mint, claim, etc.)
+  Future<String> sendContractTransaction({
+    required SupportedChain chain,
+    required String contractAddress,
+    required String encodedData,
+  }) async {
+    _ensureInitialized();
+    _ensureConnected();
+
+    try {
+      final session = _appKitModal!.session;
+      if (session == null) {
+        throw WalletServiceException('No active session');
+      }
+
+      final topic = session.topic ?? '';
+
+      debugPrint('WalletService: Sending tx to $contractAddress on chain ${chain.chainId}');
+
+      final pendingTx = _appKitModal!.request(
+        topic: topic,
+        chainId: 'eip155:${chain.chainId}',
+        request: SessionRequestParams(
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              'from': _connectedAddress,
+              'to': contractAddress,
+              'data': encodedData,
+              'value': '0x0',
+            },
+          ],
+        ),
+      ).timeout(
+        const Duration(minutes: 5),
+        onTimeout: () => throw WalletServiceException(
+          'Wallet did not respond within 5 minutes. Please try again.',
+        ),
+      );
+
+      // Give the relay a moment to deliver, then try to open the wallet app
+      // so the user sees the confirmation prompt without manually switching.
+      unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
+        try {
+          await tryOpenWallet();
+        } catch (_) {}
+      }));
+
+      final txHash = await pendingTx;
+
+      debugPrint('WalletService: Tx sent, hash: $txHash');
+      return txHash as String;
+    } catch (e) {
+      debugPrint('WalletService: sendContractTransaction error: $e');
+      throw WalletServiceException('Failed to send contract transaction: $e');
+    }
+  }
+
   /// Switch to a specific chain
   Future<void> switchChain(int chainId) async {
     _ensureInitialized();
@@ -395,7 +454,7 @@ Timestamp: $timestamp''';
             {'chainId': '0x${chainId.toRadixString(16)}'},
           ],
         ),
-      );
+      ).timeout(const Duration(seconds: 30));
       _connectedChainId = chainId;
     } catch (e) {
       // Chain switch failed, might need to add the chain first
@@ -477,6 +536,61 @@ Timestamp: $timestamp''';
     // Pad address to 32 bytes
     final addressHex = address.toLowerCase().replaceFirst('0x', '').padLeft(64, '0');
     return '0x$selector$addressHex';
+  }
+
+  /// Get the name of the connected wallet (e.g. "MetaMask", "Trust Wallet")
+  String? get connectedWalletName {
+    return _appKitModal?.session?.peer?.metadata.name;
+  }
+
+  /// Try to open the connected wallet app so the user can confirm a pending tx.
+  /// Returns true if a redirect was attempted.
+  Future<bool> tryOpenWallet() async {
+    if (_appKitModal == null) return false;
+    final session = _appKitModal!.session;
+    if (session == null) return false;
+
+    // Use the peer's native or universal link from session metadata
+    final peerRedirect = session.peer?.metadata.redirect;
+    final nativeLink = peerRedirect?.native;
+    final universalLink = peerRedirect?.universal;
+
+    final topic = session.topic ?? '';
+
+    // On iOS, opening just "metamask://" goes to the home page instead of the
+    // pending WalletConnect request. Append the session topic as a query
+    // parameter so the wallet picks up the pending request automatically.
+    // Android handles this via push/background, but the topic doesn't hurt.
+    String? link = nativeLink ?? universalLink;
+    if (link != null && link.isNotEmpty && topic.isNotEmpty) {
+      // Strip trailing slash for consistent joining
+      final base = link.endsWith('/') ? link.substring(0, link.length - 1) : link;
+      // Build WC deep link: <scheme>://wc?sessionTopic=<topic>
+      // For universal links: <url>/wc?sessionTopic=<topic>
+      if (base.contains('://')) {
+        final scheme = base.substring(0, base.indexOf('://') + 3);
+        final rest = base.substring(base.indexOf('://') + 3);
+        if (rest.isEmpty || rest == '/') {
+          link = '${scheme}wc?sessionTopic=${Uri.encodeComponent(topic)}';
+        } else {
+          // Universal link: append /wc path
+          link = '$base/wc?sessionTopic=${Uri.encodeComponent(topic)}';
+        }
+      }
+    }
+
+    if (link != null && link.isNotEmpty) {
+      try {
+        final uri = Uri.parse(link);
+        final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        debugPrint('WalletService: Launched wallet via $link: $launched');
+        return launched;
+      } catch (e) {
+        debugPrint('WalletService: Failed to launch wallet link: $e');
+      }
+    }
+
+    return false;
   }
 
   /// Disconnect the wallet

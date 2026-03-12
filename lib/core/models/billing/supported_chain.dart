@@ -8,6 +8,7 @@ class SupportedChain extends Equatable {
   final String? rpcUrl;
   final String? explorerUrl;
   final int decimals;
+  final String? nftContractAddress;
 
   const SupportedChain({
     required this.chainId,
@@ -17,6 +18,7 @@ class SupportedChain extends Equatable {
     this.rpcUrl,
     this.explorerUrl,
     this.decimals = 18,
+    this.nftContractAddress,
   });
 
   /// Fixed vault address for all chains
@@ -31,6 +33,7 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.base.org',
     explorerUrl: 'https://basescan.org',
     decimals: 18,
+    nftContractAddress: '0xc818477eBaf05B8239fd7f9AaeE25fE41981fd33',
   );
 
   /// Skale Europa chain configuration
@@ -42,6 +45,7 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.skalenodes.com/v1/elated-tan-skat',
     explorerUrl: 'https://elated-tan-skat.explorer.mainnet.skalenodes.com',
     decimals: 18,
+    nftContractAddress: '0x0B5b76F709BDc17c9f29e1D752439345BDC67b0c',
   );
 
   /// All supported chains
@@ -64,6 +68,7 @@ class SupportedChain extends Equatable {
       rpcUrl: json['rpcUrl'] as String? ?? json['rpc_url'] as String?,
       explorerUrl: json['explorerUrl'] as String? ?? json['explorer_url'] as String?,
       decimals: json['decimals'] as int? ?? 18,
+      nftContractAddress: json['nftContractAddress'] as String? ?? json['nft_contract_address'] as String?,
     );
   }
 
@@ -76,6 +81,7 @@ class SupportedChain extends Equatable {
       'rpcUrl': rpcUrl,
       'explorerUrl': explorerUrl,
       'decimals': decimals,
+      'nftContractAddress': nftContractAddress,
     };
   }
 
@@ -89,6 +95,7 @@ class SupportedChain extends Equatable {
       rpcUrl: rpcUrl,
       explorerUrl: explorerUrl,
       decimals: decimals,
+      nftContractAddress: nftContractAddress,
     );
   }
 
@@ -113,5 +120,6 @@ class SupportedChain extends Equatable {
         rpcUrl,
         explorerUrl,
         decimals,
+        nftContractAddress,
       ];
 }

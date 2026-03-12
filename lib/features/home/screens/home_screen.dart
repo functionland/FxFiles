@@ -22,6 +22,7 @@ import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -149,14 +150,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Check if any setup step is incomplete
     final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
     final hasWallet = storageState.wallets.isNotEmpty;
+    final hasAnyWallet = hasWallet || NftWalletService.instance.hasWallet;
 
     // Show setup banner if any step is incomplete (and we're done loading)
     final needsSetup = !_isLoadingJwt && (
       !isLoggedIn ||
       !hasJwt ||
-      (hasJwt && !hasWallet && storageState.error == null)
+      (hasJwt && !hasAnyWallet && storageState.error == null)
     );
-    final isFullySetup = isLoggedIn && hasJwt && hasWallet;
+    final isFullySetup = isLoggedIn && hasJwt && hasAnyWallet;
 
     final showLowStorageWarning = isLoggedIn && hasJwt &&
         storageState.isLowStorage &&
@@ -261,7 +263,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 8),
             const CategoriesSection(),
             const SizedBox(height: 8),
-            FeaturedSection(isWebsiteEnabled: isLoggedIn && hasJwt),
+            FeaturedSection(
+              isWebsiteEnabled: isLoggedIn && hasJwt,
+              isNftEnabled: isLoggedIn && hasJwt && hasAnyWallet,
+            ),
             const SizedBox(height: 8),
             const StorageSection(),
             const SizedBox(height: 16),
@@ -608,13 +613,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final storageState = ref.read(storageProvider);
     final isLoggedIn = AuthService.instance.isAuthenticated;
     final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
-    final hasWallet = storageState.wallets.isNotEmpty;
+    final hasAnyWallet = storageState.wallets.isNotEmpty || NftWalletService.instance.hasWallet;
 
     // Setup is needed if any step is incomplete (same logic as in build)
     final needsSetup = !_isLoadingJwt && (
       !isLoggedIn ||
       !hasJwt ||
-      (hasJwt && !hasWallet && storageState.error == null)
+      (hasJwt && !hasAnyWallet && storageState.error == null)
     );
 
     // Only include setup step if setup is still needed and banner is visible

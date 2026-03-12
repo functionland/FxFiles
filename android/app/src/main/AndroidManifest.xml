@@ -65,6 +65,13 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="fxfiles"/>
             </intent-filter>
+            <!-- HTTPS App Links for shareable NFT claim URLs -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="files.fx.land" android:pathPrefix="/nft-claim"/>
+            </intent-filter>
             <!-- WalletConnect callback for signature responses -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>

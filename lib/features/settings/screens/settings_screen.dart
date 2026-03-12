@@ -18,6 +18,7 @@ import 'package:fula_files/features/settings/screens/face_management_screen.dart
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
@@ -372,6 +373,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          _buildNftWalletSection(),
           _buildDevicesSection(),
           _buildFaceDetectionSection(),
           _buildSyncSection(settings),
@@ -804,6 +806,100 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _clearCache() async {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Cache cleared')),
+    );
+  }
+
+  Widget _buildNftWalletSection() {
+    if (!AuthService.instance.isAuthenticated) {
+      return _buildSection(
+        title: 'NFT Wallet',
+        children: [
+          const ListTile(
+            leading: Icon(LucideIcons.wallet),
+            title: Text('Internal Wallet'),
+            subtitle: Text('Sign in to derive your NFT wallet'),
+          ),
+        ],
+      );
+    }
+
+    return FutureBuilder<String?>(
+      future: NftWalletService.instance.getAddress(),
+      builder: (context, snapshot) {
+        final address = snapshot.data;
+
+        return _buildSection(
+          title: 'NFT Wallet',
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.wallet),
+              title: const Text('Internal Wallet'),
+              subtitle: Text(
+                address != null
+                    ? 'Auto-derived from your sign-in credentials'
+                    : 'Deriving...',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ),
+            if (address != null)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        address,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(LucideIcons.copy, size: 20),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: address));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Wallet address copied')),
+                        );
+                      },
+                      tooltip: 'Copy',
+                    ),
+                  ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(LucideIcons.alertTriangle, size: 14, color: Colors.orange[700]),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This wallet must not be used for token transfers and is only for internal app NFTs.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange[700],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

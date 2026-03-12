@@ -28,15 +28,30 @@ class DeepLinkService {
   final _bloxPairingController = StreamController<Map<String, String?>>.broadcast();
   Stream<Map<String, String?>> get onBloxPairingComplete => _bloxPairingController.stream;
 
+  // Stream controller for NFT claim deep links
+  final _nftClaimController = StreamController<Map<String, String?>>.broadcast();
+  Stream<Map<String, String?>> get onNftClaimReceived => _nftClaimController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
   Map<String, String?>? get pendingBloxPairing => _pendingBloxPairing;
 
+  // Pending NFT claim params
+  Map<String, String?>? _pendingNftClaim;
+  Map<String, String?>? get pendingNftClaim => _pendingNftClaim;
+
   /// Returns and clears any pending blox pairing params (atomic read-and-clear).
   Map<String, String?>? consumePendingBloxPairing() {
     final params = _pendingBloxPairing;
     _pendingBloxPairing = null;
+    return params;
+  }
+
+  /// Returns and clears any pending NFT claim params (atomic read-and-clear).
+  Map<String, String?>? consumePendingNftClaim() {
+    final params = _pendingNftClaim;
+    _pendingNftClaim = null;
     return params;
   }
 
@@ -74,10 +89,20 @@ class DeepLinkService {
     );
   }
 
+  /// HTTPS host for universal/app links (must match NftService.claimLinkHost)
+  static const String _universalLinkHost = 'files.fx.land';
+
   Future<void> _handleDeepLink(Uri uri) async {
     debugPrint('DeepLinkService: Handling deep link: $uri');
 
-    // Check if this is an fxfiles:// scheme
+    // Handle HTTPS universal/app links from our domain
+    if ((uri.scheme == 'https' || uri.scheme == 'http') &&
+        uri.host == _universalLinkHost) {
+      _handleUniversalLink(uri);
+      return;
+    }
+
+    // Handle fxfiles:// custom scheme
     if (uri.scheme != 'fxfiles') {
       debugPrint('DeepLinkService: Unknown scheme: ${uri.scheme}');
       return;
@@ -86,9 +111,21 @@ class DeepLinkService {
     // Route by host/path
     final host = uri.host;
 
+    // Ignore bare fxfiles:// returns (e.g. WalletConnect callback from MetaMask)
+    if (host.isEmpty || host == 'wc-callback') {
+      debugPrint('DeepLinkService: Ignoring wallet return link');
+      return;
+    }
+
     if (host == 'autopin-complete') {
       debugPrint('DeepLinkService: Blox pairing complete deeplink received');
       await _handleAutoPinComplete(uri);
+      return;
+    }
+
+    if (host == 'nft-claim') {
+      debugPrint('DeepLinkService: NFT claim deeplink received');
+      _handleNftClaim(uri);
       return;
     }
 
@@ -109,6 +146,7 @@ class DeepLinkService {
         photoUrl: picture,
         provider: provider == 'apple' ? AuthProvider.apple : AuthProvider.google,
       );
+
     }
 
     // Check for API key in query parameters
@@ -117,6 +155,19 @@ class DeepLinkService {
       debugPrint('DeepLinkService: API key received');
       await _storeApiKey(apiKey);
     }
+  }
+
+  /// Handle HTTPS universal links from files.fx.land
+  void _handleUniversalLink(Uri uri) {
+    final path = uri.path;
+
+    if (path == '/nft-claim') {
+      debugPrint('DeepLinkService: NFT claim universal link received');
+      _handleNftClaim(uri);
+      return;
+    }
+
+    debugPrint('DeepLinkService: Unknown universal link path: $path');
   }
 
   Future<void> _handleAutoPinComplete(Uri uri) async {
@@ -277,6 +328,20 @@ class DeepLinkService {
     }
   }
 
+  void _handleNftClaim(Uri uri) {
+    final params = <String, String?>{
+      'chain': uri.queryParameters['chain'],
+      'contract': uri.queryParameters['contract'],
+      'token': uri.queryParameters['token'],
+      'hash': uri.queryParameters['hash'],
+    };
+
+    _pendingNftClaim = params;
+    _nftClaimController.add(params);
+
+    debugPrint('DeepLinkService: NFT claim params stored');
+  }
+
   /// Register fxfiles:// URI scheme in the Windows registry for debug/unpackaged builds.
   /// MSIX builds use protocol_activation in pubspec.yaml instead.
   void _registerWindowsUriScheme() {
@@ -294,6 +359,7 @@ class DeepLinkService {
     } catch (e) {
       debugPrint('DeepLinkService: Failed to register URI scheme: $e');
     }
+
   }
 
   void dispose() {
@@ -301,5 +367,6 @@ class DeepLinkService {
     _apiKeyReceivedController.close();
     _orgNameReceivedController.close();
     _bloxPairingController.close();
+    _nftClaimController.close();
   }
 }

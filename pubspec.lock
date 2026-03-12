@@ -612,10 +612,10 @@ packages:
     dependency: transitive
     description:
       name: get_it
-      sha256: "1d648d2dd2047d7f7450d5727ca24ee435f240385753d90b49650e3cdff32e56"
+      sha256: "568d62f0e68666fb5d95519743b3c24a34c7f19d834b0658c46e26d778461f66"
       url: "https://pub.dev"
     source: hosted
-    version: "9.2.0"
+    version: "9.2.1"
   glob:
     dependency: transitive
     description:
@@ -836,10 +836,10 @@ packages:
     dependency: transitive
     description:
       name: json_rpc_2
-      sha256: "3c46c2633aec07810c3d6a2eb08d575b5b4072980db08f1344e66aeb53d6e4a7"
+      sha256: "82dfd37d3b2e5030ae4729e1d7f5538cbc45eb1c73d618b9272931facac3bec1"
       url: "https://pub.dev"
     source: hosted
-    version: "4.0.0"
+    version: "4.1.0"
   just_audio:
     dependency: "direct main"
     description:
@@ -960,6 +960,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
+  mobile_scanner:
+    dependency: "direct main"
+    description:
+      name: mobile_scanner
+      sha256: c92c26bf2231695b6d3477c8dcf435f51e28f87b1745966b1fe4c47a286171ce
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.2.0"
   msgpack_dart:
     dependency: transitive
     description:
@@ -1316,10 +1324,10 @@ packages:
     dependency: "direct main"
     description:
       name: reown_appkit
-      sha256: "2ffc25aa74b723c8483688c8a4432b37d4180a282a9f92089f6efcf56f69f835"
+      sha256: "4bffd64bfc6610ee2bc7f26dac8d59464824a8fcea99c9a263dc4a94bab633bb"
       url: "https://pub.dev"
     source: hosted
-    version: "1.7.7"
+    version: "1.8.3"
   reown_core:
     dependency: transitive
     description:
@@ -1910,7 +1918,7 @@ packages:
     source: hosted
     version: "1.3.0"
   wallet:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: wallet
       sha256: "20b6d8440039726841bd23b2bac64f888ec1ce1509edcc3ed2ad1753f613521e"
@@ -1934,13 +1942,13 @@ packages:
     source: hosted
     version: "1.1.1"
   web3dart:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: web3dart
-      sha256: bde2c92aac6f086988b6a1935c9d884f42a6acb772c93e1e2810f64af0db5600
+      sha256: b7401f8c57833fbde08aaaa8c56e020c5cbdef6bab7f946f69bcc342c9c492b2
       url: "https://pub.dev"
     source: hosted
-    version: "3.0.1"
+    version: "3.0.2"
   web_socket:
     dependency: transitive
     description:

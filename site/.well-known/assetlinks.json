@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "land.fx.files.dev",
+      "sha256_cert_fingerprints": [
+        "79:03:37:C4:0E:1F:F3:80:08:F4:DE:61:1C:20:C5:4A:05:A4:DD:4F:90:3A:B5:52:03:12:4E:BE:91:C9:93:85"
+      ]
+    }
+  }
+]

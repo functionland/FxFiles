@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
@@ -160,6 +161,7 @@ class AuthService {
           CloudSyncMappingService.instance.relinkMappings();
           TagStorageService.instance.restoreFromCloud();
           WebsiteService.instance.restoreFromCloud();
+          NftService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -258,6 +260,7 @@ class AuthService {
         CloudSyncMappingService.instance.relinkMappings();
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
+        NftService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -366,6 +369,7 @@ class AuthService {
         CloudSyncMappingService.instance.relinkMappings();
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
+        NftService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -560,6 +564,7 @@ class AuthService {
       CloudSyncMappingService.instance.relinkMappings();
       TagStorageService.instance.restoreFromCloud();
       WebsiteService.instance.restoreFromCloud();
+      NftService.instance.restoreFromCloud();
     }
   }
 

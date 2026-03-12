@@ -186,12 +186,13 @@ extension TaggingExtension on WidgetRef {
       iosAssetId: iosAssetId,
       fileName: fileName,
     );
-    // Invalidate the file tags provider
+    // Invalidate providers so UI refreshes
     invalidate(fileTagsProvider(FileTagQuery(
       localPath: localPath,
       remoteKey: remoteKey,
       iosAssetId: iosAssetId,
     )));
+    invalidate(taggedFilesProvider(tagId));
   }
 
   /// Remove a tag from a file
@@ -207,12 +208,13 @@ extension TaggingExtension on WidgetRef {
       remoteKey: remoteKey,
       iosAssetId: iosAssetId,
     );
-    // Invalidate the file tags provider
+    // Invalidate providers so UI refreshes
     invalidate(fileTagsProvider(FileTagQuery(
       localPath: localPath,
       remoteKey: remoteKey,
       iosAssetId: iosAssetId,
     )));
+    invalidate(taggedFilesProvider(tagId));
   }
 
   /// Remove all tags from a file

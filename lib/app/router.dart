@@ -16,6 +16,9 @@ import 'package:fula_files/features/tags/screens/tags_browser_screen.dart';
 import 'package:fula_files/features/tags/screens/tagged_files_screen.dart';
 import 'package:fula_files/features/websites/screens/websites_browser_screen.dart';
 import 'package:fula_files/features/websites/screens/website_detail_screen.dart';
+import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
+import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
+import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
@@ -147,6 +150,29 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           final tag = state.extra as FileTag?;
           return WebsiteDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/nfts',
+        builder: (context, state) => const NftsBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/nfts/:id',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          final tag = state.extra as FileTag?;
+          return NftDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/nft-claim',
+        builder: (context, state) {
+          return NftClaimScreen(
+            chainId: state.uri.queryParameters['chain'],
+            contractAddress: state.uri.queryParameters['contract'],
+            tokenId: state.uri.queryParameters['token'],
+            linkHash: state.uri.queryParameters['hash'],
+          );
         },
       ),
     ],

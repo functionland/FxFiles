@@ -26,6 +26,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   bool _acceptedThisSession = false;
 
   StreamSubscription<Map<String, String?>>? _bloxPairingSubscription;
+  StreamSubscription<Map<String, String?>>? _nftClaimSubscription;
 
   @override
   void initState() {
@@ -36,12 +37,21 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _bloxPairingSubscription =
         DeepLinkService.instance.onBloxPairingComplete.listen(_navigateToBloxPairing);
 
-    // Check for pending pairing params from cold-start deep link
+    // Listen for NFT claim deep links while app is running
+    _nftClaimSubscription =
+        DeepLinkService.instance.onNftClaimReceived.listen(_navigateToNftClaim);
+
+    // Check for pending params from cold-start deep links
     // (router not ready during initState, so defer to next frame)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final pending = DeepLinkService.instance.consumePendingBloxPairing();
-      if (pending != null) {
-        _navigateToBloxPairing(pending);
+      final pendingPairing = DeepLinkService.instance.consumePendingBloxPairing();
+      if (pendingPairing != null) {
+        _navigateToBloxPairing(pendingPairing);
+      }
+
+      final pendingNftClaim = DeepLinkService.instance.consumePendingNftClaim();
+      if (pendingNftClaim != null) {
+        _navigateToNftClaim(pendingNftClaim);
       }
     });
   }
@@ -49,6 +59,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   @override
   void dispose() {
     _bloxPairingSubscription?.cancel();
+    _nftClaimSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -63,6 +74,18 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     });
     final query = queryParts.isNotEmpty ? '?${queryParts.join('&')}' : '';
     ref.read(routerProvider).push('/blox-pairing$query');
+  }
+
+  /// Navigate to NftClaimScreen with the claim params from the deep link.
+  void _navigateToNftClaim(Map<String, String?> params) {
+    final queryParts = <String>[];
+    params.forEach((key, value) {
+      if (value != null && value.isNotEmpty) {
+        queryParts.add('$key=${Uri.encodeComponent(value)}');
+      }
+    });
+    final query = queryParts.isNotEmpty ? '?${queryParts.join('&')}' : '';
+    ref.read(routerProvider).push('/nft-claim$query');
   }
 
   @override
