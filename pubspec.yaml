@@ -90,11 +90,10 @@ dependencies:
 
   # QR Code
   qr_flutter: ^4.1.0
-  mobile_scanner: ^6.0.0
+  mobile_scanner: ^7.0.0
   
   # Icons
   lucide_icons: ^0.257.0
-  qr_flutter: ^4.1.0
 
   # Desktop Window Management
   window_manager: ^0.4.3
@@ -108,7 +107,8 @@ dependencies:
 
   # Wallet/Web3
   reown_appkit: ^1.6.0
-  web3dart: ^2.7.3
+  wallet: ^0.0.18
+  web3dart: ^3.0.2
 
 dev_dependencies:
   flutter_test:

@@ -555,7 +555,30 @@ Timestamp: $timestamp''';
     final nativeLink = peerRedirect?.native;
     final universalLink = peerRedirect?.universal;
 
-    final link = nativeLink ?? universalLink;
+    final topic = session.topic ?? '';
+
+    // On iOS, opening just "metamask://" goes to the home page instead of the
+    // pending WalletConnect request. Append the session topic as a query
+    // parameter so the wallet picks up the pending request automatically.
+    // Android handles this via push/background, but the topic doesn't hurt.
+    String? link = nativeLink ?? universalLink;
+    if (link != null && link.isNotEmpty && topic.isNotEmpty) {
+      // Strip trailing slash for consistent joining
+      final base = link.endsWith('/') ? link.substring(0, link.length - 1) : link;
+      // Build WC deep link: <scheme>://wc?sessionTopic=<topic>
+      // For universal links: <url>/wc?sessionTopic=<topic>
+      if (base.contains('://')) {
+        final scheme = base.substring(0, base.indexOf('://') + 3);
+        final rest = base.substring(base.indexOf('://') + 3);
+        if (rest.isEmpty || rest == '/') {
+          link = '${scheme}wc?sessionTopic=${Uri.encodeComponent(topic)}';
+        } else {
+          // Universal link: append /wc path
+          link = '$base/wc?sessionTopic=${Uri.encodeComponent(topic)}';
+        }
+      }
+    }
+
     if (link != null && link.isNotEmpty) {
       try {
         final uri = Uri.parse(link);

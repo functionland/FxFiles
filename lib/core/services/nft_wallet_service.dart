@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:wallet/wallet.dart' show EthereumAddress, EtherAmount;
 import 'package:web3dart/web3dart.dart';
 
 import 'package:fula_files/core/models/billing/supported_chain.dart';
@@ -59,7 +60,7 @@ class NftWalletService {
 
       // Derive EVM address using web3dart (secp256k1 + keccak256)
       final ethKey = EthPrivateKey(_privateKey!);
-      _address = ethKey.address.hexEip55;
+      _address = ethKey.address.eip55With0x;
 
       debugPrint('NftWalletService: Wallet derived: $_address');
       return _address;
@@ -80,7 +81,7 @@ class NftWalletService {
 
     _privateKey = _hexToBytes(storedKey);
     final ethKey = EthPrivateKey(_privateKey!);
-    _address = ethKey.address.hexEip55;
+    _address = ethKey.address.eip55With0x;
 
     return _address;
   }

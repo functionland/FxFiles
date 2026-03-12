@@ -111,6 +111,12 @@ class DeepLinkService {
     // Route by host/path
     final host = uri.host;
 
+    // Ignore bare fxfiles:// returns (e.g. WalletConnect callback from MetaMask)
+    if (host.isEmpty || host == 'wc-callback') {
+      debugPrint('DeepLinkService: Ignoring wallet return link');
+      return;
+    }
+
     if (host == 'autopin-complete') {
       debugPrint('DeepLinkService: Blox pairing complete deeplink received');
       await _handleAutoPinComplete(uri);
@@ -121,6 +127,7 @@ class DeepLinkService {
       debugPrint('DeepLinkService: NFT claim deeplink received');
       _handleNftClaim(uri);
       return;
+    }
 
     // Extract identity params (included by server when user is signed in)
     final email = uri.queryParameters['email'];
@@ -333,6 +340,7 @@ class DeepLinkService {
     _nftClaimController.add(params);
 
     debugPrint('DeepLinkService: NFT claim params stored');
+  }
 
   /// Register fxfiles:// URI scheme in the Windows registry for debug/unpackaged builds.
   /// MSIX builds use protocol_activation in pubspec.yaml instead.

@@ -31,8 +31,40 @@ import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
+/// Prevents GoRouter from processing deep links that DeepLinkService handles.
+///
+/// Both GoRouter (via PlatformRouteInformationProvider) and app_links receive
+/// platform deep links. Without this filter, a bare `fxfiles://` return from
+/// MetaMask / WalletConnect causes GoRouter to navigate to "/" (home), losing
+/// the user's current screen. By returning true for fxfiles:// URIs here,
+/// we consume the event before GoRouter sees it.
+class _DeepLinkNavigationFilter with WidgetsBindingObserver {
+  @override
+  Future<bool> didPushRouteInformation(RouteInformation routeInformation) async {
+    final uri = routeInformation.uri;
+    if (uri.scheme == 'fxfiles') {
+      debugPrint('DeepLinkFilter: blocked fxfiles:// from GoRouter ($uri)');
+      return true; // consumed — DeepLinkService handles it via app_links
+    }
+    return false;
+  }
+
+  @override
+  Future<bool> didPushRoute(String route) async {
+    if (route.startsWith('fxfiles://')) {
+      debugPrint('DeepLinkFilter: blocked pushRoute fxfiles:// from GoRouter');
+      return true;
+    }
+    return false;
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Register deep link filter BEFORE GoRouter's PlatformRouteInformationProvider
+  // so we intercept fxfiles:// links first (observers are checked in order).
+  WidgetsBinding.instance.addObserver(_DeepLinkNavigationFilter());
 
   // Desktop window management
   if (PlatformCapabilities.isDesktop) {
