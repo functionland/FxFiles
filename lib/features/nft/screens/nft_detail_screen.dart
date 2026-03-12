@@ -82,6 +82,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   }
 
   /// Run [operation] while showing a modal progress dialog with a Cancel button.
+  /// The dialog reactively shows the provider's statusMessage.
   /// Returns the result, or null if the user cancelled.
   Future<T?> _withProgressDialog<T>({
     required String title,
@@ -95,25 +96,45 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       barrierDismissible: false,
       builder: (ctx) => PopScope(
         canPop: false,
-        child: AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 16),
-              Text(title),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                cancelled = true;
-                ref.read(nftProvider.notifier).cancelOperation();
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('Cancel'),
-            ),
-          ],
+        child: Consumer(
+          builder: (ctx, dialogRef, _) {
+            final nftState = dialogRef.watch(nftProvider);
+            final statusMessage = nftState.statusMessage;
+            final isWalletStep = statusMessage != null &&
+                statusMessage.toLowerCase().contains('in your wallet');
+            final showOpenWallet = isWalletStep &&
+                WalletService.instance.isConnected;
+            final walletName =
+                WalletService.instance.connectedWalletName ?? 'Wallet';
+            return AlertDialog(
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(statusMessage ?? title),
+                  if (showOpenWallet) ...[
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: () => WalletService.instance.tryOpenWallet(),
+                      icon: const Icon(LucideIcons.externalLink, size: 16),
+                      label: Text('Open $walletName'),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    cancelled = true;
+                    ref.read(nftProvider.notifier).cancelOperation();
+                    Navigator.of(ctx).pop();
+                  },
+                  child: const Text('Cancel'),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -398,27 +419,29 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       return;
     }
 
-    final resolvedPath = await _resolveFilePath(localPath);
-
-    final tagState = ref.read(tagProvider);
-    final currentTag = widget.tag ??
-        tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
-    final collectionName =
-        (currentTag?.name ?? 'NFT Collection').replaceFirst('nft-', '');
-
     final result = await _withProgressDialog<NftMintRecord>(
-      title: 'Minting NFT...',
-      operation: () => ref.read(nftProvider.notifier).startMint(
-        tagId: widget.tagId,
-        localPath: resolvedPath,
-        fileName: firstFile.fileName,
-        collectionName: collectionName,
-        chain: config.chain,
-        count: config.count,
-        fulaPerNft: config.fulaPerNft,
-        eventName: config.eventName,
-        walletSource: walletSource,
-      ),
+      title: 'Preparing...',
+      operation: () async {
+        final resolvedPath = await _resolveFilePath(localPath);
+
+        final tagState = ref.read(tagProvider);
+        final currentTag = widget.tag ??
+            tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
+        final collectionName =
+            (currentTag?.name ?? 'NFT Collection').replaceFirst('nft-', '');
+
+        return ref.read(nftProvider.notifier).startMint(
+          tagId: widget.tagId,
+          localPath: resolvedPath,
+          fileName: firstFile.fileName,
+          collectionName: collectionName,
+          chain: config.chain,
+          count: config.count,
+          fulaPerNft: config.fulaPerNft,
+          eventName: config.eventName,
+          walletSource: walletSource,
+        );
+      },
     );
 
     if (!mounted) return;

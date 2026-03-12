@@ -156,6 +156,7 @@ class NftNotifier extends Notifier<NftState> {
         fulaPerNft: fulaPerNft,
         eventName: eventName,
         walletSource: walletSource,
+        onStatus: (msg) => state = state.copyWith(statusMessage: msg),
       );
       state = state.copyWith(isMinting: false, statusMessage: null);
       return record;
@@ -174,7 +175,10 @@ class NftNotifier extends Notifier<NftState> {
     required Duration expiry,
     WalletSource walletSource = WalletSource.external,
   }) async {
-    state = state.copyWith(isClaiming: true, error: null, statusMessage: 'Creating claim offer...');
+    final msg = walletSource == WalletSource.external
+        ? 'Confirm claim offer in your wallet...'
+        : 'Creating claim offer...';
+    state = state.copyWith(isClaiming: true, error: null, statusMessage: msg);
     try {
       final result = await NftService.instance.createClaimOffer(
         tagId: tagId,
@@ -197,7 +201,10 @@ class NftNotifier extends Notifier<NftState> {
     required String linkHash,
     WalletSource walletSource = WalletSource.external,
   }) async {
-    state = state.copyWith(isClaiming: true, error: null, statusMessage: 'Claiming NFT...');
+    final msg = walletSource == WalletSource.external
+        ? 'Confirm claim in your wallet...'
+        : 'Claiming NFT...';
+    state = state.copyWith(isClaiming: true, error: null, statusMessage: msg);
     try {
       final txHash = await NftService.instance.claimNft(
         chainId: chainId,
@@ -242,7 +249,10 @@ class NftNotifier extends Notifier<NftState> {
     required int amount,
     WalletSource walletSource = WalletSource.external,
   }) async {
-    state = state.copyWith(isBurning: true, error: null, statusMessage: 'Burning NFT...');
+    final burnMsg = walletSource == WalletSource.external
+        ? 'Confirm burn in your wallet...'
+        : 'Burning NFT...';
+    state = state.copyWith(isBurning: true, error: null, statusMessage: burnMsg);
     try {
       final txHash = await NftService.instance.burnNft(
         chainId: chainId,
@@ -266,7 +276,10 @@ class NftNotifier extends Notifier<NftState> {
     required int amount,
     WalletSource walletSource = WalletSource.external,
   }) async {
-    state = state.copyWith(isTransferring: true, error: null, statusMessage: 'Transferring NFT...');
+    final transferMsg = walletSource == WalletSource.external
+        ? 'Confirm transfer in your wallet...'
+        : 'Transferring NFT...';
+    state = state.copyWith(isTransferring: true, error: null, statusMessage: transferMsg);
     try {
       final txHash = await NftService.instance.transferNft(
         chainId: chainId,
@@ -290,7 +303,10 @@ class NftNotifier extends Notifier<NftState> {
     required NftClaimRecord claim,
     WalletSource walletSource = WalletSource.external,
   }) async {
-    state = state.copyWith(isClaiming: true, error: null, statusMessage: 'Cancelling claim...');
+    final cancelMsg = walletSource == WalletSource.external
+        ? 'Confirm cancellation in your wallet...'
+        : 'Cancelling claim...';
+    state = state.copyWith(isClaiming: true, error: null, statusMessage: cancelMsg);
     try {
       await NftService.instance.cancelClaimOffer(
         tagId: tagId,

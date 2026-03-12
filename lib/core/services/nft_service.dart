@@ -312,6 +312,7 @@ class NftService {
     required SupportedChain chain,
     required int count,
     required String fulaPerNft,
+    void Function(String status)? onStatus,
     required String eventName,
     WalletSource walletSource = WalletSource.external,
   }) async {
@@ -371,6 +372,7 @@ class NftService {
 
     try {
       // Step 1: Upload asset to IPFS
+      onStatus?.call('Uploading asset...');
       debugPrint('NftService: Uploading asset to IPFS...');
       final upload = await uploadNftAsset(
         localPath: localPath,
@@ -393,6 +395,7 @@ class NftService {
       await updateMintRecord(tagId, record);
 
       // Step 2: Upload metadata JSON wrapper (ERC1155-compliant)
+      onStatus?.call('Preparing metadata...');
       debugPrint('NftService: Uploading metadata JSON...');
       final metadataCid = await _uploadMetadataJson(
         imageCid: upload.cid,
@@ -405,6 +408,7 @@ class NftService {
 
       // Step 3: Approve FULA spend on the token contract
       if (totalFula > BigInt.zero) {
+        onStatus?.call('Approve FULA in your wallet...');
         debugPrint('NftService: Approving FULA spend: $totalFula');
         String approvalTxHash;
         if (walletSource == WalletSource.internal) {
@@ -427,6 +431,7 @@ class NftService {
         await updateMintRecord(tagId, record);
 
         // Poll for approval receipt
+        onStatus?.call('Waiting for approval confirmation...');
         debugPrint('NftService: Waiting for approval tx: $approvalTxHash');
         await contract.pollForReceipt(
           chainId: chain.chainId,
@@ -438,6 +443,7 @@ class NftService {
       record.status = NftMintStatus.minting;
       await updateMintRecord(tagId, record);
 
+      onStatus?.call('Confirm mint in your wallet...');
       debugPrint('NftService: Calling mintWithFula...');
       final mintData = contract.encodeMintWithFula(
         eventName,
@@ -457,6 +463,7 @@ class NftService {
       await updateMintRecord(tagId, record);
 
       // Step 4: Poll for mint receipt
+      onStatus?.call('Waiting for mint confirmation...');
       debugPrint('NftService: Waiting for mint tx: $mintTxHash');
       final receipt = await contract.pollForReceipt(
         chainId: chain.chainId,
