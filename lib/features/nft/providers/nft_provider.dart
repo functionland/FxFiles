@@ -102,6 +102,12 @@ class NftNotifier extends Notifier<NftState> {
   @override
   NftState build() => const NftState();
 
+  /// Reset all in-progress flags so the UI is unblocked.
+  /// The on-chain transaction will still complete in the background.
+  void cancelOperation() {
+    state = const NftState();
+  }
+
   /// Create a new NFT collection (tag with "nft-" prefix)
   Future<FileTag?> createCollection(String name) async {
     state = state.copyWith(isCreating: true, error: null);

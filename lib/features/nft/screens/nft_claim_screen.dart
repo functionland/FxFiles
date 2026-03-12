@@ -5,6 +5,7 @@ import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
@@ -107,23 +108,32 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
   }
 
   Future<WalletSource?> _showWalletPicker() async {
-    final internalAddress = await NftWalletService.instance.getAddress();
+    String? internalAddress;
+    bool externalConnected = false;
 
-    // Ensure WalletService is initialized so we can detect external wallets
-    if (!WalletService.instance.isInitialized && mounted) {
-      try {
-        await WalletService.instance.initialize(context);
-      } catch (_) {
-        // WalletService init may fail — continue with internal only
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await AuthService.instance.ensureAuthRestored();
+      internalAddress = await NftWalletService.instance.getAddress();
+
+      if (!WalletService.instance.isInitialized && mounted) {
+        try {
+          await WalletService.instance.initialize(context);
+        } catch (_) {}
+      }
+
+      externalConnected = WalletService.instance.isConnected;
+
+      if (internalAddress != null || externalConnected) break;
+      if (attempt < 2) {
+        await Future.delayed(const Duration(seconds: 1));
       }
     }
 
     if (!mounted) return null;
 
-    final externalConnected = WalletService.instance.isConnected;
     final externalAddress = WalletService.instance.connectedAddress;
 
-    // No wallet at all
+    // No wallet at all after retries
     if (internalAddress == null && !externalConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No wallet available. Sign in or connect a wallet.')),

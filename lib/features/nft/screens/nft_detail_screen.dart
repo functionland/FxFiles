@@ -10,6 +10,8 @@ import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
+import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
@@ -40,7 +42,91 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   void initState() {
     super.initState();
     // Eagerly derive internal wallet so hasWallet is true for UI checks
-    NftWalletService.instance.getAddress();
+    // Must ensure auth is restored first so encryption key is available
+    AuthService.instance.ensureAuthRestored().then((_) {
+      NftWalletService.instance.getAddress();
+    });
+    // Reconcile burn counts from on-chain balance for completed mints
+    _reconcileBurnCounts();
+  }
+
+  Future<void> _reconcileBurnCounts() async {
+    final mints = NftService.instance.getMintsForTag(widget.tagId);
+    for (final mint in mints) {
+      if (mint.status == NftMintStatus.completed && mint.tokenId != null) {
+        await NftService.instance.reconcileBurnCount(
+          tagId: widget.tagId,
+          mint: mint,
+        );
+      }
+    }
+  }
+
+  int _heldCount(NftMintRecord mint) {
+    int pendingLinks = 0;
+    int claimed = 0;
+    int claimBurned = 0;
+    for (final claim in mint.claims) {
+      final isExpired = claim.status == NftClaimStatus.expired ||
+          (claim.status == NftClaimStatus.pending &&
+              claim.expiresAt.isBefore(DateTime.now()));
+      if (claim.status == NftClaimStatus.claimed) {
+        claimed++;
+      } else if (claim.status == NftClaimStatus.burned) {
+        claimBurned++;
+      } else if (claim.status == NftClaimStatus.pending && !isExpired) {
+        pendingLinks++;
+      }
+    }
+    return mint.count - pendingLinks - claimed - claimBurned - mint.creatorBurned;
+  }
+
+  /// Run [operation] while showing a modal progress dialog with a Cancel button.
+  /// Returns the result, or null if the user cancelled.
+  Future<T?> _withProgressDialog<T>({
+    required String title,
+    required Future<T?> Function() operation,
+  }) async {
+    var cancelled = false;
+
+    // Show a non-dismissible dialog with cancel button
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(title),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelled = true;
+                ref.read(nftProvider.notifier).cancelOperation();
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final result = await operation();
+
+    // Dismiss the progress dialog if still showing
+    if (mounted && !cancelled) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+
+    if (cancelled) return null;
+    return result;
   }
 
   @override
@@ -256,25 +342,30 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
                   ),
                   const Spacer(),
                   GestureDetector(
-                    onTap: () => _refreshAllClaimStatuses(mints),
+                    onTap: () => _refreshAllOnChainData(mints),
                     child: Icon(LucideIcons.refreshCw, size: 16, color: Colors.grey[500]),
                   ),
                 ],
               ),
             ),
-            ...mints.map((mint) => NftCard(
-              record: mint,
-              onShareClaim: mint.status == NftMintStatus.completed && mint.tokenId != null
-                  ? () => _showClaimSheet(mint)
-                  : null,
-              onRetry: mint.status == NftMintStatus.error
-                  ? () => _retryMint(mint)
-                  : null,
-              onBurn: mint.status == NftMintStatus.completed && mint.tokenId != null
-                  ? () => _burnMint(mint)
-                  : null,
-              onCancelClaim: (claim) => _cancelClaim(mint, claim),
-            )),
+            ...mints.map((mint) {
+              final hasHeldCopies = mint.status == NftMintStatus.completed &&
+                  mint.tokenId != null &&
+                  _heldCount(mint) > 0;
+              return NftCard(
+                record: mint,
+                onShareClaim: hasHeldCopies
+                    ? () => _showClaimSheet(mint)
+                    : null,
+                onRetry: mint.status == NftMintStatus.error
+                    ? () => _retryMint(mint)
+                    : null,
+                onBurn: hasHeldCopies
+                    ? () => _burnMint(mint)
+                    : null,
+                onCancelClaim: (claim) => _cancelClaim(mint, claim),
+              );
+            }),
             const SizedBox(height: 80),
           ],
         );
@@ -315,16 +406,19 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
     final collectionName =
         (currentTag?.name ?? 'NFT Collection').replaceFirst('nft-', '');
 
-    final result = await ref.read(nftProvider.notifier).startMint(
-      tagId: widget.tagId,
-      localPath: resolvedPath,
-      fileName: firstFile.fileName,
-      collectionName: collectionName,
-      chain: config.chain,
-      count: config.count,
-      fulaPerNft: config.fulaPerNft,
-      eventName: config.eventName,
-      walletSource: walletSource,
+    final result = await _withProgressDialog<NftMintRecord>(
+      title: 'Minting NFT...',
+      operation: () => ref.read(nftProvider.notifier).startMint(
+        tagId: widget.tagId,
+        localPath: resolvedPath,
+        fileName: firstFile.fileName,
+        collectionName: collectionName,
+        chain: config.chain,
+        count: config.count,
+        fulaPerNft: config.fulaPerNft,
+        eventName: config.eventName,
+        walletSource: walletSource,
+      ),
     );
 
     if (!mounted) return;
@@ -351,10 +445,13 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       return;
     }
 
-    final result = await ref.read(nftProvider.notifier).retryMint(
-      tagId: widget.tagId,
-      record: mint,
-      chain: chain,
+    final result = await _withProgressDialog<NftMintRecord>(
+      title: 'Retrying mint...',
+      operation: () => ref.read(nftProvider.notifier).retryMint(
+        tagId: widget.tagId,
+        record: mint,
+        chain: chain,
+      ),
     );
 
     if (!mounted) return;
@@ -475,11 +572,18 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
 
     if (result == null || !mounted) return;
 
-    final offerResult = await ref.read(nftProvider.notifier).createClaimOffer(
-      tagId: widget.tagId,
-      mint: mint,
-      claimerAddress: result.address,
-      expiry: result.expiry,
+    final walletSource = await _showWalletPicker();
+    if (walletSource == null || !mounted) return;
+
+    final offerResult = await _withProgressDialog<({String linkHash, String claimLink})>(
+      title: 'Creating claim offer...',
+      operation: () => ref.read(nftProvider.notifier).createClaimOffer(
+        tagId: widget.tagId,
+        mint: mint,
+        claimerAddress: result.address,
+        expiry: result.expiry,
+        walletSource: walletSource,
+      ),
     );
 
     if (!mounted) return;
@@ -505,8 +609,17 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   // REFRESH CLAIM STATUSES
   // ============================================================================
 
-  Future<void> _refreshAllClaimStatuses(List<NftMintRecord> mints) async {
+  Future<void> _refreshAllOnChainData(List<NftMintRecord> mints) async {
     for (final mint in mints) {
+      if (mint.status != NftMintStatus.completed || mint.tokenId == null) continue;
+
+      // Reconcile burn counts from on-chain balance
+      await NftService.instance.reconcileBurnCount(
+        tagId: widget.tagId,
+        mint: mint,
+      );
+
+      // Refresh pending claim statuses
       if (mint.claims.any((c) => c.status == NftClaimStatus.pending)) {
         await ref.read(nftProvider.notifier).refreshClaimStatuses(
           tagId: widget.tagId,
@@ -516,7 +629,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Claim statuses refreshed')),
+        const SnackBar(content: Text('On-chain data refreshed')),
       );
     }
   }
@@ -555,15 +668,24 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
     final walletSource = await _showWalletPicker();
     if (walletSource == null || !mounted) return;
 
-    final txHash = await ref.read(nftProvider.notifier).burnNft(
-      chainId: mint.chainId,
-      tokenId: mint.tokenId!,
-      amount: 1,
-      walletSource: walletSource,
+    final txHash = await _withProgressDialog<String>(
+      title: 'Burning NFT...',
+      operation: () => ref.read(nftProvider.notifier).burnNft(
+        chainId: mint.chainId,
+        tokenId: mint.tokenId!,
+        amount: 1,
+        walletSource: walletSource,
+      ),
     );
 
     if (!mounted) return;
     if (txHash != null) {
+      await NftService.instance.markCreatorBurned(
+        tagId: widget.tagId,
+        mint: mint,
+        amount: 1,
+      );
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('NFT burned successfully')),
       );
@@ -608,15 +730,18 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
     final walletSource = await _showWalletPicker();
     if (walletSource == null || !mounted) return;
 
-    final success = await ref.read(nftProvider.notifier).cancelClaimOffer(
-      tagId: widget.tagId,
-      mint: mint,
-      claim: claim,
-      walletSource: walletSource,
+    final success = await _withProgressDialog<bool>(
+      title: 'Cancelling claim offer...',
+      operation: () => ref.read(nftProvider.notifier).cancelClaimOffer(
+        tagId: widget.tagId,
+        mint: mint,
+        claim: claim,
+        walletSource: walletSource,
+      ),
     );
 
     if (!mounted) return;
-    if (success) {
+    if (success == true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Claim offer cancelled')),
       );
@@ -635,23 +760,35 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   // ============================================================================
 
   Future<WalletSource?> _showWalletPicker() async {
-    final internalAddress = await NftWalletService.instance.getAddress();
+    // Show a brief loading indicator while wallet is being resolved
+    String? internalAddress;
+    bool externalConnected = false;
 
-    // Ensure WalletService is initialized so we can detect external wallets
-    if (!WalletService.instance.isInitialized && mounted) {
-      try {
-        await WalletService.instance.initialize(context);
-      } catch (_) {
-        // WalletService init may fail — continue with internal only
+    // Try up to 3 times with increasing waits for auth to restore
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await AuthService.instance.ensureAuthRestored();
+      internalAddress = await NftWalletService.instance.getAddress();
+
+      if (!WalletService.instance.isInitialized && mounted) {
+        try {
+          await WalletService.instance.initialize(context);
+        } catch (_) {}
+      }
+
+      externalConnected = WalletService.instance.isConnected;
+
+      if (internalAddress != null || externalConnected) break;
+      if (attempt < 2) {
+        // Wait briefly for auth session to finish restoring
+        await Future.delayed(const Duration(seconds: 1));
       }
     }
 
     if (!mounted) return null;
 
-    final externalConnected = WalletService.instance.isConnected;
     final externalAddress = WalletService.instance.connectedAddress;
 
-    // No wallet at all
+    // No wallet at all after retries
     if (internalAddress == null && !externalConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No wallet available. Sign in or connect a wallet.')),

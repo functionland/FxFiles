@@ -7,7 +7,7 @@ import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 
 /// Card displaying a minted NFT with its status, thumbnail, and token info
-class NftCard extends StatelessWidget {
+class NftCard extends StatefulWidget {
   final NftMintRecord record;
   final VoidCallback? onShareClaim;
   final VoidCallback? onRetry;
@@ -24,7 +24,15 @@ class NftCard extends StatelessWidget {
   });
 
   @override
+  State<NftCard> createState() => _NftCardState();
+}
+
+class _NftCardState extends State<NftCard> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final record = widget.record;
     final chain = SupportedChain.byChainId(record.chainId);
 
     return Card(
@@ -120,44 +128,59 @@ class NftCard extends StatelessWidget {
                 ),
 
                 // Actions
-                if (record.status == NftMintStatus.error && onRetry != null)
+                if (record.status == NftMintStatus.error && widget.onRetry != null)
                   IconButton(
                     icon: const Icon(LucideIcons.refreshCw, size: 20),
                     tooltip: 'Retry mint',
-                    onPressed: onRetry,
+                    onPressed: widget.onRetry,
                   ),
-                if (record.status == NftMintStatus.completed && onBurn != null)
+                if (record.status == NftMintStatus.completed && widget.onBurn != null)
                   IconButton(
                     icon: const Icon(LucideIcons.flame, size: 20),
                     tooltip: 'Burn NFT',
-                    onPressed: onBurn,
+                    onPressed: widget.onBurn,
                   ),
-                if (record.status == NftMintStatus.completed && onShareClaim != null)
+                if (record.status == NftMintStatus.completed && widget.onShareClaim != null)
                   IconButton(
                     icon: const Icon(LucideIcons.share2, size: 20),
                     tooltip: 'New claim link',
-                    onPressed: onShareClaim,
+                    onPressed: widget.onShareClaim,
+                  ),
+                // Detail expand/collapse
+                if (record.status == NftMintStatus.completed)
+                  IconButton(
+                    icon: Icon(
+                      _expanded ? LucideIcons.chevronUp : LucideIcons.chevronDown,
+                      size: 20,
+                    ),
+                    tooltip: _expanded ? 'Hide details' : 'Show details',
+                    onPressed: () => setState(() => _expanded = !_expanded),
                   ),
               ],
             ),
 
-            // Claim history
-            if (record.claims.isNotEmpty) ...[
+            // Expanded detail section
+            if (_expanded && record.status == NftMintStatus.completed) ...[
               const Divider(height: 16),
-              Text(
-                'Claim Links (${record.claims.length})',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              ...record.claims.map((claim) => _ClaimRow(
-                claim: claim,
-                chain: chain,
-                onCancel: onCancelClaim != null && claim.status == NftClaimStatus.pending
-                    ? () => onCancelClaim!(claim)
-                    : null,
-              )),
+              _CopyBreakdown(record: record),
+              // Claim history
+              if (record.claims.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Claim Links (${record.claims.length})',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                ...record.claims.map((claim) => _ClaimRow(
+                  claim: claim,
+                  chain: chain,
+                  onCancel: widget.onCancelClaim != null && claim.status == NftClaimStatus.pending
+                      ? () => widget.onCancelClaim!(claim)
+                      : null,
+                )),
+              ],
             ],
           ],
         ),
@@ -185,6 +208,76 @@ class NftCard extends StatelessWidget {
   }
 }
 
+/// Shows a per-copy status breakdown of the minted NFTs
+class _CopyBreakdown extends StatelessWidget {
+  final NftMintRecord record;
+
+  const _CopyBreakdown({required this.record});
+
+  @override
+  Widget build(BuildContext context) {
+    // Compute per-copy counts from claims
+    int pendingLinks = 0;
+    int claimed = 0;
+    int burned = 0;
+
+    for (final claim in record.claims) {
+      final isExpired = claim.status == NftClaimStatus.expired ||
+          (claim.status == NftClaimStatus.pending &&
+              claim.expiresAt.isBefore(DateTime.now()));
+
+      if (claim.status == NftClaimStatus.claimed) {
+        claimed++;
+      } else if (claim.status == NftClaimStatus.burned) {
+        burned++;
+      } else if (claim.status == NftClaimStatus.pending && !isExpired) {
+        pendingLinks++;
+      }
+      // expired claims return to creator, so they don't consume a copy
+    }
+
+    final totalBurned = burned + record.creatorBurned;
+    final held = record.count - pendingLinks - claimed - totalBurned;
+
+    final entries = <({String label, int count, Color color, IconData icon})>[
+      if (held > 0)
+        (label: 'Held by you', count: held, color: Colors.blue, icon: LucideIcons.wallet),
+      if (pendingLinks > 0)
+        (label: 'Link generated', count: pendingLinks, color: Colors.orange, icon: LucideIcons.link),
+      if (claimed > 0)
+        (label: 'Claimed', count: claimed, color: Colors.green, icon: LucideIcons.userCheck),
+      if (totalBurned > 0)
+        (label: 'Burned', count: totalBurned, color: Colors.red, icon: LucideIcons.flame),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Copy Breakdown',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 6),
+        ...entries.map((e) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            children: [
+              Icon(e.icon, size: 14, color: e.color),
+              const SizedBox(width: 8),
+              Text(
+                '${e.count}x ${e.label}',
+                style: TextStyle(fontSize: 12, color: e.color),
+              ),
+            ],
+          ),
+        )),
+      ],
+    );
+  }
+}
+
 class _ClaimRow extends StatelessWidget {
   final NftClaimRecord claim;
   final SupportedChain? chain;
@@ -208,76 +301,91 @@ class _ClaimRow extends StatelessWidget {
       NftClaimStatus.burned => (Colors.red, 'Burned'),
     };
 
+    final showActions = claim.status == NftClaimStatus.pending &&
+        !isExpired &&
+        claim.linkHash != null;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Status dot
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              color: statusColor,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 6),
-          // Status label
-          Text(
-            statusLabel,
-            style: TextStyle(
-              color: statusColor,
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(width: 8),
-          // Expiry
-          if (claim.status == NftClaimStatus.pending && !isExpired)
-            Text(
-              'expires ${_formatDate(claim.expiresAt)}',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                fontSize: 10,
+          // Status row
+          Row(
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: statusColor,
+                  shape: BoxShape.circle,
+                ),
               ),
-            ),
-          if (claim.status == NftClaimStatus.claimed && claim.claimerAddress != null)
-            Expanded(
-              child: Text(
-                '→ ${_truncateAddress(claim.claimerAddress!)}',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
+              const SizedBox(width: 6),
+              Text(
+                statusLabel,
+                style: TextStyle(
+                  color: statusColor,
                   fontSize: 10,
-                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
                 ),
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          if (claim.status != NftClaimStatus.claimed)
-            const Spacer(),
-          // Copy link button (only for pending, non-expired claims)
-          if (claim.status == NftClaimStatus.pending &&
-              !isExpired &&
-              claim.linkHash != null) ...[
-            GestureDetector(
-              onTap: () => _copyClaimLink(context),
-              child: Icon(
-                LucideIcons.copy,
-                size: 13,
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-            if (onCancel != null) ...[
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: onCancel,
-                child: Icon(
-                  LucideIcons.xCircle,
-                  size: 13,
-                  color: Colors.red[400],
+              if (claim.status == NftClaimStatus.pending && !isExpired)
+                Text(
+                  'expires ${_formatDate(claim.expiresAt)}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontSize: 10,
+                  ),
                 ),
-              ),
+              if (claim.status == NftClaimStatus.claimed && claim.claimerAddress != null)
+                Expanded(
+                  child: Text(
+                    '→ ${_truncateAddress(claim.claimerAddress!)}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
             ],
+          ),
+          // Action buttons
+          if (showActions) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _copyClaimLink(context),
+                    icon: const Icon(LucideIcons.copy, size: 16),
+                    label: const Text('Copy Link'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ),
+                if (onCancel != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onCancel,
+                      icon: Icon(LucideIcons.xCircle, size: 16, color: Colors.red[400]),
+                      label: Text('Cancel', style: TextStyle(color: Colors.red[400])),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        textStyle: const TextStyle(fontSize: 12),
+                        side: BorderSide(color: Colors.red[300]!),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ],
         ],
       ),

@@ -3,27 +3,39 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 
 /// Shows a dialog where the user picks a wallet and sees its QR code
 /// so a sender can scan it to transfer an NFT.
 Future<void> showReceiveNftDialog(BuildContext context) async {
-  final internalAddress = await NftWalletService.instance.getAddress();
+  String? internalAddress;
+  bool externalConnected = false;
 
-  // Ensure WalletService is initialized so we can detect external wallets
-  if (!WalletService.instance.isInitialized && context.mounted) {
-    try {
-      await WalletService.instance.initialize(context);
-    } catch (_) {}
+  for (var attempt = 0; attempt < 3; attempt++) {
+    await AuthService.instance.ensureAuthRestored();
+    internalAddress = await NftWalletService.instance.getAddress();
+
+    if (!WalletService.instance.isInitialized && context.mounted) {
+      try {
+        await WalletService.instance.initialize(context);
+      } catch (_) {}
+    }
+
+    externalConnected = WalletService.instance.isConnected;
+
+    if (internalAddress != null || externalConnected) break;
+    if (attempt < 2) {
+      await Future.delayed(const Duration(seconds: 1));
+    }
   }
 
-  final externalConnected = WalletService.instance.isConnected;
   final externalAddress = WalletService.instance.connectedAddress;
 
   if (!context.mounted) return;
 
-  // If no wallet available
+  // If no wallet available after retries
   if (internalAddress == null && !externalConnected) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -74,10 +86,12 @@ Future<void> showReceiveNftDialog(BuildContext context) async {
   );
 
   if (choice == null || !context.mounted) return;
-  _showQrDialog(context, choice.address, choice.label);
+  _showQrDialog(context, choice.address, choice.label,
+      isInternal: choice.label == 'Internal Wallet');
 }
 
-void _showQrDialog(BuildContext context, String address, String label) {
+void _showQrDialog(BuildContext context, String address, String label,
+    {bool isInternal = false}) {
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -133,6 +147,22 @@ void _showQrDialog(BuildContext context, String address, String label) {
             icon: const Icon(LucideIcons.copy, size: 14),
             label: const Text('Copy Address'),
           ),
+          if (isInternal) ...[
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(LucideIcons.alertTriangle, size: 14, color: Colors.orange[700]),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'This wallet must not be used for token transfers and is only for internal app NFTs.',
+                    style: TextStyle(fontSize: 11, color: Colors.orange[700]),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
       actions: [

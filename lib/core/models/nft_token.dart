@@ -81,6 +81,9 @@ class NftMintRecord extends HiveObject {
   @HiveField(15)
   String eventName;
 
+  @HiveField(16)
+  int creatorBurned;
+
   NftMintRecord({
     required this.id,
     this.tokenId,
@@ -98,6 +101,7 @@ class NftMintRecord extends HiveObject {
     this.approvalTxHash,
     this.metadataCid,
     this.eventName = 'default',
+    this.creatorBurned = 0,
   });
 
   Map<String, dynamic> toJson() {
@@ -118,6 +122,7 @@ class NftMintRecord extends HiveObject {
       'approvalTxHash': approvalTxHash,
       'metadataCid': metadataCid,
       'eventName': eventName,
+      'creatorBurned': creatorBurned,
     };
   }
 
@@ -142,6 +147,7 @@ class NftMintRecord extends HiveObject {
       approvalTxHash: json['approvalTxHash'] as String?,
       metadataCid: json['metadataCid'] as String?,
       eventName: json['eventName'] as String? ?? 'default',
+      creatorBurned: json['creatorBurned'] as int? ?? 0,
     );
   }
 

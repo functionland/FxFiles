@@ -854,6 +854,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(LucideIcons.alertTriangle, size: 14, color: Colors.orange[700]),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This wallet must not be used for token transfers and is only for internal app NFTs.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange[700],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         );
       },

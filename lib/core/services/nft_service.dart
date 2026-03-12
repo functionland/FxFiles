@@ -863,6 +863,65 @@ class NftService {
     scheduleSyncToCloud();
   }
 
+  /// Track that the creator burned their own copies (not via claim link).
+  Future<void> markCreatorBurned({
+    required String tagId,
+    required NftMintRecord mint,
+    required int amount,
+  }) async {
+    mint.creatorBurned += amount;
+    await updateMintRecord(tagId, mint);
+    scheduleSyncToCloud();
+  }
+
+  /// Reconcile creatorBurned for a mint record by querying the on-chain balance.
+  /// Fixes records where burns happened but weren't tracked locally.
+  Future<void> reconcileBurnCount({
+    required String tagId,
+    required NftMintRecord mint,
+  }) async {
+    if (mint.status != NftMintStatus.completed || mint.tokenId == null) return;
+
+    final chain = SupportedChain.byChainId(mint.chainId);
+    if (chain?.nftContractAddress == null) return;
+
+    try {
+      final onChainBalance = await NftContractService.instance.getBalance(
+        chainId: mint.chainId,
+        contractAddress: chain!.nftContractAddress!,
+        account: mint.creatorAddress,
+        tokenId: mint.tokenId!,
+      );
+
+      // Count copies no longer held by creator from claims
+      int claimedOrPending = 0;
+      for (final claim in mint.claims) {
+        final isExpired = claim.status == NftClaimStatus.expired ||
+            (claim.status == NftClaimStatus.pending &&
+                claim.expiresAt.isBefore(DateTime.now()));
+        if (claim.status == NftClaimStatus.claimed) {
+          claimedOrPending++;
+        } else if (claim.status == NftClaimStatus.pending && !isExpired) {
+          claimedOrPending++;
+        }
+      }
+
+      // creatorBurned = total minted - on-chain balance - copies sent via claims
+      final inferred = mint.count - onChainBalance.toInt() - claimedOrPending;
+      final corrected = inferred < 0 ? 0 : inferred;
+
+      if (corrected != mint.creatorBurned) {
+        debugPrint('NftService: Reconciling burn count for token ${mint.tokenId}: '
+            '${mint.creatorBurned} → $corrected');
+        mint.creatorBurned = corrected;
+        await updateMintRecord(tagId, mint);
+        scheduleSyncToCloud();
+      }
+    } catch (e) {
+      debugPrint('NftService: Reconcile failed for token ${mint.tokenId}: $e');
+    }
+  }
+
   // ============================================================================
   // TRANSFER FLOW (no FULA released — standard ERC1155 transfer)
   // ============================================================================
