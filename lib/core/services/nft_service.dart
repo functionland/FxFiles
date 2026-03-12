@@ -667,7 +667,7 @@ class NftService {
   }
 
   /// Fetch claim offer data from the contract to check expiry/status
-  Future<({int tokenId, int status, int expiresAt})?> _fetchClaimOffer(
+  Future<({int tokenId, int status, int expiresAt, String? claimerAddress})?> _fetchClaimOffer(
     int chainId,
     String contractAddress,
     String linkHash,
