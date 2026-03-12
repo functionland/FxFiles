@@ -33,7 +33,7 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.base.org',
     explorerUrl: 'https://basescan.org',
     decimals: 18,
-    nftContractAddress: '0xDFA28bb08b7484e810E4D775d437ef7f19B3597E',
+    nftContractAddress: '0xc818477eBaf05B8239fd7f9AaeE25fE41981fd33',
   );
 
   /// Skale Europa chain configuration
@@ -45,7 +45,7 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.skalenodes.com/v1/elated-tan-skat',
     explorerUrl: 'https://elated-tan-skat.explorer.mainnet.skalenodes.com',
     decimals: 18,
-    nftContractAddress: '0x082FE5DbeE53D4669608ca3B568Fd217d172116B',
+    nftContractAddress: '0x0B5b76F709BDc17c9f29e1D752439345BDC67b0c',
   );
 
   /// All supported chains

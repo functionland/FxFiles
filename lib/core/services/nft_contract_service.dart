@@ -16,8 +16,8 @@ class NftContractService {
   static final NftContractService instance = NftContractService._();
 
   // Function selectors — keccak256 of signature, first 4 bytes
-  // mintWithFula(string,string,uint256,uint256)
-  static const String _mintWithFulaSelector = '4caf86a6';
+  // mintWithFula(string,string,uint256,uint256,uint96)
+  static const String _mintWithFulaSelector = '7de4a084';
   // createClaimOffer(uint256,address,uint256)
   static const String _createClaimOfferSelector = '49db23ce';
   // claimNFT(bytes32)
@@ -54,23 +54,25 @@ class NftContractService {
     return '0x$_approveSelector$address$amountHex';
   }
 
-  /// Encode mintWithFula(string eventName, string metadataCid, uint256 fulaPerNft, uint256 count)
-  String encodeMintWithFula(String eventName, String metadataCid, BigInt fulaPerNft, int count) {
-    // ABI encoding for (string, string, uint256, uint256):
-    // Head: 4 words. Word 0 = offset to eventName data. Word 1 = offset to metadataCid data.
-    // Word 2 = fulaPerNft. Word 3 = count.
+  /// Encode mintWithFula(string eventName, string metadataCid, uint256 fulaPerNft, uint256 count, uint96 royaltyBps)
+  String encodeMintWithFula(String eventName, String metadataCid, BigInt fulaPerNft, int count, {int royaltyBps = 0}) {
+    // ABI encoding for (string, string, uint256, uint256, uint96):
+    // Head: 5 words. Word 0 = offset to eventName data. Word 1 = offset to metadataCid data.
+    // Word 2 = fulaPerNft. Word 3 = count. Word 4 = royaltyBps.
     final eventNameBytes = utf8.encode(eventName);
     final metadataCidBytes = utf8.encode(metadataCid);
 
-    // eventName offset = 128 (0x80, past 4 head words)
-    final eventNameOffset = _padUint256(BigInt.from(128));
-    // metadataCid offset = 128 + 32 + ceil32(eventNameBytes.length)
+    // eventName offset = 160 (0xa0, past 5 head words)
+    final eventNameOffset = _padUint256(BigInt.from(160));
+    // metadataCid offset = 160 + 32 + ceil32(eventNameBytes.length)
     final eventNamePaddedLen = ((eventNameBytes.length + 31) ~/ 32) * 32;
-    final metadataCidOffset = _padUint256(BigInt.from(128 + 32 + eventNamePaddedLen));
+    final metadataCidOffset = _padUint256(BigInt.from(160 + 32 + eventNamePaddedLen));
     // fulaPerNft
     final fulaHex = _padUint256(fulaPerNft);
     // count
     final countHex = _padUint256(BigInt.from(count));
+    // royaltyBps (uint96, encoded as uint256)
+    final royaltyHex = _padUint256(BigInt.from(royaltyBps));
 
     // eventName: length + padded data
     final eventNameLengthHex = _padUint256(BigInt.from(eventNameBytes.length));
@@ -81,7 +83,7 @@ class NftContractService {
     final metadataCidDataHex = _padBytes(metadataCidBytes);
 
     return '0x$_mintWithFulaSelector'
-        '$eventNameOffset$metadataCidOffset$fulaHex$countHex'
+        '$eventNameOffset$metadataCidOffset$fulaHex$countHex$royaltyHex'
         '$eventNameLengthHex$eventNameDataHex'
         '$metadataCidLengthHex$metadataCidDataHex';
   }

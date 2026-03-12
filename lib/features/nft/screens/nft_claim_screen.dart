@@ -111,6 +111,25 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
     String? internalAddress;
     bool externalConnected = false;
 
+    // Show a loading dialog while wallets are being resolved
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Loading wallets...'),
+            ],
+          ),
+        ),
+      ),
+    );
+
     for (var attempt = 0; attempt < 3; attempt++) {
       await AuthService.instance.ensureAuthRestored();
       internalAddress = await NftWalletService.instance.getAddress();
@@ -127,6 +146,11 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
       if (attempt < 2) {
         await Future.delayed(const Duration(seconds: 1));
       }
+    }
+
+    // Dismiss loading dialog
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
     }
 
     if (!mounted) return null;

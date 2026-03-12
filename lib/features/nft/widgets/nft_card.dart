@@ -98,31 +98,55 @@ class _NftCardState extends State<NftCard> {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
-                      // Explorer link for completed mints
-                      if (record.status == NftMintStatus.completed &&
-                          record.txHash != null &&
-                          chain != null)
-                        GestureDetector(
-                          onTap: () => _openExplorer(chain, record.txHash!),
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(LucideIcons.externalLink, size: 11, color: Colors.blue[400]),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'View on Explorer',
-                                  style: TextStyle(
-                                    color: Colors.blue[400],
-                                    fontSize: 11,
-                                    decoration: TextDecoration.underline,
+                      // Explorer + IPFS links for completed mints
+                      if (record.status == NftMintStatus.completed) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Wrap(
+                            spacing: 12,
+                            children: [
+                              if (record.txHash != null && chain != null)
+                                GestureDetector(
+                                  onTap: () => _openExplorer(chain, record.txHash!),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(LucideIcons.externalLink, size: 11, color: Colors.blue[400]),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Explorer',
+                                        style: TextStyle(
+                                          color: Colors.blue[400],
+                                          fontSize: 11,
+                                          decoration: TextDecoration.underline,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
+                              if (record.gatewayUrl != null)
+                                GestureDetector(
+                                  onTap: () => _openIpfs(record.gatewayUrl!),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(LucideIcons.globe, size: 11, color: Colors.blue[400]),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'View on IPFS',
+                                        style: TextStyle(
+                                          color: Colors.blue[400],
+                                          fontSize: 11,
+                                          decoration: TextDecoration.underline,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
+                      ],
                     ],
                   ),
                 ),
@@ -193,6 +217,10 @@ class _NftCardState extends State<NftCard> {
     if (url != null) {
       launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
     }
+  }
+
+  void _openIpfs(String gatewayUrl) {
+    launchUrl(Uri.parse(gatewayUrl), mode: LaunchMode.externalApplication);
   }
 
   Widget _placeholder() {

@@ -439,6 +439,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
           count: config.count,
           fulaPerNft: config.fulaPerNft,
           eventName: config.eventName,
+          royaltyBps: config.royaltyBps,
           walletSource: walletSource,
         );
       },
@@ -783,9 +784,27 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   // ============================================================================
 
   Future<WalletSource?> _showWalletPicker() async {
-    // Show a brief loading indicator while wallet is being resolved
     String? internalAddress;
     bool externalConnected = false;
+
+    // Show a loading dialog while wallets are being resolved
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Loading wallets...'),
+            ],
+          ),
+        ),
+      ),
+    );
 
     // Try up to 3 times with increasing waits for auth to restore
     for (var attempt = 0; attempt < 3; attempt++) {
@@ -805,6 +824,11 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
         // Wait briefly for auth session to finish restoring
         await Future.delayed(const Duration(seconds: 1));
       }
+    }
+
+    // Dismiss loading dialog
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
     }
 
     if (!mounted) return null;

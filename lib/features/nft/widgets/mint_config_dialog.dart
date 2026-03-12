@@ -8,12 +8,14 @@ class MintConfig {
   final String fulaPerNft;
   final SupportedChain chain;
   final String eventName;
+  final int royaltyBps;
 
   const MintConfig({
     required this.count,
     required this.fulaPerNft,
     required this.chain,
     required this.eventName,
+    this.royaltyBps = 0,
   });
 }
 
@@ -23,6 +25,7 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
   final countController = TextEditingController(text: '1');
   final fulaController = TextEditingController(text: '10');
   final eventController = TextEditingController(text: 'default');
+  final royaltyController = TextEditingController(text: '0');
   final validChains = SupportedChain.all
       .where((c) => c.nftContractAddress != null &&
           c.nftContractAddress != '0x0000000000000000000000000000000000000000')
@@ -70,6 +73,18 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
                       hintText: '10',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(LucideIcons.coins),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: royaltyController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Royalty %',
+                      hintText: '0',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(LucideIcons.percent),
+                      helperText: 'Creator royalty on secondary sales (0-100%)',
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -153,11 +168,24 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
                           return;
                         }
 
+                        // Validate royalty
+                        final royaltyText = royaltyController.text.trim();
+                        final royaltyPct = double.tryParse(royaltyText) ?? 0;
+                        if (royaltyPct < 0 || royaltyPct > 100) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Royalty must be between 0% and 100%')),
+                          );
+                          return;
+                        }
+                        // Convert percentage to basis points (e.g. 2.5% → 250 bps)
+                        final royaltyBps = (royaltyPct * 100).round();
+
                         Navigator.of(ctx).pop(MintConfig(
                           count: count,
                           fulaPerNft: fula,
                           chain: selectedChain,
                           eventName: event,
+                          royaltyBps: royaltyBps,
                         ));
                       },
                 child: const Text('Mint'),
@@ -174,6 +202,7 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
     countController.dispose();
     fulaController.dispose();
     eventController.dispose();
+    royaltyController.dispose();
   });
 
   return result;

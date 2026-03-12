@@ -80,13 +80,14 @@ class NftMintRecordAdapter extends TypeAdapter<NftMintRecord> {
       metadataCid: fields[14] as String?,
       eventName: fields[15] as String? ?? 'default',
       creatorBurned: fields[16] as int? ?? 0,
+      royaltyBps: fields[17] as int? ?? 0,
     );
   }
 
   @override
   void write(BinaryWriter writer, NftMintRecord obj) {
     writer
-      ..writeByte(17)
+      ..writeByte(18)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -120,7 +121,9 @@ class NftMintRecordAdapter extends TypeAdapter<NftMintRecord> {
       ..writeByte(15)
       ..write(obj.eventName)
       ..writeByte(16)
-      ..write(obj.creatorBurned);
+      ..write(obj.creatorBurned)
+      ..writeByte(17)
+      ..write(obj.royaltyBps);
   }
 
   @override

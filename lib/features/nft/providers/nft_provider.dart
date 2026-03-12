@@ -142,6 +142,7 @@ class NftNotifier extends Notifier<NftState> {
     required int count,
     required String fulaPerNft,
     required String eventName,
+    int royaltyBps = 0,
     WalletSource walletSource = WalletSource.external,
   }) async {
     state = state.copyWith(isMinting: true, error: null, statusMessage: 'Uploading asset...');
@@ -155,6 +156,7 @@ class NftNotifier extends Notifier<NftState> {
         count: count,
         fulaPerNft: fulaPerNft,
         eventName: eventName,
+        royaltyBps: royaltyBps,
         walletSource: walletSource,
         onStatus: (msg) => state = state.copyWith(statusMessage: msg),
       );

@@ -314,6 +314,7 @@ class NftService {
     required String fulaPerNft,
     void Function(String status)? onStatus,
     required String eventName,
+    int royaltyBps = 0,
     WalletSource walletSource = WalletSource.external,
   }) async {
     final nftContractAddress = chain.nftContractAddress;
@@ -367,6 +368,7 @@ class NftService {
       mintedAt: DateTime.now(),
       status: NftMintStatus.approving,
       eventName: eventName,
+      royaltyBps: royaltyBps,
     );
     await addMintRecord(tagId, record);
 
@@ -391,6 +393,7 @@ class NftService {
         mintedAt: record.mintedAt,
         status: NftMintStatus.approving,
         eventName: eventName,
+        royaltyBps: royaltyBps,
       );
       await updateMintRecord(tagId, record);
 
@@ -450,6 +453,7 @@ class NftService {
         metadataCid,
         fulaPerNftBigInt,
         count,
+        royaltyBps: royaltyBps,
       );
       final mintTxHash = await _sendTransaction(
         chain: chain,
@@ -1101,6 +1105,7 @@ class NftService {
           record.metadataCid ?? record.ipfsCid,
           fulaPerNftBigInt,
           record.count,
+          royaltyBps: record.royaltyBps,
         );
         final mintTxHash = await _sendTransaction(
           chain: chain,
