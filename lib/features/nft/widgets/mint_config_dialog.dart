@@ -7,23 +7,29 @@ class MintConfig {
   final int count;
   final String fulaPerNft;
   final SupportedChain chain;
+  final String eventName;
 
   const MintConfig({
     required this.count,
     required this.fulaPerNft,
     required this.chain,
+    required this.eventName,
   });
 }
 
 /// Dialog for configuring NFT minting parameters:
-/// count, FULA per NFT, and chain selection.
-/// Full implementation in Phase 2.
+/// count, FULA per NFT, event name, and chain selection.
 Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
   final countController = TextEditingController(text: '1');
   final fulaController = TextEditingController(text: '10');
-  var selectedChain = SupportedChain.base;
+  final eventController = TextEditingController(text: 'default');
+  final validChains = SupportedChain.all
+      .where((c) => c.nftContractAddress != null &&
+          c.nftContractAddress != '0x0000000000000000000000000000000000000000')
+      .toList();
+  var selectedChain = validChains.isNotEmpty ? validChains.first : SupportedChain.base;
 
-  return showDialog<MintConfig>(
+  final result = await showDialog<MintConfig>(
     context: context,
     builder: (ctx) {
       return StatefulBuilder(
@@ -34,6 +40,17 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  TextField(
+                    controller: eventController,
+                    decoration: const InputDecoration(
+                      labelText: 'Event / Category',
+                      hintText: 'default',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(LucideIcons.tag),
+                    ),
+                    maxLength: 128,
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: countController,
                     keyboardType: TextInputType.number,
@@ -63,8 +80,7 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(LucideIcons.link),
                     ),
-                    items: SupportedChain.all
-                        .where((c) => c.nftContractAddress != null)
+                    items: validChains
                         .map((c) => DropdownMenuItem(
                               value: c,
                               child: Text(c.chainName),
@@ -76,7 +92,7 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
                       }
                     },
                   ),
-                  if (SupportedChain.all.every((c) => c.nftContractAddress == null))
+                  if (validChains.isEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 12),
                       child: Text(
@@ -93,18 +109,56 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
                 child: const Text('Cancel'),
               ),
               FilledButton(
-                onPressed: SupportedChain.all.every((c) => c.nftContractAddress == null)
+                onPressed: validChains.isEmpty
                     ? null
                     : () {
-                        final count = int.tryParse(countController.text) ?? 1;
+                        final count = int.tryParse(countController.text);
                         final fula = fulaController.text.trim();
-                        if (count > 0 && fula.isNotEmpty) {
-                          Navigator.of(ctx).pop(MintConfig(
-                            count: count,
-                            fulaPerNft: fula,
-                            chain: selectedChain,
-                          ));
+                        final event = eventController.text.trim();
+
+                        // Validate event name
+                        if (event.isEmpty) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Event name is required')),
+                          );
+                          return;
                         }
+
+                        // Validate count
+                        if (count == null || count <= 0) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Count must be at least 1')),
+                          );
+                          return;
+                        }
+                        if (count > 10000) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Count must be 10,000 or less')),
+                          );
+                          return;
+                        }
+
+                        // Validate FULA amount (must be a valid non-negative decimal)
+                        if (fula.isEmpty) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('FULA amount is required')),
+                          );
+                          return;
+                        }
+                        final fulaNum = double.tryParse(fula);
+                        if (fulaNum == null || fulaNum < 0) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Invalid FULA amount')),
+                          );
+                          return;
+                        }
+
+                        Navigator.of(ctx).pop(MintConfig(
+                          count: count,
+                          fulaPerNft: fula,
+                          chain: selectedChain,
+                          eventName: event,
+                        ));
                       },
                 child: const Text('Mint'),
               ),
@@ -114,4 +168,13 @@ Future<MintConfig?> showMintConfigDialog(BuildContext context) async {
       );
     },
   );
+
+  // Dispose after dialog is fully closed (including animations)
+  Future.delayed(const Duration(milliseconds: 300), () {
+    countController.dispose();
+    fulaController.dispose();
+    eventController.dispose();
+  });
+
+  return result;
 }

@@ -83,10 +83,20 @@ class DeepLinkService {
     );
   }
 
+  /// HTTPS host for universal/app links (must match NftService.claimLinkHost)
+  static const String _universalLinkHost = 'files.fx.land';
+
   Future<void> _handleDeepLink(Uri uri) async {
     debugPrint('DeepLinkService: Handling deep link: $uri');
 
-    // Check if this is an fxfiles:// scheme
+    // Handle HTTPS universal/app links from our domain
+    if ((uri.scheme == 'https' || uri.scheme == 'http') &&
+        uri.host == _universalLinkHost) {
+      _handleUniversalLink(uri);
+      return;
+    }
+
+    // Handle fxfiles:// custom scheme
     if (uri.scheme != 'fxfiles') {
       debugPrint('DeepLinkService: Unknown scheme: ${uri.scheme}');
       return;
@@ -113,6 +123,19 @@ class DeepLinkService {
       debugPrint('DeepLinkService: API key received');
       await _storeApiKey(apiKey);
     }
+  }
+
+  /// Handle HTTPS universal links from files.fx.land
+  void _handleUniversalLink(Uri uri) {
+    final path = uri.path;
+
+    if (path == '/nft-claim') {
+      debugPrint('DeepLinkService: NFT claim universal link received');
+      _handleNftClaim(uri);
+      return;
+    }
+
+    debugPrint('DeepLinkService: Unknown universal link path: $path');
   }
 
   Future<void> _handleAutoPinComplete(Uri uri) async {

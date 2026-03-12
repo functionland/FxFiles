@@ -372,6 +372,45 @@ Timestamp: $timestamp''';
     return '0x$selector$addressHex$amountHex';
   }
 
+  /// Send a generic contract transaction (approve, mint, claim, etc.)
+  Future<String> sendContractTransaction({
+    required SupportedChain chain,
+    required String contractAddress,
+    required String encodedData,
+  }) async {
+    _ensureInitialized();
+    _ensureConnected();
+
+    try {
+      final session = _appKitModal!.session;
+      if (session == null) {
+        throw WalletServiceException('No active session');
+      }
+
+      final topic = session.topic ?? '';
+
+      final txHash = await _appKitModal!.request(
+        topic: topic,
+        chainId: 'eip155:${chain.chainId}',
+        request: SessionRequestParams(
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              'from': _connectedAddress,
+              'to': contractAddress,
+              'data': encodedData,
+              'value': '0x0',
+            },
+          ],
+        ),
+      );
+
+      return txHash as String;
+    } catch (e) {
+      throw WalletServiceException('Failed to send contract transaction: $e');
+    }
+  }
+
   /// Switch to a specific chain
   Future<void> switchChain(int chainId) async {
     _ensureInitialized();

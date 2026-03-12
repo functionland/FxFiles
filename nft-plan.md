@@ -23,188 +23,118 @@ All files created and wired. See git diff for details.
 
 ---
 
-## Phase 2: Smart Contract + Minting (requires deployed contract)
+## Phase 2: Smart Contract + Minting - COMPLETE
 
-### Prerequisites
-- Deploy ERC1155 contract identically on Base (8453) and Skale Europa (2046399126)
-- Contract must implement: `mintWithFula`, `createClaimOffer`, `claimNFT`, `transferBack`, `getTokenInfo`, `getClaimOffer`, `getCreatorTokens`
-- Contract holds FULA tokens via `IERC20.transferFrom()` on mint
+### Smart Contract (`/mnt/e/GitHub/fula-chain`)
+- `contracts/core/FulaFileNFT.sol` — ERC1155 + GovernanceModule, FULA locking, claim escrow
+- `contracts/governance/interfaces/IFulaFileNFT.sol` — Events + errors interface
+- `scripts/deployFulaFileNFT.ts` — UUPS proxy deployment
+- `test/governance/integration/FulaFileNFT.test.ts` — 25 tests, all passing
 
-### Tasks
+### Flutter Changes
+- `nft_token.dart` + `.g.dart` — Added `@HiveField(13) approvalTxHash`
+- `supported_chain.dart` — Zero address placeholder for both chains (replace after deployment)
+- `nft_contract_service.dart` — All 7 selectors filled (`e90284f4`, `49db23ce`, `fbcb5ae7`, `76ee030a`, `8c7a63ae`, `695aaae9`, `74abfa54`), added `pollForReceipt()` + `parseTokenIdFromReceipt()`
+- `wallet_service.dart` — Added `sendContractTransaction()` generic method
+- `nft_service.dart` — Implemented `startMint()` full flow (upload → approve → mint → poll → parse)
+- `nft_provider.dart` — Added `startMint()` notifier wrapper
+- `nft_detail_screen.dart` — Enabled mint button with spinner + wired share button on NftCard
 
-1. **Fill contract addresses in `SupportedChain`**
-   - File: `lib/core/models/billing/supported_chain.dart`
-   - Set `nftContractAddress` for both `base` and `skale` static instances
-
-2. **Fill function selectors in `NftContractService`**
-   - File: `lib/core/services/nft_contract_service.dart`
-   - Replace all `'00000000'` placeholder selectors with actual `keccak256(signature)[:4]` values from deployed ABI:
-     - `mintWithFula(string,uint256,uint256)`
-     - `createClaimOffer(uint256,address,uint256)`
-     - `claimNFT(bytes32)`
-     - `transferBack(uint256,address,uint256)`
-     - `getTokenInfo(uint256)`
-     - `getClaimOffer(bytes32)`
-     - `getCreatorTokens(address)`
-
-3. **Implement IPFS upload in mint flow**
-   - File: `lib/core/services/nft_service.dart`
-   - Add `startMint()` method that:
-     1. Uploads image to IPFS via `uploadNftAsset()` (already implemented)
-     2. Creates `NftMintRecord` with status `approving`
-     3. Calls approve + mint via Reown AppKit
-     4. Polls `eth_getTransactionReceipt` every 3s
-     5. Parses `tokenId` from logs
-     6. Updates record status through `approving -> minting -> confirming -> completed`
-
-4. **Wire approve + mint via Reown AppKit**
-   - File: `lib/core/services/nft_service.dart`
-   - Use `WalletService.instance` to send transactions:
-     - Step 1: `approve(nftContractAddress, fulaPerNft * count)` on FULA token contract
-     - Step 2: `mintWithFula(ipfsCid, fulaPerNftWei, count)` on NFT contract
-   - Both via `eth_sendTransaction` through Reown AppKit session
-
-5. **Transaction receipt polling**
-   - File: `lib/core/services/nft_contract_service.dart`
-   - `getTransactionReceipt()` already implemented
-   - Add `pollForReceipt()` with 3s interval, max 5 min timeout
-   - Parse `tokenId` from mint event logs (first topic after event signature)
-
-6. **Enable Mint button in `NftDetailScreen`**
-   - File: `lib/features/nft/screens/nft_detail_screen.dart`
-   - Change `onPressed: null` to call `showMintConfigDialog()` then `startMint()`
-   - Show progress via `NftMintStatus` updates
-
-7. **Add `startMint()` to `NftNotifier`**
-   - File: `lib/features/nft/providers/nft_provider.dart`
-   - Add method that coordinates the mint flow, updates `isMinting` state
-
-8. **Wire `NftCard` share button**
-   - File: `lib/features/nft/widgets/nft_card.dart`
-   - Connect `onShareClaim` callback in `NftDetailScreen`
+### Remaining after contract deployment
+- Replace `0x000...000` in `SupportedChain` with real proxy addresses
 
 ---
 
-## Phase 3: Claim Links
+## Phase 3: Claim Links - COMPLETE (connected wallet flow)
 
-### Tasks
+### Implemented
+- `nft_contract_service.dart` — Added `parseClaimOfferHash()` and `decodeTokenInfo()` for reading contract state
+- `nft_service.dart` — Added `createClaimOffer()` (send tx → parse linkHash → build deep link → save NftClaimRecord), `claimNft()` (send claimNFT tx → poll receipt), `fetchTokenInfo()` (eth_call → decode)
+- `nft_provider.dart` — Added `createClaimOffer()` and `claimNft()` notifier methods
+- `nft_detail_screen.dart` — Share button opens claimer address dialog → creates on-chain offer → shows share sheet with link
+- `nft_claim_screen.dart` — Fetches token info on load (image, creator, FULA, supply), enables claim button for connected wallets
 
-1. **Implement `createClaimOffer()` flow**
-   - File: `lib/core/services/nft_service.dart`
-   - Add method that:
-     1. Calls `createClaimOffer(tokenId, claimerAddress, expiresAt)` via Reown AppKit
-     2. Parses `linkHash` from tx receipt logs
-     3. Builds link: `fxfiles://nft-claim?chain={chainId}&contract={addr}&token={tokenId}&hash={linkHash}`
-     4. Saves `NftClaimRecord` locally (status: pending)
-
-2. **Wire `ClaimLinkShareSheet`**
-   - File: `lib/features/nft/widgets/claim_link_share_sheet.dart`
-   - Already implemented UI; just needs to be called from `NftDetailScreen` after `createClaimOffer()` succeeds
-
-3. **Implement `NftClaimScreen` token info fetch**
-   - File: `lib/features/nft/screens/nft_claim_screen.dart`
-   - On load: call `getTokenInfo(tokenId)` via `NftContractService.ethCall()`
-   - Display: NFT image (from IPFS CID in token info), FULA amount, creator address
-   - Enable "Claim" button
-
-4. **Implement `claimNFT()` for connected wallets**
-   - File: `lib/core/services/nft_service.dart`
-   - If user has Reown AppKit wallet connected: send `claimNFT(linkHash)` via `eth_sendTransaction`
-
-5. **Implement `NftWalletService.signTransaction()` for derived wallets**
-   - File: `lib/core/services/nft_wallet_service.dart`
-   - Full secp256k1 signing using `pointy_castle` (already transitive dep):
-     1. RLP encode transaction (nonce, gasPrice, gasLimit, to, value, data, chainId)
-     2. keccak256 hash
-     3. secp256k1 sign with derived private key
-     4. Encode v, r, s into signed transaction
-     5. Submit via `eth_sendRawTransaction` to chain's RPC
-   - Replace placeholder address derivation with proper `keccak256(secp256k1_pubkey)[12:]`
-
-6. **Implement `claimNFT()` for derived wallets**
-   - File: `lib/core/services/nft_service.dart`
-   - If no Reown AppKit wallet: use `NftWalletService.signTransaction()` to sign and submit
-   - On Skale: gas is free (sFUEL). On Base: claimer pays ~$0.01 gas in ETH
-
-7. **Add `claimNft()` to `NftNotifier`**
-   - File: `lib/features/nft/providers/nft_provider.dart`
-   - Add method, update `isClaiming` state
+### Deferred to Phase 5
+- `NftWalletService.signTransaction()` — Full secp256k1 signing for derived wallets (requires RLP encoding + keccak256 + secp256k1). Currently only Reown AppKit wallets can mint/claim.
 
 ---
 
-## Phase 4: Transfer-Back + QR
+## Phase 4: Transfer-Back + QR - COMPLETE
 
-### Prerequisites
-- Add to `pubspec.yaml`:
-  ```yaml
-  qr_flutter: ^4.1.0
-  mobile_scanner: ^6.0.0
-  ```
+### Implemented
+- `pubspec.yaml` — Added `qr_flutter: ^4.1.0` and `mobile_scanner: ^6.0.0`
+- `transfer_back_qr_dialog.dart` — Replaced placeholder with `QrImageView`, JSON payload `{chain, token, amount, claimer, nonce}`, detail summary below QR
+- `nft_qr_scanner_screen.dart` — Replaced placeholder with `MobileScanner` widget, parses JSON payload, fetches token info for FULA display, shows confirmation dialog with transfer-back details, flashlight + camera switch controls
+- `nft_service.dart` — Added `transferBack()` flow (encodeTransferBack → sendContractTransaction → pollForReceipt) + `markClaimReturned()` to update claim status
+- `nft_provider.dart` — Added `transferBack()` notifier wrapper
+- `nft_claim_screen.dart` — After claiming: shows "Transfer Back" button (calls contract directly) + QR code button (shows QR for sender verification), transfer-back success state
+- `nft_detail_screen.dart` — Added QR scan button in app bar (navigates to `/nft-qr-scan`)
 
-### Tasks
-
-1. **Implement QR code generation in `TransferBackQrDialog`**
-   - File: `lib/features/nft/widgets/transfer_back_qr_dialog.dart`
-   - Replace placeholder with `QrImageView` from `qr_flutter`
-   - QR payload (JSON): `{chain, token, amount, claimer, nonce, signature}`
-   - Signature: sign `keccak256(abi.encodePacked(chain, token, amount, claimer, nonce))` via derived wallet or Reown AppKit
-
-2. **Implement camera scanner in `NftQrScannerScreen`**
-   - File: `lib/features/nft/screens/nft_qr_scanner_screen.dart`
-   - Replace placeholder with `MobileScanner` widget
-   - On scan: parse JSON payload, validate signature, show confirmation dialog
-   - Confirmation: "Return {n} NFT(s), release {fula} FULA to claimer"
-
-3. **Implement `transferBack()` flow**
-   - File: `lib/core/services/nft_service.dart`
-   - Sender calls `transferBack(tokenId, claimer, amount)` via Reown AppKit
-   - Contract transfers NFT sender<-claimer, releases locked FULA to claimer
-   - Update `NftClaimRecord.status` to `returnedBack`
-
-4. **Add "Transfer Back" button to claimed NFTs in `NftClaimScreen`**
-   - After claiming: show "Transfer Back" button that opens `TransferBackQrDialog`
-
-5. **Wire QR scan route**
-   - Route `/nft-qr-scan` already exists
-   - Add navigation from `NftDetailScreen` (e.g. action button for sender)
+### Deferred to Phase 5
+- QR payload signature (secp256k1 signing) — requires `NftWalletService.signTransaction()` which is deferred
 
 ---
 
-## Phase 5: Polish
+## Phase 5: Polish - COMPLETE
 
-### Tasks
+### Implemented
 
 1. **Error handling**
-   - Insufficient FULA balance: check before approve, show specific message
-   - No gas (Base): detect ETH balance < estimated gas, prompt user
-   - Expired claim links: check `expiresAt` before attempting claim
-   - Already claimed: handle contract revert gracefully
-   - Network errors: retry logic with exponential backoff
+   - `nft_service.dart` — FULA balance check before approve in `startMint()` with specific "Required vs Available" message
+   - `nft_service.dart` — Expired claim check via `_fetchClaimOffer()` + `decodeClaimOffer()` before attempting claim
+   - `nft_service.dart` — Already-claimed detection from contract revert messages
+   - `nft_service.dart` — Not-claim-recipient error handling
+   - `nft_service.dart` — Reverted transaction detection with user-friendly messages
+   - `nft_contract_service.dart` — Added `decodeClaimOffer()` for on-chain expiry/claimed status checks
 
 2. **Chain switching**
-   - When user is on wrong chain for a mint/claim: call `wallet_switchEthereumChain`
-   - Use existing `WalletService.switchChain()` method
+   - `nft_service.dart` — Added `_ensureCorrectChain()` helper using `WalletService.switchChain()`
+   - Called before `startMint()`, `claimNft()`, `transferBack()`, and `retryMint()`
 
 3. **Block explorer links**
-   - Add "View on Explorer" links for all transaction hashes
-   - Use existing `SupportedChain.getTxExplorerUrl(txHash)`
-   - Show in `NftCard` and `NftClaimScreen`
+   - `nft_card.dart` — "View on Explorer" link for completed mints using `SupportedChain.getTxExplorerUrl()`
+   - `nft_claim_screen.dart` — Clickable explorer links for claim tx and transfer-back tx hashes
 
 4. **Cloud sync for NFT collections**
-   - File: `lib/core/services/nft_service.dart`
-   - `syncToCloud()` already implemented
-   - Add `restoreFromCloud()` following `WebsiteService.restoreFromCloud()` pattern
-   - Call on app start after auth check
+   - `nft_service.dart` — Added `restoreFromCloud()` following WebsiteService pattern (guard checks, preserve in-progress mints, merge by tagId, silent on NoSuchKey)
+   - `auth_service.dart` — Added `NftService.instance.restoreFromCloud()` at all 4 auth completion points (auto-login, Google, Apple, reinitialize)
 
 5. **Loading states and status indicators**
-   - Animated status indicators in `NftCard` for in-progress operations
-   - Skeleton loading in `NftsBrowserScreen` while tags load
-   - Progress overlay during mint flow (approve -> mint -> confirm)
+   - `nft_card.dart` — Animated pulsing status badge with spinner for in-progress operations (approving/minting/confirming)
+   - `nfts_browser_screen.dart` — Shimmer skeleton loading while tags initialize
+   - `nft_detail_screen.dart` — Status message display below mint button showing current step (with spinner)
 
 6. **Retry logic for failed operations**
-   - Failed mints: "Retry" button on error `NftCard`
-   - Failed claims: retry button in `NftClaimScreen`
-   - Save partial state so retries can resume from last step
+   - `nft_service.dart` — Added `retryMint()` that resumes from last successful step (skips upload if CID exists, skips approval if tx exists, re-polls mint tx)
+   - `nft_provider.dart` — Added `retryMint()` notifier wrapper
+   - `nft_card.dart` — Retry button (refresh icon) on error-state cards
+   - `nft_detail_screen.dart` — Wired `onRetry` callback to `_retryMint()` method
+   - `nft_claim_screen.dart` — Retry button for failed claim attempts
+
+### Remaining (requires deployed contract)
+- Replace `0x000...000` in `SupportedChain` with real proxy addresses
+
+---
+
+## Phase 6: Design Overhaul - COMPLETE
+
+Three fundamental design changes applied:
+
+### Change 3: Burn-to-Release Model
+- **Contract**: Removed `transferBack()`. Added `burn()` and `burnBatch()` overrides that release locked FULA via `storageToken.safeTransfer()`. Standard ERC1155 transfers (safeTransferFrom) preserved — FULA stays locked on transfer, only released on burn.
+- **Flutter**: Renamed `returnedBack` → `burned`, removed QR scanner/transfer-back dialog, added burn button with confirmation dialog, added transfer button with address input.
+- **Deleted**: `transfer_back_qr_dialog.dart`, `nft_qr_scanner_screen.dart`
+
+### Change 1: Open Claim Links
+- **Contract**: `createClaimOffer()` allows `claimer = address(0)` for open claims. `claimNFT()` skips claimer check when offer has zero-address claimer.
+- **Flutter**: "Anyone can claim" toggle (default ON) in claim sheet. Open claims skip address input.
+- **Tests**: 43 tests passing (added open claim + burn tests, removed transferBack + zero-claimer-revert tests).
+
+### Change 2: Internal Wallet
+- **NftWalletService**: Fixed base64 decode bug, uses web3dart `EthPrivateKey` for proper secp256k1 derivation, added `sendSignedTransaction()` and `sendApproveTransaction()`.
+- **WalletSource dispatch**: `enum WalletSource { internal, external }` — all service methods dispatch to either `NftWalletService` or `WalletService`.
+- **Wallet Picker UI**: Dialog shown before every NFT operation (mint, claim, burn, transfer). Auto-selects if only one wallet available.
+- **Settings**: NFT Wallet section shows internal wallet address with copy button.
 
 ---
 
@@ -219,43 +149,37 @@ mintWithFula(string ipfsCid, uint256 fulaPerNft, uint256 count) -> uint256 first
 
 // Claiming - sender creates offer, recipient claims
 createClaimOffer(uint256 tokenId, address claimer, uint256 expiresAt) -> bytes32 linkHash
+// claimer = address(0) → open claim (anyone), claimer = 0x1234... → targeted
 claimNFT(bytes32 linkHash)
 
-// Transfer-back - claimer returns NFT, locked FULA released to claimer
-transferBack(uint256 tokenId, address sender, uint256 amount)
+// Burn - permanently destroys NFT, releases locked FULA to burner
+burn(address account, uint256 id, uint256 value)
+burnBatch(address account, uint256[] ids, uint256[] values)
+
+// Transfer - standard ERC1155, FULA stays locked
+safeTransferFrom(from, to, id, amount, data)  // inherited
+
+// Cancel - sender (after expiry) or admin can cancel stuck offers
+cancelClaimOffer(bytes32 linkHash)
 
 // Read functions
 getTokenInfo(uint256 tokenId) -> (creator, ipfsCid, fulaAmount, totalSupply)
 getClaimOffer(bytes32 linkHash) -> (tokenId, sender, claimer, expiresAt, claimed)
-balanceOf(address, uint256) -> uint256  // standard ERC1155
 getCreatorTokens(address) -> uint256[]
 ```
 
 ## Deterministic Wallet Derivation
 
 ```
-existingKey = Argon2id("{provider}:{userId}:{email}", "fula-files-v1") -> 32 bytes [already exists]
-nftPrivateKey = HMAC-SHA256(existingKey, "nft-wallet") -> 32 bytes
-nftAddress = keccak256(secp256k1_pubkey(nftPrivateKey))[12:] -> 20 bytes -> "0x..."
+encryptionKey = Argon2id("{provider}:{userId}:{email}", "fula-files-v1") -> 32 bytes (existing)
+nftPrivateKey = HMAC-SHA256("nft-wallet", base64Decode(encryptionKey)) -> 32 bytes
+nftAddress    = EthPrivateKey(nftPrivateKey).address.eip55With0x -> "0x..." (via web3dart + wallet)
 ```
 
-Phase 2 must replace the placeholder address derivation in `NftWalletService` with proper secp256k1 + keccak256 using `pointy_castle`.
+Uses web3dart for proper secp256k1 public key derivation and keccak256 address computation.
 
 ## Deep Link Format
 
 ```
 fxfiles://nft-claim?chain=8453&contract=0x...&token=123&hash=0xabc...
-```
-
-## QR Payload Format (Phase 4)
-
-```json
-{
-  "chain": 8453,
-  "token": 123,
-  "amount": 1,
-  "claimer": "0x...",
-  "nonce": 1234567890,
-  "signature": "0x..."
-}
 ```

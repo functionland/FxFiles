@@ -12,6 +12,11 @@ A minimalistic file manager with Fula decentralized storage backup support. Buil
 - **Search**: Search local files by name
 - **Trash Management**: Safely delete and restore files
 - **Dark/Light Theme**: Automatic theme switching
+- **NFT Minting**: Mint images as ERC1155 NFTs on Base/Skale Europa with FULA token backing
+- **NFT Sharing & Claiming**: Share NFTs via deep links — open claims (anyone) or targeted (specific wallet)
+- **NFT Transfer**: Standard ERC1155 transfers between wallets (FULA stays locked)
+- **NFT Burn-to-Release**: Burn NFTs to permanently destroy them and release locked FULA to the burner
+- **Dual Wallet Support**: Internal wallet (auto-derived from sign-in) or external wallet (WalletConnect)
 
 ## Architecture
 
@@ -22,19 +27,26 @@ lib/
 │   ├── router.dart           # GoRouter navigation
 │   └── theme/                # Theme configuration
 ├── core/
-│   ├── models/               # Data models (LocalFile, FulaObject, SyncState)
+│   ├── models/               # Data models (LocalFile, FulaObject, SyncState, NftToken)
 │   └── services/             # Core services
 │       ├── auth_service.dart         # Google/Apple authentication
 │       ├── encryption_service.dart   # AES-256-GCM encryption
 │       ├── file_service.dart         # Local file operations
 │       ├── fula_api_service.dart     # Fula S3-compatible API
 │       ├── local_storage_service.dart # Hive local storage
+│       ├── nft_service.dart          # NFT mint/claim/burn/transfer orchestration
+│       ├── nft_contract_service.dart  # ABI encoding + RPC calls for NFT contract
+│       ├── nft_wallet_service.dart    # Deterministic wallet derivation + signing
 │       ├── secure_storage_service.dart # Secure key storage
 │       └── sync_service.dart         # File synchronization
 ├── features/
 │   ├── browser/              # Local file browser
 │   ├── fula/                 # Fula cloud browser
 │   ├── home/                 # Home screen with categories
+│   ├── nft/                  # NFT minting & claiming
+│   │   ├── providers/        # NftNotifier, nftTagsProvider, nftMintsProvider
+│   │   ├── screens/          # Collection browser, detail, claim
+│   │   └── widgets/          # NftCard, MintConfigDialog, ClaimShareSheet
 │   ├── search/               # File search
 │   ├── settings/             # App settings
 │   ├── shared/               # Shared files
@@ -120,6 +132,8 @@ Local File → Encrypt (AES-256-GCM) → Upload to Fula → IPFS Storage
 | `sign_in_with_apple` | Apple authentication |
 | `workmanager` | Background sync tasks |
 | `connectivity_plus` | Network monitoring |
+| `reown_appkit` | WalletConnect wallet connection (external wallet for NFTs) |
+| `web3dart` | EVM wallet derivation + transaction signing (internal wallet) |
 
 ## Usage
 
@@ -538,6 +552,190 @@ For the gateway at `https://cloud.fx.land/view`:
    4. Parse JSON to get Playlist objects
    ```
 
+### NFT Lifecycle
+
+FxFiles includes a full NFT lifecycle built on ERC1155 tokens with FULA token backing. FULA tokens are permanently locked inside NFTs and can only be released by burning the NFT.
+
+#### Overview
+
+```
+Create Collection → Import Images → Mint NFTs → Share / Transfer → Burn to Release FULA
+```
+
+Users can:
+- **Mint** images as on-chain NFTs with FULA locked per token
+- **Share** claim links — open (anyone can claim) or targeted (specific wallet)
+- **Transfer** NFTs freely via standard ERC1155 transfers (FULA stays locked)
+- **Burn** NFTs to permanently destroy them and release the locked FULA to the burner
+
+#### Wallet Options
+
+Every NFT operation shows a **wallet picker** before proceeding:
+
+| Wallet | Source | Use Case |
+|--------|--------|----------|
+| **Internal Wallet** | Auto-derived from sign-in credentials via HMAC-SHA256 + secp256k1 (web3dart) | Non-crypto users — no setup required |
+| **Connected Wallet** | External wallet via Reown AppKit (WalletConnect) | Crypto users who want to use MetaMask, etc. |
+
+If only one wallet is available, it auto-selects. If neither is available, the user is prompted to sign in or connect.
+
+**Internal wallet derivation:**
+```
+encryptionKey = Argon2id("{provider}:{userId}:{email}", "fula-files-v1") → 32 bytes (existing)
+nftPrivateKey = HMAC-SHA256("nft-wallet", encryptionKey) → 32 bytes
+nftAddress    = EthPrivateKey(nftPrivateKey).address → "0x..."
+```
+
+The internal wallet uses web3dart's `EthPrivateKey` for proper secp256k1 address derivation and `Web3Client.sendTransaction()` for on-chain signing.
+
+#### 1. Minting
+
+**User flow:** Create Collection → Import Images → Choose Wallet → Configure (count, FULA/NFT, chain) → Mint
+
+**Pipeline (5 checkpointed steps):**
+
+```
+Upload to IPFS → Approve FULA spend → mintWithFula() → Poll Receipt → Parse Token ID
+```
+
+1. **Upload to IPFS** — Image uploaded unencrypted to Fula S3 gateway, CID returned
+2. **Approve FULA** — ERC20 `approve()` so the NFT contract can pull FULA tokens
+3. **mintWithFula()** — Contract locks FULA and mints ERC1155 tokens
+4. **Poll Receipt** — Wait for transaction confirmation
+5. **Parse Token ID** — Extract minted token ID from receipt logs
+
+Each step is persisted to Hive. If the app crashes or the transaction fails, "Retry" resumes from the last successful step (skips upload if CID exists, skips approval if tx exists).
+
+For internal wallets, approval uses `NftWalletService.sendApproveTransaction()` (ABI-encodes ERC20 approve and signs locally). For external wallets, it goes through `WalletService.sendContractTransaction()` via WalletConnect.
+
+#### 2. Sharing (Claim Links)
+
+**Creator side:** On a minted NFT card → "Share Claim" → Configure → Share link
+
+The claim dialog offers:
+- **"Anyone can claim" toggle** (default ON) — creates an open claim where `claimer = address(0)` on-chain. First person to open the link claims it.
+- **Targeted claim** (toggle OFF) — enter a specific wallet address. Only that wallet can claim.
+- **Expiry** — 1, 7, 30, or 90 days.
+
+The contract escrows 1 NFT via `createClaimOffer()` and returns a `linkHash`. A deep link is generated:
+
+```
+fxfiles://nft-claim?chain={chainId}&contract={address}&token={tokenId}&hash={linkHash}
+```
+
+**Claimer side:** Open link → App shows NFT details (image, creator, FULA/NFT, supply) → Choose Wallet → Claim
+
+The claim screen fetches token info from the contract via `eth_call`, displays the NFT image from the IPFS gateway, and calls `claimNFT(linkHash)` on-chain. Pre-claim checks detect already-claimed or expired links.
+
+After claiming, the screen shows **Transfer** and **Burn** buttons.
+
+#### 3. Transfer
+
+Standard ERC1155 `safeTransferFrom()`. FULA tokens remain locked inside the NFT — transfers do NOT release FULA. The UI shows: "Transfer keeps FULA locked. Only burning releases FULA."
+
+**Flow:** Choose Wallet → Enter recipient `0x...` address → Confirm → `safeTransferFrom()` → Poll Receipt
+
+NFTs can be transferred any number of times between any wallets. The FULA only comes out when someone burns.
+
+#### 4. Burn (Releases FULA)
+
+The **only way** to release locked FULA from an NFT is to burn it. Burning permanently destroys the NFT and sends the proportional FULA to the burner.
+
+**Flow:** Choose Wallet → Confirmation dialog ("This will permanently destroy the NFT and release X FULA to your wallet. This action cannot be undone.") → `burn(account, tokenId, amount)` → Poll Receipt
+
+The contract's `burn()` override:
+1. Calls `super.burn()` — standard ERC1155 burn (checks caller is owner or approved, zeros balance)
+2. Calculates `fulaToRelease = tokenInfo[id].fulaPerNft * amount`
+3. Decrements `totalLockedFula`
+4. Transfers FULA to the burner via `storageToken.safeTransfer()`
+5. Emits `NftBurned(tokenId, burner, amount, fulaReleased)`
+
+`burnBatch()` works similarly for multiple token types in one transaction.
+
+#### Smart Contract: `FulaFileNFT.sol`
+
+ERC1155 upgradeable contract using OpenZeppelin v5.3.0 + GovernanceModule (UUPS proxy).
+
+Deployed identically on Base (chain 8453) and Skale Europa (chain 2046399126).
+
+```solidity
+// Mint — caller must approve() FULA spend first
+mintWithFula(string ipfsCid, uint256 fulaPerNft, uint256 count) → uint256 firstTokenId
+
+// Claim — sender creates offer (escrows NFT), recipient claims
+createClaimOffer(uint256 tokenId, address claimer, uint256 expiresAt) → bytes32 linkHash
+claimNFT(bytes32 linkHash)
+// claimer = address(0) → open claim (anyone can claim)
+// claimer = 0x1234...  → only that address can claim
+
+// Burn — permanently destroys NFT, releases locked FULA to burner
+burn(address account, uint256 id, uint256 value)       // single token type
+burnBatch(address account, uint256[] ids, uint256[] values)  // multiple types
+
+// Transfer — standard ERC1155, FULA stays locked
+safeTransferFrom(from, to, id, amount, data)  // inherited from ERC1155
+
+// Cancel — sender (after expiry) or admin can cancel stuck offers
+cancelClaimOffer(bytes32 linkHash)
+
+// Read
+getTokenInfo(uint256 tokenId) → (creator, ipfsCid, fulaAmount, totalSupply)
+getClaimOffer(bytes32 linkHash) → (tokenId, sender, claimer, expiresAt, claimed)
+getCreatorTokens(address) → uint256[]
+```
+
+**Security features:**
+- `totalLockedFula` tracking prevents admin `recoverERC20` from draining locked funds
+- Monotonic nonce prevents duplicate claim offer hashes
+- `ipfsCid` length validation (1-256 bytes)
+- `nonReentrant` + `whenNotPaused` on all write functions
+- Burn checks caller is owner or approved (via ERC1155Burnable)
+
+#### Flutter Architecture
+
+| Component | Role |
+|-----------|------|
+| `NftService` | Orchestrates mint/claim/burn/transfer flows, Hive persistence, cloud sync |
+| `NftContractService` | ABI encoding, RPC calls, receipt polling |
+| `NftWalletService` | Deterministic wallet derivation (web3dart), transaction signing |
+| `WalletService` | External wallet via Reown AppKit (WalletConnect) |
+| `NftNotifier` (Riverpod) | UI state: `isMinting`, `isClaiming`, `isBurning`, `isTransferring`, `error` |
+| `nftMintsProvider` | `StreamProvider.family` — real-time mint status updates per collection |
+| `nftTagsProvider` | Filters tags with `nft-` prefix to list NFT collections |
+
+**Wallet dispatch:** All transaction methods accept a `WalletSource` enum (`internal` or `external`). Internal uses `NftWalletService.sendSignedTransaction()` (web3dart `Web3Client`). External uses `WalletService.sendContractTransaction()` (Reown AppKit).
+
+#### Data Models (Hive)
+
+| Type ID | Model | Description |
+|---------|-------|-------------|
+| 30 | `NftCollection` | Collection with tagId, name, list of mints |
+| 31 | `NftMintRecord` | Mint state: CID, txHash, tokenId, status, claims |
+| 32 | `NftClaimRecord` | Claim state: linkHash, claimer, status, tx hashes |
+| 33 | `NftMintStatus` | Enum: approving, minting, confirming, completed, error |
+| 34 | `NftClaimStatus` | Enum: pending, claimed, burned, expired |
+
+#### Cloud Sync
+
+NFT metadata is encrypted and synced to the `nft-metadata` S3 bucket:
+
+```
+Bucket: nft-metadata
+Key:    .fula/nfts/{userId}.json
+```
+
+On login, `restoreFromCloud()` merges cloud data with local state, preserving any in-progress mints. Sync is debounced (5s) and triggered after mints, claims, and burns.
+
+#### Deep Link Format
+
+```
+fxfiles://nft-claim?chain=8453&contract=0x...&token=123&hash=0xabc...
+```
+
+#### After Contract Deployment
+
+Replace the zero-address placeholders in `SupportedChain.nftContractAddress` with the real proxy addresses for each chain.
+
 ## Contributing
 
 1. Fork the repository
@@ -593,6 +791,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ ] Add folder names in tabs inside each category. default view is All, but user can switch to other tabs in each category like "Images" to see only images in that folder for example "WhatsApp"
 - [ X ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of parameters are based on the current s3 API doc for encrypted files where we have everything to decrypt a file in the link and it shows the link to user (General) - Implemented three share types: public links, password-protected links, and recipient-specific shares
 - [ X ] Change package name to land.fx.files.dev and create github actions to remove.dev for publishing to play store
+- [ X ] NFT minting: Mint images as ERC1155 NFTs on Base/Skale Europa with FULA token locking (NFT)
+- [ X ] NFT claim links: Share NFTs via deep links — open claims (anyone) or targeted (specific wallet) (NFT)
+- [ X ] NFT burn-to-release: Burn NFTs to permanently destroy and release locked FULA (NFT)
+- [ X ] NFT transfer: Standard ERC1155 transfers, FULA stays locked (NFT)
+- [ X ] NFT internal wallet: Deterministic wallet derivation + web3dart signing for non-crypto users (NFT)
+- [ X ] NFT wallet picker: Choose internal or connected wallet before every operation (NFT)
+- [ X ] NFT cloud sync: Encrypted metadata sync to S3 for cross-device recovery (NFT)
+- [ X ] NFT retry logic: Resume failed mints from last checkpoint (NFT)
+- [ ] Deploy FulaFileNFT contract and update SupportedChain addresses (NFT)
 - [ ] Implement proper error handling for background sync
 - [ ] Add unit tests for all services
 - [ ] Add AI features that interact with blox

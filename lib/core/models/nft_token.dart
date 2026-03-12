@@ -27,7 +27,7 @@ enum NftClaimStatus {
   @HiveField(2)
   expired,
   @HiveField(3)
-  returnedBack,
+  burned,
 }
 
 /// Record of a single NFT mint operation
@@ -72,6 +72,15 @@ class NftMintRecord extends HiveObject {
   @HiveField(12)
   List<NftClaimRecord> claims;
 
+  @HiveField(13)
+  String? approvalTxHash;
+
+  @HiveField(14)
+  String? metadataCid;
+
+  @HiveField(15)
+  String eventName;
+
   NftMintRecord({
     required this.id,
     this.tokenId,
@@ -86,6 +95,9 @@ class NftMintRecord extends HiveObject {
     required this.status,
     this.errorMessage,
     this.claims = const [],
+    this.approvalTxHash,
+    this.metadataCid,
+    this.eventName = 'default',
   });
 
   Map<String, dynamic> toJson() {
@@ -103,6 +115,9 @@ class NftMintRecord extends HiveObject {
       'status': status.index,
       'errorMessage': errorMessage,
       'claims': claims.map((c) => c.toJson()).toList(),
+      'approvalTxHash': approvalTxHash,
+      'metadataCid': metadataCid,
+      'eventName': eventName,
     };
   }
 
@@ -124,6 +139,9 @@ class NftMintRecord extends HiveObject {
               ?.map((c) => NftClaimRecord.fromJson(c as Map<String, dynamic>))
               .toList() ??
           [],
+      approvalTxHash: json['approvalTxHash'] as String?,
+      metadataCid: json['metadataCid'] as String?,
+      eventName: json['eventName'] as String? ?? 'default',
     );
   }
 
@@ -168,7 +186,7 @@ class NftClaimRecord extends HiveObject {
   String? claimTxHash;
 
   @HiveField(9)
-  String? transferBackTxHash;
+  String? burnTxHash;
 
   NftClaimRecord({
     required this.id,
@@ -180,7 +198,7 @@ class NftClaimRecord extends HiveObject {
     required this.expiresAt,
     required this.status,
     this.claimTxHash,
-    this.transferBackTxHash,
+    this.burnTxHash,
   });
 
   Map<String, dynamic> toJson() {
@@ -194,7 +212,7 @@ class NftClaimRecord extends HiveObject {
       'expiresAt': expiresAt.toIso8601String(),
       'status': status.index,
       'claimTxHash': claimTxHash,
-      'transferBackTxHash': transferBackTxHash,
+      'burnTxHash': burnTxHash,
     };
   }
 
@@ -209,7 +227,7 @@ class NftClaimRecord extends HiveObject {
       expiresAt: DateTime.parse(json['expiresAt'] as String),
       status: NftClaimStatus.values[json['status'] as int? ?? 0],
       claimTxHash: json['claimTxHash'] as String?,
-      transferBackTxHash: json['transferBackTxHash'] as String?,
+      burnTxHash: json['burnTxHash'] as String?,
     );
   }
 

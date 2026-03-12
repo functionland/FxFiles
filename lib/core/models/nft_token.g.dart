@@ -76,13 +76,16 @@ class NftMintRecordAdapter extends TypeAdapter<NftMintRecord> {
       status: fields[10] as NftMintStatus,
       errorMessage: fields[11] as String?,
       claims: (fields[12] as List?)?.cast<NftClaimRecord>().toList() ?? [],
+      approvalTxHash: fields[13] as String?,
+      metadataCid: fields[14] as String?,
+      eventName: fields[15] as String? ?? 'default',
     );
   }
 
   @override
   void write(BinaryWriter writer, NftMintRecord obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(16)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -108,7 +111,13 @@ class NftMintRecordAdapter extends TypeAdapter<NftMintRecord> {
       ..writeByte(11)
       ..write(obj.errorMessage)
       ..writeByte(12)
-      ..write(obj.claims);
+      ..write(obj.claims)
+      ..writeByte(13)
+      ..write(obj.approvalTxHash)
+      ..writeByte(14)
+      ..write(obj.metadataCid)
+      ..writeByte(15)
+      ..write(obj.eventName);
   }
 
   @override
@@ -142,7 +151,7 @@ class NftClaimRecordAdapter extends TypeAdapter<NftClaimRecord> {
       expiresAt: fields[6] as DateTime,
       status: fields[7] as NftClaimStatus,
       claimTxHash: fields[8] as String?,
-      transferBackTxHash: fields[9] as String?,
+      burnTxHash: fields[9] as String?,
     );
   }
 
@@ -169,7 +178,7 @@ class NftClaimRecordAdapter extends TypeAdapter<NftClaimRecord> {
       ..writeByte(8)
       ..write(obj.claimTxHash)
       ..writeByte(9)
-      ..write(obj.transferBackTxHash);
+      ..write(obj.burnTxHash);
   }
 
   @override
@@ -251,7 +260,7 @@ class NftClaimStatusAdapter extends TypeAdapter<NftClaimStatus> {
       case 2:
         return NftClaimStatus.expired;
       case 3:
-        return NftClaimStatus.returnedBack;
+        return NftClaimStatus.burned;
       default:
         return NftClaimStatus.pending;
     }
@@ -269,7 +278,7 @@ class NftClaimStatusAdapter extends TypeAdapter<NftClaimStatus> {
       case NftClaimStatus.expired:
         writer.writeByte(2);
         break;
-      case NftClaimStatus.returnedBack:
+      case NftClaimStatus.burned:
         writer.writeByte(3);
         break;
     }

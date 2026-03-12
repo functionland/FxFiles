@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claim Your NFT - FxFiles</title>
+  <meta property="og:title" content="Claim Your NFT - FxFiles">
+  <meta property="og:description" content="Someone sent you an NFT via FxFiles. Open the app to claim it.">
+  <meta property="og:type" content="website">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #fafafa;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      text-align: center;
+      padding: 2rem;
+      max-width: 480px;
+    }
+    .icon {
+      width: 80px;
+      height: 80px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 20px;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #a1a1aa; margin-bottom: 1.5rem; line-height: 1.5; }
+    .info {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+      text-align: left;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.4rem 0;
+      font-size: 0.9rem;
+    }
+    .info-label { color: #71717a; }
+    .info-value { color: #d4d4d8; font-family: monospace; font-size: 0.85rem; }
+    .btn-primary {
+      display: inline-block;
+      padding: 0.875rem 2rem;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+      text-decoration: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      width: 100%;
+      max-width: 300px;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin: 1.5rem 0;
+      color: #52525b;
+      font-size: 0.85rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #27272a;
+    }
+    .stores { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+    .stores a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.625rem 1.25rem;
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 10px;
+      color: #fafafa;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: border-color 0.2s;
+    }
+    .stores a:hover { border-color: #6366f1; }
+    .status { color: #a1a1aa; font-size: 0.85rem; margin-top: 1rem; }
+    .status.success { color: #4ade80; }
+    .status.error { color: #f87171; }
+    #fallback { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">&#x1F48E;</div>
+    <h1>NFT Claim</h1>
+    <p class="subtitle">Someone sent you an NFT via FxFiles</p>
+
+    <div class="info" id="claim-info" style="display:none">
+      <div class="info-row">
+        <span class="info-label">Token</span>
+        <span class="info-value" id="token-id">-</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Chain</span>
+        <span class="info-value" id="chain-name">-</span>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="open-btn" onclick="openApp()">
+      Open in FxFiles
+    </button>
+
+    <p class="status" id="status">Attempting to open FxFiles...</p>
+
+    <div id="fallback">
+      <div class="divider">or</div>
+      <p class="subtitle">Don't have FxFiles yet? Download it:</p>
+      <div class="stores">
+        <a href="https://apps.apple.com/app/fxfiles/id6504747875" target="_blank">
+          <span>&#x1F34E;</span> App Store
+        </a>
+        <a href="https://play.google.com/store/apps/details?id=land.fx.files.dev" target="_blank">
+          <span>&#x1F4F1;</span> Google Play
+        </a>
+      </div>
+      <p class="status">After installing, tap the link again to claim your NFT.</p>
+    </div>
+  </div>
+
+  <script>
+    const CHAINS = {
+      '8453': 'Base',
+      '2046399126': 'SKALE Europa',
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    const chain = params.get('chain');
+    const contract = params.get('contract');
+    const token = params.get('token');
+    const hash = params.get('hash');
+
+    // Show token info
+    if (token) {
+      document.getElementById('claim-info').style.display = 'block';
+      document.getElementById('token-id').textContent = '#' + token;
+      document.getElementById('chain-name').textContent = CHAINS[chain] || ('Chain ' + chain);
+    }
+
+    function buildDeepLink() {
+      const p = new URLSearchParams();
+      if (chain) p.set('chain', chain);
+      if (contract) p.set('contract', contract);
+      if (token) p.set('token', token);
+      if (hash) p.set('hash', hash);
+      return 'fxfiles://nft-claim?' + p.toString();
+    }
+
+    function openApp() {
+      const deepLink = buildDeepLink();
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Opening FxFiles...';
+      statusEl.className = 'status';
+
+      // Try the deep link
+      window.location.href = deepLink;
+
+      // If still here after 2.5s, the app didn't open — show fallback
+      setTimeout(function() {
+        if (!document.hidden) {
+          statusEl.textContent = 'Could not open app automatically.';
+          statusEl.className = 'status error';
+          document.getElementById('fallback').style.display = 'block';
+        }
+      }, 2500);
+    }
+
+    // Auto-attempt on page load (only on mobile)
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      openApp();
+    } else {
+      document.getElementById('status').textContent = 'Tap the button to open in FxFiles.';
+      document.getElementById('fallback').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

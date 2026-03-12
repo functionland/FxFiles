@@ -24,6 +24,7 @@ import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
@@ -124,8 +125,9 @@ Future<ProviderContainer> _initializeApp() async {
   // Initialize website service (non-blocking)
   WebsiteService.instance.init();
 
-  // Initialize NFT service (non-blocking)
+  // Initialize NFT service and wallet (non-blocking)
   NftService.instance.init();
+  NftWalletService.instance.getAddress();
 
   // Initialize video services (non-blocking)
   VideoThumbnailService.instance.init();

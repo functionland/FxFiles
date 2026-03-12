@@ -3,19 +3,20 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:web3dart/web3dart.dart';
 
-import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// Deterministic EVM wallet derivation for non-web3 users.
 ///
-/// Derives a private key from the existing Argon2id encryption key:
-///   nftPrivateKey = HMAC-SHA256(existingKey, "nft-wallet") -> 32 bytes
+/// Derives a private key from the existing Argon2id encryption key (stored as base64):
+///   nftPrivateKey = HMAC-SHA256("nft-wallet", base64Decode(encryptionKey)) -> 32 bytes
 ///   nftAddress = keccak256(secp256k1_pubkey(nftPrivateKey))[12:] -> "0x..."
 ///
-/// This service is only used as a fallback when the user doesn't have a
-/// Reown AppKit wallet connected. The actual secp256k1 signing and address
-/// derivation will be implemented in Phase 2 when the smart contract is deployed.
+/// This service provides an internal wallet so non-crypto users can mint/claim/burn
+/// without connecting an external wallet like MetaMask.
 class NftWalletService {
   NftWalletService._();
   static final NftWalletService instance = NftWalletService._();
@@ -32,22 +33,22 @@ class NftWalletService {
     if (_address != null) return _address;
 
     try {
-      // Get the existing Argon2id-derived encryption key
-      final encryptionKeyHex = await SecureStorageService.instance.read(
+      // Get the existing Argon2id-derived encryption key (stored as base64)
+      final encryptionKeyBase64 = await SecureStorageService.instance.read(
         SecureStorageKeys.encryptionKey,
       );
 
-      if (encryptionKeyHex == null || encryptionKeyHex.isEmpty) {
+      if (encryptionKeyBase64 == null || encryptionKeyBase64.isEmpty) {
         debugPrint('NftWalletService: No encryption key available');
         return null;
       }
 
-      // Decode the existing key (stored as hex)
-      final existingKey = _hexToBytes(encryptionKeyHex);
+      // Decode the existing key (stored as base64)
+      final existingKey = base64Decode(encryptionKeyBase64);
 
       // Derive NFT private key: HMAC-SHA256(existingKey, "nft-wallet")
-      final hmacSha256 = Hmac(sha256, existingKey);
-      final digest = hmacSha256.convert(utf8.encode('nft-wallet'));
+      final hmacSha256 = Hmac(sha256, utf8.encode('nft-wallet'));
+      final digest = hmacSha256.convert(existingKey);
       _privateKey = Uint8List.fromList(digest.bytes);
 
       // Store for recovery
@@ -56,10 +57,9 @@ class NftWalletService {
         _bytesToHex(_privateKey!),
       );
 
-      // Address derivation requires secp256k1 + keccak256 (Phase 2)
-      // For now, create a placeholder derived from the key hash
-      final addressHash = sha256.convert(_privateKey!);
-      _address = '0x${addressHash.toString().substring(0, 40)}';
+      // Derive EVM address using web3dart (secp256k1 + keccak256)
+      final ethKey = EthPrivateKey(_privateKey!);
+      _address = ethKey.address.hexEip55;
 
       debugPrint('NftWalletService: Wallet derived: $_address');
       return _address;
@@ -79,8 +79,8 @@ class NftWalletService {
     if (storedKey == null || storedKey.isEmpty) return null;
 
     _privateKey = _hexToBytes(storedKey);
-    final addressHash = sha256.convert(_privateKey!);
-    _address = '0x${addressHash.toString().substring(0, 40)}';
+    final ethKey = EthPrivateKey(_privateKey!);
+    _address = ethKey.address.hexEip55;
 
     return _address;
   }
@@ -89,6 +89,68 @@ class NftWalletService {
   Future<String?> getAddress() async {
     if (_address != null) return _address;
     return await restoreWallet() ?? await deriveWallet();
+  }
+
+  /// Send a signed transaction using the internal wallet.
+  /// Returns the transaction hash.
+  Future<String> sendSignedTransaction({
+    required SupportedChain chain,
+    required String to,
+    required String encodedData,
+    BigInt? value,
+  }) async {
+    if (_privateKey == null) {
+      await deriveWallet();
+    }
+    if (_privateKey == null) {
+      throw Exception('Internal wallet not available — sign in first');
+    }
+
+    if (chain.rpcUrl == null) {
+      throw Exception('No RPC URL for chain ${chain.chainName}');
+    }
+
+    final httpClient = http.Client();
+    try {
+      final client = Web3Client(chain.rpcUrl!, httpClient);
+      final credentials = EthPrivateKey(_privateKey!);
+
+      final tx = Transaction(
+        to: EthereumAddress.fromHex(to),
+        data: _hexToBytes(encodedData.replaceFirst('0x', '')),
+        value: value != null ? EtherAmount.inWei(value) : EtherAmount.zero(),
+      );
+
+      final txHash = await client.sendTransaction(
+        credentials,
+        tx,
+        chainId: chain.chainId,
+      );
+
+      return txHash;
+    } finally {
+      httpClient.close();
+    }
+  }
+
+  /// Send an ERC20 approve transaction using the internal wallet.
+  Future<String> sendApproveTransaction({
+    required SupportedChain chain,
+    required String tokenAddress,
+    required String spender,
+    required BigInt amount,
+  }) async {
+    // ABI encode: approve(address,uint256)
+    const approveSelector = '095ea7b3';
+    final spenderHex = spender.toLowerCase().replaceFirst('0x', '').padLeft(64, '0');
+    final amountHex = amount.toRadixString(16).padLeft(64, '0');
+    final data = '0x$approveSelector$spenderHex$amountHex';
+
+    return sendSignedTransaction(
+      chain: chain,
+      to: tokenAddress,
+      encodedData: data,
+    );
   }
 
   /// Clear cached wallet state

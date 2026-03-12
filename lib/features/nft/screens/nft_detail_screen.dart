@@ -9,6 +9,12 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
+import 'package:fula_files/core/models/billing/supported_chain.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
+import 'package:fula_files/features/nft/widgets/claim_link_share_sheet.dart';
+import 'package:fula_files/features/nft/widgets/mint_config_dialog.dart';
 import 'package:fula_files/features/nft/widgets/nft_card.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
@@ -29,6 +35,13 @@ class NftDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Eagerly derive internal wallet so hasWallet is true for UI checks
+    NftWalletService.instance.getAddress();
+  }
+
   @override
   Widget build(BuildContext context) {
     final tagState = ref.watch(tagProvider);
@@ -60,28 +73,69 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.plus),
-            tooltip: 'Import images',
-            onPressed: () => _pickImages(),
+          taggedFilesAsync.when(
+            data: (files) => IconButton(
+              icon: const Icon(LucideIcons.plus),
+              tooltip: files.isEmpty ? 'Import image' : 'Replace image',
+              onPressed: files.isEmpty ? () => _pickImages() : null,
+            ),
+            loading: () => const SizedBox.shrink(),
+            error: (_, __) => const SizedBox.shrink(),
           ),
         ],
       ),
       body: ListView(
         children: [
-          // Section A: Assets
+          // Section A: Asset (single image per collection)
           _buildAssetsSection(context, taggedFilesAsync),
 
-          // Section B: Mint button (Phase 2 — disabled for now)
+          // Section B: Mint button + status
           taggedFilesAsync.when(
             data: (files) {
               if (files.isEmpty) return const SizedBox.shrink();
+              final nftState = ref.watch(nftProvider);
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: FilledButton.icon(
-                  onPressed: null, // Enabled in Phase 2 when contract is deployed
-                  icon: const Icon(LucideIcons.sparkles),
-                  label: const Text('Mint NFTs'),
+                child: Column(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: nftState.isMinting
+                          ? null
+                          : () => _startMintFlow(files),
+                      icon: nftState.isMinting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(LucideIcons.sparkles),
+                      label: Text(nftState.isMinting ? 'Minting...' : 'Mint NFT'),
+                    ),
+                    if (nftState.statusMessage != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.5,
+                              color: Colors.grey[500],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            nftState.statusMessage!,
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
               );
             },
@@ -198,7 +252,15 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
                     ),
               ),
             ),
-            ...mints.map((mint) => NftCard(record: mint)),
+            ...mints.map((mint) => NftCard(
+              record: mint,
+              onShareClaim: mint.status == NftMintStatus.completed && mint.tokenId != null
+                  ? () => _showClaimSheet(mint)
+                  : null,
+              onRetry: mint.status == NftMintStatus.error
+                  ? () => _retryMint(mint)
+                  : null,
+            )),
             const SizedBox(height: 80),
           ],
         );
@@ -209,14 +271,329 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   }
 
   // ============================================================================
+  // MINT FLOW
+  // ============================================================================
+
+  Future<void> _startMintFlow(List<TaggedFile> files) async {
+    // Show mint config dialog
+    final config = await showMintConfigDialog(context);
+    if (config == null || !mounted) return;
+
+    // Pick wallet source
+    final walletSource = await _showWalletPicker();
+    if (walletSource == null || !mounted) return;
+
+    // Resolve the first tagged file to use as the NFT asset
+    final firstFile = files.first;
+    final localPath = firstFile.localPath;
+    if (localPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No local file to mint')),
+      );
+      return;
+    }
+
+    final resolvedPath = await _resolveFilePath(localPath);
+
+    final tagState = ref.read(tagProvider);
+    final currentTag = widget.tag ??
+        tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
+    final collectionName =
+        (currentTag?.name ?? 'NFT Collection').replaceFirst('nft-', '');
+
+    final result = await ref.read(nftProvider.notifier).startMint(
+      tagId: widget.tagId,
+      localPath: resolvedPath,
+      fileName: firstFile.fileName,
+      collectionName: collectionName,
+      chain: config.chain,
+      count: config.count,
+      fulaPerNft: config.fulaPerNft,
+      eventName: config.eventName,
+      walletSource: walletSource,
+    );
+
+    if (!mounted) return;
+    if (result != null && result.status == NftMintStatus.completed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Minted Token #${result.tokenId ?? "?"}')),
+      );
+    } else {
+      final nftState = ref.read(nftProvider);
+      if (nftState.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Mint failed: ${nftState.error}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _retryMint(NftMintRecord mint) async {
+    final chain = SupportedChain.byChainId(mint.chainId);
+    if (chain == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unknown chain')),
+      );
+      return;
+    }
+
+    final result = await ref.read(nftProvider.notifier).retryMint(
+      tagId: widget.tagId,
+      record: mint,
+      chain: chain,
+    );
+
+    if (!mounted) return;
+    if (result != null && result.status == NftMintStatus.completed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Retry successful! Token #${result.tokenId ?? "?"}')),
+      );
+    } else {
+      final nftState = ref.read(nftProvider);
+      if (nftState.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Retry failed: ${nftState.error}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showClaimSheet(NftMintRecord mint) async {
+    // Prompt for claimer address + expiry, with "Anyone can claim" toggle
+    final claimerController = TextEditingController();
+    try {
+    final result = await showDialog<({String? address, Duration expiry})?>(
+      context: context,
+      builder: (ctx) {
+        var expiryDays = 7;
+        var openClaim = true;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Create Claim Offer'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Anyone can claim'),
+                    subtitle: Text(
+                      openClaim
+                          ? 'First person to open the link claims it'
+                          : 'Only the specified wallet can claim',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    value: openClaim,
+                    onChanged: (v) => setDialogState(() => openClaim = v),
+                  ),
+                  if (!openClaim) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: claimerController,
+                      decoration: const InputDecoration(
+                        labelText: 'Claimer Wallet Address',
+                        hintText: '0x...',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(LucideIcons.wallet),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<int>(
+                    value: expiryDays,
+                    decoration: const InputDecoration(
+                      labelText: 'Expires in',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(LucideIcons.clock),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 1, child: Text('1 day')),
+                      DropdownMenuItem(value: 7, child: Text('7 days')),
+                      DropdownMenuItem(value: 30, child: Text('30 days')),
+                      DropdownMenuItem(value: 90, child: Text('90 days')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) setDialogState(() => expiryDays = v);
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (openClaim) {
+                      Navigator.of(ctx).pop((address: null, expiry: Duration(days: expiryDays)));
+                    } else {
+                      final addr = claimerController.text.trim();
+                      if (RegExp(r'^0x[0-9a-fA-F]{40}$').hasMatch(addr)) {
+                        Navigator.of(ctx).pop((address: addr, expiry: Duration(days: expiryDays)));
+                      } else {
+                        ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(content: Text('Enter a valid 0x address (42 characters)')),
+                        );
+                      }
+                    }
+                  },
+                  child: const Text('Create'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) return;
+
+    final offerResult = await ref.read(nftProvider.notifier).createClaimOffer(
+      tagId: widget.tagId,
+      mint: mint,
+      claimerAddress: result.address,
+      expiry: result.expiry,
+    );
+
+    if (!mounted) return;
+    if (offerResult != null) {
+      final chain = SupportedChain.byChainId(mint.chainId);
+      await showClaimLinkShareSheet(
+        context,
+        claimLink: offerResult.claimLink,
+        tokenId: mint.tokenId!,
+        chainName: chain?.chainName ?? 'Unknown',
+      );
+    } else {
+      final nftState = ref.read(nftProvider);
+      if (nftState.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: ${nftState.error}')),
+        );
+      }
+    }
+    } finally {
+      claimerController.dispose();
+    }
+  }
+
+  // ============================================================================
+  // WALLET PICKER
+  // ============================================================================
+
+  Future<WalletSource?> _showWalletPicker() async {
+    final internalAddress = await NftWalletService.instance.getAddress();
+
+    // Ensure WalletService is initialized so we can detect external wallets
+    if (!WalletService.instance.isInitialized && mounted) {
+      try {
+        await WalletService.instance.initialize(context);
+      } catch (_) {
+        // WalletService init may fail — continue with internal only
+      }
+    }
+
+    if (!mounted) return null;
+
+    final externalConnected = WalletService.instance.isConnected;
+    final externalAddress = WalletService.instance.connectedAddress;
+
+    // No wallet at all
+    if (internalAddress == null && !externalConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No wallet available. Sign in or connect a wallet.')),
+      );
+      return null;
+    }
+
+    // Use a special sentinel to indicate "connect external wallet" was chosen
+    const connectSentinel = WalletSource.external;
+
+    // Always show the picker so the user can choose or connect
+    final choice = await showDialog<WalletSource?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Choose Wallet'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (internalAddress != null)
+              ListTile(
+                leading: const Icon(LucideIcons.keyRound),
+                title: const Text('Internal Wallet'),
+                subtitle: Text(
+                  _truncateAddress(internalAddress),
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                onTap: () => Navigator.of(ctx).pop(WalletSource.internal),
+              ),
+            if (internalAddress != null && (externalConnected || WalletService.instance.isInitialized))
+              const SizedBox(height: 4),
+            if (externalConnected)
+              ListTile(
+                leading: const Icon(LucideIcons.wallet),
+                title: const Text('Connected Wallet'),
+                subtitle: Text(
+                  _truncateAddress(externalAddress!),
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                onTap: () => Navigator.of(ctx).pop(WalletSource.external),
+              ),
+            if (!externalConnected && WalletService.instance.isInitialized)
+              ListTile(
+                leading: const Icon(LucideIcons.link2),
+                title: const Text('Connect External Wallet'),
+                subtitle: const Text('MetaMask, Trust Wallet, etc.'),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                // Pop with external as a signal to trigger connect flow
+                onTap: () => Navigator.of(ctx).pop(connectSentinel),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (choice == null) return null;
+
+    // If external was chosen but no wallet was connected, trigger connect flow
+    if (choice == WalletSource.external && !WalletService.instance.isConnected) {
+      if (!mounted) return null;
+      final address = await WalletService.instance.connectWallet(context);
+      if (address == null || !mounted) return null;
+      return WalletSource.external;
+    }
+
+    return choice;
+  }
+
+  static String _truncateAddress(String address) {
+    if (address.length <= 14) return address;
+    return '${address.substring(0, 8)}...${address.substring(address.length - 6)}';
+  }
+
+  // ============================================================================
   // IMPORT FLOW (images only for NFTs)
   // ============================================================================
 
   Future<void> _pickImages() async {
+    // Prevent importing if collection already has an asset
+    final existing = await TagStorageService.instance.getFilesWithTag(widget.tagId);
+    if (existing.isNotEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Collection already has an image. Remove it first to replace.')),
+        );
+      }
+      return;
+    }
+
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.image,
-        allowMultiple: true,
+        allowMultiple: false,
       );
       if (result == null || result.files.isEmpty) return;
       await _importPickedFiles(result.files);
@@ -268,7 +645,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
 
     if (mounted && imported > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Imported $imported image(s)')),
+        const SnackBar(content: Text('Image imported')),
       );
     }
   }

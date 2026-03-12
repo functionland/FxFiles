@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
+import 'package:fula_files/features/nft/widgets/receive_nft_dialog.dart';
+import 'package:fula_files/features/tags/providers/tag_provider.dart';
 
 /// Screen listing all NFT collections (tags with "nft-" prefix)
 class NftsBrowserScreen extends ConsumerWidget {
@@ -11,15 +14,25 @@ class NftsBrowserScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final tagState = ref.watch(tagProvider);
     final nftTags = ref.watch(nftTagsProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('NFTs'),
+        actions: [
+          IconButton(
+            icon: const Icon(LucideIcons.qrCode),
+            tooltip: 'Receive NFT',
+            onPressed: () => showReceiveNftDialog(context),
+          ),
+        ],
       ),
-      body: nftTags.isEmpty
-          ? _buildEmptyState(context, ref)
-          : _buildList(context, ref, nftTags),
+      body: tagState.isLoading
+          ? _buildShimmerList(context)
+          : nftTags.isEmpty
+              ? _buildEmptyState(context, ref)
+              : _buildList(context, ref, nftTags),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _createCollection(context, ref),
         child: const Icon(LucideIcons.plus),
@@ -54,6 +67,46 @@ class NftsBrowserScreen extends ConsumerWidget {
             label: const Text('Create Collection'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildShimmerList(BuildContext context) {
+    return Shimmer.fromColors(
+      baseColor: Colors.grey[300]!,
+      highlightColor: Colors.grey[100]!,
+      child: ListView.builder(
+        padding: const EdgeInsets.only(bottom: 80),
+        itemCount: 3,
+        itemBuilder: (context, index) {
+          return ListTile(
+            leading: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            title: Container(
+              height: 14,
+              width: 120,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            subtitle: Container(
+              height: 10,
+              width: 80,
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
