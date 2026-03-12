@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/file_tag.dart';
@@ -273,6 +274,44 @@ class NftNotifier extends Notifier<NftState> {
     } catch (e) {
       state = state.copyWith(isTransferring: false, error: _friendlyError(e.toString()), statusMessage: null);
       return null;
+    }
+  }
+
+  /// Cancel a pending claim offer, returning NFT to creator
+  Future<bool> cancelClaimOffer({
+    required String tagId,
+    required NftMintRecord mint,
+    required NftClaimRecord claim,
+    WalletSource walletSource = WalletSource.external,
+  }) async {
+    state = state.copyWith(isClaiming: true, error: null, statusMessage: 'Cancelling claim...');
+    try {
+      await NftService.instance.cancelClaimOffer(
+        tagId: tagId,
+        mint: mint,
+        claim: claim,
+        walletSource: walletSource,
+      );
+      state = state.copyWith(isClaiming: false, statusMessage: null);
+      return true;
+    } catch (e) {
+      state = state.copyWith(isClaiming: false, error: _friendlyError(e.toString()), statusMessage: null);
+      return false;
+    }
+  }
+
+  /// Refresh claim statuses from on-chain data
+  Future<void> refreshClaimStatuses({
+    required String tagId,
+    required NftMintRecord mint,
+  }) async {
+    try {
+      await NftService.instance.refreshClaimStatuses(
+        tagId: tagId,
+        mint: mint,
+      );
+    } catch (e) {
+      debugPrint('NftProvider: refreshClaimStatuses error: $e');
     }
   }
 

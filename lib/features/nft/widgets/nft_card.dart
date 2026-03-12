@@ -11,12 +11,16 @@ class NftCard extends StatelessWidget {
   final NftMintRecord record;
   final VoidCallback? onShareClaim;
   final VoidCallback? onRetry;
+  final VoidCallback? onBurn;
+  final void Function(NftClaimRecord claim)? onCancelClaim;
 
   const NftCard({
     super.key,
     required this.record,
     this.onShareClaim,
     this.onRetry,
+    this.onBurn,
+    this.onCancelClaim,
   });
 
   @override
@@ -122,6 +126,12 @@ class NftCard extends StatelessWidget {
                     tooltip: 'Retry mint',
                     onPressed: onRetry,
                   ),
+                if (record.status == NftMintStatus.completed && onBurn != null)
+                  IconButton(
+                    icon: const Icon(LucideIcons.flame, size: 20),
+                    tooltip: 'Burn NFT',
+                    onPressed: onBurn,
+                  ),
                 if (record.status == NftMintStatus.completed && onShareClaim != null)
                   IconButton(
                     icon: const Icon(LucideIcons.share2, size: 20),
@@ -141,7 +151,13 @@ class NftCard extends StatelessWidget {
                     ),
               ),
               const SizedBox(height: 4),
-              ...record.claims.map((claim) => _ClaimRow(claim: claim, chain: chain)),
+              ...record.claims.map((claim) => _ClaimRow(
+                claim: claim,
+                chain: chain,
+                onCancel: onCancelClaim != null && claim.status == NftClaimStatus.pending
+                    ? () => onCancelClaim!(claim)
+                    : null,
+              )),
             ],
           ],
         ),
@@ -172,8 +188,9 @@ class NftCard extends StatelessWidget {
 class _ClaimRow extends StatelessWidget {
   final NftClaimRecord claim;
   final SupportedChain? chain;
+  final VoidCallback? onCancel;
 
-  const _ClaimRow({required this.claim, required this.chain});
+  const _ClaimRow({required this.claim, required this.chain, this.onCancel});
 
   @override
   Widget build(BuildContext context) {
@@ -241,7 +258,7 @@ class _ClaimRow extends StatelessWidget {
           // Copy link button (only for pending, non-expired claims)
           if (claim.status == NftClaimStatus.pending &&
               !isExpired &&
-              claim.linkHash != null)
+              claim.linkHash != null) ...[
             GestureDetector(
               onTap: () => _copyClaimLink(context),
               child: Icon(
@@ -250,6 +267,18 @@ class _ClaimRow extends StatelessWidget {
                 color: colorScheme.onSurfaceVariant,
               ),
             ),
+            if (onCancel != null) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: onCancel,
+                child: Icon(
+                  LucideIcons.xCircle,
+                  size: 13,
+                  color: Colors.red[400],
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );

@@ -699,6 +699,104 @@ class NftService {
   }
 
   // ============================================================================
+  // CANCEL CLAIM OFFER
+  // ============================================================================
+
+  /// Cancel a pending claim offer, returning the escrowed NFT to the creator.
+  Future<void> cancelClaimOffer({
+    required String tagId,
+    required NftMintRecord mint,
+    required NftClaimRecord claim,
+    WalletSource walletSource = WalletSource.external,
+  }) async {
+    if (claim.linkHash == null) throw Exception('No link hash for this claim');
+
+    final chain = SupportedChain.byChainId(claim.chainId);
+    if (chain == null) throw Exception('Unknown chain: ${claim.chainId}');
+
+    final nftContractAddress = chain.nftContractAddress;
+    if (nftContractAddress == null ||
+        nftContractAddress == '0x0000000000000000000000000000000000000000') {
+      throw Exception('NFT contract not deployed on ${chain.chainName}');
+    }
+
+    if (walletSource == WalletSource.external) {
+      await _ensureCorrectChain(chain);
+    }
+
+    final contract = NftContractService.instance;
+    final data = contract.encodeCancelClaimOffer(claim.linkHash!);
+
+    debugPrint('NftService: Cancelling claim offer: ${claim.linkHash}');
+    final txHash = await _sendTransaction(
+      chain: chain,
+      contractAddress: nftContractAddress,
+      encodedData: data,
+      walletSource: walletSource,
+    );
+
+    await contract.pollForReceipt(
+      chainId: chain.chainId,
+      txHash: txHash,
+    );
+
+    // Update local record
+    final claimIndex = mint.claims.indexWhere((c) => c.id == claim.id);
+    if (claimIndex != -1) {
+      mint.claims[claimIndex].status = NftClaimStatus.expired; // reuse expired for cancelled
+      await updateMintRecord(tagId, mint);
+      scheduleSyncToCloud();
+    }
+
+    debugPrint('NftService: Claim offer cancelled');
+  }
+
+  // ============================================================================
+  // REFRESH CLAIM STATUSES FROM CHAIN
+  // ============================================================================
+
+  /// Query on-chain status of all pending claims for a mint record.
+  /// Updates local records with claimed/cancelled status and claimer addresses.
+  Future<void> refreshClaimStatuses({
+    required String tagId,
+    required NftMintRecord mint,
+  }) async {
+    final chain = SupportedChain.byChainId(mint.chainId);
+    if (chain == null) return;
+
+    final nftContractAddress = chain.nftContractAddress;
+    if (nftContractAddress == null) return;
+
+    bool changed = false;
+    for (final claim in mint.claims) {
+      if (claim.linkHash == null) continue;
+      // Only refresh pending claims
+      if (claim.status != NftClaimStatus.pending) continue;
+
+      final offerInfo = await _fetchClaimOffer(
+        chain.chainId,
+        nftContractAddress,
+        claim.linkHash!,
+      );
+      if (offerInfo == null) continue;
+
+      if (offerInfo.status == 1 && claim.status != NftClaimStatus.claimed) {
+        claim.status = NftClaimStatus.claimed;
+        claim.claimerAddress = offerInfo.claimerAddress;
+        changed = true;
+      } else if (offerInfo.status == 2 && claim.status != NftClaimStatus.expired) {
+        claim.status = NftClaimStatus.expired;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await updateMintRecord(tagId, mint);
+      scheduleSyncToCloud();
+    }
+  }
+
+  // ============================================================================
   // BURN FLOW (releases locked FULA)
   // ============================================================================
 

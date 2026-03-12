@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/features/nft/widgets/claim_link_share_sheet.dart';
 import 'package:fula_files/features/nft/widgets/mint_config_dialog.dart';
+import 'package:fula_files/features/nft/widgets/address_qr_scanner_dialog.dart';
 import 'package:fula_files/features/nft/widgets/nft_card.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
@@ -245,11 +246,20 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-              child: Text(
-                'Minted NFTs',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+              child: Row(
+                children: [
+                  Text(
+                    'Minted NFTs',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => _refreshAllClaimStatuses(mints),
+                    child: Icon(LucideIcons.refreshCw, size: 16, color: Colors.grey[500]),
+                  ),
+                ],
               ),
             ),
             ...mints.map((mint) => NftCard(
@@ -260,6 +270,10 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
               onRetry: mint.status == NftMintStatus.error
                   ? () => _retryMint(mint)
                   : null,
+              onBurn: mint.status == NftMintStatus.completed && mint.tokenId != null
+                  ? () => _burnMint(mint)
+                  : null,
+              onCancelClaim: (claim) => _cancelClaim(mint, claim),
             )),
             const SizedBox(height: 80),
           ],
@@ -361,7 +375,6 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   Future<void> _showClaimSheet(NftMintRecord mint) async {
     // Prompt for claimer address + expiry, with "Anyone can claim" toggle
     final claimerController = TextEditingController();
-    try {
     final result = await showDialog<({String? address, Duration expiry})?>(
       context: context,
       builder: (ctx) {
@@ -390,11 +403,21 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: claimerController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Claimer Wallet Address',
                         hintText: '0x...',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(LucideIcons.wallet),
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(LucideIcons.wallet),
+                        suffixIcon: IconButton(
+                          icon: const Icon(LucideIcons.scanLine, size: 20),
+                          tooltip: 'Scan QR code',
+                          onPressed: () async {
+                            final address = await showAddressQrScannerDialog(ctx);
+                            if (address != null) {
+                              claimerController.text = address;
+                            }
+                          },
+                        ),
                       ),
                     ),
                   ],
@@ -447,6 +470,9 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       },
     );
 
+    // Dispose after dialog animation completes
+    Future.delayed(const Duration(milliseconds: 300), () => claimerController.dispose());
+
     if (result == null || !mounted) return;
 
     final offerResult = await ref.read(nftProvider.notifier).createClaimOffer(
@@ -473,8 +499,134 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
         );
       }
     }
-    } finally {
-      claimerController.dispose();
+  }
+
+  // ============================================================================
+  // REFRESH CLAIM STATUSES
+  // ============================================================================
+
+  Future<void> _refreshAllClaimStatuses(List<NftMintRecord> mints) async {
+    for (final mint in mints) {
+      if (mint.claims.any((c) => c.status == NftClaimStatus.pending)) {
+        await ref.read(nftProvider.notifier).refreshClaimStatuses(
+          tagId: widget.tagId,
+          mint: mint,
+        );
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Claim statuses refreshed')),
+      );
+    }
+  }
+
+  // ============================================================================
+  // BURN FLOW
+  // ============================================================================
+
+  Future<void> _burnMint(NftMintRecord mint) async {
+    final chain = SupportedChain.byChainId(mint.chainId);
+    final fulaAmount = mint.fulaPerNft;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Burn NFT'),
+        content: Text(
+          'This will burn 1 NFT (Token #${mint.tokenId}) and release $fulaAmount FULA to the NFT creator.\n\nThis action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Burn'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final walletSource = await _showWalletPicker();
+    if (walletSource == null || !mounted) return;
+
+    final txHash = await ref.read(nftProvider.notifier).burnNft(
+      chainId: mint.chainId,
+      tokenId: mint.tokenId!,
+      amount: 1,
+      walletSource: walletSource,
+    );
+
+    if (!mounted) return;
+    if (txHash != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('NFT burned successfully')),
+      );
+    } else {
+      final nftState = ref.read(nftProvider);
+      if (nftState.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Burn failed: ${nftState.error}')),
+        );
+      }
+    }
+  }
+
+  // ============================================================================
+  // CANCEL CLAIM
+  // ============================================================================
+
+  Future<void> _cancelClaim(NftMintRecord mint, NftClaimRecord claim) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel Claim Offer'),
+        content: const Text(
+          'This will cancel the claim link and return the escrowed NFT to your wallet.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Cancel Offer'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final walletSource = await _showWalletPicker();
+    if (walletSource == null || !mounted) return;
+
+    final success = await ref.read(nftProvider.notifier).cancelClaimOffer(
+      tagId: widget.tagId,
+      mint: mint,
+      claim: claim,
+      walletSource: walletSource,
+    );
+
+    if (!mounted) return;
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Claim offer cancelled')),
+      );
+    } else {
+      final nftState = ref.read(nftProvider);
+      if (nftState.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cancel failed: ${nftState.error}')),
+        );
+      }
     }
   }
 

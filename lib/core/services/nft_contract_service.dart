@@ -38,6 +38,8 @@ class NftContractService {
   static const String _getEventTokensSelector = 'a3de9df1';
   // getEventTokenCount(address,string)
   static const String _getEventTokenCountSelector = '69a76991';
+  // cancelClaimOffer(bytes32)
+  static const String _cancelClaimOfferSelector = '29845de0';
   // approve(address,uint256) — standard ERC20
   static const String _approveSelector = '095ea7b3';
 
@@ -97,6 +99,12 @@ class NftContractService {
   String encodeClaimNft(String linkHash) {
     final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
     return '0x$_claimNftSelector$hashHex';
+  }
+
+  /// Encode cancelClaimOffer(bytes32 linkHash)
+  String encodeCancelClaimOffer(String linkHash) {
+    final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
+    return '0x$_cancelClaimOfferSelector$hashHex';
   }
 
   /// Encode burn(address account, uint256 id, uint256 value)
@@ -380,7 +388,7 @@ class NftContractService {
 
   /// Decode getClaimOffer response: (uint256 tokenId, address sender, address claimer, uint256 expiresAt, uint8 status)
   /// Status: 0=active, 1=claimed, 2=cancelled
-  ({int tokenId, int status, int expiresAt})? decodeClaimOffer(String hexData) {
+  ({int tokenId, int status, int expiresAt, String? claimerAddress})? decodeClaimOffer(String hexData) {
     final data = hexData.replaceFirst('0x', '');
     if (data.length < 320) return null; // 5 * 32 bytes
 
@@ -388,13 +396,16 @@ class NftContractService {
       // Word 0: tokenId
       final tokenId = int.parse(data.substring(0, 64), radix: 16);
       // Word 1: sender address (skip)
-      // Word 2: claimer address (skip)
+      // Word 2: claimer address
+      final claimerRaw = data.substring(128, 192);
+      final claimerAddr = '0x${claimerRaw.substring(24)}';
+      final claimer = claimerAddr == '0x${'0' * 40}' ? null : claimerAddr;
       // Word 3: expiresAt
       final expiresAt = int.parse(data.substring(192, 256), radix: 16);
       // Word 4: status (uint8: 0=active, 1=claimed, 2=cancelled)
       final status = int.parse(data.substring(256, 320), radix: 16);
 
-      return (tokenId: tokenId, status: status, expiresAt: expiresAt);
+      return (tokenId: tokenId, status: status, expiresAt: expiresAt, claimerAddress: claimer);
     } catch (e) {
       debugPrint('NftContractService: decodeClaimOffer error: $e');
       return null;
