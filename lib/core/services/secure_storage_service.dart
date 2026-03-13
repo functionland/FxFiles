@@ -95,6 +95,9 @@ class SecureStorageKeys {
   static const String bloxIpOverride = 'blox_ip_override';
   static const String bloxLastKnownIp = 'blox_last_known_ip';
 
+  // Apple Sign-In derivation email (pinned on first key derivation)
+  static const String derivationEmail = 'derivation_email';
+
   // App backup password keys
   static const String appPasswordSaltPrefix = 'app_password_salt_';
   static const String appPasswordVerifierPrefix = 'app_password_verifier_';

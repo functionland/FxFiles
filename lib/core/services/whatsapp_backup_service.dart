@@ -13,6 +13,7 @@ import 'package:fula_files/core/models/app_models.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 
 /// Progress of an ongoing backup or restore operation.
@@ -812,10 +813,17 @@ class WhatsAppBackupService {
         fileIndex[keyHash] = entry.toJson();
       }
 
+      // Include derivationEmail so a new device can recover the pinned
+      // email before key derivation (prevents Apple email drift).
+      final derivationEmail = await SecureStorageService.instance.read(
+        SecureStorageKeys.derivationEmail,
+      );
+
       final jsonStr = jsonEncode({
         'backups': backups,
         'fileIndex': fileIndex,
         'updatedAt': DateTime.now().toIso8601String(),
+        if (derivationEmail != null) 'derivationEmail': derivationEmail,
       });
       final data = Uint8List.fromList(utf8.encode(jsonStr));
 
@@ -853,6 +861,22 @@ class WhatsAppBackupService {
 
       final jsonStr = utf8.decode(data);
       final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+
+      // Recover pinned derivation email before any further key derivation.
+      // This ensures Apple users get the same KDF input on a new device.
+      final derivationEmail = json['derivationEmail'] as String?;
+      if (derivationEmail != null && derivationEmail.isNotEmpty) {
+        final existing = await SecureStorageService.instance.read(
+          SecureStorageKeys.derivationEmail,
+        );
+        if (existing == null || existing.isEmpty) {
+          await SecureStorageService.instance.write(
+            SecureStorageKeys.derivationEmail,
+            derivationEmail,
+          );
+          debugPrint('WhatsAppBackup: restored derivationEmail from manifest');
+        }
+      }
 
       // Restore backup records — merge, don't overwrite.
       // If a record already exists locally (e.g. from a more recent backup on
