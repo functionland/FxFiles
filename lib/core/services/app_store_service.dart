@@ -55,6 +55,10 @@ class AppStoreService {
   final _onAppChangedController = StreamController<List<ActivatedApp>>.broadcast();
   Stream<List<ActivatedApp>> get onAppChanged => _onAppChangedController.stream;
 
+  // In-memory cache of derived encryption keys (RAM only, cleared on app restart).
+  // Keyed by appId. Populated after the user enters a correct password.
+  final Map<String, Uint8List> _sessionKeys = {};
+
   // Cloud sync state
   static const String _appMetadataBucket = 'app-metadata';
   bool _metaBucketChecked = false;
@@ -215,6 +219,34 @@ class AppStoreService {
     await _backupRecordsBox.put(record.id, record);
   }
 
+  /// Clear ALL backup records and file index entries for an app.
+  /// Does not touch cloud — caller is responsible for deleting cloud files first.
+  Future<void> clearAllBackupData(String appId) async {
+    if (!_isInitialized) return;
+
+    // Remove all backup records for this app
+    final recordKeys = _backupRecordsBox.values
+        .where((r) => r.appId == appId)
+        .map((r) => r.id)
+        .toList();
+    for (final key in recordKeys) {
+      await _backupRecordsBox.delete(key);
+    }
+
+    // Remove all file index entries
+    await _fileIndexBox.clear();
+
+    // Reset last backup time
+    final app = getActivatedApp(appId);
+    if (app != null) {
+      app.lastBackupAt = null;
+      await app.save();
+      _notifyChange();
+    }
+
+    debugPrint('AppStoreService: cleared all backup data for $appId (${recordKeys.length} records, file index wiped)');
+  }
+
   Future<void> deleteBackupRecord(String backupId) async {
     await _backupRecordsBox.delete(backupId);
     // Remove orphaned file entries
@@ -262,6 +294,10 @@ class AppStoreService {
 
   // ============================================================================
   // PASSWORD MANAGEMENT
+  //
+  // The raw password is never persisted. Only salt + verifier are stored in
+  // SecureStorage. The derived encryption key is cached in RAM so the user
+  // only needs to enter the password once per app session.
   // ============================================================================
 
   Future<void> setAppPassword(String appId, String password) async {
@@ -278,6 +314,16 @@ class AppStoreService {
       '${SecureStorageKeys.appPasswordVerifierPrefix}$appId',
       base64Encode(verifier),
     );
+    // Persist the derived key in SecureStorage so background tasks can use it.
+    // SecureStorage is encrypted at rest by the OS secure enclave — the raw
+    // password is never stored, only the derived 256-bit key.
+    await SecureStorageService.instance.write(
+      '${SecureStorageKeys.appDerivedKeyPrefix}$appId',
+      base64Encode(key),
+    );
+
+    // Also cache in RAM for this session
+    _sessionKeys[appId] = key;
 
     final app = getActivatedApp(appId);
     if (app != null) {
@@ -288,6 +334,7 @@ class AppStoreService {
     }
   }
 
+  /// Verify password and cache the derived key in RAM on success.
   Future<bool> verifyAppPassword(String appId, String password) async {
     try {
       final saltStr = await SecureStorageService.instance.read(
@@ -303,27 +350,54 @@ class AppStoreService {
       final verifier = Uint8List.fromList(base64Decode(verifierStr));
 
       final decrypted = await _decrypt(verifier, key);
-      return utf8.decode(decrypted) == 'FxFiles-verified';
+      if (utf8.decode(decrypted) == 'FxFiles-verified') {
+        _sessionKeys[appId] = key;
+        return true;
+      }
+      return false;
     } catch (_) {
       return false;
     }
   }
 
-  Future<Uint8List?> deriveEncryptionKey(String appId, String password) async {
-    final saltStr = await SecureStorageService.instance.read(
-      '${SecureStorageKeys.appPasswordSaltPrefix}$appId',
+  /// Get the encryption key for an app. Checks in order:
+  /// 1. In-memory session cache (fastest, set after user enters password)
+  /// 2. SecureStorage persisted key (used by background tasks)
+  /// Returns null if no password is set for this app.
+  Future<Uint8List?> getEncryptionKey(String appId) async {
+    // 1. RAM cache
+    final cached = _sessionKeys[appId];
+    if (cached != null) return cached;
+
+    // 2. SecureStorage (set when user created the password)
+    final stored = await SecureStorageService.instance.read(
+      '${SecureStorageKeys.appDerivedKeyPrefix}$appId',
     );
-    if (saltStr == null) return null;
-    final salt = Uint8List.fromList(base64Decode(saltStr));
-    return _deriveKeyFromPassword(password, salt);
+    if (stored != null) {
+      final key = Uint8List.fromList(base64Decode(stored));
+      _sessionKeys[appId] = key; // cache for rest of session
+      return key;
+    }
+
+    return null;
   }
 
+  /// Whether a verified encryption key is available (RAM or SecureStorage).
+  bool hasSessionKey(String appId) => _sessionKeys.containsKey(appId);
+
+  /// Clear the cached key (e.g. when the user changes or removes the password).
+  void clearSessionKey(String appId) => _sessionKeys.remove(appId);
+
   Future<void> removeAppPassword(String appId) async {
+    _sessionKeys.remove(appId);
     await SecureStorageService.instance.delete(
       '${SecureStorageKeys.appPasswordSaltPrefix}$appId',
     );
     await SecureStorageService.instance.delete(
       '${SecureStorageKeys.appPasswordVerifierPrefix}$appId',
+    );
+    await SecureStorageService.instance.delete(
+      '${SecureStorageKeys.appDerivedKeyPrefix}$appId',
     );
     final app = getActivatedApp(appId);
     if (app != null) {

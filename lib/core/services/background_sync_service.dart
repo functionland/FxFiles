@@ -160,8 +160,9 @@ Future<void> _executeAppBackup(Map<String, dynamic>? inputData) async {
   await AppStoreService.instance.init();
   await WhatsAppBackupService.instance.init();
   if (!AppStoreService.instance.isAppActivated(appId)) return;
+  // showNotifications: true → Android top-bar notification, iOS badge
   await WhatsAppBackupService.instance
-      .runBackup(appId: appId)
+      .runBackup(appId: appId, showNotifications: true)
       .timeout(const Duration(minutes: 9));
 }
 
@@ -453,6 +454,24 @@ class BackgroundSyncService {
       existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
     );
     debugPrint('Scheduled app backup for $appId every ${frequency.inHours}h');
+  }
+
+  /// Run app backup immediately as a one-off WorkManager task (Android only).
+  /// This survives app close — WorkManager keeps the task alive even if the
+  /// user swipes the app away. On iOS the backup runs inline (foreground only).
+  Future<void> runAppBackupNow({required String appId}) async {
+    if (!Platform.isAndroid) return;
+
+    final uniqueId = 'app-backup-now-${DateTime.now().millisecondsSinceEpoch}';
+    await Workmanager().registerOneOffTask(
+      uniqueId,
+      appBackupTask,
+      inputData: {'appId': appId},
+      constraints: Constraints(
+        networkType: NetworkType.connected,
+      ),
+    );
+    debugPrint('Queued immediate app backup for $appId via WorkManager');
   }
 
   Future<void> cancelAppBackup(String appId) async {

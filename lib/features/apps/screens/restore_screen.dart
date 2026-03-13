@@ -179,29 +179,21 @@ class _RestoreScreenState extends ConsumerState<RestoreScreen> {
   }
 
   Future<void> _startRestore() async {
-    final activated = AppStoreService.instance.getActivatedApp(widget.appId);
-    String? password;
-
-    if (activated?.hasPassword == true) {
-      password = await _promptPassword();
-      if (password == null) {
-        if (mounted) Navigator.pop(context);
-        return;
-      }
+    // Ensure encryption key is available if password is set
+    final unlocked = await _ensureUnlocked();
+    if (!unlocked) {
+      if (mounted) Navigator.pop(context);
+      return;
     }
 
     setState(() => _started = true);
-    ref.read(appProvider.notifier).startRestore(appId: widget.appId, password: password);
+    ref.read(appProvider.notifier).startRestore(appId: widget.appId);
   }
 
   Future<void> _startCategoryRestore() async {
-    final activated = AppStoreService.instance.getActivatedApp(widget.appId);
-    String? password;
-
-    if (activated?.hasPassword == true) {
-      password = await _promptPassword();
-      if (password == null) return;
-    }
+    // Ensure encryption key is available if password is set
+    final unlocked = await _ensureUnlocked();
+    if (!unlocked) return;
 
     setState(() => _started = true);
 
@@ -210,10 +202,34 @@ class _RestoreScreenState extends ConsumerState<RestoreScreen> {
       if (!mounted) break;
       await ref.read(appProvider.notifier).startRestore(
         appId: widget.appId,
-        password: password,
         category: cat,
       );
     }
+  }
+
+  /// If password is set but session key is not cached, prompt once.
+  /// Returns true if no password needed or key was successfully verified.
+  Future<bool> _ensureUnlocked() async {
+    final activated = AppStoreService.instance.getActivatedApp(widget.appId);
+    if (activated?.hasPassword != true) return true;
+
+    // Already have the key cached
+    if (AppStoreService.instance.hasSessionKey(widget.appId)) return true;
+
+    final password = await _promptPassword();
+    if (password == null) return false;
+
+    final valid = await AppStoreService.instance.verifyAppPassword(widget.appId, password);
+    if (!valid) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Incorrect password')),
+        );
+      }
+      return false;
+    }
+    // verifyAppPassword caches the derived key in _sessionKeys + SecureStorage
+    return true;
   }
 
   Future<String?> _promptPassword() async {

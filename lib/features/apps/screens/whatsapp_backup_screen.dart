@@ -166,6 +166,32 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
               onDelete: () => _confirmDelete(context, ref, record),
             )),
           ],
+
+          // Delete All Backups — danger zone
+          if (history.isNotEmpty || stats.totalFiles > 0) ...[
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 8),
+            Text('Danger Zone', style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.red)),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: appState.isBusy ? null : () => _confirmDeleteAll(context, ref),
+                icon: const Icon(LucideIcons.trash2, color: Colors.red),
+                label: const Text('Delete All Backups'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  side: const BorderSide(color: Colors.red),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Permanently removes all backed-up files from the cloud and resets all backup data.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            ),
+          ],
         ],
       ),
     );
@@ -173,11 +199,23 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
 
   Future<void> _startBackup(BuildContext context, WidgetRef ref) async {
     final activated = AppStoreService.instance.getActivatedApp(widget.appId);
-    String? password;
 
-    if (activated?.hasPassword == true) {
-      password = await _promptPassword(context, 'Enter password to encrypt backup');
+    // If password is set but we don't have the key cached in this session,
+    // prompt once. After that, the session key is reused automatically.
+    if (activated?.hasPassword == true &&
+        !AppStoreService.instance.hasSessionKey(widget.appId)) {
+      final password = await _promptPassword(context, 'Enter backup password');
       if (password == null) return;
+      final valid = await AppStoreService.instance.verifyAppPassword(widget.appId, password);
+      if (!valid) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Incorrect password')),
+          );
+        }
+        return;
+      }
+      // verifyAppPassword caches the derived key in _sessionKeys
     }
 
     Directory? overrideDir;
@@ -187,7 +225,6 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
 
     ref.read(appProvider.notifier).startBackup(
       widget.appId,
-      password: password,
       overrideDir: overrideDir,
     );
   }
@@ -251,6 +288,51 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _confirmDeleteAll(BuildContext context, WidgetRef ref) async {
+    final activated = AppStoreService.instance.getActivatedApp(widget.appId);
+
+    // Step 1: Password verification (required if password is set)
+    if (activated?.hasPassword == true) {
+      final password = await _promptPassword(context, 'Enter password to confirm');
+      if (password == null) return;
+      final valid = await AppStoreService.instance.verifyAppPassword(widget.appId, password);
+      if (!valid) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Incorrect password')),
+          );
+        }
+        return;
+      }
+    }
+
+    // Step 2: Final confirmation dialog
+    if (!context.mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete All Backups?'),
+        content: const Text(
+          'This will permanently delete ALL backed-up files from the cloud, '
+          'remove all backup history, and reset the file index. '
+          'Your original WhatsApp files on this device will NOT be affected.\n\n'
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete Everything'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    ref.read(appProvider.notifier).deleteAllBackups(widget.appId);
   }
 
   void _confirmDelete(BuildContext context, WidgetRef ref, BackupRecord record) {

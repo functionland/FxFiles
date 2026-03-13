@@ -109,7 +109,7 @@ class AppNotifier extends Notifier<AppState> {
     try {
       await AppStoreService.instance.deactivateApp(appId);
       await BackgroundSyncService.instance.cancelAppBackup(appId);
-      ref.invalidateSelf();
+      state = state.copyWith();
     } catch (e) {
       state = state.copyWith(error: e.toString());
     }
@@ -118,13 +118,22 @@ class AppNotifier extends Notifier<AppState> {
   Future<void> setPassword(String appId, String password) async {
     try {
       await AppStoreService.instance.setAppPassword(appId, password);
-      ref.invalidateSelf();
+      state = state.copyWith();
     } catch (e) {
       state = state.copyWith(error: 'Failed to set password: ${e.toString()}');
     }
   }
 
-  Future<BackupRecord?> startBackup(String appId, {String? password, Directory? overrideDir}) async {
+  Future<BackupRecord?> startBackup(String appId, {Directory? overrideDir}) async {
+    // On Android, also queue a one-off WorkManager task as a safety net.
+    // If the user closes the app mid-backup, WorkManager picks up where we
+    // left off — only un-indexed files (not yet uploaded) remain to process.
+    // If the inline backup finishes first, the WorkManager task will scan,
+    // find 0 new files, and exit immediately.
+    if (Platform.isAndroid) {
+      BackgroundSyncService.instance.runAppBackupNow(appId: appId);
+    }
+
     state = state.copyWith(
       isBackingUp: true,
       error: null,
@@ -135,19 +144,20 @@ class AppNotifier extends Notifier<AppState> {
     try {
       final record = await WhatsAppBackupService.instance.runBackup(
         appId: appId,
-        password: password,
         overrideDir: overrideDir,
         onProgress: (p) {
+          final isScanning = p.currentFile == 'Scanning files...';
           state = state.copyWith(
             progress: p,
-            statusMessage: p.currentFile != null
-                ? 'Uploading ${p.completedFiles}/${p.totalFiles}: ${p.currentFile}'
-                : 'Uploading ${p.completedFiles}/${p.totalFiles}...',
+            statusMessage: isScanning
+                ? 'Scanning ${p.completedFiles}/${p.totalFiles} files...'
+                : p.currentFile != null
+                    ? 'Uploading ${p.completedFiles}/${p.totalFiles}: ${p.currentFile}'
+                    : 'Uploading ${p.completedFiles}/${p.totalFiles}...',
           );
         },
       );
       state = state.copyWith(isBackingUp: false, statusMessage: null, progress: null);
-      ref.invalidateSelf();
       return record;
     } catch (e) {
       state = state.copyWith(
@@ -167,7 +177,6 @@ class AppNotifier extends Notifier<AppState> {
 
   Future<void> startRestore({
     required String appId,
-    String? password,
     BackupCategory? category,
     List<String>? specificPaths,
     Directory? restoreDir,
@@ -182,7 +191,6 @@ class AppNotifier extends Notifier<AppState> {
     try {
       await WhatsAppBackupService.instance.restoreFiles(
         appId: appId,
-        password: password,
         category: category,
         specificPaths: specificPaths,
         restoreDir: restoreDir,
@@ -214,9 +222,43 @@ class AppNotifier extends Notifier<AppState> {
   Future<void> deleteBackup(String appId, String backupId) async {
     try {
       await WhatsAppBackupService.instance.deleteBackup(appId, backupId);
-      ref.invalidateSelf();
+      // Force a new state object so Riverpod notifies watchers.
+      // ref.invalidateSelf() won't work here because build() returns
+      // the same const AppState() instance — Riverpod sees no change.
+      state = state.copyWith();
     } catch (e) {
       state = state.copyWith(error: 'Failed to delete backup: ${e.toString()}');
+    }
+  }
+
+  Future<void> deleteAllBackups(String appId) async {
+    state = state.copyWith(
+      isBackingUp: true,
+      error: null,
+      statusMessage: 'Deleting all backups...',
+      progress: const BackupProgress(),
+    );
+
+    try {
+      await WhatsAppBackupService.instance.deleteAllBackups(appId,
+        onProgress: (deleted, total) {
+          state = state.copyWith(
+            progress: BackupProgress(
+              completedFiles: deleted,
+              totalFiles: total,
+            ),
+            statusMessage: 'Deleting cloud files $deleted/$total...',
+          );
+        },
+      );
+      state = state.copyWith(isBackingUp: false, statusMessage: null, progress: null);
+    } catch (e) {
+      state = state.copyWith(
+        isBackingUp: false,
+        error: 'Failed to delete backups: ${e.toString()}',
+        statusMessage: null,
+        progress: null,
+      );
     }
   }
 }

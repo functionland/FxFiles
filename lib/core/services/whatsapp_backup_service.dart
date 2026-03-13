@@ -12,6 +12,7 @@ import 'package:fula_files/core/models/app_models.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/sync_notification_service.dart';
 
 /// Progress of an ongoing backup or restore operation.
 class BackupProgress {
@@ -99,18 +100,48 @@ class WhatsAppBackupService {
   /// Find the WhatsApp data directory for a given app definition.
   /// Returns null on iOS (caller must provide iosFolderPath) or if not found.
   Directory? findDataDirectory(AppDefinition app) {
-    if (Platform.isIOS) return null;
+    if (Platform.isIOS) {
+      debugPrint('WhatsAppBackup: iOS — caller must provide folder');
+      return null;
+    }
 
     if (app.dataPathAndroid != null) {
       final dir = Directory(app.dataPathAndroid!);
-      if (dir.existsSync()) return dir;
+      debugPrint('WhatsAppBackup: checking primary path: ${app.dataPathAndroid}');
+      if (dir.existsSync()) {
+        debugPrint('WhatsAppBackup: found primary path');
+        // Verify we can actually list contents (permission check)
+        try {
+          final count = dir.listSync().length;
+          debugPrint('WhatsAppBackup: primary path has $count top-level entries');
+          if (count > 0) return dir;
+          debugPrint('WhatsAppBackup: primary path exists but is empty, trying legacy');
+        } catch (e) {
+          debugPrint('WhatsAppBackup: cannot list primary path (permission?): $e');
+        }
+      } else {
+        debugPrint('WhatsAppBackup: primary path does not exist');
+      }
     }
 
     if (app.dataPathAndroidLegacy != null) {
       final dir = Directory(app.dataPathAndroidLegacy!);
-      if (dir.existsSync()) return dir;
+      debugPrint('WhatsAppBackup: checking legacy path: ${app.dataPathAndroidLegacy}');
+      if (dir.existsSync()) {
+        debugPrint('WhatsAppBackup: found legacy path');
+        try {
+          final count = dir.listSync().length;
+          debugPrint('WhatsAppBackup: legacy path has $count top-level entries');
+          if (count > 0) return dir;
+        } catch (e) {
+          debugPrint('WhatsAppBackup: cannot list legacy path (permission?): $e');
+        }
+      } else {
+        debugPrint('WhatsAppBackup: legacy path does not exist');
+      }
     }
 
+    debugPrint('WhatsAppBackup: no readable data directory found');
     return null;
   }
 
@@ -157,25 +188,50 @@ class WhatsAppBackupService {
   }
 
   /// Scan a directory for new/changed files compared to the file index.
-  Future<ScanResult> scanForChanges(Directory dir) async {
+  /// [onScanProgress] reports (scannedSoFar, totalFileCount) during the scan.
+  Future<ScanResult> scanForChanges(
+    Directory dir, {
+    void Function(int scanned, int total)? onScanProgress,
+  }) async {
     final newFiles = <_FileInfo>[];
     final changedFiles = <_FileInfo>[];
     var unchangedCount = 0;
     var totalSize = 0;
 
     final basePath = dir.path;
-    final entities = dir.listSync(recursive: true, followLinks: false);
+    debugPrint('WhatsAppBackup: scanning $basePath');
 
-    for (final entity in entities) {
-      if (entity is! File) continue;
+    List<FileSystemEntity> entities;
+    try {
+      entities = dir.listSync(recursive: true, followLinks: false);
+    } catch (e) {
+      debugPrint('WhatsAppBackup: listSync FAILED for $basePath: $e');
+      return ScanResult(newFiles: [], changedFiles: [], unchangedCount: 0, totalSize: 0);
+    }
+
+    final allCount = entities.length;
+    final files = entities.whereType<File>().toList();
+    final fileCount = files.length;
+    final dirCount = entities.whereType<Directory>().length;
+    debugPrint('WhatsAppBackup: found $allCount entities ($fileCount files, $dirCount dirs)');
+
+    if (fileCount == 0) {
+      // Log first few entries to help diagnose
+      for (var i = 0; i < entities.length && i < 10; i++) {
+        debugPrint('WhatsAppBackup:   [$i] ${entities[i].runtimeType}: ${entities[i].path}');
+      }
+    }
+
+    var scanned = 0;
+    for (final file in files) {
       if (_cancelled) break;
 
       try {
-        final stat = entity.statSync();
+        final stat = file.statSync();
         final size = stat.size;
         final modified = stat.modified;
-        final relativePath = entity.path.substring(basePath.length + 1);
-        final hash = await _computeQuickHash(entity, size);
+        final relativePath = file.path.substring(basePath.length + 1);
+        final hash = await _computeQuickHash(file, size);
         final category = categorizeFile(relativePath);
 
         totalSize += size;
@@ -184,7 +240,7 @@ class WhatsAppBackupService {
         if (existing == null) {
           newFiles.add(_FileInfo(
             relativePath: relativePath,
-            file: entity,
+            file: file,
             size: size,
             modified: modified,
             hash: hash,
@@ -193,7 +249,7 @@ class WhatsAppBackupService {
         } else if (existing.contentHash != hash || existing.sizeBytes != size) {
           changedFiles.add(_FileInfo(
             relativePath: relativePath,
-            file: entity,
+            file: file,
             size: size,
             modified: modified,
             hash: hash,
@@ -203,10 +259,17 @@ class WhatsAppBackupService {
           unchangedCount++;
         }
       } catch (e) {
-        debugPrint('WhatsAppBackup: scan error for ${entity.path}: $e');
+        debugPrint('WhatsAppBackup: scan error for ${file.path}: $e');
+      }
+
+      scanned++;
+      // Report progress every 100 files to avoid excessive UI updates
+      if (onScanProgress != null && (scanned % 100 == 0 || scanned == fileCount)) {
+        onScanProgress(scanned, fileCount);
       }
     }
 
+    debugPrint('WhatsAppBackup: scan result — ${newFiles.length} new, ${changedFiles.length} changed, $unchangedCount unchanged, ${totalSize} bytes total');
     return ScanResult(
       newFiles: newFiles,
       changedFiles: changedFiles,
@@ -220,15 +283,25 @@ class WhatsAppBackupService {
   // ============================================================================
 
   /// Run a backup for the given appId.
-  /// [password] if set, adds AES-256-GCM encryption on top of fula_client's.
   /// [overrideDir] used on iOS where user selects folder manually.
+  /// [showNotifications] true when running from background — shows Android
+  ///   top-bar progress notification and iOS badge. The foreground UI uses
+  ///   [onProgress] stream instead.
+  ///
+  /// Password encryption is handled automatically: if the user has set a
+  /// password, the derived key is loaded from SecureStorage (works in both
+  /// foreground and background). No password parameter needed.
+  ///
+  /// Notifications are always shown on mobile (Android top-bar, iOS badge)
+  /// so the user can track progress even if they leave the app.
   Future<BackupRecord?> runBackup({
     String appId = 'whatsapp',
-    String? password,
     Directory? overrideDir,
     void Function(BackupProgress)? onProgress,
+    bool showNotifications = true,
   }) async {
     _cancelled = false;
+    final notifier = SyncNotificationService.instance;
 
     // Check network
     final connectivity = await Connectivity().checkConnectivity();
@@ -241,7 +314,9 @@ class WhatsAppBackupService {
     if (appDef == null) throw Exception('Unknown app: $appId');
 
     final dir = overrideDir ?? findDataDirectory(appDef);
+    debugPrint('WhatsAppBackup: runBackup appId=$appId dir=${dir?.path} overrideDir=${overrideDir?.path}');
     if (dir == null || !dir.existsSync()) {
+      debugPrint('WhatsAppBackup: data directory not found or does not exist');
       throw Exception('WhatsApp data directory not found');
     }
 
@@ -250,29 +325,54 @@ class WhatsAppBackupService {
       throw Exception('Could not create backup storage');
     }
 
-    // Derive encryption key if password set
+    // Load password encryption key if the user has set one.
+    // getEncryptionKey checks RAM cache first, then SecureStorage.
+    // This works in both foreground and background isolates.
+    final activated = AppStoreService.instance.getActivatedApp(appId);
     Uint8List? encKey;
-    if (password != null) {
-      encKey = await AppStoreService.instance.deriveEncryptionKey(appId, password);
-      if (encKey == null) throw Exception('Invalid password');
+    if (activated?.hasPassword == true) {
+      encKey = await AppStoreService.instance.getEncryptionKey(appId);
+      debugPrint('WhatsAppBackup: password encryption ${encKey != null ? "active" : "key not found (will skip)"}');
     }
 
-    // Scan for changes
-    final record = await AppStoreService.instance.createBackupRecord(appId);
-    record.status = BackupStatus.scanning;
-    await AppStoreService.instance.updateBackupRecord(record);
+    // Log file index state to help diagnose "0 new files" issues
+    final existingEntries = AppStoreService.instance.getAllFileEntries();
+    debugPrint('WhatsAppBackup: file index has ${existingEntries.length} existing entries before scan');
 
+    // Scan for changes (no record created yet — avoids showing 0/0 in history)
+    if (showNotifications) {
+      await notifier.showSyncNotification(
+        title: 'WhatsApp Backup',
+        body: 'Scanning for changes...',
+      );
+    }
     _reportProgress(onProgress, const BackupProgress());
 
-    final scan = await scanForChanges(dir);
+    final scan = await scanForChanges(dir, onScanProgress: (scanned, total) {
+      _reportProgress(onProgress, BackupProgress(
+        completedFiles: scanned,
+        totalFiles: total,
+        currentFile: 'Scanning files...',
+      ));
+      if (showNotifications) {
+        notifier.updateSyncProgress(
+          current: scanned,
+          total: total,
+          currentFile: 'Scanning...',
+        );
+      }
+    });
     if (_cancelled) {
-      record.status = BackupStatus.cancelled;
-      await AppStoreService.instance.updateBackupRecord(record);
-      return record;
+      if (showNotifications) await notifier.hideSyncNotification();
+      return null;
     }
 
+    // Now create the record with real values
+    final record = await AppStoreService.instance.createBackupRecord(appId);
     final filesToUpload = [...scan.newFiles, ...scan.changedFiles];
+    debugPrint('WhatsAppBackup: ${filesToUpload.length} files to upload, ${scan.unchangedCount} unchanged');
     if (filesToUpload.isEmpty) {
+      debugPrint('WhatsAppBackup: nothing to upload — completing immediately');
       record.status = BackupStatus.completed;
       record.completedAt = DateTime.now();
       record.newFileCount = 0;
@@ -280,6 +380,9 @@ class WhatsAppBackupService {
       record.totalSizeBytes = scan.totalSize;
       await AppStoreService.instance.updateBackupRecord(record);
       await AppStoreService.instance.updateLastBackupAt(appId, DateTime.now());
+      if (showNotifications) {
+        await notifier.showSyncCompleteNotification(fileCount: 0);
+      }
       return record;
     }
 
@@ -314,13 +417,21 @@ class WhatsAppBackupService {
           completedBytes += fileInfo.size;
           final catName = fileInfo.category.name;
           categoryCounts[catName] = (categoryCounts[catName] ?? 0) + 1;
-          _reportProgress(onProgress, BackupProgress(
+          final progress = BackupProgress(
             completedFiles: completedFiles,
             totalFiles: filesToUpload.length,
             completedBytes: completedBytes,
             totalBytes: scan.totalSize,
             currentFile: fileInfo.relativePath,
-          ));
+          );
+          _reportProgress(onProgress, progress);
+          if (showNotifications) {
+            await notifier.updateSyncProgress(
+              current: completedFiles,
+              total: filesToUpload.length,
+              currentFile: fileInfo.relativePath,
+            );
+          }
         } catch (e) {
           debugPrint('WhatsAppBackup: upload error for ${fileInfo.relativePath}: $e');
         }
@@ -336,21 +447,33 @@ class WhatsAppBackupService {
         completedBytes += fileInfo.size;
         final catName = fileInfo.category.name;
         categoryCounts[catName] = (categoryCounts[catName] ?? 0) + 1;
-        _reportProgress(onProgress, BackupProgress(
+        final progress = BackupProgress(
           completedFiles: completedFiles,
           totalFiles: filesToUpload.length,
           completedBytes: completedBytes,
           totalBytes: scan.totalSize,
           currentFile: fileInfo.relativePath,
-        ));
+        );
+        _reportProgress(onProgress, progress);
+        if (showNotifications) {
+          await notifier.updateSyncProgress(
+            current: completedFiles,
+            total: filesToUpload.length,
+            currentFile: fileInfo.relativePath,
+          );
+        }
       } catch (e) {
         debugPrint('WhatsAppBackup: upload error for ${fileInfo.relativePath}: $e');
       }
     }
 
     // Finalize
+    final hasErrors = completedFiles < filesToUpload.length;
     if (_cancelled) {
       record.status = BackupStatus.cancelled;
+    } else if (hasErrors && completedFiles == 0) {
+      record.status = BackupStatus.error;
+      record.errorMessage = 'All uploads failed';
     } else {
       record.status = BackupStatus.completed;
       record.completedAt = DateTime.now();
@@ -358,6 +481,13 @@ class WhatsAppBackupService {
     record.categoryCounts = categoryCounts;
     await AppStoreService.instance.updateBackupRecord(record);
     await AppStoreService.instance.updateLastBackupAt(appId, DateTime.now());
+
+    if (showNotifications) {
+      await notifier.showSyncCompleteNotification(
+        fileCount: completedFiles,
+        hasErrors: hasErrors,
+      );
+    }
 
     _scheduleManifestSync(appId);
     return record;
@@ -417,24 +547,27 @@ class WhatsAppBackupService {
   /// Restore files from backup.
   /// [category] filters to a specific category; null = all.
   /// [specificPaths] overrides category filter with exact paths.
+  ///
+  /// Password encryption is handled automatically: if the user has set a
+  /// password, the derived key is loaded from SecureStorage (same as backup).
+  /// The caller must ensure the session key is available (prompt once if needed).
   Future<void> restoreFiles({
     String appId = 'whatsapp',
     BackupCategory? category,
     List<String>? specificPaths,
-    String? password,
     Directory? restoreDir,
     void Function(BackupProgress)? onProgress,
   }) async {
     _cancelled = false;
 
-    // Verify password if needed
+    // Load password encryption key if the user has set one.
     Uint8List? encKey;
     final app = AppStoreService.instance.getActivatedApp(appId);
     if (app != null && app.hasPassword) {
-      if (password == null) throw Exception('Password required');
-      final valid = await AppStoreService.instance.verifyAppPassword(appId, password);
-      if (!valid) throw Exception('Incorrect password');
-      encKey = await AppStoreService.instance.deriveEncryptionKey(appId, password);
+      encKey = await AppStoreService.instance.getEncryptionKey(appId);
+      if (encKey == null) {
+        throw Exception('Encryption key not available. Please enter your password first.');
+      }
     }
 
     final encryptionKey = await AuthService.instance.getEncryptionKey();
@@ -540,6 +673,48 @@ class WhatsAppBackupService {
 
     await AppStoreService.instance.deleteBackupRecord(backupId);
     _scheduleManifestSync(appId);
+  }
+
+  /// Delete ALL backups for an app: remove every file from S3, clear local
+  /// Hive indexes, and delete the cloud manifest. Resets to a clean state
+  /// as if no backup ever happened.
+  Future<void> deleteAllBackups(String appId, {
+    void Function(int deleted, int total)? onProgress,
+  }) async {
+    // 1. Collect all unique remote keys from the file index
+    final allEntries = AppStoreService.instance.getAllFileEntries();
+    final remoteKeys = allEntries.map((e) => e.remoteKey).toSet().toList();
+    debugPrint('WhatsAppBackup: deleteAllBackups — ${remoteKeys.length} cloud files to delete');
+
+    // 2. Delete each file from S3
+    var deleted = 0;
+    for (final key in remoteKeys) {
+      try {
+        await FulaApiService.instance.deleteObject(_backupBucket, key);
+      } catch (e) {
+        debugPrint('WhatsAppBackup: deleteAll error for $key: $e');
+      }
+      deleted++;
+      onProgress?.call(deleted, remoteKeys.length);
+    }
+
+    // 3. Delete the cloud manifest
+    try {
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      final userId = await _getUserId();
+      if (encryptionKey != null && userId != null) {
+        final manifestKey = '.fula/apps/$appId/manifests/$userId.json';
+        await FulaApiService.instance.deleteObject(_backupBucket, manifestKey);
+        debugPrint('WhatsAppBackup: deleted cloud manifest for $appId');
+      }
+    } catch (e) {
+      debugPrint('WhatsAppBackup: deleteAll manifest error: $e');
+    }
+
+    // 4. Clear all local Hive data (records + file index)
+    await AppStoreService.instance.clearAllBackupData(appId);
+
+    debugPrint('WhatsAppBackup: deleteAllBackups complete — $deleted cloud files removed');
   }
 
   // ============================================================================
