@@ -45,6 +45,8 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>FxFiles needs access to your camera to scan QR codes for sharing items and vault addresses.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>FxFiles needs access to your photos and videos to browse, manage, and backup your media to the cloud.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
