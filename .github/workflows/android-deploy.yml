@@ -77,7 +77,7 @@ jobs:
 
     - name: Get Package Version
       run: |
-        VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+        VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
         echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
         echo "App version: $VERSION"
 
