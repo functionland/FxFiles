@@ -94,4 +94,8 @@ class SecureStorageKeys {
   static const String bloxName = 'blox_name';
   static const String bloxIpOverride = 'blox_ip_override';
   static const String bloxLastKnownIp = 'blox_last_known_ip';
+
+  // App backup password keys
+  static const String appPasswordSaltPrefix = 'app_password_salt_';
+  static const String appPasswordVerifierPrefix = 'app_password_verifier_';
 }

@@ -19,6 +19,9 @@ import 'package:fula_files/features/websites/screens/website_detail_screen.dart'
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
+import 'package:fula_files/features/apps/screens/apps_browser_screen.dart';
+import 'package:fula_files/features/apps/screens/whatsapp_backup_screen.dart';
+import 'package:fula_files/features/apps/screens/restore_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
@@ -162,6 +165,26 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           final tag = state.extra as FileTag?;
           return NftDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/apps',
+        builder: (context, state) => const AppsBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/apps/:id',
+        builder: (context, state) {
+          final appId = state.pathParameters['id']!;
+          return WhatsAppBackupScreen(appId: appId);
+        },
+      ),
+      GoRoute(
+        path: '/apps/:id/restore',
+        builder: (context, state) {
+          final appId = state.pathParameters['id']!;
+          final extra = state.extra as Map<String, dynamic>?;
+          final showCategoryPicker = extra?['showCategoryPicker'] as bool? ?? false;
+          return RestoreScreen(appId: appId, showCategoryPicker: showCategoryPicker);
         },
       ),
       GoRoute(
