@@ -11,12 +11,14 @@ import 'package:mime/mime.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/billing/supported_chain.dart';
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 
 /// Whether to use the internal (derived) wallet or an external (AppKit) wallet.
@@ -42,6 +44,7 @@ class NftService {
   }
 
   late Box<NftCollection> _collectionsBox;
+  late Box<ReceivedNft> _receivedBox;
   bool _isInitialized = false;
 
   final _statusController = StreamController<NftMintRecord>.broadcast();
@@ -79,8 +82,15 @@ class NftService {
       if (!Hive.isAdapterRegistered(34)) {
         Hive.registerAdapter(NftClaimStatusAdapter());
       }
+      if (!Hive.isAdapterRegistered(35)) {
+        Hive.registerAdapter(ReceivedNftAdapter());
+      }
+      if (!Hive.isAdapterRegistered(36)) {
+        Hive.registerAdapter(ReceivedNftStatusAdapter());
+      }
 
       _collectionsBox = await Hive.openBox<NftCollection>('nft_collections');
+      _receivedBox = await Hive.openBox<ReceivedNft>('received_nfts');
       _isInitialized = true;
       debugPrint('NftService initialized with ${_collectionsBox.length} collections');
     } catch (e) {
@@ -113,6 +123,7 @@ class NftService {
   Future<NftCollection> ensureCollection({
     required String tagId,
     required String name,
+    String? creatorWalletAddress,
   }) async {
     if (!_isInitialized) await init();
 
@@ -125,6 +136,7 @@ class NftService {
       name: name,
       createdAt: DateTime.now(),
       mints: [],
+      creatorWalletAddress: creatorWalletAddress,
     );
 
     await _collectionsBox.put(collection.id, collection);
@@ -140,6 +152,56 @@ class NftService {
         .toList();
     for (final id in toRemove) {
       await _collectionsBox.delete(id);
+    }
+  }
+
+  /// Clear all local NFT data (collections + received). Called on sign-out.
+  Future<void> clearAll() async {
+    if (!_isInitialized) await init();
+    await _collectionsBox.clear();
+    await _receivedBox.clear();
+    debugPrint('NftService: Cleared all local NFT data');
+  }
+
+  // ============================================================================
+  // RECEIVED NFTS (claimed from others)
+  // ============================================================================
+
+  /// Get all received NFTs (held only, not burned/transferred)
+  List<ReceivedNft> getReceivedNfts() {
+    if (!_isInitialized) return [];
+    return _receivedBox.values
+        .where((r) => r.status == ReceivedNftStatus.held)
+        .toList()
+      ..sort((a, b) => b.claimedAt.compareTo(a.claimedAt));
+  }
+
+  /// Save a received NFT after claiming
+  Future<void> saveReceivedNft(ReceivedNft nft) async {
+    if (!_isInitialized) await init();
+    await _receivedBox.put(nft.id, nft);
+    debugPrint('NftService: Saved received NFT: tokenId=${nft.tokenId}, chain=${nft.chainId}');
+  }
+
+  /// Mark a received NFT as burned
+  Future<void> markReceivedBurned(String id, String txHash) async {
+    if (!_isInitialized) await init();
+    final nft = _receivedBox.get(id);
+    if (nft != null) {
+      nft.status = ReceivedNftStatus.burned;
+      nft.burnTxHash = txHash;
+      await _receivedBox.put(id, nft);
+    }
+  }
+
+  /// Mark a received NFT as transferred
+  Future<void> markReceivedTransferred(String id, String txHash) async {
+    if (!_isInitialized) await init();
+    final nft = _receivedBox.get(id);
+    if (nft != null) {
+      nft.status = ReceivedNftStatus.transferred;
+      nft.transferTxHash = txHash;
+      await _receivedBox.put(id, nft);
     }
   }
 
@@ -1153,6 +1215,142 @@ class NftService {
   }
 
   // ============================================================================
+  // ON-CHAIN RECONSTRUCTION
+  // ============================================================================
+
+  /// Reconstruct NFT collections from on-chain data.
+  /// Queries the smart contract for all events created by this wallet,
+  /// fetches token metadata, and rebuilds local collections.
+  /// Returns the number of collections reconstructed.
+  Future<int> reconstructFromChain() async {
+    if (!_isInitialized) await init();
+
+    final walletAddress = await NftWalletService.instance.getAddress();
+    if (walletAddress == null) {
+      debugPrint('NftService: reconstructFromChain — no wallet address');
+      return 0;
+    }
+
+    final contract = NftContractService.instance;
+    int reconstructed = 0;
+
+    for (final chain in SupportedChain.values) {
+      final nftContractAddress = chain.nftContractAddress;
+      if (nftContractAddress == null ||
+          nftContractAddress == '0x0000000000000000000000000000000000000000') {
+        continue;
+      }
+
+      try {
+        // 1. Get creator events (collection/event names)
+        final eventsData = contract.encodeGetCreatorEvents(walletAddress);
+        final eventsResult = await contract.ethCall(
+          chainId: chain.chainId,
+          contractAddress: nftContractAddress,
+          data: eventsData,
+        );
+        final eventNames = contract.decodeCreatorEvents(eventsResult);
+        if (eventNames == null || eventNames.isEmpty) continue;
+
+        debugPrint('NftService: Found ${eventNames.length} events on ${chain.chainName}');
+
+        for (final eventName in eventNames) {
+          // 2. Get token count for this event
+          final countData = contract.encodeGetEventTokenCount(walletAddress, eventName);
+          final countResult = await contract.ethCall(
+            chainId: chain.chainId,
+            contractAddress: nftContractAddress,
+            data: countData,
+          );
+          final tokenCount = contract.decodeUint256(countResult);
+          if (tokenCount == null || tokenCount == 0) continue;
+
+          // 3. Get token IDs
+          final tokensData = contract.encodeGetEventTokens(walletAddress, eventName, 0, tokenCount);
+          final tokensResult = await contract.ethCall(
+            chainId: chain.chainId,
+            contractAddress: nftContractAddress,
+            data: tokensData,
+          );
+          final tokenIds = contract.decodeEventTokens(tokensResult);
+          if (tokenIds == null || tokenIds.isEmpty) continue;
+
+          // 4. Ensure tag exists
+          final tagName = 'nft-$eventName';
+          FileTag? tag;
+          try {
+            final allTags = await TagStorageService.instance.getAllTags();
+            tag = allTags.firstWhere((t) => t.name == tagName);
+          } catch (_) {
+            // Tag doesn't exist, create it
+            tag = await TagStorageService.instance.createTag(
+              name: tagName,
+              colorValue: TagColors.getRandomColor(),
+            );
+          }
+
+          // 5. Ensure collection exists
+          final collection = await ensureCollection(
+            tagId: tag.id,
+            name: eventName,
+            creatorWalletAddress: walletAddress,
+          );
+
+          // 6. Fetch token info and build mint records
+          final existingMintTokenIds = collection.mints
+              .where((m) => m.tokenId != null)
+              .map((m) => m.tokenId!)
+              .toSet();
+
+          bool collectionChanged = false;
+          for (final tokenId in tokenIds) {
+            if (existingMintTokenIds.contains(tokenId)) continue;
+
+            final tokenInfo = await fetchTokenInfo(
+              chainId: chain.chainId,
+              tokenId: tokenId,
+            );
+            if (tokenInfo == null) continue;
+
+            final gatewayUrl = await _buildGatewayUrl(tokenInfo.metadataCid);
+            final mint = NftMintRecord(
+              id: _uuid.v4(),
+              tokenId: tokenId,
+              ipfsCid: tokenInfo.metadataCid,
+              gatewayUrl: gatewayUrl,
+              count: tokenInfo.initialMintCount,
+              fulaPerNft: tokenInfo.fulaPerNft.toString(),
+              chainId: chain.chainId,
+              creatorAddress: walletAddress,
+              mintedAt: DateTime.now(),
+              status: NftMintStatus.completed,
+              metadataCid: tokenInfo.metadataCid,
+              eventName: eventName,
+            );
+
+            collection.mints = [...collection.mints, mint];
+            collectionChanged = true;
+          }
+
+          if (collectionChanged) {
+            await _collectionsBox.put(collection.id, collection);
+            reconstructed++;
+          }
+        }
+      } catch (e) {
+        debugPrint('NftService: reconstructFromChain error on ${chain.chainName}: $e');
+      }
+    }
+
+    if (reconstructed > 0) {
+      scheduleSyncToCloud();
+      debugPrint('NftService: Reconstructed $reconstructed collections from chain');
+    }
+
+    return reconstructed;
+  }
+
+  // ============================================================================
   // CLOUD SYNC
   // ============================================================================
 
@@ -1266,6 +1464,15 @@ class NftService {
         debugPrint('NFT restore: no cloud data found (new user or never synced)');
       } else {
         debugPrint('NftService: restoreFromCloud error: $e');
+      }
+    }
+
+    // Fallback: if no local collections after cloud restore, try on-chain reconstruction
+    if (_collectionsBox.isEmpty) {
+      try {
+        await reconstructFromChain();
+      } catch (e) {
+        debugPrint('NftService: on-chain reconstruction fallback error: $e');
       }
     }
   }

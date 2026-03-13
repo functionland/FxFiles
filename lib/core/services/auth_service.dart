@@ -14,6 +14,7 @@ import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
@@ -717,6 +718,14 @@ class AuthService {
 
       // Clear cached sync mappings
       CloudSyncMappingService.instance.clear();
+
+      // Clear NFT wallet state and secure storage key
+      NftWalletService.instance.clear();
+      await SecureStorageService.instance.delete(SecureStorageKeys.nftWalletPrivateKey);
+
+      // Clear NFT collections, received NFTs, and tags (user-specific data)
+      await NftService.instance.clearAll();
+      await TagStorageService.instance.clearAll();
 
       // Reset FulaApiService
       FulaApiService.instance.reset();

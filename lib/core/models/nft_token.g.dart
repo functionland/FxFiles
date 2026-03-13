@@ -22,13 +22,14 @@ class NftCollectionAdapter extends TypeAdapter<NftCollection> {
       name: fields[2] as String,
       createdAt: fields[3] as DateTime,
       mints: (fields[4] as List?)?.cast<NftMintRecord>().toList() ?? [],
+      creatorWalletAddress: fields[5] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, NftCollection obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -38,7 +39,9 @@ class NftCollectionAdapter extends TypeAdapter<NftCollection> {
       ..writeByte(3)
       ..write(obj.createdAt)
       ..writeByte(4)
-      ..write(obj.mints);
+      ..write(obj.mints)
+      ..writeByte(5)
+      ..write(obj.creatorWalletAddress);
   }
 
   @override
@@ -248,6 +251,120 @@ class NftMintStatusAdapter extends TypeAdapter<NftMintStatus> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is NftMintStatusAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class ReceivedNftAdapter extends TypeAdapter<ReceivedNft> {
+  @override
+  final int typeId = 35;
+
+  @override
+  ReceivedNft read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return ReceivedNft(
+      id: fields[0] as String,
+      tokenId: fields[1] as int,
+      chainId: fields[2] as int,
+      contractAddress: fields[3] as String,
+      eventName: fields[4] as String? ?? '',
+      fulaPerNft: fields[5] as String? ?? '0',
+      creator: fields[6] as String? ?? '',
+      claimTxHash: fields[7] as String,
+      claimedAt: fields[8] as DateTime,
+      gatewayUrl: fields[9] as String?,
+      status: fields[10] as ReceivedNftStatus? ?? ReceivedNftStatus.held,
+      burnTxHash: fields[11] as String?,
+      transferTxHash: fields[12] as String?,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, ReceivedNft obj) {
+    writer
+      ..writeByte(13)
+      ..writeByte(0)
+      ..write(obj.id)
+      ..writeByte(1)
+      ..write(obj.tokenId)
+      ..writeByte(2)
+      ..write(obj.chainId)
+      ..writeByte(3)
+      ..write(obj.contractAddress)
+      ..writeByte(4)
+      ..write(obj.eventName)
+      ..writeByte(5)
+      ..write(obj.fulaPerNft)
+      ..writeByte(6)
+      ..write(obj.creator)
+      ..writeByte(7)
+      ..write(obj.claimTxHash)
+      ..writeByte(8)
+      ..write(obj.claimedAt)
+      ..writeByte(9)
+      ..write(obj.gatewayUrl)
+      ..writeByte(10)
+      ..write(obj.status)
+      ..writeByte(11)
+      ..write(obj.burnTxHash)
+      ..writeByte(12)
+      ..write(obj.transferTxHash);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReceivedNftAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class ReceivedNftStatusAdapter extends TypeAdapter<ReceivedNftStatus> {
+  @override
+  final int typeId = 36;
+
+  @override
+  ReceivedNftStatus read(BinaryReader reader) {
+    switch (reader.readByte()) {
+      case 0:
+        return ReceivedNftStatus.held;
+      case 1:
+        return ReceivedNftStatus.burned;
+      case 2:
+        return ReceivedNftStatus.transferred;
+      default:
+        return ReceivedNftStatus.held;
+    }
+  }
+
+  @override
+  void write(BinaryWriter writer, ReceivedNftStatus obj) {
+    switch (obj) {
+      case ReceivedNftStatus.held:
+        writer.writeByte(0);
+        break;
+      case ReceivedNftStatus.burned:
+        writer.writeByte(1);
+        break;
+      case ReceivedNftStatus.transferred:
+        writer.writeByte(2);
+        break;
+    }
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReceivedNftStatusAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

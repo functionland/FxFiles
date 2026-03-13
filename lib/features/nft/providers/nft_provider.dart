@@ -5,6 +5,7 @@ import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 
@@ -16,6 +17,13 @@ final nftTagsProvider = Provider<List<FileTag>>((ref) {
   return tagState.tags
       .where((t) => t.name.startsWith('nft-'))
       .toList();
+});
+
+/// Provider for received (claimed) NFTs
+final receivedNftsProvider = Provider<List<ReceivedNft>>((ref) {
+  // Re-read whenever NFT state changes (e.g. after claim/burn)
+  ref.watch(nftProvider);
+  return NftService.instance.getReceivedNfts();
 });
 
 /// Provider for mint records of a specific NFT tag
@@ -118,9 +126,11 @@ class NftNotifier extends Notifier<NftState> {
       );
 
       if (tag != null) {
+        final walletAddress = await NftWalletService.instance.getAddress();
         await NftService.instance.ensureCollection(
           tagId: tag.id,
           name: name,
+          creatorWalletAddress: walletAddress,
         );
       }
 
@@ -336,6 +346,20 @@ class NftNotifier extends Notifier<NftState> {
       );
     } catch (e) {
       debugPrint('NftProvider: refreshClaimStatuses error: $e');
+    }
+  }
+
+  /// Refresh collections from on-chain data (reconstruction fallback)
+  Future<int> refreshFromChain() async {
+    state = state.copyWith(isCreating: true, statusMessage: 'Syncing from blockchain...');
+    try {
+      final count = await NftService.instance.reconstructFromChain();
+      ref.invalidateSelf();
+      state = state.copyWith(isCreating: false, statusMessage: null);
+      return count;
+    } catch (e) {
+      state = state.copyWith(isCreating: false, error: _friendlyError(e.toString()));
+      return 0;
     }
   }
 

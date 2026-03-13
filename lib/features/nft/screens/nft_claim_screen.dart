@@ -4,6 +4,8 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
+import 'package:uuid/uuid.dart';
+import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
@@ -12,13 +14,15 @@ import 'package:fula_files/features/nft/providers/nft_provider.dart';
 import 'package:fula_files/features/nft/widgets/address_qr_scanner_dialog.dart';
 import 'package:fula_files/features/nft/widgets/receive_nft_dialog.dart';
 
-/// Screen reached via fxfiles://nft-claim deep link.
+/// Screen reached via fxfiles://nft-claim deep link or from received NFTs list.
 /// Fetches token info from the contract, displays NFT details, and allows claiming.
+/// When [receivedNftId] is set, opens in post-claim mode for burn/transfer.
 class NftClaimScreen extends ConsumerStatefulWidget {
   final String? chainId;
   final String? contractAddress;
   final String? tokenId;
   final String? linkHash;
+  final String? receivedNftId;
 
   const NftClaimScreen({
     super.key,
@@ -26,6 +30,7 @@ class NftClaimScreen extends ConsumerStatefulWidget {
     this.contractAddress,
     this.tokenId,
     this.linkHash,
+    this.receivedNftId,
   });
 
   @override
@@ -48,10 +53,16 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
   BigInt? _fulaPerNft;
   int? _initialMintCount;
   String? _gatewayUrl;
+  String? _receivedNftId; // tracks the persisted ReceivedNft.id for burn/transfer updates
 
   @override
   void initState() {
     super.initState();
+    _receivedNftId = widget.receivedNftId;
+    if (widget.receivedNftId != null) {
+      // Opened from received NFTs list — skip straight to post-claim state
+      _claimTxHash = 'already-claimed';
+    }
     _fetchTokenInfo();
   }
 
@@ -249,13 +260,34 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
     if (!mounted) return;
 
     if (txHash != null) {
+      // Persist the received NFT locally
+      final receivedId = const Uuid().v4();
+      final chain = SupportedChain.byChainId(chainIdInt);
+      await NftService.instance.saveReceivedNft(ReceivedNft(
+        id: receivedId,
+        tokenId: int.tryParse(widget.tokenId ?? '') ?? 0,
+        chainId: chainIdInt,
+        contractAddress: widget.contractAddress ?? chain?.nftContractAddress ?? '',
+        eventName: _eventName ?? '',
+        fulaPerNft: _fulaPerNft?.toString() ?? '0',
+        creator: _creator ?? '',
+        claimTxHash: txHash,
+        claimedAt: DateTime.now(),
+        gatewayUrl: _gatewayUrl,
+      ));
+      _receivedNftId = receivedId;
+      // Trigger provider refresh
+      ref.invalidate(receivedNftsProvider);
+
       setState(() {
         _isClaiming = false;
         _claimTxHash = txHash;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('NFT claimed successfully!')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('NFT claimed successfully!')),
+        );
+      }
     } else {
       final nftState = ref.read(nftProvider);
       setState(() {
@@ -325,13 +357,20 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
     if (!mounted) return;
 
     if (txHash != null) {
+      // Update received NFT status
+      if (_receivedNftId != null) {
+        await NftService.instance.markReceivedBurned(_receivedNftId!, txHash);
+        ref.invalidate(receivedNftsProvider);
+      }
       setState(() {
         _isBurning = false;
         _burnTxHash = txHash;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('NFT burned! $fulaAmount FULA released to the NFT creator.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('NFT burned! $fulaAmount FULA released to the NFT creator.')),
+        );
+      }
     } else {
       final nftState = ref.read(nftProvider);
       setState(() {
@@ -425,13 +464,20 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
     if (!mounted) return;
 
     if (txHash != null) {
+      // Update received NFT status
+      if (_receivedNftId != null) {
+        await NftService.instance.markReceivedTransferred(_receivedNftId!, txHash);
+        ref.invalidate(receivedNftsProvider);
+      }
       setState(() {
         _isTransferring = false;
         _transferTxHash = txHash;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('NFT transferred successfully!')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('NFT transferred successfully!')),
+        );
+      }
     } else {
       final nftState = ref.read(nftProvider);
       setState(() {
@@ -458,7 +504,7 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Claim NFT'),
+        title: Text(widget.receivedNftId != null ? 'My NFT' : 'Claim NFT'),
       ),
       body: Center(
         child: SingleChildScrollView(

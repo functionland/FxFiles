@@ -172,6 +172,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             contractAddress: state.uri.queryParameters['contract'],
             tokenId: state.uri.queryParameters['token'],
             linkHash: state.uri.queryParameters['hash'],
+            receivedNftId: state.uri.queryParameters['receivedId'],
           );
         },
       ),

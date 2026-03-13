@@ -388,6 +388,75 @@ class NftContractService {
     );
   }
 
+  /// Decode a single uint256 return value (e.g. getEventTokenCount)
+  int? decodeUint256(String hexData) {
+    final data = hexData.replaceFirst('0x', '');
+    if (data.length < 64) return null;
+    try {
+      return int.parse(data.substring(0, 64), radix: 16);
+    } catch (e) {
+      debugPrint('NftContractService: decodeUint256 error: $e');
+      return null;
+    }
+  }
+
+  /// Decode getCreatorEvents(address) response: returns string[]
+  /// ABI: offset → array length → per-element offsets → string data
+  List<String>? decodeCreatorEvents(String hexData) {
+    final data = hexData.replaceFirst('0x', '');
+    if (data.length < 128) return null; // At least offset + length
+
+    try {
+      // Word 0: offset to array data
+      final arrayOffset = int.parse(data.substring(0, 64), radix: 16) * 2;
+      // At arrayOffset: array length
+      final arrayLength = int.parse(data.substring(arrayOffset, arrayOffset + 64), radix: 16);
+      if (arrayLength == 0) return [];
+
+      final result = <String>[];
+      // After array length: per-element offsets (relative to array start)
+      for (int i = 0; i < arrayLength; i++) {
+        final offsetPos = arrayOffset + 64 + i * 64;
+        final elementOffset = int.parse(data.substring(offsetPos, offsetPos + 64), radix: 16) * 2;
+        // Element data is at arrayOffset + 64 + elementOffset (relative to after array length word)
+        // Actually, ABI string[] offsets are relative to the start of the array data (after the length word)
+        final absOffset = arrayOffset + 64 + elementOffset;
+        result.add(_decodeString(data, absOffset));
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('NftContractService: decodeCreatorEvents error: $e');
+      return null;
+    }
+  }
+
+  /// Decode getEventTokens(address,string,uint256,uint256) response: returns uint256[]
+  /// ABI: offset → array length → uint256 values
+  List<int>? decodeEventTokens(String hexData) {
+    final data = hexData.replaceFirst('0x', '');
+    if (data.length < 128) return null;
+
+    try {
+      // Word 0: offset to array data
+      final arrayOffset = int.parse(data.substring(0, 64), radix: 16) * 2;
+      // At arrayOffset: array length
+      final arrayLength = int.parse(data.substring(arrayOffset, arrayOffset + 64), radix: 16);
+      if (arrayLength == 0) return [];
+
+      final result = <int>[];
+      for (int i = 0; i < arrayLength; i++) {
+        final valuePos = arrayOffset + 64 + i * 64;
+        result.add(int.parse(data.substring(valuePos, valuePos + 64), radix: 16));
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('NftContractService: decodeEventTokens error: $e');
+      return null;
+    }
+  }
+
   /// Decode getClaimOffer response: (uint256 tokenId, address sender, address claimer, uint256 expiresAt, uint8 status)
   /// Status: 0=active, 1=claimed, 2=cancelled
   ({int tokenId, int status, int expiresAt, String? claimerAddress})? decodeClaimOffer(String hexData) {

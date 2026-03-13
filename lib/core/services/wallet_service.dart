@@ -269,46 +269,128 @@ Timestamp: $timestamp''';
     return message;
   }
 
-  /// Sign a message using personal_sign (EIP-191)
+  /// Sign a message using personal_sign (EIP-191).
+  /// Handles stale pending requests by opening the wallet for the user to
+  /// approve/reject, then retrying after the app resumes.
   Future<String> signLinkMessage(String message) async {
     _ensureInitialized();
     _ensureConnected();
 
     try {
-      final session = _appKitModal!.session;
-      if (session == null) {
-        throw WalletServiceException('No active session');
+      return await _requestPersonalSign(message);
+    } catch (e) {
+      final errorStr = e.toString();
+      // -32002: "Request of type 'personal_sign' already pending" —
+      // stale request from a previous failed attempt sitting in MetaMask.
+      // Open the wallet so user can approve/reject it, wait for app resume,
+      // then retry with a fresh request.
+      if (errorStr.contains('-32002') || errorStr.contains('already pending')) {
+        debugPrint('WalletService: Stale pending sign request. Opening wallet to clear it...');
+
+        // Open MetaMask so user can handle the stale request
+        await tryOpenWallet();
+
+        // Wait for the app to come back to foreground
+        await _waitForAppResume();
+
+        // Brief pause for the relay to process the approval/rejection
+        await Future.delayed(const Duration(seconds: 1));
+
+        // Retry the sign — stale request should now be cleared
+        debugPrint('WalletService: App resumed, retrying sign...');
+        try {
+          return await _requestPersonalSign(message);
+        } catch (retryError) {
+          debugPrint('WalletService: Retry sign failed: $retryError');
+          throw WalletServiceException(
+            'Failed to sign message. Please try again.',
+          );
+        }
       }
+      rethrow;
+    }
+  }
 
-      final topic = session.topic ?? '';
-      final chainId = _appKitModal!.selectedChain?.chainId ?? 'eip155:8453';
+  /// Waits until the app returns to the foreground (e.g. after switching to a
+  /// wallet app). Times out after 5 minutes.
+  Future<void> _waitForAppResume() {
+    final completer = Completer<void>();
+    late final _AppResumeObserver observer;
+    observer = _AppResumeObserver(() {
+      if (!completer.isCompleted) {
+        WidgetsBinding.instance.removeObserver(observer);
+        completer.complete();
+      }
+    });
+    WidgetsBinding.instance.addObserver(observer);
 
-      debugPrint('WalletService: Requesting signature...');
-      debugPrint('WalletService: Topic: $topic');
-      debugPrint('WalletService: ChainId: $chainId');
-      debugPrint('WalletService: Address: $_connectedAddress');
+    // Safety timeout
+    Future.delayed(const Duration(minutes: 5), () {
+      if (!completer.isCompleted) {
+        WidgetsBinding.instance.removeObserver(observer);
+        completer.complete();
+      }
+    });
 
-      // Convert message to hex for personal_sign (EIP-191)
-      final hexMessage = '0x${message.codeUnits.map((c) => c.toRadixString(16).padLeft(2, '0')).join()}';
-      debugPrint('WalletService: Hex message: $hexMessage');
+    return completer.future;
+  }
 
-      final signature = await _appKitModal!.request(
-        topic: topic,
-        chainId: chainId,
-        request: SessionRequestParams(
-          method: 'personal_sign',
-          params: [
-            hexMessage,
-            _connectedAddress,
-          ],
-        ),
-      );
+  /// Low-level personal_sign request. Opens wallet app after sending.
+  Future<String> _requestPersonalSign(String message) async {
+    final session = _appKitModal!.session;
+    if (session == null) {
+      throw WalletServiceException('No active session');
+    }
 
+    final topic = session.topic ?? '';
+    final chainId = _appKitModal!.selectedChain?.chainId ?? 'eip155:8453';
+
+    debugPrint('WalletService: Requesting signature...');
+    debugPrint('WalletService: Topic: $topic');
+    debugPrint('WalletService: ChainId: $chainId');
+    debugPrint('WalletService: Address: $_connectedAddress');
+
+    // Convert message to hex for personal_sign (EIP-191)
+    final hexMessage = '0x${message.codeUnits.map((c) => c.toRadixString(16).padLeft(2, '0')).join()}';
+    debugPrint('WalletService: Hex message: $hexMessage');
+
+    var completed = false;
+
+    final pendingSign = _appKitModal!.request(
+      topic: topic,
+      chainId: chainId,
+      request: SessionRequestParams(
+        method: 'personal_sign',
+        params: [
+          hexMessage,
+          _connectedAddress,
+        ],
+      ),
+    ).timeout(
+      const Duration(minutes: 5),
+      onTimeout: () => throw WalletServiceException(
+        'Wallet did not respond within 5 minutes. Please try again.',
+      ),
+    );
+
+    // Give the relay a moment to deliver, then open the wallet app
+    // so the user sees the signing prompt without manually switching.
+    // Skip if the request already completed (e.g. -32002 error).
+    unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
+      if (completed) return;
+      try {
+        await tryOpenWallet();
+      } catch (_) {}
+    }));
+
+    try {
+      final signature = await pendingSign;
+      completed = true;
       debugPrint('WalletService: Signature received: $signature');
       return signature as String;
     } catch (e) {
-      debugPrint('WalletService: Failed to sign message: $e');
-      throw WalletServiceException('Failed to sign message: $e');
+      completed = true;
+      rethrow;
     }
   }
 
@@ -337,7 +419,7 @@ Timestamp: $timestamp''';
       // Function selector: 0xa9059cbb
       final data = _encodeErc20Transfer(toAddress, amount);
 
-      final txHash = await _appKitModal!.request(
+      final pendingTx = _appKitModal!.request(
         topic: topic,
         chainId: 'eip155:${chain.chainId}',
         request: SessionRequestParams(
@@ -351,8 +433,21 @@ Timestamp: $timestamp''';
             },
           ],
         ),
+      ).timeout(
+        const Duration(minutes: 5),
+        onTimeout: () => throw WalletServiceException(
+          'Wallet did not respond within 5 minutes. Please try again.',
+        ),
       );
 
+      // Give the relay a moment to deliver, then open the wallet app
+      unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
+        try {
+          await tryOpenWallet();
+        } catch (_) {}
+      }));
+
+      final txHash = await pendingTx;
       return txHash as String;
     } catch (e) {
       throw WalletServiceException('Failed to send transaction: $e');
@@ -649,4 +744,17 @@ class WalletServiceException implements Exception {
 
   @override
   String toString() => 'WalletServiceException: $message';
+}
+
+/// Observer that fires a callback when the app returns to the foreground.
+class _AppResumeObserver extends WidgetsBindingObserver {
+  final VoidCallback onResume;
+  _AppResumeObserver(this.onResume);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      onResume();
+    }
+  }
 }

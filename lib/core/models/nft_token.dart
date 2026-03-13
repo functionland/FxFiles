@@ -253,6 +253,121 @@ class NftClaimRecord extends HiveObject {
   int get hashCode => id.hashCode;
 }
 
+/// Status of a received (claimed) NFT
+@HiveType(typeId: 36)
+enum ReceivedNftStatus {
+  @HiveField(0)
+  held,
+  @HiveField(1)
+  burned,
+  @HiveField(2)
+  transferred,
+}
+
+/// A received NFT — one claimed or transferred to the user's wallet
+@HiveType(typeId: 35)
+class ReceivedNft extends HiveObject {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final int tokenId;
+
+  @HiveField(2)
+  final int chainId;
+
+  @HiveField(3)
+  final String contractAddress;
+
+  @HiveField(4)
+  final String eventName;
+
+  @HiveField(5)
+  final String fulaPerNft; // stored as string
+
+  @HiveField(6)
+  final String creator;
+
+  @HiveField(7)
+  final String claimTxHash;
+
+  @HiveField(8)
+  final DateTime claimedAt;
+
+  @HiveField(9)
+  String? gatewayUrl;
+
+  @HiveField(10)
+  ReceivedNftStatus status;
+
+  @HiveField(11)
+  String? burnTxHash;
+
+  @HiveField(12)
+  String? transferTxHash;
+
+  ReceivedNft({
+    required this.id,
+    required this.tokenId,
+    required this.chainId,
+    required this.contractAddress,
+    required this.eventName,
+    required this.fulaPerNft,
+    required this.creator,
+    required this.claimTxHash,
+    required this.claimedAt,
+    this.gatewayUrl,
+    this.status = ReceivedNftStatus.held,
+    this.burnTxHash,
+    this.transferTxHash,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'tokenId': tokenId,
+      'chainId': chainId,
+      'contractAddress': contractAddress,
+      'eventName': eventName,
+      'fulaPerNft': fulaPerNft,
+      'creator': creator,
+      'claimTxHash': claimTxHash,
+      'claimedAt': claimedAt.toIso8601String(),
+      'gatewayUrl': gatewayUrl,
+      'status': status.index,
+      'burnTxHash': burnTxHash,
+      'transferTxHash': transferTxHash,
+    };
+  }
+
+  factory ReceivedNft.fromJson(Map<String, dynamic> json) {
+    return ReceivedNft(
+      id: json['id'] as String,
+      tokenId: json['tokenId'] as int,
+      chainId: json['chainId'] as int,
+      contractAddress: json['contractAddress'] as String,
+      eventName: json['eventName'] as String? ?? '',
+      fulaPerNft: json['fulaPerNft'] as String? ?? '0',
+      creator: json['creator'] as String? ?? '',
+      claimTxHash: json['claimTxHash'] as String,
+      claimedAt: DateTime.parse(json['claimedAt'] as String),
+      gatewayUrl: json['gatewayUrl'] as String?,
+      status: ReceivedNftStatus.values[json['status'] as int? ?? 0],
+      burnTxHash: json['burnTxHash'] as String?,
+      transferTxHash: json['transferTxHash'] as String?,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is ReceivedNft && other.id == id;
+  }
+
+  @override
+  int get hashCode => id.hashCode;
+}
+
 /// An NFT collection groups minted NFTs under a tag
 @HiveType(typeId: 30)
 class NftCollection extends HiveObject {
@@ -271,12 +386,16 @@ class NftCollection extends HiveObject {
   @HiveField(4)
   List<NftMintRecord> mints;
 
+  @HiveField(5)
+  final String? creatorWalletAddress;
+
   NftCollection({
     required this.id,
     required this.tagId,
     required this.name,
     required this.createdAt,
     this.mints = const [],
+    this.creatorWalletAddress,
   });
 
   Map<String, dynamic> toJson() {
@@ -286,6 +405,7 @@ class NftCollection extends HiveObject {
       'name': name,
       'createdAt': createdAt.toIso8601String(),
       'mints': mints.map((m) => m.toJson()).toList(),
+      'creatorWalletAddress': creatorWalletAddress,
     };
   }
 
@@ -299,6 +419,7 @@ class NftCollection extends HiveObject {
               ?.map((m) => NftMintRecord.fromJson(m as Map<String, dynamic>))
               .toList() ??
           [],
+      creatorWalletAddress: json['creatorWalletAddress'] as String?,
     );
   }
 
