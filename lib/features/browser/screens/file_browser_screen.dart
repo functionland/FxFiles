@@ -3285,7 +3285,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       context,
       localPath: file.path,
       remoteKey: syncState?.remotePath,
-      iosAssetId: syncState?.iosAssetId,
+      iosAssetId: file.iosAssetId ?? syncState?.iosAssetId,
       fileName: file.name,
     );
 

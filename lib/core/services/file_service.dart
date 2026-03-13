@@ -695,8 +695,37 @@ class FileService {
     final starredPaths = LocalStorageService.instance.getStarredFiles();
     final results = <LocalFile>[];
 
+    // On iOS, build a lookup of iosAssetId by virtual path from recent files
+    Map<String, String>? iosAssetIdByPath;
+    if (Platform.isIOS) {
+      final recentFiles = LocalStorageService.instance.getRecentFiles(limit: 1000);
+      iosAssetIdByPath = {
+        for (final rf in recentFiles)
+          if (rf.iosAssetId != null) rf.path: rf.iosAssetId!,
+      };
+    }
+
     for (final path in starredPaths) {
       try {
+        // On iOS, virtual paths (e.g. "PhotoKit/IMG_123.jpg") don't exist on
+        // the filesystem. Detect them and create LocalFile from metadata.
+        if (Platform.isIOS && !path.startsWith('/')) {
+          // Try recent files first, then sync state for iosAssetId
+          var iosAssetId = iosAssetIdByPath?[path];
+          iosAssetId ??= LocalStorageService.instance
+              .getSyncStateByDisplayPath(path)?.iosAssetId;
+          results.add(LocalFile(
+            path: path,
+            name: p.basename(path),
+            size: 0,
+            modifiedAt: DateTime.now(),
+            isDirectory: false,
+            mimeType: lookupMimeType(path),
+            iosAssetId: iosAssetId,
+          ));
+          continue;
+        }
+
         // Check what type of entity this is (file, directory, or non-existent)
         final entityType = await FileSystemEntity.type(path);
 

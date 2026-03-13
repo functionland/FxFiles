@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 
@@ -102,7 +104,7 @@ class TaggedFilesScreen extends ConsumerWidget {
     );
   }
 
-  void _openFile(BuildContext context, TaggedFile taggedFile) {
+  Future<void> _openFile(BuildContext context, TaggedFile taggedFile) async {
     final path = taggedFile.localPath;
     if (path == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -111,31 +113,78 @@ class TaggedFilesScreen extends ConsumerWidget {
       return;
     }
 
-    // Check if file exists
-    final file = File(path);
-    if (!file.existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File not found')),
-      );
-      return;
+    // Resolve actual file path — on iOS, virtual paths (e.g. "PhotoKit/...")
+    // must be resolved via the asset ID to get a real filesystem path.
+    String filePath = path;
+    final isVirtualPath = Platform.isIOS && !path.startsWith('/');
+    if (isVirtualPath) {
+      // Resolve iosAssetId: use stored value, fall back to recent files / sync states
+      final iosAssetId = taggedFile.iosAssetId
+          ?? _lookupIosAssetId(path);
+      if (iosAssetId != null) {
+        final actualFile = await MediaService.instance.getOriginalFile(iosAssetId);
+        if (actualFile != null) {
+          filePath = actualFile.path;
+        } else {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('File no longer available in Photos library')),
+            );
+          }
+          return;
+        }
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Cannot locate file — try re-tagging it')),
+          );
+        }
+        return;
+      }
+    } else {
+      // Check if file exists on filesystem
+      if (!File(filePath).existsSync()) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('File not found')),
+          );
+        }
+        return;
+      }
     }
+
+    if (!context.mounted) return;
 
     // Determine file type and open appropriate viewer
-    final ext = path.toLowerCase().split('.').last;
+    final ext = filePath.toLowerCase().split('.').last;
 
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif'].contains(ext)) {
-      context.push('/viewer/image', extra: path);
+      context.push('/viewer/image', extra: filePath);
     } else if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].contains(ext)) {
-      context.push('/viewer/video', extra: path);
+      context.push('/viewer/video', extra: filePath);
     } else if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'].contains(ext)) {
-      context.push('/viewer/audio', extra: path);
+      context.push('/viewer/audio', extra: filePath);
     } else if (['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'log'].contains(ext)) {
-      context.push('/viewer/text', extra: path);
+      context.push('/viewer/text', extra: filePath);
     } else {
       // Navigate to browser with file's parent directory
-      final parentDir = file.parent.path;
+      final parentDir = File(filePath).parent.path;
       context.push('/browser', extra: {'path': parentDir});
     }
+  }
+
+  /// Look up iosAssetId for an iOS virtual path from recent files or sync states.
+  static String? _lookupIosAssetId(String virtualPath) {
+    // Try recent files
+    final recentFiles = LocalStorageService.instance.getRecentFiles(limit: 1000);
+    for (final rf in recentFiles) {
+      if (rf.path == virtualPath && rf.iosAssetId != null) {
+        return rf.iosAssetId;
+      }
+    }
+    // Try sync state
+    return LocalStorageService.instance
+        .getSyncStateByDisplayPath(virtualPath)?.iosAssetId;
   }
 
   Future<void> _removeTag(BuildContext context, WidgetRef ref, TaggedFile taggedFile) async {
@@ -209,6 +258,25 @@ class _TaggedFileTile extends StatelessWidget {
   Widget _buildThumbnail() {
     final path = taggedFile.localPath;
     if (path == null) {
+      return _buildPlaceholderThumbnail();
+    }
+
+    // On iOS, virtual paths (e.g. "PhotoKit/...") don't exist on the filesystem.
+    // Use iosAssetId to display the thumbnail via PhotoKit.
+    if (Platform.isIOS && !path.startsWith('/')) {
+      final iosAssetId = taggedFile.iosAssetId
+          ?? TaggedFilesScreen._lookupIosAssetId(path);
+      if (iosAssetId != null) {
+        final localFile = LocalFile(
+          path: path,
+          name: taggedFile.fileName,
+          size: 0,
+          modifiedAt: taggedFile.taggedAt,
+          isDirectory: false,
+          iosAssetId: iosAssetId,
+        );
+        return FileThumbnail(file: localFile, size: 48);
+      }
       return _buildPlaceholderThumbnail();
     }
 
