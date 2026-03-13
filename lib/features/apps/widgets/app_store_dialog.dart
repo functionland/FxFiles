@@ -210,13 +210,27 @@ class _AppCard extends ConsumerWidget {
       );
       if (dirPath == null || !context.mounted) return;
 
-      await ref.read(appProvider.notifier).activateApp(app.id, iosFolderPath: dirPath);
-      if (context.mounted) Navigator.pop(context);
+      final iosResult = await ref.read(appProvider.notifier).activateApp(app.id, iosFolderPath: dirPath);
+      if (!context.mounted) return;
+      if (iosResult == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to activate app. Please try again.')),
+        );
+        return;
+      }
+      Navigator.pop(context);
       return;
     }
 
     // Android / Desktop: direct activation
-    await ref.read(appProvider.notifier).activateApp(app.id);
-    if (context.mounted) Navigator.pop(context);
+    final result = await ref.read(appProvider.notifier).activateApp(app.id);
+    if (!context.mounted) return;
+    if (result == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to activate app. Please try again.')),
+      );
+      return;
+    }
+    Navigator.pop(context);
   }
 }

@@ -129,7 +129,7 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
                   ? 'Your backups are encrypted with a password'
                   : 'Add a password for extra security'),
               trailing: TextButton(
-                onPressed: () => _showPasswordDialog(context, ref),
+                onPressed: appState.isBusy ? null : () => _showPasswordDialog(context, ref),
                 child: Text(activated?.hasPassword == true ? 'Change' : 'Set'),
               ),
             ),
@@ -375,7 +375,10 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
+            onPressed: () {
+              if (controller.text.trim().isEmpty) return;
+              Navigator.pop(ctx, controller.text);
+            },
             child: const Text('OK'),
           ),
         ],
@@ -449,7 +452,11 @@ class _BackupHistoryTile extends StatelessWidget {
           style: Theme.of(context).textTheme.bodyLarge,
         ),
         subtitle: Text(
-          '${record.newFileCount} new files, ${_formatSize(record.totalSizeBytes)}',
+          record.status == BackupStatus.uploading || record.status == BackupStatus.scanning
+              ? 'In progress...'
+              : record.status == BackupStatus.error
+                  ? record.errorMessage ?? 'Failed'
+                  : '${record.newFileCount} new files, ${_formatSize(record.totalSizeBytes)}',
         ),
         trailing: PopupMenuButton<String>(
           onSelected: (value) {

@@ -215,8 +215,30 @@ class AppStoreService {
     return record;
   }
 
+  BackupRecord? getBackupRecord(String backupId) {
+    if (!_isInitialized) return null;
+    return _backupRecordsBox.get(backupId);
+  }
+
   Future<void> updateBackupRecord(BackupRecord record) async {
     await _backupRecordsBox.put(record.id, record);
+  }
+
+  /// Mark any backup records stuck in uploading/scanning/pending as interrupted.
+  /// Called on init to clean up after the app was killed mid-backup.
+  Future<void> finalizeStaleRecords() async {
+    if (!_isInitialized) return;
+    final stale = _backupRecordsBox.values.where((r) =>
+        r.status == BackupStatus.uploading ||
+        r.status == BackupStatus.scanning ||
+        r.status == BackupStatus.pending);
+    for (final record in stale.toList()) {
+      debugPrint('AppStoreService: marking stale record ${record.id} (${record.status}) as error');
+      record.status = BackupStatus.error;
+      record.errorMessage = 'Interrupted — backup was not completed';
+      record.completedAt = DateTime.now();
+      await _backupRecordsBox.put(record.id, record);
+    }
   }
 
   /// Clear ALL backup records and file index entries for an app.

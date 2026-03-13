@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/app_models.dart';
@@ -81,6 +82,11 @@ class WhatsAppBackupService {
   bool _backupBucketExists = false;
   bool _cancelled = false;
 
+  // Concurrency lock: prevents parallel runBackup() calls from racing on
+  // _cancelled flag and index writes (e.g. UI + WorkManager in same process).
+  bool _isRunning = false;
+  Completer<BackupRecord?>? _runningBackup;
+
   // Manifest sync state
   bool _manifestSyncScheduled = false;
   static const Duration _manifestSyncDebounce = Duration(seconds: 5);
@@ -91,6 +97,9 @@ class WhatsAppBackupService {
   Future<void> init() async {
     // AppStoreService handles Hive init for all app models
     await AppStoreService.instance.init();
+    // Mark any records stuck in uploading/scanning/pending as interrupted.
+    // This happens when the app was killed mid-backup.
+    await AppStoreService.instance.finalizeStaleRecords();
   }
 
   // ============================================================================
@@ -299,6 +308,40 @@ class WhatsAppBackupService {
     Directory? overrideDir,
     void Function(BackupProgress)? onProgress,
     bool showNotifications = true,
+  }) async {
+    // If a backup is already running, return the existing future instead of
+    // starting a second concurrent run that would race on state.
+    if (_isRunning && _runningBackup != null) {
+      debugPrint('WhatsAppBackup: backup already running — returning existing future');
+      return _runningBackup!.future;
+    }
+
+    _isRunning = true;
+    _runningBackup = Completer<BackupRecord?>();
+
+    try {
+      final result = await _runBackupInternal(
+        appId: appId,
+        overrideDir: overrideDir,
+        onProgress: onProgress,
+        showNotifications: showNotifications,
+      );
+      _runningBackup!.complete(result);
+      return result;
+    } catch (e) {
+      _runningBackup!.completeError(e);
+      rethrow;
+    } finally {
+      _isRunning = false;
+      _runningBackup = null;
+    }
+  }
+
+  Future<BackupRecord?> _runBackupInternal({
+    required String appId,
+    Directory? overrideDir,
+    void Function(BackupProgress)? onProgress,
+    required bool showNotifications,
   }) async {
     _cancelled = false;
     final notifier = SyncNotificationService.instance;
@@ -515,7 +558,7 @@ class WhatsAppBackupService {
       _backupBucket,
       remoteKey,
       data,
-      encryptionKey ?? Uint8List(32),
+      encryptionKey ?? Uint8List(0),
     );
 
     // Update file index
@@ -583,7 +626,7 @@ class WhatsAppBackupService {
     if (entries.isEmpty) throw Exception('No files to restore');
 
     // Determine restore directory
-    final targetDir = restoreDir ?? _getDefaultRestoreDir(appId);
+    final targetDir = restoreDir ?? await _getDefaultRestoreDir(appId);
     if (!targetDir.existsSync()) {
       targetDir.createSync(recursive: true);
     }
@@ -608,7 +651,7 @@ class WhatsAppBackupService {
         var data = await FulaApiService.instance.downloadAndDecrypt(
           _backupBucket,
           entry.remoteKey,
-          encryptionKey ?? Uint8List(32),
+          encryptionKey ?? Uint8List(0),
         );
 
         // Decrypt password layer
@@ -636,13 +679,14 @@ class WhatsAppBackupService {
     ));
   }
 
-  Directory _getDefaultRestoreDir(String appId) {
+  Future<Directory> _getDefaultRestoreDir(String appId) async {
     final appDef = AppStoreService.getAppDefinition(appId);
     if (Platform.isAndroid && appDef?.dataPathAndroid != null) {
       return Directory(appDef!.dataPathAndroid!);
     }
-    // iOS / fallback: app documents directory
-    return Directory('/tmp/fxfiles_restore/$appId');
+    // iOS / fallback: use app documents directory (not world-readable /tmp)
+    final docs = await getApplicationDocumentsDirectory();
+    return Directory('${docs.path}/fxfiles_restore/$appId');
   }
 
   void cancelRestore() {
@@ -655,6 +699,7 @@ class WhatsAppBackupService {
 
   Future<void> deleteBackup(String appId, String backupId) async {
     final entries = AppStoreService.instance.getFileEntriesForBackup(backupId);
+    final failedKeys = <String>[];
 
     for (final entry in entries) {
       // Check if any other backup references this remote key
@@ -666,9 +711,15 @@ class WhatsAppBackupService {
         try {
           await FulaApiService.instance.deleteObject(_backupBucket, entry.remoteKey);
         } catch (e) {
+          failedKeys.add(entry.remoteKey);
           debugPrint('WhatsAppBackup: delete error for ${entry.remoteKey}: $e');
         }
       }
+    }
+
+    if (failedKeys.isNotEmpty) {
+      debugPrint('WhatsAppBackup: ${failedKeys.length} cloud files failed to delete '
+          '(encrypted, inaccessible without key — orphaned storage only)');
     }
 
     await AppStoreService.instance.deleteBackupRecord(backupId);
@@ -688,14 +739,21 @@ class WhatsAppBackupService {
 
     // 2. Delete each file from S3
     var deleted = 0;
+    var failedCount = 0;
     for (final key in remoteKeys) {
       try {
         await FulaApiService.instance.deleteObject(_backupBucket, key);
       } catch (e) {
+        failedCount++;
         debugPrint('WhatsAppBackup: deleteAll error for $key: $e');
       }
       deleted++;
       onProgress?.call(deleted, remoteKeys.length);
+    }
+
+    if (failedCount > 0) {
+      debugPrint('WhatsAppBackup: deleteAll — $failedCount/$deleted cloud deletes failed '
+          '(encrypted, inaccessible without key — orphaned storage only)');
     }
 
     // 3. Delete the cloud manifest
@@ -747,7 +805,11 @@ class WhatsAppBackupService {
           .toList();
       final fileIndex = <String, dynamic>{};
       for (final entry in AppStoreService.instance.getAllFileEntries()) {
-        fileIndex[entry.relativePath] = entry.toJson();
+        // Use hashed keys as defense-in-depth (the manifest is already
+        // encrypted by fula_client, but plaintext paths in keys would leak
+        // structure if the outer encryption were ever compromised).
+        final keyHash = sha256.convert(utf8.encode(entry.relativePath)).toString();
+        fileIndex[keyHash] = entry.toJson();
       }
 
       final jsonStr = jsonEncode({
@@ -792,21 +854,36 @@ class WhatsAppBackupService {
       final jsonStr = utf8.decode(data);
       final json = jsonDecode(jsonStr) as Map<String, dynamic>;
 
-      // Restore backup records
+      // Restore backup records — merge, don't overwrite.
+      // If a record already exists locally (e.g. from a more recent backup on
+      // this device), keep the local version to avoid destroying newer state
+      // with a stale cloud manifest from a previous device.
       final backupsList = json['backups'] as List<dynamic>? ?? [];
+      var restoredRecords = 0;
       for (final bJson in backupsList) {
         final record = BackupRecord.fromJson(bJson as Map<String, dynamic>);
-        await AppStoreService.instance.updateBackupRecord(record);
+        final existing = AppStoreService.instance.getBackupRecord(record.id);
+        if (existing == null) {
+          await AppStoreService.instance.updateBackupRecord(record);
+          restoredRecords++;
+        }
       }
 
-      // Restore file index
+      // Restore file index — merge, don't overwrite.
       final fileIndex = json['fileIndex'] as Map<String, dynamic>? ?? {};
+      var restoredFiles = 0;
       for (final entry in fileIndex.values) {
         final fileEntry = BackupFileEntry.fromJson(entry as Map<String, dynamic>);
-        await AppStoreService.instance.putFileEntry(fileEntry);
+        final existing = AppStoreService.instance.getFileEntry(fileEntry.relativePath);
+        if (existing == null) {
+          await AppStoreService.instance.putFileEntry(fileEntry);
+          restoredFiles++;
+        }
       }
 
-      debugPrint('WhatsAppBackup: manifest restored for $appId (${backupsList.length} backups, ${fileIndex.length} files)');
+      debugPrint('WhatsAppBackup: manifest restored for $appId '
+          '($restoredRecords/${backupsList.length} records merged, '
+          '$restoredFiles/${fileIndex.length} files merged)');
     } catch (e) {
       final errorStr = e.toString();
       if (errorStr.contains('NoSuchKey') ||

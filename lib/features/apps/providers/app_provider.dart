@@ -125,6 +125,8 @@ class AppNotifier extends Notifier<AppState> {
   }
 
   Future<BackupRecord?> startBackup(String appId, {Directory? overrideDir}) async {
+    if (state.isBusy) return null;
+
     // On Android, also queue a one-off WorkManager task as a safety net.
     // If the user closes the app mid-backup, WorkManager picks up where we
     // left off — only un-indexed files (not yet uploaded) remain to process.
@@ -181,6 +183,8 @@ class AppNotifier extends Notifier<AppState> {
     List<String>? specificPaths,
     Directory? restoreDir,
   }) async {
+    if (state.isBusy) return;
+
     state = state.copyWith(
       isRestoring: true,
       error: null,
@@ -232,6 +236,8 @@ class AppNotifier extends Notifier<AppState> {
   }
 
   Future<void> deleteAllBackups(String appId) async {
+    if (state.isBusy) return;
+
     state = state.copyWith(
       isBackingUp: true,
       error: null,
