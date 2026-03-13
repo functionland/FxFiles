@@ -466,8 +466,25 @@ class AuthService {
     // Ensure RustLib is initialized (may have failed at startup)
     await ensureRustLibInitialized();
 
+    // Pin the email used for key derivation so Apple email drift doesn't
+    // change the derived key on a new device (Apple may return null or a
+    // different relay address after the first sign-in).
+    String email;
+    final storedEmail = await SecureStorageService.instance.read(
+      SecureStorageKeys.derivationEmail,
+    );
+    if (storedEmail != null && storedEmail.isNotEmpty) {
+      email = storedEmail;
+    } else {
+      email = _currentUser!.email;
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.derivationEmail,
+        email,
+      );
+    }
+
     // Combined input: "google:{userId}:{email}"
-    final input = '${_currentUser!.provider.name}:${_currentUser!.id}:${_currentUser!.email}';
+    final input = '${_currentUser!.provider.name}:${_currentUser!.id}:$email';
 
     // Use Argon2id via fula_client for cross-platform consistency and brute-force resistance
     // This produces identical keys on Flutter (native) and WebUI (WASM)
@@ -475,9 +492,7 @@ class AuthService {
       await fula.deriveKey(context: 'fula-files-v1', input: utf8.encode(input)),
     );
 
-    debugPrint('AuthService: Derived key using Argon2id');
-    debugPrint('  Input: "$input"');
-    debugPrint('  Key first 4 bytes: ${_encryptionKey!.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+    debugPrint('AuthService: Derived encryption key via Argon2id');
 
     await SecureStorageService.instance.write(
       SecureStorageKeys.encryptionKey,
@@ -706,6 +721,7 @@ class AuthService {
       await SecureStorageService.instance.delete(SecureStorageKeys.userCredentials);
       await SecureStorageService.instance.delete(SecureStorageKeys.authProvider);
       await SecureStorageService.instance.delete(SecureStorageKeys.encryptionKey);
+      await SecureStorageService.instance.delete(SecureStorageKeys.derivationEmail);
       await SecureStorageService.instance.delete(SecureStorageKeys.userPublicKey);
       await SecureStorageService.instance.delete(SecureStorageKeys.userPrivateKey);
 

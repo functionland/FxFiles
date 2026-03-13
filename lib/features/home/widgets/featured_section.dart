@@ -142,7 +142,14 @@ class FeaturedSection extends StatelessWidget {
                   },
                 ),
               ),
-              const Expanded(child: SizedBox()),
+              Expanded(
+                child: _FeaturedCard(
+                  icon: LucideIcons.layoutGrid,
+                  label: 'Apps',
+                  color: Colors.green,
+                  onTap: () => context.push('/apps'),
+                ),
+              ),
             ],
           ),
         ),

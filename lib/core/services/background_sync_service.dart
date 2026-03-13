@@ -12,6 +12,8 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
+import 'package:fula_files/core/services/app_store_service.dart';
+import 'package:fula_files/core/services/whatsapp_backup_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String periodicSyncTask = 'periodicSync';
@@ -19,6 +21,7 @@ const String uploadTask = 'uploadTask';
 const String downloadTask = 'downloadTask';
 const String retryFailedTask = 'retryFailedTask';
 const String cleanupTask = 'cleanupIncomplete';
+const String appBackupTask = 'appBackup';
 
 @pragma('vm:entry-point')
 void callbackDispatcher() {
@@ -63,6 +66,9 @@ void callbackDispatcher() {
           break;
         case cleanupTask:
           await _executeCleanupIncomplete();
+          break;
+        case appBackupTask:
+          await _executeAppBackup(inputData);
           break;
       }
 
@@ -147,6 +153,17 @@ Future<void> _executeRetryFailed() async {
   // Process with timeout
   final timeout = const Duration(minutes: 9);
   await SyncService.instance.processQueueWithTimeout(timeout);
+}
+
+Future<void> _executeAppBackup(Map<String, dynamic>? inputData) async {
+  final appId = inputData?['appId'] as String? ?? 'whatsapp';
+  await AppStoreService.instance.init();
+  await WhatsAppBackupService.instance.init();
+  if (!AppStoreService.instance.isAppActivated(appId)) return;
+  // showNotifications: true → Android top-bar notification, iOS badge
+  await WhatsAppBackupService.instance
+      .runBackup(appId: appId, showNotifications: true)
+      .timeout(const Duration(minutes: 9));
 }
 
 Future<void> _executeCleanupIncomplete() async {
@@ -415,6 +432,52 @@ class BackgroundSyncService {
       ),
       existingWorkPolicy: ExistingWorkPolicy.replace,
     );
+  }
+
+  Future<void> scheduleAppBackup({
+    required String appId,
+    Duration frequency = const Duration(hours: 24),
+  }) async {
+    if (PlatformCapabilities.isDesktop) return; // Apps not supported on desktop
+    if (Platform.isIOS) return; // No automatic backup on iOS
+    if (!Platform.isAndroid) return;
+
+    await Workmanager().registerPeriodicTask(
+      'app-backup-$appId',
+      appBackupTask,
+      frequency: frequency,
+      inputData: {'appId': appId},
+      constraints: Constraints(
+        networkType: NetworkType.unmetered,
+        requiresBatteryNotLow: true,
+      ),
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
+    );
+    debugPrint('Scheduled app backup for $appId every ${frequency.inHours}h');
+  }
+
+  /// Run app backup immediately as a one-off WorkManager task (Android only).
+  /// This survives app close — WorkManager keeps the task alive even if the
+  /// user swipes the app away. On iOS the backup runs inline (foreground only).
+  Future<void> runAppBackupNow({required String appId}) async {
+    if (!Platform.isAndroid) return;
+
+    final uniqueId = 'app-backup-now-${DateTime.now().millisecondsSinceEpoch}';
+    await Workmanager().registerOneOffTask(
+      uniqueId,
+      appBackupTask,
+      inputData: {'appId': appId},
+      constraints: Constraints(
+        networkType: NetworkType.connected,
+      ),
+    );
+    debugPrint('Queued immediate app backup for $appId via WorkManager');
+  }
+
+  Future<void> cancelAppBackup(String appId) async {
+    if (!Platform.isAndroid) return;
+    await Workmanager().cancelByUniqueName('app-backup-$appId');
+    debugPrint('Cancelled app backup for $appId');
   }
 
   Future<void> cancelAll() async {

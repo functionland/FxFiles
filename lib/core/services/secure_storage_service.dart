@@ -94,4 +94,14 @@ class SecureStorageKeys {
   static const String bloxName = 'blox_name';
   static const String bloxIpOverride = 'blox_ip_override';
   static const String bloxLastKnownIp = 'blox_last_known_ip';
+
+  // Apple Sign-In derivation email (pinned on first key derivation)
+  static const String derivationEmail = 'derivation_email';
+
+  // App backup password keys
+  static const String appPasswordSaltPrefix = 'app_password_salt_';
+  static const String appPasswordVerifierPrefix = 'app_password_verifier_';
+  // Derived encryption key — stored in SecureStorage so background tasks can use it.
+  // The OS secure enclave protects it at rest. The raw password is never stored.
+  static const String appDerivedKeyPrefix = 'app_derived_key_';
 }
