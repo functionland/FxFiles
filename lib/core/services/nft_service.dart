@@ -1234,7 +1234,7 @@ class NftService {
     final contract = NftContractService.instance;
     int reconstructed = 0;
 
-    for (final chain in SupportedChain.values) {
+    for (final chain in SupportedChain.all) {
       final nftContractAddress = chain.nftContractAddress;
       if (nftContractAddress == null ||
           nftContractAddress == '0x0000000000000000000000000000000000000000') {
