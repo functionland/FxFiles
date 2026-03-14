@@ -432,7 +432,7 @@ class WhatsAppBackupService {
 
     // Upload
     record.status = BackupStatus.uploading;
-    record.newFileCount = filesToUpload.length;
+    record.newFileCount = 0;
     record.totalFileCount = filesToUpload.length + scan.unchangedCount;
     record.totalSizeBytes = scan.totalSize;
     await AppStoreService.instance.updateBackupRecord(record);
@@ -459,8 +459,13 @@ class WhatsAppBackupService {
           await _uploadFile(fileInfo, record.id, appId, encKey, encryptionKey);
           completedFiles++;
           completedBytes += fileInfo.size;
+          record.newFileCount = completedFiles;
           final catName = fileInfo.category.name;
           categoryCounts[catName] = (categoryCounts[catName] ?? 0) + 1;
+          if (completedFiles % 50 == 0) {
+            record.categoryCounts = categoryCounts;
+            await AppStoreService.instance.updateBackupRecord(record);
+          }
           final progress = BackupProgress(
             completedFiles: completedFiles,
             totalFiles: filesToUpload.length,
@@ -489,8 +494,13 @@ class WhatsAppBackupService {
         await _uploadFile(fileInfo, record.id, appId, encKey, encryptionKey);
         completedFiles++;
         completedBytes += fileInfo.size;
+        record.newFileCount = completedFiles;
         final catName = fileInfo.category.name;
         categoryCounts[catName] = (categoryCounts[catName] ?? 0) + 1;
+        if (completedFiles % 50 == 0) {
+          record.categoryCounts = categoryCounts;
+          await AppStoreService.instance.updateBackupRecord(record);
+        }
         final progress = BackupProgress(
           completedFiles: completedFiles,
           totalFiles: filesToUpload.length,
@@ -515,6 +525,7 @@ class WhatsAppBackupService {
     final hasErrors = completedFiles < filesToUpload.length;
     if (_cancelled) {
       record.status = BackupStatus.cancelled;
+      record.completedAt = DateTime.now();
     } else if (hasErrors && completedFiles == 0) {
       record.status = BackupStatus.error;
       record.errorMessage = 'All uploads failed';
@@ -522,6 +533,8 @@ class WhatsAppBackupService {
       record.status = BackupStatus.completed;
       record.completedAt = DateTime.now();
     }
+    record.newFileCount = completedFiles;
+    record.totalSizeBytes = completedBytes;
     record.categoryCounts = categoryCounts;
     await AppStoreService.instance.updateBackupRecord(record);
     await AppStoreService.instance.updateLastBackupAt(appId, DateTime.now());

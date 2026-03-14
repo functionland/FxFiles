@@ -238,6 +238,7 @@ class AppStoreService {
       record.errorMessage = 'Interrupted — backup was not completed';
       record.completedAt = DateTime.now();
       await _backupRecordsBox.put(record.id, record);
+      await updateLastBackupAt(record.appId, record.completedAt!);
     }
   }
 

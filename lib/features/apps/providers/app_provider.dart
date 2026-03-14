@@ -174,7 +174,7 @@ class AppNotifier extends Notifier<AppState> {
 
   void cancelBackup() {
     WhatsAppBackupService.instance.cancelBackup();
-    state = state.copyWith(isBackingUp: false, statusMessage: null, progress: null);
+    state = state.copyWith(statusMessage: 'Cancelling...');
   }
 
   Future<void> startRestore({
