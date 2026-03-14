@@ -133,16 +133,16 @@ import UserNotifications
         // Schedule next sync
         scheduleBackgroundSync()
 
-        // Set expiration handler
-        task.expirationHandler = {
-            // Clean up if task expires
-            debugPrint("Background sync task expired")
+        // Set expiration handler — iOS calls this when time is almost up
+        task.expirationHandler = { [weak self] in
+            debugPrint("Background sync task expiring — notifying Flutter")
+            self?.methodChannel?.invokeMethod("onBackgroundSyncExpiring", arguments: nil, result: nil)
+            task.setTaskCompleted(success: false)
         }
 
         // Notify Flutter to process sync queue
         DispatchQueue.main.async { [weak self] in
             self?.methodChannel?.invokeMethod("onBackgroundSync", arguments: nil) { result in
-                // Task completion handled by Flutter callback
                 if let success = result as? Bool, success {
                     task.setTaskCompleted(success: true)
                 } else {
@@ -150,21 +150,17 @@ import UserNotifications
                 }
             }
         }
-
-        // Fallback: complete after timeout if Flutter doesn't respond
-        DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
-            // If task is still running, complete it
-            task.setTaskCompleted(success: true)
-        }
     }
 
     private func handleBackgroundRefresh(task: BGAppRefreshTask) {
         // Schedule next refresh
         scheduleBackgroundRefresh()
 
-        // Set expiration handler
-        task.expirationHandler = {
-            debugPrint("Background refresh task expired")
+        // Set expiration handler — iOS calls this when time is almost up
+        task.expirationHandler = { [weak self] in
+            debugPrint("Background refresh task expiring — notifying Flutter")
+            self?.methodChannel?.invokeMethod("onBackgroundSyncExpiring", arguments: nil, result: nil)
+            task.setTaskCompleted(success: false)
         }
 
         // Quick check - notify Flutter
@@ -176,11 +172,6 @@ import UserNotifications
                     task.setTaskCompleted(success: false)
                 }
             }
-        }
-
-        // Fallback timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
-            task.setTaskCompleted(success: true)
         }
     }
 

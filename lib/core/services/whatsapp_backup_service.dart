@@ -484,7 +484,7 @@ class WhatsAppBackupService {
         } catch (e) {
           debugPrint('WhatsAppBackup: upload error for ${fileInfo.relativePath}: $e');
         }
-      }));
+      })).timeout(const Duration(minutes: 5));
     }
 
     // Upload large files sequentially
@@ -557,7 +557,8 @@ class WhatsAppBackupService {
     Uint8List? passwordKey,
     Uint8List? encryptionKey,
   ) async {
-    var data = await fileInfo.file.readAsBytes();
+    var data = await fileInfo.file.readAsBytes()
+        .timeout(const Duration(seconds: 30));
 
     // Password encryption layer
     if (passwordKey != null) {
@@ -573,7 +574,7 @@ class WhatsAppBackupService {
       remoteKey,
       data,
       encryptionKey ?? Uint8List(0),
-    );
+    ).timeout(const Duration(minutes: 2));
 
     // Update file index
     final entry = BackupFileEntry(
