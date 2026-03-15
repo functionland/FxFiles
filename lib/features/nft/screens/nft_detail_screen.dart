@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -496,11 +498,13 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   Future<void> _showClaimSheet(NftMintRecord mint) async {
     // Prompt for claimer address + expiry, with "Anyone can claim" toggle
     final claimerController = TextEditingController();
-    final result = await showDialog<({String? address, Duration expiry})?>(
+    final isBaseChain = mint.chainId == 8453;
+    final result = await showDialog<({String? address, Duration expiry, bool sponsorGas})?>(
       context: context,
       builder: (ctx) {
         var expiryDays = 7;
         var openClaim = true;
+        var sponsorGas = false;
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             return AlertDialog(
@@ -560,6 +564,21 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
                       if (v != null) setDialogState(() => expiryDays = v);
                     },
                   ),
+                  if (isBaseChain) ...[
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Sponsor gas for receiver'),
+                      subtitle: Text(
+                        sponsorGas
+                            ? 'Receiver can claim & act gas-free (~0.001 ETH)'
+                            : 'Receiver pays their own gas',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      value: sponsorGas,
+                      onChanged: (v) => setDialogState(() => sponsorGas = v),
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -570,11 +589,11 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
                 FilledButton(
                   onPressed: () {
                     if (openClaim) {
-                      Navigator.of(ctx).pop((address: null, expiry: Duration(days: expiryDays)));
+                      Navigator.of(ctx).pop((address: null, expiry: Duration(days: expiryDays), sponsorGas: sponsorGas));
                     } else {
                       final addr = claimerController.text.trim();
                       if (RegExp(r'^0x[0-9a-fA-F]{40}$').hasMatch(addr)) {
-                        Navigator.of(ctx).pop((address: addr, expiry: Duration(days: expiryDays)));
+                        Navigator.of(ctx).pop((address: addr, expiry: Duration(days: expiryDays), sponsorGas: sponsorGas));
                       } else {
                         ScaffoldMessenger.of(ctx).showSnackBar(
                           const SnackBar(content: Text('Enter a valid 0x address (42 characters)')),
@@ -599,6 +618,28 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
     final walletSource = await _showWalletPicker();
     if (walletSource == null || !mounted) return;
 
+    // Calculate gas deposit if sponsoring (gasPrice * 300,000 for 2-tx margin)
+    BigInt? gasDeposit;
+    if (result.sponsorGas) {
+      // ~0.001 ETH default, or estimate from gas price
+      gasDeposit = BigInt.from(300000) * BigInt.from(1000000000); // 300k * 1 gwei fallback
+      try {
+        final chain = SupportedChain.byChainId(mint.chainId);
+        if (chain?.rpcUrl != null) {
+          final response = await http.post(
+            Uri.parse(chain!.rpcUrl!),
+            headers: {'Content-Type': 'application/json'},
+            body: '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}',
+          ).timeout(const Duration(seconds: 5));
+          final body = jsonDecode(response.body);
+          if (body['result'] != null) {
+            final gasPrice = BigInt.parse((body['result'] as String).replaceFirst('0x', ''), radix: 16);
+            gasDeposit = BigInt.from(300000) * gasPrice;
+          }
+        }
+      } catch (_) {}
+    }
+
     final offerResult = await _withProgressDialog<({String linkHash, String claimLink})>(
       title: 'Creating claim offer...',
       operation: () => ref.read(nftProvider.notifier).createClaimOffer(
@@ -607,6 +648,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
         claimerAddress: result.address,
         expiry: result.expiry,
         walletSource: walletSource,
+        gasDepositWei: gasDeposit,
       ),
     );
 

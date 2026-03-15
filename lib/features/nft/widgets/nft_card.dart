@@ -143,6 +143,29 @@ class _NftCardState extends State<NftCard> {
                                     ],
                                   ),
                                 ),
+                              if (record.tokenId != null && chain != null &&
+                                  chain.getOpenSeaUrl(chain.nftContractAddress ?? '', record.tokenId!) != null)
+                                GestureDetector(
+                                  onTap: () => launchUrl(
+                                    Uri.parse(chain.getOpenSeaUrl(chain.nftContractAddress!, record.tokenId!)!),
+                                    mode: LaunchMode.externalApplication,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(LucideIcons.shoppingBag, size: 11, color: Colors.blue[400]),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Sell on OpenSea',
+                                        style: TextStyle(
+                                          color: Colors.blue[400],
+                                          fontSize: 11,
+                                          decoration: TextDecoration.underline,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                             ],
                           ),
                         ),
@@ -426,7 +449,7 @@ class _ClaimRow extends StatelessWidget {
       chainId: claim.chainId,
       contractAddress: nftContractAddress,
       tokenId: claim.tokenId,
-      linkHash: claim.linkHash!,
+      secret: claim.linkHash!,
     );
     Clipboard.setData(ClipboardData(text: claimLink));
     ScaffoldMessenger.of(context).showSnackBar(

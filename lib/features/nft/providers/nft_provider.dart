@@ -186,6 +186,7 @@ class NftNotifier extends Notifier<NftState> {
     String? claimerAddress,
     required Duration expiry,
     WalletSource walletSource = WalletSource.external,
+    BigInt? gasDepositWei,
   }) async {
     final msg = walletSource == WalletSource.external
         ? 'Confirm claim offer in your wallet...'
@@ -198,6 +199,7 @@ class NftNotifier extends Notifier<NftState> {
         claimerAddress: claimerAddress,
         expiry: expiry,
         walletSource: walletSource,
+        gasDepositWei: gasDepositWei,
       );
       state = state.copyWith(isClaiming: false, statusMessage: null);
       return (linkHash: result.linkHash, claimLink: result.claimLink);
@@ -260,6 +262,7 @@ class NftNotifier extends Notifier<NftState> {
     required int tokenId,
     required int amount,
     WalletSource walletSource = WalletSource.external,
+    String? linkHash,
   }) async {
     final burnMsg = walletSource == WalletSource.external
         ? 'Confirm burn in your wallet...'
@@ -271,6 +274,7 @@ class NftNotifier extends Notifier<NftState> {
         tokenId: tokenId,
         amount: amount,
         walletSource: walletSource,
+        linkHash: linkHash,
       );
       state = state.copyWith(isBurning: false, statusMessage: null);
       return txHash;
@@ -287,6 +291,7 @@ class NftNotifier extends Notifier<NftState> {
     required String toAddress,
     required int amount,
     WalletSource walletSource = WalletSource.external,
+    String? linkHash,
   }) async {
     final transferMsg = walletSource == WalletSource.external
         ? 'Confirm transfer in your wallet...'
@@ -299,6 +304,7 @@ class NftNotifier extends Notifier<NftState> {
         toAddress: toAddress,
         amount: amount,
         walletSource: walletSource,
+        linkHash: linkHash,
       );
       state = state.copyWith(isTransferring: false, statusMessage: null);
       return txHash;

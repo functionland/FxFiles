@@ -306,6 +306,10 @@ class ReceivedNft extends HiveObject {
   @HiveField(12)
   String? transferTxHash;
 
+  /// The claim link hash — needed for gasless burn/transfer via meta-tx relay.
+  @HiveField(13)
+  String? claimLinkHash;
+
   ReceivedNft({
     required this.id,
     required this.tokenId,
@@ -320,6 +324,7 @@ class ReceivedNft extends HiveObject {
     this.status = ReceivedNftStatus.held,
     this.burnTxHash,
     this.transferTxHash,
+    this.claimLinkHash,
   });
 
   Map<String, dynamic> toJson() {
@@ -337,6 +342,7 @@ class ReceivedNft extends HiveObject {
       'status': status.index,
       'burnTxHash': burnTxHash,
       'transferTxHash': transferTxHash,
+      'claimLinkHash': claimLinkHash,
     };
   }
 
@@ -355,6 +361,7 @@ class ReceivedNft extends HiveObject {
       status: ReceivedNftStatus.values[json['status'] as int? ?? 0],
       burnTxHash: json['burnTxHash'] as String?,
       transferTxHash: json['transferTxHash'] as String?,
+      claimLinkHash: json['claimLinkHash'] as String?,
     );
   }
 

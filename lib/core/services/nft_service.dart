@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:web3dart/web3dart.dart' show keccak256;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
@@ -19,6 +21,7 @@ import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
+import 'package:fula_files/core/services/meta_tx_relay_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 
 /// Whether to use the internal (derived) wallet or an external (AppKit) wallet.
@@ -33,14 +36,26 @@ class NftService {
   /// HTTPS domain for shareable claim links.
   static const String claimLinkHost = 'files.fx.land';
 
+  /// Compute the on-chain claimKey from a secret (hex string).
+  static String secretToClaimKey(String secret) {
+    final hex = secret.replaceFirst('0x', '');
+    final bytes = Uint8List(hex.length ~/ 2);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    final keyBytes = keccak256(bytes);
+    return '0x${keyBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+  }
+
   /// Build a shareable HTTPS claim link.
+  /// [secret] is the raw claim secret (shared via link). The on-chain key is keccak256(secret).
   static String buildClaimLink({
     required int chainId,
     required String contractAddress,
     required int tokenId,
-    required String linkHash,
+    required String secret,
   }) {
-    return 'https://$claimLinkHost/nft-claim?chain=$chainId&contract=$contractAddress&token=$tokenId&hash=$linkHash';
+    return 'https://$claimLinkHost/nft-claim?chain=$chainId&contract=$contractAddress&token=$tokenId&hash=$secret';
   }
 
   late Box<NftCollection> _collectionsBox;
@@ -174,6 +189,16 @@ class NftService {
         .where((r) => r.status == ReceivedNftStatus.held)
         .toList()
       ..sort((a, b) => b.claimedAt.compareTo(a.claimedAt));
+  }
+
+  /// Get a specific received NFT by ID
+  ReceivedNft? getReceivedNft(String id) {
+    if (!_isInitialized) return null;
+    try {
+      return _receivedBox.values.firstWhere((r) => r.id == id);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Save a received NFT after claiming
@@ -570,6 +595,7 @@ class NftService {
     String? claimerAddress,
     required Duration expiry,
     WalletSource walletSource = WalletSource.external,
+    BigInt? gasDepositWei,
   }) async {
     final chain = SupportedChain.byChainId(mint.chainId);
     if (chain == null) throw Exception('Unknown chain: ${mint.chainId}');
@@ -591,42 +617,47 @@ class NftService {
       DateTime.now().add(expiry).millisecondsSinceEpoch ~/ 1000,
     );
 
-    // Send createClaimOffer tx
+    // Generate random 32-byte secret and derive claimKey
+    final rng = Random.secure();
+    final secretBytes = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      secretBytes[i] = rng.nextInt(256);
+    }
+    final secret = '0x${secretBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+    final claimKeyBytes = keccak256(secretBytes);
+    final claimKey = '0x${claimKeyBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+
+    // Send createClaimOffer tx (payable if gasDepositWei > 0)
     debugPrint('NftService: Creating claim offer for token $tokenId...');
-    final data = contract.encodeCreateClaimOffer(tokenId, claimerAddress, expiresAt);
+    final data = contract.encodeCreateClaimOffer(tokenId, claimerAddress, expiresAt, claimKey);
     final txHash = await _sendTransaction(
       chain: chain,
       contractAddress: nftContractAddress,
       encodedData: data,
       walletSource: walletSource,
+      value: gasDepositWei,
     );
 
     // Poll for receipt
     debugPrint('NftService: Waiting for claim offer tx: $txHash');
-    final receipt = await contract.pollForReceipt(
+    await contract.pollForReceipt(
       chainId: chain.chainId,
       txHash: txHash,
     );
 
-    // Parse linkHash from event
-    final linkHash = contract.parseClaimOfferHash(receipt);
-    if (linkHash == null) {
-      throw Exception('Failed to parse claim offer linkHash from receipt');
-    }
-
-    // Build shareable HTTPS claim link
+    // Build shareable HTTPS claim link (contains secret, NOT claimKey)
     final claimLink = buildClaimLink(
       chainId: chain.chainId,
       contractAddress: nftContractAddress,
       tokenId: tokenId,
-      linkHash: linkHash,
+      secret: secret,
     );
 
-    // Save claim record
+    // Save claim record (store secret for claim link sharing; derive claimKey on demand)
     final claimRecord = NftClaimRecord(
       id: _uuid.v4(),
       tokenId: tokenId,
-      linkHash: linkHash,
+      linkHash: secret,
       claimerAddress: claimerAddress,
       chainId: chain.chainId,
       createdAt: DateTime.now(),
@@ -639,13 +670,14 @@ class NftService {
     mint.claims = [...mint.claims, claimRecord];
     await updateMintRecord(tagId, mint);
 
-    debugPrint('NftService: Claim offer created: $linkHash');
+    debugPrint('NftService: Claim offer created with claimKey: $claimKey');
     scheduleSyncToCloud();
 
-    return (linkHash: linkHash, claimLink: claimLink, record: claimRecord);
+    return (linkHash: secret, claimLink: claimLink, record: claimRecord);
   }
 
   /// Claim an NFT using the specified wallet source.
+  /// [linkHash] is the secret from the claim link URL (hash-commitment: contract derives claimKey).
   Future<String> claimNft({
     required int chainId,
     required String linkHash,
@@ -660,6 +692,16 @@ class NftService {
       throw Exception('NFT contract not deployed on ${chain.chainName}');
     }
 
+    // linkHash from URL is the secret; derive claimKey for on-chain lookups
+    final secret = linkHash;
+    final secretHex = secret.replaceFirst('0x', '');
+    final secretBytes = Uint8List(secretHex.length ~/ 2);
+    for (var i = 0; i < secretBytes.length; i++) {
+      secretBytes[i] = int.parse(secretHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    final claimKeyBytes = keccak256(secretBytes);
+    final claimKey = '0x${claimKeyBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+
     // Validate wallet availability
     await _getWalletAddress(walletSource);
 
@@ -668,9 +710,9 @@ class NftService {
       await _ensureCorrectChain(chain);
     }
 
-    // Check claim expiry on-chain before attempting
+    // Check claim expiry on-chain before attempting (use claimKey for lookup)
     try {
-      final offerInfo = await _fetchClaimOffer(chainId, nftContractAddress, linkHash);
+      final offerInfo = await _fetchClaimOffer(chainId, nftContractAddress, claimKey);
       if (offerInfo != null) {
         if (offerInfo.status == 1) {
           throw Exception('This NFT has already been claimed');
@@ -695,9 +737,27 @@ class NftService {
 
     final contract = NftContractService.instance;
 
-    // Send claimNFT tx
-    debugPrint('NftService: Claiming NFT with linkHash: $linkHash');
-    final data = contract.encodeClaimNft(linkHash);
+    // Check if gasless meta-tx is available
+    if (chain.supportsGaslessRelay && walletSource == WalletSource.internal) {
+      if (chain.freeGas) {
+        // Free-gas chains (Skale): always use relay, no deposit needed
+        debugPrint('NftService: Free-gas chain, using meta-tx claim');
+        return _claimViaMeta(chain: chain, secret: secret, claimKey: claimKey);
+      }
+      // Paid-gas chains (Base): use relay only if gas deposit exists
+      final gasDeposit = await MetaTxRelayService.instance.getGasDeposit(
+        chainId: chain.chainId,
+        linkHash: claimKey,
+      );
+      if (gasDeposit > BigInt.zero) {
+        debugPrint('NftService: Gas deposit found, using meta-tx claim');
+        return _claimViaMeta(chain: chain, secret: secret, claimKey: claimKey);
+      }
+    }
+
+    // Send claimNFT tx (direct on-chain, pass secret)
+    debugPrint('NftService: Claiming NFT with secret');
+    final data = contract.encodeClaimNft(secret);
 
     String txHash;
     try {
@@ -760,6 +820,157 @@ class NftService {
     }
   }
 
+  // ============================================================================
+  // META-TX GASLESS FLOWS (Base chain only)
+  // ============================================================================
+
+  /// Claim via gasless meta-transaction relay (internal wallet only).
+  Future<String> _claimViaMeta({
+    required SupportedChain chain,
+    required String secret,
+    required String claimKey,
+  }) async {
+    final relay = MetaTxRelayService.instance;
+    final wallet = NftWalletService.instance;
+    final address = await wallet.getAddress();
+    if (address == null) throw Exception('Internal wallet not available');
+
+    final nonce = await relay.getMetaNonce(chainId: chain.chainId, address: address);
+    final deadline = DateTime.now().add(const Duration(minutes: 5)).millisecondsSinceEpoch ~/ 1000;
+
+    // Sign EIP-712 over claimKey (public key), NOT the secret
+    final sig = await wallet.signClaimNftMeta(
+      claimKey: claimKey,
+      claimer: address,
+      deadline: deadline,
+      nonce: nonce,
+      chainId: chain.chainId,
+      contractAddress: chain.nftContractAddress!,
+    );
+
+    debugPrint('NftService: Submitting gasless claim via relay...');
+    // Send secret (not claimKey) to relay — relay passes it to claimNFTMeta(secret, ...)
+    final txHash = await relay.relay(
+      action: 'claimNFT',
+      chainId: chain.chainId,
+      secret: secret,
+      claimKey: claimKey,
+      signer: address,
+      deadline: deadline,
+      nonce: nonce,
+      signature: sig,
+    );
+
+    // Poll for receipt
+    debugPrint('NftService: Waiting for meta-tx claim: $txHash');
+    await NftContractService.instance.pollForReceipt(
+      chainId: chain.chainId,
+      txHash: txHash,
+    );
+
+    debugPrint('NftService: Gasless claim successful');
+    return txHash;
+  }
+
+  /// Burn via gasless meta-transaction relay.
+  Future<String> burnViaMeta({
+    required int chainId,
+    required String claimKey,
+    required int tokenId,
+    required int amount,
+  }) async {
+    final chain = SupportedChain.byChainId(chainId);
+    if (chain?.nftContractAddress == null) throw Exception('Unknown chain: $chainId');
+
+    final relay = MetaTxRelayService.instance;
+    final wallet = NftWalletService.instance;
+    final address = await wallet.getAddress();
+    if (address == null) throw Exception('Internal wallet not available');
+
+    final nonce = await relay.getMetaNonce(chainId: chainId, address: address);
+    final deadline = DateTime.now().add(const Duration(minutes: 5)).millisecondsSinceEpoch ~/ 1000;
+
+    final sig = await wallet.signBurnMeta(
+      claimKey: claimKey,
+      tokenId: tokenId,
+      amount: amount,
+      holder: address,
+      deadline: deadline,
+      nonce: nonce,
+      chainId: chainId,
+      contractAddress: chain!.nftContractAddress!,
+    );
+
+    debugPrint('NftService: Submitting gasless burn via relay...');
+    final txHash = await relay.relay(
+      action: 'burn',
+      chainId: chainId,
+      claimKey: claimKey,
+      signer: address,
+      deadline: deadline,
+      nonce: nonce,
+      signature: sig,
+      tokenId: tokenId,
+      amount: amount,
+    );
+
+    await NftContractService.instance.pollForReceipt(
+      chainId: chainId,
+      txHash: txHash,
+    );
+
+    debugPrint('NftService: Gasless burn successful');
+    return txHash;
+  }
+
+  /// Transfer back to creator via gasless meta-transaction relay.
+  Future<String> transferBackViaMeta({
+    required int chainId,
+    required String claimKey,
+    required int tokenId,
+  }) async {
+    final chain = SupportedChain.byChainId(chainId);
+    if (chain?.nftContractAddress == null) throw Exception('Unknown chain: $chainId');
+
+    final relay = MetaTxRelayService.instance;
+    final wallet = NftWalletService.instance;
+    final address = await wallet.getAddress();
+    if (address == null) throw Exception('Internal wallet not available');
+
+    final nonce = await relay.getMetaNonce(chainId: chainId, address: address);
+    final deadline = DateTime.now().add(const Duration(minutes: 5)).millisecondsSinceEpoch ~/ 1000;
+
+    final sig = await wallet.signTransferBackMeta(
+      claimKey: claimKey,
+      tokenId: tokenId,
+      holder: address,
+      deadline: deadline,
+      nonce: nonce,
+      chainId: chainId,
+      contractAddress: chain!.nftContractAddress!,
+    );
+
+    debugPrint('NftService: Submitting gasless transferBack via relay...');
+    final txHash = await relay.relay(
+      action: 'transferBack',
+      chainId: chainId,
+      claimKey: claimKey,
+      signer: address,
+      deadline: deadline,
+      nonce: nonce,
+      signature: sig,
+      tokenId: tokenId,
+    );
+
+    await NftContractService.instance.pollForReceipt(
+      chainId: chainId,
+      txHash: txHash,
+    );
+
+    debugPrint('NftService: Gasless transferBack successful');
+    return txHash;
+  }
+
   /// Ensure the wallet is on the correct chain, switching if needed
   Future<void> _ensureCorrectChain(SupportedChain chain) async {
     final wallet = WalletService.instance;
@@ -798,9 +1009,10 @@ class NftService {
     }
 
     final contract = NftContractService.instance;
-    final data = contract.encodeCancelClaimOffer(claim.linkHash!);
+    final claimKey = secretToClaimKey(claim.linkHash!);
+    final data = contract.encodeCancelClaimOffer(claimKey);
 
-    debugPrint('NftService: Cancelling claim offer: ${claim.linkHash}');
+    debugPrint('NftService: Cancelling claim offer: $claimKey');
     final txHash = await _sendTransaction(
       chain: chain,
       contractAddress: nftContractAddress,
@@ -846,10 +1058,11 @@ class NftService {
       // Only refresh pending claims
       if (claim.status != NftClaimStatus.pending) continue;
 
+      final claimKey = secretToClaimKey(claim.linkHash!);
       final offerInfo = await _fetchClaimOffer(
         chain.chainId,
         nftContractAddress,
-        claim.linkHash!,
+        claimKey,
       );
       if (offerInfo == null) continue;
 
@@ -874,11 +1087,13 @@ class NftService {
   // ============================================================================
 
   /// Burn NFTs, releasing locked FULA to the burner.
+  /// If [linkHash] is provided and gas deposit exists, uses gasless meta-tx relay.
   Future<String> burnNft({
     required int chainId,
     required int tokenId,
     required int amount,
     WalletSource walletSource = WalletSource.external,
+    String? linkHash,
   }) async {
     final chain = SupportedChain.byChainId(chainId);
     if (chain == null) throw Exception('Unknown chain: $chainId');
@@ -887,6 +1102,21 @@ class NftService {
     if (nftContractAddress == null ||
         nftContractAddress == '0x0000000000000000000000000000000000000000') {
       throw Exception('NFT contract not deployed on ${chain.chainName}');
+    }
+
+    // Check if gasless burn is available (linkHash here is the secret from claim link)
+    if (linkHash != null && chain.supportsGaslessRelay && walletSource == WalletSource.internal) {
+      final claimKey = secretToClaimKey(linkHash);
+      if (chain.freeGas) {
+        return burnViaMeta(chainId: chainId, claimKey: claimKey, tokenId: tokenId, amount: amount);
+      }
+      final gasDeposit = await MetaTxRelayService.instance.getGasDeposit(
+        chainId: chain.chainId,
+        linkHash: claimKey,
+      );
+      if (gasDeposit > BigInt.zero) {
+        return burnViaMeta(chainId: chainId, claimKey: claimKey, tokenId: tokenId, amount: amount);
+      }
     }
 
     final account = await _getWalletAddress(walletSource);
@@ -1000,12 +1230,14 @@ class NftService {
   // ============================================================================
 
   /// Transfer NFTs to another address. FULA stays locked — only burn releases it.
+  /// If [linkHash] is provided and gas deposit exists, uses gasless transferBack meta-tx.
   Future<String> transferNft({
     required int chainId,
     required int tokenId,
     required String toAddress,
     required int amount,
     WalletSource walletSource = WalletSource.external,
+    String? linkHash,
   }) async {
     final chain = SupportedChain.byChainId(chainId);
     if (chain == null) throw Exception('Unknown chain: $chainId');
@@ -1014,6 +1246,21 @@ class NftService {
     if (nftContractAddress == null ||
         nftContractAddress == '0x0000000000000000000000000000000000000000') {
       throw Exception('NFT contract not deployed on ${chain.chainName}');
+    }
+
+    // Check if gasless transferBack is available (linkHash here is the secret from claim link)
+    if (linkHash != null && chain.supportsGaslessRelay && walletSource == WalletSource.internal) {
+      final claimKey = secretToClaimKey(linkHash);
+      if (chain.freeGas) {
+        return transferBackViaMeta(chainId: chainId, claimKey: claimKey, tokenId: tokenId);
+      }
+      final gasDeposit = await MetaTxRelayService.instance.getGasDeposit(
+        chainId: chain.chainId,
+        linkHash: claimKey,
+      );
+      if (gasDeposit > BigInt.zero) {
+        return transferBackViaMeta(chainId: chainId, claimKey: claimKey, tokenId: tokenId);
+      }
     }
 
     final from = await _getWalletAddress(walletSource);
@@ -1521,18 +1768,21 @@ class NftService {
     required String contractAddress,
     required String encodedData,
     WalletSource walletSource = WalletSource.external,
+    BigInt? value,
   }) async {
     if (walletSource == WalletSource.internal) {
       return NftWalletService.instance.sendSignedTransaction(
         chain: chain,
         to: contractAddress,
         encodedData: encodedData,
+        value: value,
       );
     } else {
       return WalletService.instance.sendContractTransaction(
         chain: chain,
         contractAddress: contractAddress,
         encodedData: encodedData,
+        value: value,
       );
     }
   }

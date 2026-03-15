@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/features/billing/providers/billing_provider.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
 import 'package:fula_files/features/nft/widgets/receive_nft_dialog.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 
 /// Screen listing NFTs in two tabs: Created and Received.
@@ -560,7 +561,24 @@ class _ReceivedNftTile extends StatelessWidget {
         '$chainName \u2022 Token #${nft.tokenId}',
         style: TextStyle(color: Colors.grey[600], fontSize: 12),
       ),
-      trailing: const Icon(LucideIcons.chevronRight, size: 18),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (nft.status == ReceivedNftStatus.held && chain != null &&
+              chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId) != null)
+            IconButton(
+              icon: Icon(LucideIcons.shoppingBag, size: 18, color: Colors.blue[400]),
+              tooltip: 'Sell on OpenSea',
+              constraints: const BoxConstraints(),
+              padding: const EdgeInsets.all(8),
+              onPressed: () => launchUrl(
+                Uri.parse(chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId)!),
+                mode: LaunchMode.externalApplication,
+              ),
+            ),
+          const Icon(LucideIcons.chevronRight, size: 18),
+        ],
+      ),
       onTap: onTap,
     );
   }

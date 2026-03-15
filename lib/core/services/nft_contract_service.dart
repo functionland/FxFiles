@@ -18,8 +18,8 @@ class NftContractService {
   // Function selectors — keccak256 of signature, first 4 bytes
   // mintWithFula(string,string,uint256,uint256,uint96)
   static const String _mintWithFulaSelector = '7de4a084';
-  // createClaimOffer(uint256,address,uint256)
-  static const String _createClaimOfferSelector = '49db23ce';
+  // createClaimOffer(uint256,address,uint256,bytes32)
+  static const String _createClaimOfferSelector = 'ba599c50';
   // claimNFT(bytes32)
   static const String _claimNftSelector = 'fbcb5ae7';
   // burn(address,uint256,uint256)
@@ -42,6 +42,16 @@ class NftContractService {
   static const String _cancelClaimOfferSelector = '29845de0';
   // approve(address,uint256) — standard ERC20
   static const String _approveSelector = '095ea7b3';
+  // claimNFTMeta(bytes32,address,uint256,uint256,bytes)
+  static const String _claimNftMetaSelector = '59172b79';
+  // burnMeta(bytes32,uint256,uint256,address,uint256,uint256,bytes)
+  static const String _burnMetaSelector = 'b65d7bbb';
+  // transferBackMeta(bytes32,uint256,address,uint256,uint256,bytes)
+  static const String _transferBackMetaSelector = '6b568b42';
+  // claimGasDeposits(bytes32)
+  static const String _claimGasDepositsSelector = '6e3e2fa3';
+  // metaNonces(address)
+  static const String _metaNoncesSelector = 'a3c573eb';
 
   // ============================================================================
   // ABI ENCODING
@@ -88,18 +98,19 @@ class NftContractService {
         '$metadataCidLengthHex$metadataCidDataHex';
   }
 
-  /// Encode createClaimOffer(uint256 tokenId, address claimer, uint256 expiresAt)
+  /// Encode createClaimOffer(uint256 tokenId, address claimer, uint256 expiresAt, bytes32 claimKey)
   /// If [claimerAddress] is null, uses address(0) for an open claim.
-  String encodeCreateClaimOffer(int tokenId, String? claimerAddress, BigInt expiresAt) {
+  String encodeCreateClaimOffer(int tokenId, String? claimerAddress, BigInt expiresAt, String claimKey) {
     final tokenHex = _padUint256(BigInt.from(tokenId));
     final address = _padAddress(claimerAddress ?? '0x0000000000000000000000000000000000000000');
     final expiresHex = _padUint256(expiresAt);
-    return '0x$_createClaimOfferSelector$tokenHex$address$expiresHex';
+    final keyHex = claimKey.replaceFirst('0x', '').padLeft(64, '0');
+    return '0x$_createClaimOfferSelector$tokenHex$address$expiresHex$keyHex';
   }
 
-  /// Encode claimNFT(bytes32 linkHash)
-  String encodeClaimNft(String linkHash) {
-    final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
+  /// Encode claimNFT(bytes32 secret)
+  String encodeClaimNft(String secret) {
+    final hashHex = secret.replaceFirst('0x', '').padLeft(64, '0');
     return '0x$_claimNftSelector$hashHex';
   }
 
@@ -107,6 +118,72 @@ class NftContractService {
   String encodeCancelClaimOffer(String linkHash) {
     final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
     return '0x$_cancelClaimOfferSelector$hashHex';
+  }
+
+  /// Encode claimNFTMeta(bytes32 secret, address claimer, uint256 deadline, uint256 nonce, bytes sig)
+  String encodeClaimNftMeta(String secret, String claimer, BigInt deadline, int nonce, String signature) {
+    final hashHex = secret.replaceFirst('0x', '').padLeft(64, '0');
+    final claimerHex = _padAddress(claimer);
+    final deadlineHex = _padUint256(deadline);
+    final nonceHex = _padUint256(BigInt.from(nonce));
+    // bytes: offset (5*32=160), then length + data
+    final sigOffset = _padUint256(BigInt.from(160));
+    final sigBytes = _hexToByteList(signature.replaceFirst('0x', ''));
+    final sigLengthHex = _padUint256(BigInt.from(sigBytes.length));
+    final sigDataHex = _padBytes(sigBytes);
+    return '0x$_claimNftMetaSelector$hashHex$claimerHex$deadlineHex$nonceHex$sigOffset$sigLengthHex$sigDataHex';
+  }
+
+  /// Encode burnMeta(bytes32 claimKey, uint256 tokenId, uint256 amount, address holder, uint256 deadline, uint256 nonce, bytes sig)
+  String encodeBurnMeta(String claimKey, int tokenId, int amount, String holder, BigInt deadline, int nonce, String signature) {
+    final hashHex = claimKey.replaceFirst('0x', '').padLeft(64, '0');
+    final tokenHex = _padUint256(BigInt.from(tokenId));
+    final amountHex = _padUint256(BigInt.from(amount));
+    final holderHex = _padAddress(holder);
+    final deadlineHex = _padUint256(deadline);
+    final nonceHex = _padUint256(BigInt.from(nonce));
+    // bytes offset = 7*32 = 224
+    final sigOffset = _padUint256(BigInt.from(224));
+    final sigBytes = _hexToByteList(signature.replaceFirst('0x', ''));
+    final sigLengthHex = _padUint256(BigInt.from(sigBytes.length));
+    final sigDataHex = _padBytes(sigBytes);
+    return '0x$_burnMetaSelector$hashHex$tokenHex$amountHex$holderHex$deadlineHex$nonceHex$sigOffset$sigLengthHex$sigDataHex';
+  }
+
+  /// Encode transferBackMeta(bytes32 claimKey, uint256 tokenId, address holder, uint256 deadline, uint256 nonce, bytes sig)
+  String encodeTransferBackMeta(String claimKey, int tokenId, String holder, BigInt deadline, int nonce, String signature) {
+    final hashHex = claimKey.replaceFirst('0x', '').padLeft(64, '0');
+    final tokenHex = _padUint256(BigInt.from(tokenId));
+    final holderHex = _padAddress(holder);
+    final deadlineHex = _padUint256(deadline);
+    final nonceHex = _padUint256(BigInt.from(nonce));
+    // bytes offset = 6*32 = 192
+    final sigOffset = _padUint256(BigInt.from(192));
+    final sigBytes = _hexToByteList(signature.replaceFirst('0x', ''));
+    final sigLengthHex = _padUint256(BigInt.from(sigBytes.length));
+    final sigDataHex = _padBytes(sigBytes);
+    return '0x$_transferBackMetaSelector$hashHex$tokenHex$holderHex$deadlineHex$nonceHex$sigOffset$sigLengthHex$sigDataHex';
+  }
+
+  /// Encode claimGasDeposits(bytes32 linkHash) — view
+  String encodeGetClaimGasDeposit(String linkHash) {
+    final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
+    return '0x$_claimGasDepositsSelector$hashHex';
+  }
+
+  /// Encode metaNonces(address) — view
+  String encodeGetMetaNonce(String address) {
+    final addrHex = _padAddress(address);
+    return '0x$_metaNoncesSelector$addrHex';
+  }
+
+  List<int> _hexToByteList(String hex) {
+    final cleaned = hex.replaceFirst('0x', '');
+    final result = <int>[];
+    for (var i = 0; i < cleaned.length; i += 2) {
+      result.add(int.parse(cleaned.substring(i, i + 2), radix: 16));
+    }
+    return result;
   }
 
   /// Encode burn(address account, uint256 id, uint256 value)

@@ -473,10 +473,12 @@ Timestamp: $timestamp''';
     required SupportedChain chain,
     required String contractAddress,
     required String encodedData,
+    BigInt? value,
   }) async {
     _ensureInitialized();
     _ensureConnected();
 
+    var txCompleted = false;
     try {
       final session = _appKitModal!.session;
       if (session == null) {
@@ -486,6 +488,10 @@ Timestamp: $timestamp''';
       final topic = session.topic ?? '';
 
       debugPrint('WalletService: Sending tx to $contractAddress on chain ${chain.chainId}');
+
+      final valueHex = value != null && value > BigInt.zero
+          ? '0x${value.toRadixString(16)}'
+          : '0x0';
 
       final pendingTx = _appKitModal!.request(
         topic: topic,
@@ -497,7 +503,7 @@ Timestamp: $timestamp''';
               'from': _connectedAddress,
               'to': contractAddress,
               'data': encodedData,
-              'value': '0x0',
+              'value': valueHex,
             },
           ],
         ),
@@ -510,17 +516,30 @@ Timestamp: $timestamp''';
 
       // Give the relay a moment to deliver, then try to open the wallet app
       // so the user sees the confirmation prompt without manually switching.
+      // Stop retrying once the tx completes (user already approved/rejected).
       unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
-        try {
-          await tryOpenWallet();
-        } catch (_) {}
+        for (var attempt = 0; attempt < 3 && !txCompleted; attempt++) {
+          try {
+            final opened = await tryOpenWallet();
+            if (opened) return;
+            debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} returned false');
+          } catch (e) {
+            debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} error: $e');
+          }
+          // Wait longer each retry: 1s, 2s
+          if (attempt < 2 && !txCompleted) {
+            await Future.delayed(Duration(seconds: attempt + 1));
+          }
+        }
       }));
 
       final txHash = await pendingTx;
+      txCompleted = true;
 
       debugPrint('WalletService: Tx sent, hash: $txHash');
       return txHash as String;
     } catch (e) {
+      txCompleted = true;
       debugPrint('WalletService: sendContractTransaction error: $e');
       throw WalletServiceException('Failed to send contract transaction: $e');
     }

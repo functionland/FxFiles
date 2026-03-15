@@ -154,6 +154,160 @@ class NftWalletService {
     );
   }
 
+  // ============================================================================
+  // EIP-712 SIGNING (for gasless meta-tx claims on Base)
+  // ============================================================================
+
+  /// Build the EIP-712 domain separator for FulaFileNFT.
+  Uint8List _buildDomainSeparator(int chainId, String contractAddress) {
+    // EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)
+    final domainTypeHash = _keccak256Utf8(
+      'EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)');
+    final nameHash = _keccak256Utf8('FulaFileNFT');
+    final versionHash = _keccak256Utf8('1');
+
+    final encoded = _abiEncode([
+      domainTypeHash,
+      nameHash,
+      versionHash,
+      _uint256Bytes(BigInt.from(chainId)),
+      _addressBytes(contractAddress),
+    ]);
+    return _keccak256(encoded);
+  }
+
+  /// Sign a ClaimNFTMeta EIP-712 typed data.
+  /// [claimKey] is the public key (keccak256 of secret) — we sign over this, NOT the secret.
+  /// Returns the raw ECDSA signature as a hex string (no 0x prefix).
+  Future<String> signClaimNftMeta({
+    required String claimKey,
+    required String claimer,
+    required int deadline,
+    required int nonce,
+    required int chainId,
+    required String contractAddress,
+  }) async {
+    final typeHash = _keccak256Utf8(
+      'ClaimNFTMeta(bytes32 claimKey,address claimer,uint256 deadline,uint256 nonce)');
+    final structHash = _keccak256(_abiEncode([
+      typeHash,
+      _bytes32FromHex(claimKey),
+      _addressBytes(claimer),
+      _uint256Bytes(BigInt.from(deadline)),
+      _uint256Bytes(BigInt.from(nonce)),
+    ]));
+    return _signEip712(structHash, chainId, contractAddress);
+  }
+
+  /// Sign a BurnMeta EIP-712 typed data.
+  Future<String> signBurnMeta({
+    required String claimKey,
+    required int tokenId,
+    required int amount,
+    required String holder,
+    required int deadline,
+    required int nonce,
+    required int chainId,
+    required String contractAddress,
+  }) async {
+    final typeHash = _keccak256Utf8(
+      'BurnMeta(bytes32 claimKey,uint256 tokenId,uint256 amount,address holder,uint256 deadline,uint256 nonce)');
+    final structHash = _keccak256(_abiEncode([
+      typeHash,
+      _bytes32FromHex(claimKey),
+      _uint256Bytes(BigInt.from(tokenId)),
+      _uint256Bytes(BigInt.from(amount)),
+      _addressBytes(holder),
+      _uint256Bytes(BigInt.from(deadline)),
+      _uint256Bytes(BigInt.from(nonce)),
+    ]));
+    return _signEip712(structHash, chainId, contractAddress);
+  }
+
+  /// Sign a TransferBackMeta EIP-712 typed data.
+  Future<String> signTransferBackMeta({
+    required String claimKey,
+    required int tokenId,
+    required String holder,
+    required int deadline,
+    required int nonce,
+    required int chainId,
+    required String contractAddress,
+  }) async {
+    final typeHash = _keccak256Utf8(
+      'TransferBackMeta(bytes32 claimKey,uint256 tokenId,address holder,uint256 deadline,uint256 nonce)');
+    final structHash = _keccak256(_abiEncode([
+      typeHash,
+      _bytes32FromHex(claimKey),
+      _uint256Bytes(BigInt.from(tokenId)),
+      _addressBytes(holder),
+      _uint256Bytes(BigInt.from(deadline)),
+      _uint256Bytes(BigInt.from(nonce)),
+    ]));
+    return _signEip712(structHash, chainId, contractAddress);
+  }
+
+  /// Core EIP-712 signing: build digest and sign with raw ECDSA.
+  Future<String> _signEip712(Uint8List structHash, int chainId, String contractAddress) async {
+    if (_privateKey == null) await deriveWallet();
+    if (_privateKey == null) throw Exception('Internal wallet not available');
+
+    final domainSep = _buildDomainSeparator(chainId, contractAddress);
+
+    // digest = keccak256("\x19\x01" || domainSeparator || structHash)
+    final prefix = Uint8List.fromList([0x19, 0x01]);
+    final digestInput = Uint8List.fromList([...prefix, ...domainSep, ...structHash]);
+    final digest = _keccak256(digestInput);
+
+    // Raw ECDSA sign using web3dart's low-level sign function
+    final ecSig = sign(digest, _privateKey!);
+    // Build 65-byte signature: r (32) + s (32) + v (1)
+    final rBytes = _bigIntToBytes32(ecSig.r);
+    final sBytes = _bigIntToBytes32(ecSig.s);
+    final v = ecSig.v;
+    final sigBytes = Uint8List.fromList([...rBytes, ...sBytes, v]);
+    return '0x${_bytesToHex(sigBytes)}';
+  }
+
+  // EIP-712 helpers
+
+  Uint8List _keccak256Utf8(String input) {
+    return keccakUtf8(input);
+  }
+
+  Uint8List _keccak256(Uint8List input) {
+    return keccak256(input);
+  }
+
+  Uint8List _abiEncode(List<Uint8List> values) {
+    final result = <int>[];
+    for (final v in values) {
+      // Each value is already 32 bytes padded
+      result.addAll(v);
+    }
+    return Uint8List.fromList(result);
+  }
+
+  Uint8List _uint256Bytes(BigInt value) {
+    final hex = value.toRadixString(16).padLeft(64, '0');
+    return _hexToBytes(hex);
+  }
+
+  Uint8List _addressBytes(String address) {
+    final cleaned = address.toLowerCase().replaceFirst('0x', '').padLeft(64, '0');
+    return _hexToBytes(cleaned);
+  }
+
+  Uint8List _bytes32FromHex(String hex) {
+    final cleaned = hex.replaceFirst('0x', '').padLeft(64, '0');
+    return _hexToBytes(cleaned);
+  }
+
+  Uint8List _bigIntToBytes32(BigInt value) {
+    final hex = value.toUnsigned(256).toRadixString(16).padLeft(64, '0');
+    return _hexToBytes(hex);
+  }
+
   /// Clear cached wallet state
   void clear() {
     _privateKey = null;

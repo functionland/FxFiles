@@ -9,6 +9,9 @@ class SupportedChain extends Equatable {
   final String? explorerUrl;
   final int decimals;
   final String? nftContractAddress;
+  /// Whether this chain has zero/free gas (e.g. Skale sFUEL).
+  /// When true, gasless meta-tx relay works without a gas deposit.
+  final bool freeGas;
 
   const SupportedChain({
     required this.chainId,
@@ -19,6 +22,7 @@ class SupportedChain extends Equatable {
     this.explorerUrl,
     this.decimals = 18,
     this.nftContractAddress,
+    this.freeGas = false,
   });
 
   /// Fixed vault address for all chains
@@ -33,7 +37,7 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.base.org',
     explorerUrl: 'https://basescan.org',
     decimals: 18,
-    nftContractAddress: '0xc818477eBaf05B8239fd7f9AaeE25fE41981fd33',
+    nftContractAddress: '0x9a219BA802227a434dfCF1E993B71f6bC63e877f',
   );
 
   /// Skale Europa chain configuration
@@ -45,7 +49,8 @@ class SupportedChain extends Equatable {
     rpcUrl: 'https://mainnet.skalenodes.com/v1/elated-tan-skat',
     explorerUrl: 'https://elated-tan-skat.explorer.mainnet.skalenodes.com',
     decimals: 18,
-    nftContractAddress: '0x0B5b76F709BDc17c9f29e1D752439345BDC67b0c',
+    nftContractAddress: '0x04d43CF942B754Ad92A0b0baf3D2f36D20c9721F',
+    freeGas: true,
   );
 
   /// All supported chains
@@ -69,6 +74,7 @@ class SupportedChain extends Equatable {
       explorerUrl: json['explorerUrl'] as String? ?? json['explorer_url'] as String?,
       decimals: json['decimals'] as int? ?? 18,
       nftContractAddress: json['nftContractAddress'] as String? ?? json['nft_contract_address'] as String?,
+      freeGas: json['freeGas'] as bool? ?? json['free_gas'] as bool? ?? false,
     );
   }
 
@@ -82,6 +88,7 @@ class SupportedChain extends Equatable {
       'explorerUrl': explorerUrl,
       'decimals': decimals,
       'nftContractAddress': nftContractAddress,
+      'freeGas': freeGas,
     };
   }
 
@@ -96,8 +103,14 @@ class SupportedChain extends Equatable {
       explorerUrl: explorerUrl,
       decimals: decimals,
       nftContractAddress: nftContractAddress,
+      freeGas: freeGas,
     );
   }
+
+  /// Whether this chain supports gasless meta-tx relay.
+  /// True if the chain has free gas (no deposit needed) or has an NFT contract deployed.
+  bool get supportsGaslessRelay => nftContractAddress != null &&
+      nftContractAddress != '0x0000000000000000000000000000000000000000';
 
   /// Get explorer URL for a transaction
   String? getTxExplorerUrl(String txHash) {
@@ -111,6 +124,21 @@ class SupportedChain extends Equatable {
     return '$explorerUrl/address/$address';
   }
 
+  /// OpenSea chain slug, or null if not supported.
+  String? get openSeaSlug {
+    switch (chainId) {
+      case 8453: return 'base';
+      default: return null;
+    }
+  }
+
+  /// OpenSea URL for an NFT, or null if chain not supported.
+  String? getOpenSeaUrl(String contractAddress, int tokenId) {
+    final slug = openSeaSlug;
+    if (slug == null) return null;
+    return 'https://opensea.io/assets/$slug/$contractAddress/$tokenId';
+  }
+
   @override
   List<Object?> get props => [
         chainId,
@@ -121,5 +149,6 @@ class SupportedChain extends Equatable {
         explorerUrl,
         decimals,
         nftContractAddress,
+        freeGas,
       ];
 }

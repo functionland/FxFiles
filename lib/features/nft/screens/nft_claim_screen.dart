@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/nft_token.dart';
+import 'package:fula_files/core/services/meta_tx_relay_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
@@ -54,6 +55,7 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
   int? _initialMintCount;
   String? _gatewayUrl;
   String? _receivedNftId; // tracks the persisted ReceivedNft.id for burn/transfer updates
+  bool _hasGasDeposit = false; // true if creator sponsored gas for this claim
 
   @override
   void initState() {
@@ -95,9 +97,45 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
             ? 'https://ipfs.cloud.fx.land/gateway/${info.metadataCid}'
             : null;
 
+        // Check if gas deposit exists (gasless claim available)
+        // linkHash from URL is the secret; derive claimKey for on-chain lookups
+        final chain = SupportedChain.byChainId(chainIdInt);
+        bool hasGas = chain?.freeGas == true;
+        if (!hasGas && widget.linkHash != null && chain?.supportsGaslessRelay == true) {
+          try {
+            final claimKey = NftService.secretToClaimKey(widget.linkHash!);
+            final deposit = await MetaTxRelayService.instance.getGasDeposit(
+              chainId: chainIdInt,
+              linkHash: claimKey,
+            );
+            hasGas = deposit > BigInt.zero;
+          } catch (_) {}
+        }
+
+        // If opened from received NFTs list, check for stored linkHash
+        if (widget.receivedNftId != null && !hasGas) {
+          try {
+            final received = NftService.instance.getReceivedNft(widget.receivedNftId!);
+            if (received?.claimLinkHash != null) {
+              final receivedChain = SupportedChain.byChainId(received!.chainId);
+              if (receivedChain?.freeGas == true) {
+                hasGas = true;
+              } else if (receivedChain?.supportsGaslessRelay == true) {
+                final claimKey = NftService.secretToClaimKey(received.claimLinkHash!);
+                final deposit = await MetaTxRelayService.instance.getGasDeposit(
+                  chainId: received.chainId,
+                  linkHash: claimKey,
+                );
+                hasGas = deposit > BigInt.zero;
+              }
+            }
+          } catch (_) {}
+        }
+
         setState(() {
           _creator = info.creator;
           _eventName = info.eventName;
+          _hasGasDeposit = hasGas;
           _fulaPerNft = info.fulaPerNft;
           _initialMintCount = info.initialMintCount;
           _gatewayUrl = gatewayUrl;
@@ -274,6 +312,7 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
         claimTxHash: txHash,
         claimedAt: DateTime.now(),
         gatewayUrl: _gatewayUrl,
+        claimLinkHash: widget.linkHash,
       ));
       _receivedNftId = receivedId;
       // Trigger provider refresh
@@ -347,11 +386,18 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
       _error = null;
     });
 
+    // Resolve linkHash for gasless burn
+    String? burnLinkHash = widget.linkHash;
+    if (burnLinkHash == null && _receivedNftId != null) {
+      burnLinkHash = NftService.instance.getReceivedNft(_receivedNftId!)?.claimLinkHash;
+    }
+
     final txHash = await ref.read(nftProvider.notifier).burnNft(
       chainId: chainIdInt,
       tokenId: tokenIdInt,
       amount: 1,
       walletSource: walletSource,
+      linkHash: burnLinkHash,
     );
 
     if (!mounted) return;
@@ -453,12 +499,19 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
       _error = null;
     });
 
+    // Resolve linkHash for gasless transfer
+    String? transferLinkHash = widget.linkHash;
+    if (transferLinkHash == null && _receivedNftId != null) {
+      transferLinkHash = NftService.instance.getReceivedNft(_receivedNftId!)?.claimLinkHash;
+    }
+
     final txHash = await ref.read(nftProvider.notifier).transferNft(
       chainId: chainIdInt,
       tokenId: tokenIdInt,
       toAddress: toAddress,
       amount: 1,
       walletSource: walletSource,
+      linkHash: transferLinkHash,
     );
 
     if (!mounted) return;
@@ -656,6 +709,28 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
                       ),
                     ),
                   ] else ...[
+                    // Sell on OpenSea (Base chain only)
+                    Builder(builder: (context) {
+                      final tokenIdInt = int.tryParse(widget.tokenId ?? '');
+                      final openSeaChain = chain;
+                      final contract = widget.contractAddress ?? openSeaChain?.nftContractAddress;
+                      final openSeaUrl = (openSeaChain != null && contract != null && tokenIdInt != null)
+                          ? openSeaChain.getOpenSeaUrl(contract, tokenIdInt)
+                          : null;
+                      if (openSeaUrl == null) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: OutlinedButton.icon(
+                          onPressed: () => launchUrl(Uri.parse(openSeaUrl), mode: LaunchMode.externalApplication),
+                          icon: const Icon(LucideIcons.shoppingBag),
+                          label: const Text('Sell on OpenSea'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.blue[600],
+                            side: BorderSide(color: Colors.blue[300]!),
+                          ),
+                        ),
+                      );
+                    }),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -711,8 +786,18 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(LucideIcons.download),
-                    label: Text(_isClaiming ? 'Claiming...' : 'Claim NFT'),
+                    label: Text(_isClaiming
+                        ? 'Claiming...'
+                        : _hasGasDeposit ? 'Claim NFT (gas-free)' : 'Claim NFT'),
                   ),
+                  if (_hasGasDeposit) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Gas sponsored by creator',
+                      style: TextStyle(color: Colors.green[400], fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                   if (!NftWalletService.instance.hasWallet && !WalletService.instance.isConnected) ...[
                     const SizedBox(height: 8),
                     Text(

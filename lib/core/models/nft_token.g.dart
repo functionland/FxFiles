@@ -279,13 +279,14 @@ class ReceivedNftAdapter extends TypeAdapter<ReceivedNft> {
       status: fields[10] as ReceivedNftStatus? ?? ReceivedNftStatus.held,
       burnTxHash: fields[11] as String?,
       transferTxHash: fields[12] as String?,
+      claimLinkHash: fields[13] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ReceivedNft obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -311,7 +312,9 @@ class ReceivedNftAdapter extends TypeAdapter<ReceivedNft> {
       ..writeByte(11)
       ..write(obj.burnTxHash)
       ..writeByte(12)
-      ..write(obj.transferTxHash);
+      ..write(obj.transferTxHash)
+      ..writeByte(13)
+      ..write(obj.claimLinkHash);
   }
 
   @override
