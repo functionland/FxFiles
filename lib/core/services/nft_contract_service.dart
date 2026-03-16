@@ -49,9 +49,9 @@ class NftContractService {
   // transferBackMeta(bytes32,uint256,address,uint256,uint256,bytes)
   static const String _transferBackMetaSelector = '6b568b42';
   // claimGasDeposits(bytes32)
-  static const String _claimGasDepositsSelector = '6e3e2fa3';
+  static const String _claimGasDepositsSelector = 'a52f4cf5';
   // metaNonces(address)
-  static const String _metaNoncesSelector = 'a3c573eb';
+  static const String _metaNoncesSelector = 'ef799465';
 
   // ============================================================================
   // ABI ENCODING

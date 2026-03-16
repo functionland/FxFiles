@@ -25,7 +25,7 @@ class MetaTxRelayService {
     final contract = NftContractService.instance;
     // claimGasDeposits(bytes32) — public mapping getter
     // selector: keccak256("claimGasDeposits(bytes32)")[:4]
-    const selector = '6e3e2fa3';
+    const selector = 'a52f4cf5';
     final hashHex = linkHash.replaceFirst('0x', '').padLeft(64, '0');
     final data = '0x$selector$hashHex';
 
@@ -54,7 +54,7 @@ class MetaTxRelayService {
   }) async {
     final contract = NftContractService.instance;
     // metaNonces(address) — public mapping getter
-    const selector = 'a3c573eb';
+    const selector = 'ef799465';
     final addrHex = address.toLowerCase().replaceFirst('0x', '').padLeft(64, '0');
     final data = '0x$selector$addrHex';
 
