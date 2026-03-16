@@ -405,6 +405,11 @@ class ErrorMessages {
     return getUserFriendlyMessage(error, context: 'detect faces');
   }
 
+  /// Get error message for text recognition
+  static String forTextRecognition(dynamic error) {
+    return getUserFriendlyMessage(error, context: 'extract text from image');
+  }
+
   /// Get error message for billing/wallet operations
   static String forBilling(dynamic error, {String? operation}) {
     return getUserFriendlyMessage(

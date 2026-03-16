@@ -12,6 +12,9 @@ import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/features/viewer/screens/image_editor_screen.dart';
+import 'package:flutter/services.dart';
+import 'package:fula_files/core/services/text_recognition_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
 class ImageViewerScreen extends StatefulWidget {
@@ -62,6 +65,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
   List<DetectedFace> _faces = [];
   bool _facesLoaded = false;
   bool _isDetectingFaces = false;
+  bool _isExtractingText = false;
 
   // File info
   FileStat? _fileStat;
@@ -280,6 +284,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
       _facesLoaded = false;
       _faces = [];
       _fileStat = null;
+      _isExtractingText = false;
     });
     _loadFaces();
     _loadFileInfo();
@@ -379,6 +384,125 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
         );
       }
     }
+  }
+
+  Future<void> _extractText() async {
+    if (_images.isEmpty) return;
+    final currentPath = _images[_currentIndex];
+
+    setState(() => _isExtractingText = true);
+
+    try {
+      final text = await TextRecognitionService.instance.recognizeText(currentPath);
+
+      if (mounted) {
+        setState(() => _isExtractingText = false);
+
+        if (text != null && text.isNotEmpty) {
+          _showExtractedTextSheet(text);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No text found in this image')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isExtractingText = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(ErrorMessages.forTextRecognition(e))),
+        );
+      }
+    }
+  }
+
+  void _showExtractedTextSheet(String text) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.45,
+          minChildSize: 0.25,
+          maxChildSize: 0.85,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              ),
+              child: Column(
+                children: [
+                  // Drag handle
+                  Center(
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 12),
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.white38 : Colors.black26,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+                    child: Row(
+                      children: [
+                        Icon(LucideIcons.fileType,
+                            size: 20,
+                            color: isDark ? Colors.white70 : Colors.black87),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Extracted Text',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: text));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Copied to clipboard')),
+                            );
+                          },
+                          icon: const Icon(LucideIcons.copy, size: 16),
+                          label: const Text('Copy All'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  // Scrollable text body
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.all(16),
+                      child: SelectableText(
+                        text,
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.5,
+                          color: isDark ? Colors.white70 : Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _openEditor() async {
@@ -722,6 +846,24 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                         onPressed: () => Share.shareXFiles([XFile(_images[_currentIndex])]),
                         tooltip: 'Share',
                       ),
+                      if (PlatformCapabilities.isMobile)
+                        _isExtractingText
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              )
+                            : IconButton(
+                                icon: const Icon(LucideIcons.fileType, color: Colors.white),
+                                onPressed: _extractText,
+                                tooltip: 'Extract Text',
+                              ),
                       IconButton(
                         icon: const Icon(LucideIcons.info, color: Colors.white),
                         onPressed: _showDetailsPanel,
