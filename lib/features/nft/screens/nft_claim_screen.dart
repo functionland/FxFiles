@@ -64,6 +64,15 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
     if (widget.receivedNftId != null) {
       // Opened from received NFTs list — skip straight to post-claim state
       _claimTxHash = 'already-claimed';
+      // Pre-load burn/transfer state so the screen shows correct status
+      final received = NftService.instance.getReceivedNft(widget.receivedNftId!);
+      if (received != null) {
+        if (received.status == ReceivedNftStatus.burned) {
+          _burnTxHash = received.burnTxHash;
+        } else if (received.status == ReceivedNftStatus.transferred) {
+          _transferTxHash = received.transferTxHash;
+        }
+      }
     }
     _fetchTokenInfo();
   }

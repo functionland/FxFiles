@@ -543,43 +543,77 @@ class _ReceivedNftTile extends StatelessWidget {
     final chain = SupportedChain.byChainId(nft.chainId);
     final chainName = chain?.chainName ?? 'Chain ${nft.chainId}';
     final displayName = nft.eventName.isNotEmpty ? nft.eventName : 'Token #${nft.tokenId}';
+    final isHeld = nft.status == ReceivedNftStatus.held;
+    final isBurned = nft.status == ReceivedNftStatus.burned;
 
-    return ListTile(
-      leading: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: Colors.purple.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(8),
+    final IconData leadingIcon;
+    final Color leadingColor;
+    if (isBurned) {
+      leadingIcon = Icons.local_fire_department;
+      leadingColor = Colors.red;
+    } else if (!isHeld) {
+      leadingIcon = Icons.send;
+      leadingColor = Colors.blue;
+    } else {
+      leadingIcon = LucideIcons.download;
+      leadingColor = Colors.purple;
+    }
+
+    return Opacity(
+      opacity: isHeld ? 1.0 : 0.5,
+      child: ListTile(
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: leadingColor.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Center(
+            child: Icon(leadingIcon, size: 20, color: leadingColor),
+          ),
         ),
-        child: const Center(
-          child: Icon(LucideIcons.download, size: 20, color: Colors.purple),
-        ),
-      ),
-      title: Text(displayName),
-      subtitle: Text(
-        '$chainName \u2022 Token #${nft.tokenId}',
-        style: TextStyle(color: Colors.grey[600], fontSize: 12),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (nft.status == ReceivedNftStatus.held && chain != null &&
-              chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId) != null)
-            IconButton(
-              icon: Icon(LucideIcons.shoppingBag, size: 18, color: Colors.blue[400]),
-              tooltip: 'Sell on OpenSea',
-              constraints: const BoxConstraints(),
-              padding: const EdgeInsets.all(8),
-              onPressed: () => launchUrl(
-                Uri.parse(chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId)!),
-                mode: LaunchMode.externalApplication,
+        title: Row(
+          children: [
+            Flexible(child: Text(displayName)),
+            if (!isHeld) ...[
+              const SizedBox(width: 6),
+              Chip(
+                label: Text(
+                  isBurned ? 'Burned' : 'Transferred',
+                  style: const TextStyle(fontSize: 10),
+                ),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-            ),
-          const Icon(LucideIcons.chevronRight, size: 18),
-        ],
+            ],
+          ],
+        ),
+        subtitle: Text(
+          '$chainName \u2022 Token #${nft.tokenId}',
+          style: TextStyle(color: Colors.grey[600], fontSize: 12),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isHeld && chain != null &&
+                chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId) != null)
+              IconButton(
+                icon: Icon(LucideIcons.shoppingBag, size: 18, color: Colors.blue[400]),
+                tooltip: 'Sell on OpenSea',
+                constraints: const BoxConstraints(),
+                padding: const EdgeInsets.all(8),
+                onPressed: () => launchUrl(
+                  Uri.parse(chain.getOpenSeaUrl(nft.contractAddress, nft.tokenId)!),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
+            const Icon(LucideIcons.chevronRight, size: 18),
+          ],
+        ),
+        onTap: onTap,
       ),
-      onTap: onTap,
     );
   }
 }

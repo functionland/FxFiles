@@ -182,12 +182,10 @@ class NftService {
   // RECEIVED NFTS (claimed from others)
   // ============================================================================
 
-  /// Get all received NFTs (held only, not burned/transferred)
+  /// Get all received NFTs (including burned/transferred)
   List<ReceivedNft> getReceivedNfts() {
     if (!_isInitialized) return [];
-    return _receivedBox.values
-        .where((r) => r.status == ReceivedNftStatus.held)
-        .toList()
+    return _receivedBox.values.toList()
       ..sort((a, b) => b.claimedAt.compareTo(a.claimedAt));
   }
 
@@ -1206,6 +1204,8 @@ class NftService {
           claimedOrPending++;
         } else if (claim.status == NftClaimStatus.pending && !isExpired) {
           claimedOrPending++;
+        } else if (claim.status == NftClaimStatus.burned) {
+          claimedOrPending++;
         }
       }
 
@@ -1213,7 +1213,7 @@ class NftService {
       final inferred = mint.count - onChainBalance.toInt() - claimedOrPending;
       final corrected = inferred < 0 ? 0 : inferred;
 
-      if (corrected != mint.creatorBurned) {
+      if (corrected < mint.creatorBurned) {
         debugPrint('NftService: Reconciling burn count for token ${mint.tokenId}: '
             '${mint.creatorBurned} → $corrected');
         mint.creatorBurned = corrected;
