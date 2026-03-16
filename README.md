@@ -9,11 +9,13 @@ A minimalistic file manager with Fula decentralized storage backup support. Buil
 - **Client-Side Encryption**: AES-256-GCM encryption before upload
 - **Authentication**: Sign in with Google or Apple
 - **File Viewers**: Built-in viewers for images, videos, and text files
+- **Text Extraction (OCR)**: Extract text from any image on-device — tap, copy, done. All processing stays on your phone, fully private (iOS & Android)
 - **Search**: Search local files by name
 - **Trash Management**: Safely delete and restore files
 - **Dark/Light Theme**: Automatic theme switching
-- **NFT Minting**: Mint images as ERC1155 NFTs on Base/Skale Europa with FULA token backing
-- **NFT Sharing & Claiming**: Share NFTs via deep links — open claims (anyone) or targeted (specific wallet)
+- **NFT Generation**: Generate NFTs from your photos and share them with friends and family to claim with zero gas fees — no smart contracts, no fees, just import your asset and generate
+- **Zero-Gas NFT Claiming**: Recipients claim NFTs with absolutely no gas fees via a server-side relay — perfect for non-crypto people who don't even have a wallet. No wallet top-ups, no confusing transaction popups. Just sign, claim, and it's yours
+- **OpenSea Integration**: Minted NFTs show up on OpenSea automatically — ready to view, share, or show off
 - **NFT Transfer**: Standard ERC1155 transfers between wallets (FULA stays locked)
 - **NFT Burn-to-Release**: Burn NFTs to permanently destroy them and release locked FULA to the burner
 - **Dual Wallet Support**: Internal wallet (auto-derived from sign-in) or external wallet (WalletConnect)
@@ -37,6 +39,7 @@ lib/
 │       ├── nft_service.dart          # NFT mint/claim/burn/transfer orchestration
 │       ├── nft_contract_service.dart  # ABI encoding + RPC calls for NFT contract
 │       ├── nft_wallet_service.dart    # Deterministic wallet derivation + signing
+│       ├── text_recognition_service.dart # On-device OCR text extraction (ML Kit)
 │       ├── secure_storage_service.dart # Secure key storage
 │       └── sync_service.dart         # File synchronization
 ├── features/
@@ -178,6 +181,7 @@ Local File → Encrypt (AES-256-GCM) → Upload to Fula → IPFS Storage
 | `sign_in_with_apple` | Apple authentication |
 | `workmanager` | Background sync tasks |
 | `connectivity_plus` | Network monitoring |
+| `google_mlkit_text_recognition` | On-device OCR text extraction from images |
 | `reown_appkit` | WalletConnect wallet connection (external wallet for NFTs) |
 | `web3dart` | EVM wallet derivation + transaction signing (internal wallet) |
 
@@ -600,19 +604,23 @@ For the gateway at `https://cloud.fx.land/view`:
 
 ### NFT Lifecycle
 
-FxFiles includes a full NFT lifecycle built on ERC1155 tokens with FULA token backing. FULA tokens are permanently locked inside NFTs and can only be released by burning the NFT.
+Generate NFTs from your photos and let your friends and family claim them with zero gas. No smart contracts, no fees — just import your asset, generate an NFT, and share it with your friends or put it on OpenSea. Recipients claim with no wallet top-ups and no confusing transaction popups. Just sign, claim, and it's theirs. NFTs show up on OpenSea automatically — ready to view, share, or show off. Perfect for non-crypto people who don't even have a wallet.
+
+Built on ERC1155 tokens with FULA token backing. FULA tokens are permanently locked inside NFTs and can only be released by burning the NFT. Claims are gasless via a server-side meta-transaction relay that sponsors gas on behalf of the claimer.
 
 #### Overview
 
 ```
-Create Collection → Import Images → Mint NFTs → Share / Transfer → Burn to Release FULA
+Create Collection → Import Images → Generate NFTs → Share Link → Friends Claim (Zero Gas) → View on OpenSea
 ```
 
 Users can:
-- **Mint** images as on-chain NFTs with FULA locked per token
+- **Generate** NFTs from photos with FULA locked per token — no smart contract knowledge needed
 - **Share** claim links — open (anyone can claim) or targeted (specific wallet)
+- **Claim with zero gas** — server-side relay pays gas fees so recipients never need tokens or wallet top-ups
 - **Transfer** NFTs freely via standard ERC1155 transfers (FULA stays locked)
 - **Burn** NFTs to permanently destroy them and release the locked FULA to the burner
+- **View on OpenSea** — minted NFTs appear on OpenSea automatically
 
 #### Wallet Options
 
@@ -634,9 +642,9 @@ nftAddress    = EthPrivateKey(nftPrivateKey).address → "0x..."
 
 The internal wallet uses web3dart's `EthPrivateKey` for proper secp256k1 address derivation and `Web3Client.sendTransaction()` for on-chain signing.
 
-#### 1. Minting
+#### 1. Generating NFTs
 
-**User flow:** Create Collection → Import Images → Choose Wallet → Configure (count, FULA/NFT, chain) → Mint
+**User flow:** Create Collection → Import Photos → Choose Wallet → Configure (count, FULA/NFT, chain) → Generate
 
 **Pipeline (5 checkpointed steps):**
 
@@ -669,9 +677,16 @@ The contract escrows 1 NFT via `createClaimOffer()` and returns a `linkHash`. A 
 fxfiles://nft-claim?chain={chainId}&contract={address}&token={tokenId}&hash={linkHash}
 ```
 
-**Claimer side:** Open link → App shows NFT details (image, creator, FULA/NFT, supply) → Choose Wallet → Claim
+**Claimer side:** Open link → App shows NFT details (image, creator, FULA/NFT, supply) → Choose Wallet → Claim (zero gas)
 
-The claim screen fetches token info from the contract via `eth_call`, displays the NFT image from the IPFS gateway, and calls `claimNFT(linkHash)` on-chain. Pre-claim checks detect already-claimed or expired links.
+The claim screen fetches token info from the contract via `eth_call`, displays the NFT image from the IPFS gateway. Claims are submitted to the server-side relay (`/api/v1/nft/relay`) which broadcasts the transaction and pays gas on behalf of the claimer. The claimer only signs an EIP-712 message — no gas tokens needed. Pre-claim checks detect already-claimed or expired links.
+
+**Sponsored gas (meta-transaction relay):**
+- Claimer signs an EIP-712 typed message (no on-chain transaction from their wallet)
+- Server relay broadcasts `claimNFTMeta()` using a funded relay wallet
+- On SKALE Europa: gas is inherently free (sFUEL)
+- On Base: relay wallet covers ETH gas costs
+- Result: recipients never need to hold any tokens to claim
 
 After claiming, the screen shows **Transfer** and **Burn** buttons.
 
@@ -710,13 +725,15 @@ mintWithFula(string ipfsCid, uint256 fulaPerNft, uint256 count) → uint256 firs
 
 // Claim — sender creates offer (escrows NFT), recipient claims
 createClaimOffer(uint256 tokenId, address claimer, uint256 expiresAt) → bytes32 linkHash
-claimNFT(bytes32 linkHash)
+claimNFT(bytes32 linkHash)              // direct claim (claimer pays gas)
+claimNFTMeta(bytes32 secret, address signer, uint256 deadline, uint256 nonce, bytes signature)  // sponsored claim (relay pays gas)
 // claimer = address(0) → open claim (anyone can claim)
 // claimer = 0x1234...  → only that address can claim
 
 // Burn — permanently destroys NFT, releases locked FULA to burner
 burn(address account, uint256 id, uint256 value)       // single token type
 burnBatch(address account, uint256[] ids, uint256[] values)  // multiple types
+burnMeta(bytes32 claimKey, uint256 tokenId, uint256 amount, address signer, uint256 deadline, uint256 nonce, bytes signature)  // sponsored burn
 
 // Transfer — standard ERC1155, FULA stays locked
 safeTransferFrom(from, to, id, amount, data)  // inherited from ERC1155
@@ -846,6 +863,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ X ] NFT cloud sync: Encrypted metadata sync to S3 for cross-device recovery (NFT)
 - [ X ] NFT retry logic: Resume failed mints from last checkpoint (NFT)
 - [ X ] Deploy FulaFileNFT contract and update SupportedChain addresses (NFT)
+- [ X ] Zero-gas NFT claiming: Server-side meta-transaction relay sponsors gas for claimers (NFT)
+- [ X ] Text extraction (OCR): Extract text from images on-device with one tap — copy all or select portions, fully private (Images)
 - [ X ] Implement proper error handling for background sync
 - [ X ] Add unit tests for all services
 - [ X ] Add AI features that interact with blox
