@@ -542,7 +542,9 @@ class _ReceivedNftTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chain = SupportedChain.byChainId(nft.chainId);
     final chainName = chain?.chainName ?? 'Chain ${nft.chainId}';
-    final displayName = nft.eventName.isNotEmpty ? nft.eventName : 'Token #${nft.tokenId}';
+    final displayName = nft.eventName.isNotEmpty && nft.eventName != 'default'
+        ? nft.eventName
+        : 'Token #${nft.tokenId}';
     final isHeld = nft.status == ReceivedNftStatus.held;
     final isBurned = nft.status == ReceivedNftStatus.burned;
 
@@ -565,13 +567,24 @@ class _ReceivedNftTile extends StatelessWidget {
         leading: Container(
           width: 40,
           height: 40,
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: leadingColor.withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Center(
-            child: Icon(leadingIcon, size: 20, color: leadingColor),
-          ),
+          child: nft.gatewayUrl != null
+              ? Image.network(
+                  nft.gatewayUrl!,
+                  width: 40,
+                  height: 40,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Center(
+                    child: Icon(leadingIcon, size: 20, color: leadingColor),
+                  ),
+                )
+              : Center(
+                  child: Icon(leadingIcon, size: 20, color: leadingColor),
+                ),
         ),
         title: Row(
           children: [

@@ -101,9 +101,9 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
       if (!mounted) return;
 
       if (info != null) {
-        // Build gateway URL from metadataCid
+        // Resolve actual image URL from metadata JSON
         final gatewayUrl = info.metadataCid.isNotEmpty
-            ? 'https://ipfs.cloud.fx.land/gateway/${info.metadataCid}'
+            ? await NftService.instance.resolveImageUrl(info.metadataCid)
             : null;
 
         // Check if gas deposit exists (gasless claim available)
@@ -139,6 +139,15 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
               }
             }
           } catch (_) {}
+        }
+
+        // Update stored ReceivedNft if gateway URL changed
+        if (_receivedNftId != null && gatewayUrl != null) {
+          final received = NftService.instance.getReceivedNft(_receivedNftId!);
+          if (received != null && received.gatewayUrl != gatewayUrl) {
+            received.gatewayUrl = gatewayUrl;
+            await NftService.instance.saveReceivedNft(received);
+          }
         }
 
         setState(() {
@@ -188,16 +197,23 @@ class _NftClaimScreenState extends ConsumerState<NftClaimScreen> {
       ),
     );
 
-    for (var attempt = 0; attempt < 3; attempt++) {
+    // Initialize auth and wallet once before retrying address resolution
+    try {
       await AuthService.instance.ensureAuthRestored();
-      internalAddress = await NftWalletService.instance.getAddress();
+    } catch (e) {
+      debugPrint('NftClaimScreen: ensureAuthRestored error: $e');
+    }
 
-      if (!WalletService.instance.isInitialized && mounted) {
-        try {
-          await WalletService.instance.initialize(context);
-        } catch (_) {}
+    if (!WalletService.instance.isInitialized && mounted) {
+      try {
+        await WalletService.instance.initialize(context);
+      } catch (e) {
+        debugPrint('NftClaimScreen: WalletService.initialize error: $e');
       }
+    }
 
+    for (var attempt = 0; attempt < 3; attempt++) {
+      internalAddress = await NftWalletService.instance.getAddress();
       externalConnected = WalletService.instance.isConnected;
 
       if (internalAddress != null || externalConnected) break;

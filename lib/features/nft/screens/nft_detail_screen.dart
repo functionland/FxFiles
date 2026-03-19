@@ -676,8 +676,15 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   // ============================================================================
 
   Future<void> _refreshAllOnChainData(List<NftMintRecord> mints) async {
+    bool isFirstMint = true;
     for (final mint in mints) {
       if (mint.status != NftMintStatus.completed || mint.tokenId == null) continue;
+
+      // Throttle between mints to avoid RPC 429 rate limiting
+      if (!isFirstMint) {
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+      isFirstMint = false;
 
       // Reconcile burn counts from on-chain balance
       await NftService.instance.reconcileBurnCount(
@@ -685,8 +692,10 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
         mint: mint,
       );
 
-      // Refresh pending claim statuses
-      if (mint.claims.any((c) => c.status == NftClaimStatus.pending)) {
+      // Refresh claim statuses (pending → claimed, claimed → burned)
+      if (mint.claims.any((c) =>
+          c.status == NftClaimStatus.pending ||
+          c.status == NftClaimStatus.claimed)) {
         await ref.read(nftProvider.notifier).refreshClaimStatuses(
           tagId: widget.tagId,
           mint: mint,

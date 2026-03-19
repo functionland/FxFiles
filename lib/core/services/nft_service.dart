@@ -1051,26 +1051,58 @@ class NftService {
     if (nftContractAddress == null) return;
 
     bool changed = false;
+    bool isFirstRpc = true;
     for (final claim in mint.claims) {
       if (claim.linkHash == null) continue;
-      // Only refresh pending claims
-      if (claim.status != NftClaimStatus.pending) continue;
 
-      final claimKey = secretToClaimKey(claim.linkHash!);
-      final offerInfo = await _fetchClaimOffer(
-        chain.chainId,
-        nftContractAddress,
-        claimKey,
-      );
-      if (offerInfo == null) continue;
+      if (claim.status == NftClaimStatus.pending) {
+        // Throttle RPC calls to avoid 429 rate limiting
+        if (!isFirstRpc) {
+          await Future.delayed(const Duration(milliseconds: 350));
+        }
+        isFirstRpc = false;
 
-      if (offerInfo.status == 1 && claim.status != NftClaimStatus.claimed) {
-        claim.status = NftClaimStatus.claimed;
-        claim.claimerAddress = offerInfo.claimerAddress;
-        changed = true;
-      } else if (offerInfo.status == 2 && claim.status != NftClaimStatus.expired) {
-        claim.status = NftClaimStatus.expired;
-        changed = true;
+        // Check on-chain offer status for pending claims
+        final claimKey = secretToClaimKey(claim.linkHash!);
+        final offerInfo = await _fetchClaimOffer(
+          chain.chainId,
+          nftContractAddress,
+          claimKey,
+        );
+        if (offerInfo == null) continue;
+
+        if (offerInfo.status == 1 && claim.status != NftClaimStatus.claimed) {
+          claim.status = NftClaimStatus.claimed;
+          claim.claimerAddress = offerInfo.claimerAddress;
+          changed = true;
+        } else if (offerInfo.status == 2 && claim.status != NftClaimStatus.expired) {
+          claim.status = NftClaimStatus.expired;
+          changed = true;
+        }
+      } else if (claim.status == NftClaimStatus.claimed &&
+                 claim.claimerAddress != null &&
+                 mint.tokenId != null) {
+        // Throttle RPC calls to avoid 429 rate limiting
+        if (!isFirstRpc) {
+          await Future.delayed(const Duration(milliseconds: 350));
+        }
+        isFirstRpc = false;
+
+        // Check if claimer still holds the token (detect burns)
+        try {
+          final balance = await NftContractService.instance.getBalance(
+            chainId: chain.chainId,
+            contractAddress: nftContractAddress,
+            account: claim.claimerAddress!,
+            tokenId: mint.tokenId!,
+          );
+          if (balance == BigInt.zero) {
+            claim.status = NftClaimStatus.burned;
+            changed = true;
+          }
+        } catch (e) {
+          debugPrint('NftService: balance check failed for claim ${claim.id}: $e');
+        }
       }
     }
 
@@ -1317,6 +1349,34 @@ class NftService {
     }
   }
 
+  /// Resolve the actual image URL from a metadata CID.
+  /// Fetches the metadata JSON and returns the `image` field.
+  /// Falls back to building a gateway URL from `properties.imageCid`.
+  /// Returns null on failure.
+  Future<String?> resolveImageUrl(String metadataCid) async {
+    if (metadataCid.isEmpty) return null;
+    try {
+      final metadataUrl = await _buildGatewayUrl(metadataCid);
+      final response = await http.get(Uri.parse(metadataUrl)).timeout(
+        const Duration(seconds: 10),
+      );
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final image = json['image'] as String?;
+        if (image != null && image.isNotEmpty) return image;
+        // Fallback: try properties.imageCid
+        final props = json['properties'] as Map<String, dynamic>?;
+        final imageCid = props?['imageCid'] as String?;
+        if (imageCid != null && imageCid.isNotEmpty) {
+          return _buildGatewayUrl(imageCid);
+        }
+      }
+    } catch (e) {
+      debugPrint('NftService: resolveImageUrl error: $e');
+    }
+    return null;
+  }
+
   // ============================================================================
   // RETRY LOGIC
   // ============================================================================
@@ -1559,7 +1619,8 @@ class NftService {
             );
             if (tokenInfo == null) continue;
 
-            final gatewayUrl = await _buildGatewayUrl(tokenInfo.metadataCid);
+            final gatewayUrl = await resolveImageUrl(tokenInfo.metadataCid) ??
+                await _buildGatewayUrl(tokenInfo.metadataCid);
             final mint = NftMintRecord(
               id: _uuid.v4(),
               tokenId: tokenId,
