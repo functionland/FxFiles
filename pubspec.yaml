@@ -24,6 +24,9 @@ dependencies:
   open_filex: ^4.6.0
   mime: ^2.0.0
 
+  # Prevent sleep while syncing (Windows, Android, iOS)
+  wakelock_plus: ^1.2.8
+
   # Local Storage & Security
   flutter_secure_storage: ^10.0.0
   hive_flutter: ^1.1.0

@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 enum SyncDirection { upload, download, bidirectional }
 
@@ -169,7 +170,15 @@ class SyncService {
   void _processUploadQueueAsync() {
     if (_isProcessingUpload) return;
     _isProcessingUpload = true;
-    processUploadQueue().whenComplete(() => _isProcessingUpload = false);
+    // Prevent the OS from sleeping while uploads are running
+    WakelockPlus.enable().catchError((_) {});
+    processUploadQueue().whenComplete(() {
+      _isProcessingUpload = false;
+      // Release wakelock when queue is drained
+      if (_uploadQueue.isEmpty) {
+        WakelockPlus.disable().catchError((_) {});
+      }
+    });
   }
 
   Future<void> queueDownload({
@@ -815,6 +824,15 @@ class SyncService {
     _activeUploads = 0;
     await LocalStorageService.instance.clearAllSyncStates();
     await LocalStorageService.instance.clearSyncQueue();
+  }
+
+  /// Resume uploads if there are pending items in the queue.
+  /// Called when the app returns from sleep/background.
+  void resumeIfPending() {
+    if (_uploadQueue.isNotEmpty && !_isProcessingUpload) {
+      debugPrint('SyncService: Resuming ${_uploadQueue.length} pending uploads after wake');
+      _processUploadQueueAsync();
+    }
   }
 
   /// Restore pending tasks from persistent storage (call on app start)
