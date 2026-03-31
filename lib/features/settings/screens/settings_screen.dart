@@ -18,6 +18,7 @@ import 'package:fula_files/features/settings/screens/face_management_screen.dart
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
+import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
@@ -976,6 +977,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Widget _buildSyncSection(AppSettings settings) {
+    final pendingCount = LocalStorageService.instance.pendingSyncTaskCount;
+
     return _buildSection(
       title: 'Sync',
       children: [
@@ -986,6 +989,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           value: settings.wifiOnly,
           onChanged: (value) {
             ref.read(settingsProvider.notifier).setWifiOnly(value);
+          },
+        ),
+        ListTile(
+          leading: const Icon(LucideIcons.listTodo),
+          title: const Text('Sync Queue'),
+          subtitle: Text(pendingCount > 0
+              ? '$pendingCount pending'
+              : 'No pending uploads'),
+          trailing: const Icon(LucideIcons.chevronRight),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SyncQueueScreen()),
+            );
           },
         ),
       ],

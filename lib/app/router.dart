@@ -25,6 +25,7 @@ import 'package:fula_files/features/apps/screens/restore_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
+import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -59,6 +60,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings',
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: '/sync-queue',
+        builder: (context, state) => const SyncQueueScreen(),
       ),
       GoRoute(
         path: '/search',

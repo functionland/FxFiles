@@ -155,19 +155,26 @@ class TaggedFilesScreen extends ConsumerWidget {
 
     if (!context.mounted) return;
 
-    // Determine file type and open appropriate viewer
-    final ext = filePath.toLowerCase().split('.').last;
+    // Determine file type and open appropriate viewer using LocalFile
+    // for consistent extension handling across the app.
+    final localFile = LocalFile(
+      path: filePath,
+      name: filePath.split(Platform.pathSeparator).last,
+      size: 0,
+      modifiedAt: DateTime.now(),
+      isDirectory: false,
+    );
 
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif'].contains(ext)) {
+    if (localFile.isImage) {
       context.push('/viewer/image', extra: filePath);
-    } else if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].contains(ext)) {
+    } else if (localFile.isVideo) {
       context.push('/viewer/video', extra: filePath);
-    } else if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'].contains(ext)) {
+    } else if (localFile.isAudio) {
       context.push('/viewer/audio', extra: filePath);
-    } else if (['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'log'].contains(ext)) {
+    } else if (localFile.isTextViewable) {
       context.push('/viewer/text', extra: filePath);
     } else {
-      // Navigate to browser with file's parent directory
+      // No built-in viewer for this type; navigate to parent directory
       final parentDir = File(filePath).parent.path;
       context.push('/browser', extra: {'path': parentDir});
     }

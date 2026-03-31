@@ -53,6 +53,13 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 
 
+# Copy fula_flutter.dll to the plugin's expected location before plugins are configured
+set(FULA_DLL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/fula_flutter.dll")
+set(FULA_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/.plugin_symlinks/fula_client/windows")
+if(EXISTS "${FULA_DLL_SOURCE}" AND EXISTS "${FULA_PLUGIN_DIR}")
+  file(COPY "${FULA_DLL_SOURCE}" DESTINATION "${FULA_PLUGIN_DIR}")
+endif()
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)

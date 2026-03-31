@@ -340,9 +340,13 @@ class FolderWatchService {
       );
 
       // Listen for sync completion (only if not cancelled)
-      SyncService.instance.addListener((localPath, status) {
+      late final SyncStatusCallback syncListener;
+      syncListener = (localPath, status) {
         // Ignore updates if sync was cancelled
-        if (_cancelledSyncs.contains(path)) return;
+        if (_cancelledSyncs.contains(path)) {
+          SyncService.instance.removeListener(syncListener);
+          return;
+        }
 
         if (localPath.startsWith(path) && status == SyncStatus.synced) {
           syncedCount++;
@@ -360,9 +364,11 @@ class FolderWatchService {
               syncedFiles: syncedCount,
             );
             _notifyListeners(path, FolderSyncStatus.synced);
+            SyncService.instance.removeListener(syncListener);
           }
         }
-      });
+      };
+      SyncService.instance.addListener(syncListener);
 
       debugPrint('Started syncing $path: $totalFiles files (${totalFiles - syncedCount} to upload)');
       
@@ -471,9 +477,13 @@ class FolderWatchService {
       }
 
       // Listen for sync completion (only if not cancelled)
-      SyncService.instance.addListener((localPath, status) {
+      late final SyncStatusCallback syncListener;
+      syncListener = (localPath, status) {
         // Ignore updates if sync was cancelled
-        if (_cancelledSyncs.contains(path)) return;
+        if (_cancelledSyncs.contains(path)) {
+          SyncService.instance.removeListener(syncListener);
+          return;
+        }
 
         if (trackedPaths.contains(localPath) && status == SyncStatus.synced) {
           syncedCount++;
@@ -491,9 +501,11 @@ class FolderWatchService {
               syncedFiles: syncedCount,
             );
             _notifyListeners(path, FolderSyncStatus.synced);
+            SyncService.instance.removeListener(syncListener);
           }
         }
-      });
+      };
+      SyncService.instance.addListener(syncListener);
       
       debugPrint('Started category sync for $categoryName: ${files.length} files');
       

@@ -67,6 +67,19 @@ class LocalFile {
     return ['dart', 'py', 'js', 'ts', 'java', 'kt', 'swift', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'rb', 'php', 'html', 'css', 'json', 'xml', 'yaml', 'yml'].contains(ext);
   }
 
+  bool get isTextViewable {
+    final ext = extension;
+    return [
+      'txt', 'md', 'rtf', 'csv', 'log', 'ini', 'conf', 'cfg',
+      'json', 'xml', 'yaml', 'yml', 'sql',
+      'dart', 'js', 'ts', 'jsx', 'tsx', 'vue', 'py', 'java', 'kt',
+      'swift', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'rb', 'php',
+      'html', 'css', 'sh',
+      'gradle', 'properties', 'env', 'gitignore', 'dockerignore',
+      'makefile', 'cmake',
+    ].contains(ext);
+  }
+
   String get sizeFormatted {
     // For iOS PhotoKit files, size is 0 (we skip expensive file.length())
     if (size == 0) {

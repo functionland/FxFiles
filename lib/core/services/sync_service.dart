@@ -12,12 +12,6 @@ import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
 
-// Top-level function for isolate - reads file bytes
-Future<Uint8List> _readFileInIsolate(String path) async {
-  final file = File(path);
-  return await file.readAsBytes();
-}
-
 enum SyncDirection { upload, download, bidirectional }
 
 typedef SyncStatusCallback = void Function(String localPath, SyncStatus status);
@@ -203,9 +197,11 @@ class SyncService {
     int syncedCount = 0;
     int errorCount = 0;
 
-    // Calculate total bytes for progress tracking
+    // Calculate total bytes for progress tracking.
+    // Iterate a snapshot copy to avoid ConcurrentModificationError when
+    // fire-and-forget _queueBatch calls add to _uploadQueue during awaits.
     int totalBytes = 0;
-    for (final task in _uploadQueue) {
+    for (final task in _uploadQueue.toList()) {
       try {
         final file = File(task.localPath);
         if (await file.exists()) {
@@ -286,6 +282,14 @@ class SyncService {
     // Wait for all active uploads to complete
     while (_activeUploads > 0) {
       await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    // Safety: if files were added during processing (from fire-and-forget batches),
+    // restart processing instead of showing completion
+    if (_uploadQueue.isNotEmpty) {
+      _isProcessingUpload = false;
+      _processUploadQueueAsync();
+      return;
     }
 
     // Show completion notification
@@ -487,51 +491,34 @@ class SyncService {
         totalBytes: 0,
       );
 
-      // Read file in isolate to avoid blocking UI thread
-      final data = await compute(_readFileInIsolate, task.localPath);
+      // Get file size without reading the file into memory
+      final fileSize = await File(task.localPath).length();
 
       _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
-        totalBytes: data.length,
+        totalBytes: fileSize,
       );
 
       // Start tracking this upload in progress manager
       UploadProgressManager.instance.startUpload(
         localPath: task.localPath,
         remoteKey: task.remoteKey,
-        totalBytes: data.length,
+        totalBytes: fileSize,
       );
 
+      // Upload by file path - avoids loading entire file into Dart memory.
+      // The file is read on the Rust side of the FFI bridge, eliminating
+      // the OOM risk for large files (10GB+).
       String etag;
-      if (task.encrypt) {
-        final encryptionKey = await AuthService.instance.getEncryptionKey();
-        if (encryptionKey == null) {
-          throw SyncException('Encryption key not available');
-        }
-
-        etag = await FulaApiService.instance.encryptAndUploadLargeFile(
-          task.remoteBucket,
-          task.remoteKey,
-          data,
-          encryptionKey,
-          originalFilename: task.localPath.split(RegExp(r'[/\\]')).last,
-          onProgress: (UploadProgress progress) {
-            _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
-              bytesTransferred: progress.bytesUploaded,
-            );
-          },
-        );
-      } else {
-        etag = await FulaApiService.instance.uploadLargeFile(
-          task.remoteBucket,
-          task.remoteKey,
-          data,
-          onProgress: (UploadProgress progress) {
-            _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
-              bytesTransferred: progress.bytesUploaded,
-            );
-          },
-        );
-      }
+      etag = await FulaApiService.instance.uploadLargeFileFromPath(
+        task.remoteBucket,
+        task.remoteKey,
+        task.localPath,
+        onProgress: (UploadProgress progress) {
+          _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
+            bytesTransferred: progress.bytesUploaded,
+          );
+        },
+      );
 
       debugPrint('Upload completed: ${task.remoteKey}, etag: $etag');
 
@@ -551,7 +538,7 @@ class SyncService {
             status: SyncStatus.synced,
             lastSyncedAt: DateTime.now(),
             etag: etag,
-            localSize: data.length,
+            localSize: fileSize,
           ),
         );
         _notifyListeners(task.localPath, SyncStatus.synced);

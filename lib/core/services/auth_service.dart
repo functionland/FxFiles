@@ -655,10 +655,14 @@ class AuthService {
     return base64Encode(key);
   }
 
+  String? _cachedShareId;
+
   Future<String?> getShareId() async {
+    if (_cachedShareId != null) return _cachedShareId;
     final key = await getPublicKey();
     if (key == null) return null;
-    return encodeShareId(key);
+    _cachedShareId = encodeShareId(key);
+    return _cachedShareId;
   }
 
   static String encodeShareId(Uint8List publicKey) {
@@ -749,11 +753,13 @@ class AuthService {
       // Always clear internal state last
       _currentUser = null;
       _encryptionKey = null;
+      _cachedShareId = null;
     } catch (e) {
       debugPrint('Sign out error: $e');
       // Still clear internal state even on error to ensure UI updates
       _currentUser = null;
       _encryptionKey = null;
+      _cachedShareId = null;
       rethrow;
     }
   }

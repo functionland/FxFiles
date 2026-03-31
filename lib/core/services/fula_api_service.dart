@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
@@ -497,6 +498,45 @@ class FulaApiService {
       return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload large file: $e');
+    }
+  }
+
+  /// Upload a large file by path - avoids loading file into Dart memory
+  ///
+  /// The file is read on the Rust side, avoiding the FFI serialization
+  /// overhead that causes OOM for very large files (1GB+).
+  Future<String> uploadLargeFileFromPath(
+    String bucket,
+    String key,
+    String filePath, {
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    _ensureConfigured();
+    try {
+      await _ensureForestLoaded(bucket);
+
+      // Get file size without reading the file
+      final fileSize = await File(filePath).length();
+
+      final result = await fula.putFlatFromPath(
+        client: _client!,
+        bucket: bucket,
+        path: key,
+        filePath: filePath,
+        contentType: null,
+      );
+
+      // Report completion
+      if (onProgress != null) {
+        onProgress(UploadProgress(
+          bytesUploaded: fileSize,
+          totalBytes: fileSize,
+        ));
+      }
+
+      return result.etag;
+    } catch (e) {
+      throw FulaApiException('Failed to upload file from path: $e');
     }
   }
 

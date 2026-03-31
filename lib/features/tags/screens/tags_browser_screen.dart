@@ -8,11 +8,25 @@ import 'package:fula_files/features/tags/widgets/create_tag_dialog.dart';
 import 'package:fula_files/features/tags/widgets/edit_tag_dialog.dart';
 
 /// Screen for browsing all tags
-class TagsBrowserScreen extends ConsumerWidget {
+class TagsBrowserScreen extends ConsumerStatefulWidget {
   const TagsBrowserScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<TagsBrowserScreen> createState() => _TagsBrowserScreenState();
+}
+
+class _TagsBrowserScreenState extends ConsumerState<TagsBrowserScreen> {
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final tagState = ref.watch(tagProvider);
 
     return Scaffold(
@@ -88,21 +102,74 @@ class TagsBrowserScreen extends ConsumerWidget {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: () => ref.read(tagProvider.notifier).refresh(),
-      child: ListView.builder(
-        padding: const EdgeInsets.only(bottom: 80),
-        itemCount: tagState.tags.length,
-        itemBuilder: (context, index) {
-          final tag = tagState.tags[index];
-          return _TagListTile(
-            tag: tag,
-            onTap: () => context.push('/tags/${tag.id}', extra: tag),
-            onEdit: () => _editTag(context, tag),
-            onDelete: () => _deleteTag(context, ref, tag),
-          );
-        },
-      ),
+    final filteredTags = _searchQuery.isEmpty
+        ? tagState.tags
+        : tagState.tags
+            .where((tag) =>
+                tag.name.toLowerCase().contains(_searchQuery.toLowerCase()))
+            .toList();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search tags...',
+              prefixIcon: const Icon(LucideIcons.search, size: 20),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(LucideIcons.x, size: 18),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _searchQuery = '');
+                      },
+                    )
+                  : null,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.grey[300]!),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.grey[300]!),
+              ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+            ),
+            onChanged: (value) => setState(() => _searchQuery = value),
+          ),
+        ),
+        Expanded(
+          child: filteredTags.isEmpty
+              ? Center(
+                  child: Text(
+                    'No tags matching "$_searchQuery"',
+                    style: TextStyle(color: Colors.grey[500]),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: () => ref.read(tagProvider.notifier).refresh(),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.only(bottom: 80),
+                    itemCount: filteredTags.length,
+                    itemBuilder: (context, index) {
+                      final tag = filteredTags[index];
+                      return _TagListTile(
+                        tag: tag,
+                        onTap: () =>
+                            context.push('/tags/${tag.id}', extra: tag),
+                        onEdit: () => _editTag(context, tag),
+                        onDelete: () => _deleteTag(context, ref, tag),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ],
     );
   }
 

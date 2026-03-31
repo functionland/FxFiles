@@ -125,13 +125,6 @@ class _SyncProgressIndicatorState extends ConsumerState<SyncProgressIndicator>
       }
     }
 
-    // Also check batch progress for file count based estimate
-    if (percentage == 0 && batchProgress != null && batchProgress.totalFiles > 0) {
-      // Use batch percentage as fallback
-      percentage = batchProgress.percentage.round();
-      progressValue = batchProgress.percentage / 100;
-    }
-
     // Update animation target
     if (percentage > 0) {
       _updateProgress(percentage.toDouble());

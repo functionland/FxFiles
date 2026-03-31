@@ -965,7 +965,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       context.push('/viewer/video', extra: filePath);
     } else if (file.isAudio) {
       context.push('/viewer/audio', extra: filePath);
-    } else if (['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'dart', 'js', 'py', 'java', 'kt', 'swift', 'go', 'rs', 'c', 'cpp', 'h', 'css', 'html', 'sh', 'rtf', 'csv', 'log', 'ini', 'conf', 'cfg', 'ts', 'tsx', 'jsx', 'vue', 'sql', 'gradle', 'properties', 'env', 'gitignore', 'dockerignore', 'makefile', 'cmake'].contains(ext)) {
+    } else if (file.isTextViewable) {
       context.push('/viewer/text', extra: filePath);
     } else {
       // Unknown file type - open with system app selector
