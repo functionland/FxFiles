@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/onboarding/screens/terms_of_service_screen.dart';
 import 'package:fula_files/shared/widgets/keyboard_shortcuts.dart';
@@ -95,6 +96,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       _refreshBloxConnection();
       // Resume any pending uploads that were interrupted by sleep
       SyncService.instance.resumeIfPending();
+      // Restart file watchers and scan for changes missed while backgrounded
+      FolderWatchService.instance.onAppResumed();
     }
   }
 

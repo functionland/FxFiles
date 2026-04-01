@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:path_provider/path_provider.dart';
@@ -8,6 +11,8 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
@@ -28,6 +33,14 @@ class FolderWatchService {
   // Track cancelled syncs to prevent queuing after disable
   final Set<String> _cancelledSyncs = {};
 
+  // Track active sync listeners for cleanup in dispose()
+  final Set<SyncStatusCallback> _activeSyncListeners = {};
+
+  // Cloud sync for folder configs
+  static const String _metadataBucket = 'fula-metadata';
+  bool _cloudSyncScheduled = false;
+  static const _cloudSyncDebounce = Duration(seconds: 5);
+
   // Parallel upload configuration
   static const int maxParallelUploads = 4;
   int _activeUploads = 0;
@@ -42,8 +55,12 @@ class FolderWatchService {
   }
 
   void _notifyListeners(String path, FolderSyncStatus status) {
-    for (final listener in _listeners) {
-      listener(path, status);
+    for (final listener in List.of(_listeners)) {
+      try {
+        listener(path, status);
+      } catch (e) {
+        debugPrint('FolderWatchService: listener error for $path: $e');
+      }
     }
   }
 
@@ -67,6 +84,63 @@ class FolderWatchService {
     debugPrint('FolderWatchService initialized with ${enabledSyncs.length} watched folders');
   }
 
+  /// Called when app returns to foreground. Restarts watchers and
+  /// scans for files that may have been missed while backgrounded.
+  Future<void> onAppResumed() async {
+    if (!_isInitialized) return;
+
+    final enabledSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
+    if (enabledSyncs.isEmpty) return;
+
+    debugPrint('FolderWatchService: onAppResumed - checking ${enabledSyncs.length} folders');
+
+    for (final sync in enabledSyncs) {
+      // Restart watcher (cancel stale, start fresh)
+      await _stopWatching(sync.path);
+      await _startWatching(sync.path);
+
+      // Lightweight re-scan: only queue files modified since last sync
+      if (sync.path.startsWith('category:')) {
+        // Category syncs re-trigger full sync (skips already-synced files)
+        syncFolder(sync.path);
+      } else {
+        _scanForNewFiles(sync.path, sync.lastSyncedAt);
+      }
+    }
+  }
+
+  /// Scan a directory for files modified after the given timestamp.
+  /// Queues any new/modified files that haven't been synced yet.
+  Future<void> _scanForNewFiles(String path, DateTime? since) async {
+    final dir = Directory(path);
+    if (!await dir.exists()) return;
+
+    final threshold = since ?? DateTime.fromMillisecondsSinceEpoch(0);
+
+    try {
+      await for (final entity in dir.list(recursive: true, followLinks: false)
+          .handleError((error) {
+        debugPrint('Resume scan error in $path: $error');
+      })) {
+        if (entity is! File) continue;
+
+        try {
+          final stat = await entity.stat();
+          if (stat.modified.isAfter(threshold)) {
+            final syncState = LocalStorageService.instance.getSyncState(entity.path);
+            if (syncState?.isSynced != true) {
+              _queueFileUpload(path, entity.path);
+            }
+          }
+        } catch (e) {
+          debugPrint('Error statting file during resume scan: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Resume scan failed for $path: $e');
+    }
+  }
+
   Future<void> enableFolderSync({
     required String path,
     required String targetBucket,
@@ -75,6 +149,7 @@ class FolderWatchService {
   }) async {
     // Clear from cancelled set if re-enabling
     _cancelledSyncs.remove(path);
+    SyncService.instance.clearCancelledBucket(targetBucket);
 
     // Check if user is authenticated
     if (!AuthService.instance.isAuthenticated) {
@@ -100,6 +175,7 @@ class FolderWatchService {
     await _registerPeriodicSync();
 
     debugPrint('Enabled folder sync for: $path');
+    _scheduleSyncToCloud();
 
     // Trigger initial sync - DON'T AWAIT, let it run in background
     // This returns control to UI immediately while sync happens async
@@ -129,6 +205,7 @@ class FolderWatchService {
     _notifyListeners(path, FolderSyncStatus.disabled);
 
     debugPrint('Disabled folder sync for: $path');
+    _scheduleSyncToCloud();
   }
 
   Future<void> _startWatching(String path) async {
@@ -174,14 +251,34 @@ class FolderWatchService {
   }
 
   void _handleFileSystemEvent(String folderPath, FileSystemEvent event) {
-    // Only handle file creation and modification
     if (event is FileSystemCreateEvent || event is FileSystemModifyEvent) {
       final file = File(event.path);
       if (file.existsSync() && !FileSystemEntity.isDirectorySync(event.path)) {
         debugPrint('File changed in watched folder: ${event.path}');
         _queueFileUpload(folderPath, event.path);
       }
+    } else if (event is FileSystemMoveEvent) {
+      // File was renamed or moved within the watched directory
+      final destination = event.destination;
+      if (destination != null) {
+        final file = File(destination);
+        if (file.existsSync() && !FileSystemEntity.isDirectorySync(destination)) {
+          debugPrint('File moved/renamed in watched folder: ${event.path} -> $destination');
+          _queueFileUpload(folderPath, destination);
+        }
+      }
     }
+  }
+
+  /// Strip trailing path separator to avoid off-by-one in substring calculations.
+  String _normalizePath(String path) {
+    if (path.endsWith(Platform.pathSeparator)) {
+      return path.substring(0, path.length - 1);
+    }
+    if (Platform.isWindows && path.endsWith('/')) {
+      return path.substring(0, path.length - 1);
+    }
+    return path;
   }
 
   void _queueFileUpload(String folderPath, String filePath) {
@@ -210,8 +307,9 @@ class FolderWatchService {
       if (!await file.exists()) return;
       
       // Calculate remote key
-      final relativePath = pending.filePath.substring(pending.folderPath.length + 1);
-      final folderName = pending.folderPath.split('/').last;
+      final normalizedFolder = _normalizePath(pending.folderPath);
+      final relativePath = pending.filePath.substring(normalizedFolder.length + 1);
+      final folderName = normalizedFolder.split(Platform.pathSeparator).last;
       final remoteKey = folderSync.isCategory 
           ? relativePath.replaceAll('\\', '/')
           : '$folderName/$relativePath'.replaceAll('\\', '/');
@@ -231,16 +329,19 @@ class FolderWatchService {
     }
   }
 
-  /// Queue a batch of files in parallel (don't await each individually)
+  /// Queue a batch of files individually so one failure doesn't lose the rest.
   Future<void> _queueBatch(List<_FileQueueItem> batch) async {
-    final futures = batch.map((item) => SyncService.instance.queueUpload(
-      localPath: item.localPath,
-      remoteBucket: item.bucket,
-      remoteKey: item.remoteKey,
-    ));
-
-    // Wait for all items in batch to be queued (not uploaded)
-    await Future.wait(futures);
+    for (final item in batch) {
+      try {
+        await SyncService.instance.queueUpload(
+          localPath: item.localPath,
+          remoteBucket: item.bucket,
+          remoteKey: item.remoteKey,
+        );
+      } catch (e) {
+        debugPrint('Failed to queue ${item.localPath}: $e');
+      }
+    }
   }
 
   Future<void> syncFolder(String path) async {
@@ -273,14 +374,22 @@ class FolderWatchService {
         throw Exception('Directory does not exist: $path');
       }
 
-      final folderName = path.split('/').last;
+      final normalizedPath = _normalizePath(path);
+      final folderName = normalizedPath.split(Platform.pathSeparator).last;
       int syncedCount = 0;
       int totalFiles = 0;
       const batchSize = 25;
       final toQueue = <_FileQueueItem>[];
 
-      // Collect files using stream (yields between iterations)
-      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      // Collect files using stream (yields between iterations).
+      // .handleError catches per-directory errors (e.g., permission denied on
+      // a subdirectory) and lets the stream continue with remaining entries.
+      int scanErrors = 0;
+      await for (final entity in dir.list(recursive: true, followLinks: false)
+          .handleError((error, stackTrace) {
+        scanErrors++;
+        debugPrint('Error scanning path during folder sync: $error');
+      })) {
         // Check if cancelled during file collection
         if (_cancelledSyncs.contains(path)) {
           debugPrint('Sync cancelled during file scan for $path');
@@ -300,7 +409,7 @@ class FolderWatchService {
         }
 
         // Calculate remote key
-        final relativePath = file.path.substring(path.length + 1);
+        final relativePath = file.path.substring(normalizedPath.length + 1);
         final remoteKey = folderSync.isCategory
             ? relativePath.replaceAll('\\', '/')
             : '$folderName/$relativePath'.replaceAll('\\', '/');
@@ -313,9 +422,71 @@ class FolderWatchService {
         toQueue.add(_FileQueueItem(file.path, bucket, remoteKey));
       }
 
+      final filesToSync = toQueue.length;
+
+      // Update total count
+      await LocalStorageService.instance.updateFolderSyncStatus(
+        path,
+        FolderSyncStatus.syncing,
+        totalFiles: totalFiles,
+        syncedFiles: syncedCount,
+      );
+
+      // Register listener BEFORE queueing so no completions are missed.
+      // Dart's single-threaded event loop guarantees the listener is in place
+      // before any completion callback can fire.
+      if (filesToSync > 0) {
+        int completedCount = 0;
+        int failedCount = 0;
+        late final SyncStatusCallback syncListener;
+        syncListener = (localPath, status) {
+          if (_cancelledSyncs.contains(path)) {
+            SyncService.instance.removeListener(syncListener);
+            _activeSyncListeners.remove(syncListener);
+            return;
+          }
+
+          if (!localPath.startsWith(path)) return;
+
+          if (status == SyncStatus.synced) {
+            completedCount++;
+            syncedCount++;
+          } else if (status == SyncStatus.error) {
+            failedCount++;
+          } else {
+            return;
+          }
+
+          LocalStorageService.instance.updateFolderSyncStatus(
+            path,
+            FolderSyncStatus.syncing,
+            syncedFiles: syncedCount,
+          );
+
+          if (completedCount + failedCount >= filesToSync) {
+            final finalStatus = failedCount > 0
+                ? FolderSyncStatus.error
+                : FolderSyncStatus.synced;
+            final errorMsg = failedCount > 0
+                ? '$failedCount file(s) failed to sync'
+                : null;
+            LocalStorageService.instance.updateFolderSyncStatus(
+              path,
+              finalStatus,
+              syncedFiles: syncedCount,
+              errorMessage: errorMsg,
+            );
+            _notifyListeners(path, finalStatus);
+            SyncService.instance.removeListener(syncListener);
+            _activeSyncListeners.remove(syncListener);
+          }
+        };
+        SyncService.instance.addListener(syncListener);
+        _activeSyncListeners.add(syncListener);
+      }
+
       // Queue all files in small batches without blocking UI
       for (int i = 0; i < toQueue.length; i += batchSize) {
-        // Check if cancelled before queueing batch
         if (_cancelledSyncs.contains(path)) {
           debugPrint('Sync cancelled during queue for $path');
           return;
@@ -324,53 +495,28 @@ class FolderWatchService {
         final end = (i + batchSize < toQueue.length) ? i + batchSize : toQueue.length;
         final batch = toQueue.sublist(i, end);
 
-        // Fire-and-forget: queue batch without awaiting
-        _queueBatch(batch);
+        try {
+          await _queueBatch(batch);
+        } catch (e) {
+          debugPrint('Error queuing batch for $path: $e');
+        }
 
-        // Yield to UI after each batch
         await Future.delayed(Duration.zero);
       }
 
-      // Update final total count
-      await LocalStorageService.instance.updateFolderSyncStatus(
-        path,
-        FolderSyncStatus.syncing,
-        totalFiles: totalFiles,
-        syncedFiles: syncedCount,
-      );
+      if (filesToSync == 0) {
+        // All files already synced — mark complete immediately
+        await LocalStorageService.instance.updateFolderSyncStatus(
+          path,
+          FolderSyncStatus.synced,
+          syncedFiles: syncedCount,
+        );
+        _notifyListeners(path, FolderSyncStatus.synced);
+      }
 
-      // Listen for sync completion (only if not cancelled)
-      late final SyncStatusCallback syncListener;
-      syncListener = (localPath, status) {
-        // Ignore updates if sync was cancelled
-        if (_cancelledSyncs.contains(path)) {
-          SyncService.instance.removeListener(syncListener);
-          return;
-        }
-
-        if (localPath.startsWith(path) && status == SyncStatus.synced) {
-          syncedCount++;
-          LocalStorageService.instance.updateFolderSyncStatus(
-            path,
-            FolderSyncStatus.syncing,
-            syncedFiles: syncedCount,
-          );
-
-          // Check if all done
-          if (syncedCount >= totalFiles) {
-            LocalStorageService.instance.updateFolderSyncStatus(
-              path,
-              FolderSyncStatus.synced,
-              syncedFiles: syncedCount,
-            );
-            _notifyListeners(path, FolderSyncStatus.synced);
-            SyncService.instance.removeListener(syncListener);
-          }
-        }
-      };
-      SyncService.instance.addListener(syncListener);
-
-      debugPrint('Started syncing $path: $totalFiles files (${totalFiles - syncedCount} to upload)');
+      debugPrint('Folder sync scan for $path: $totalFiles files found, '
+          '$syncedCount already synced, $filesToSync to queue, '
+          '$scanErrors scan errors');
       
     } catch (e) {
       debugPrint('Folder sync failed for $path: $e');
@@ -406,22 +552,32 @@ class FolderWatchService {
       );
       _notifyListeners(path, FolderSyncStatus.syncing);
 
-      // Get all files for this category using MediaService (may take time)
-      final result = await MediaService.instance.getMediaByCategory(
-        category,
-        offset: 0,
-        limit: 10000, // Get all files
-        sortBy: 'date',
-        ascending: false,
-      );
+      // Get all files for this category using paginated fetches
+      const fetchLimit = 1000;
+      int fetchOffset = 0;
+      final allFiles = <LocalFile>[];
 
-      // Check if cancelled after file scan
-      if (_cancelledSyncs.contains(path)) {
-        debugPrint('Category sync cancelled after scan for $path');
-        return;
+      while (true) {
+        if (_cancelledSyncs.contains(path)) {
+          debugPrint('Category sync cancelled during fetch for $path');
+          return;
+        }
+
+        final result = await MediaService.instance.getMediaByCategory(
+          category,
+          offset: fetchOffset,
+          limit: fetchLimit,
+          sortBy: 'date',
+          ascending: false,
+        );
+
+        allFiles.addAll(result.files);
+        fetchOffset += result.files.length;
+
+        if (!result.hasMore || result.files.isEmpty) break;
       }
 
-      final files = result.files;
+      final files = allFiles;
 
       // Update with actual file count
       await LocalStorageService.instance.updateFolderSyncStatus(
@@ -457,10 +613,62 @@ class FolderWatchService {
         toQueue.add(_FileQueueItem(file.path, bucket, file.name));
       }
 
+      final filesToSync = toQueue.length;
+
+      // Register listener BEFORE queueing so no completions are missed
+      if (filesToSync > 0) {
+        int completedCount = 0;
+        int failedCount = 0;
+        late final SyncStatusCallback syncListener;
+        syncListener = (localPath, status) {
+          if (_cancelledSyncs.contains(path)) {
+            SyncService.instance.removeListener(syncListener);
+            _activeSyncListeners.remove(syncListener);
+            return;
+          }
+
+          if (!trackedPaths.contains(localPath)) return;
+
+          if (status == SyncStatus.synced) {
+            completedCount++;
+            syncedCount++;
+          } else if (status == SyncStatus.error) {
+            failedCount++;
+          } else {
+            return;
+          }
+
+          LocalStorageService.instance.updateFolderSyncStatus(
+            path,
+            FolderSyncStatus.syncing,
+            syncedFiles: syncedCount,
+          );
+
+          if (completedCount + failedCount >= filesToSync) {
+            final finalStatus = failedCount > 0
+                ? FolderSyncStatus.error
+                : FolderSyncStatus.synced;
+            final errorMsg = failedCount > 0
+                ? '$failedCount file(s) failed to sync'
+                : null;
+            LocalStorageService.instance.updateFolderSyncStatus(
+              path,
+              finalStatus,
+              syncedFiles: syncedCount,
+              errorMessage: errorMsg,
+            );
+            _notifyListeners(path, finalStatus);
+            SyncService.instance.removeListener(syncListener);
+            _activeSyncListeners.remove(syncListener);
+          }
+        };
+        SyncService.instance.addListener(syncListener);
+        _activeSyncListeners.add(syncListener);
+      }
+
       // Queue all files in small batches without blocking UI
       const batchSize = 25;
       for (int i = 0; i < toQueue.length; i += batchSize) {
-        // Check if cancelled before queueing batch
         if (_cancelledSyncs.contains(path)) {
           debugPrint('Category sync cancelled during queue for $path');
           return;
@@ -469,45 +677,27 @@ class FolderWatchService {
         final end = (i + batchSize < toQueue.length) ? i + batchSize : toQueue.length;
         final batch = toQueue.sublist(i, end);
 
-        // Fire-and-forget: queue batch without awaiting
-        _queueBatch(batch);
+        try {
+          await _queueBatch(batch);
+        } catch (e) {
+          debugPrint('Error queuing batch for $path: $e');
+        }
 
-        // Yield to UI after each batch
         await Future.delayed(Duration.zero);
       }
 
-      // Listen for sync completion (only if not cancelled)
-      late final SyncStatusCallback syncListener;
-      syncListener = (localPath, status) {
-        // Ignore updates if sync was cancelled
-        if (_cancelledSyncs.contains(path)) {
-          SyncService.instance.removeListener(syncListener);
-          return;
-        }
+      if (filesToSync == 0) {
+        // All files already synced — mark complete immediately
+        await LocalStorageService.instance.updateFolderSyncStatus(
+          path,
+          FolderSyncStatus.synced,
+          syncedFiles: syncedCount,
+        );
+        _notifyListeners(path, FolderSyncStatus.synced);
+      }
 
-        if (trackedPaths.contains(localPath) && status == SyncStatus.synced) {
-          syncedCount++;
-          LocalStorageService.instance.updateFolderSyncStatus(
-            path,
-            FolderSyncStatus.syncing,
-            syncedFiles: syncedCount,
-          );
-
-          // Check if all done
-          if (syncedCount >= files.length) {
-            LocalStorageService.instance.updateFolderSyncStatus(
-              path,
-              FolderSyncStatus.synced,
-              syncedFiles: syncedCount,
-            );
-            _notifyListeners(path, FolderSyncStatus.synced);
-            SyncService.instance.removeListener(syncListener);
-          }
-        }
-      };
-      SyncService.instance.addListener(syncListener);
-      
-      debugPrint('Started category sync for $categoryName: ${files.length} files');
+      debugPrint('Category sync scan for $categoryName: ${files.length} files found, '
+          '$syncedCount already synced, $filesToSync to queue');
       
     } catch (e) {
       debugPrint('Category sync failed for $path: $e');
@@ -582,11 +772,158 @@ class FolderWatchService {
   /// Returns false on iOS (can only sync categories or app sandbox)
   bool get canSelectArbitraryFolders => !Platform.isIOS;
 
+  // ============================================================================
+  // CLOUD PERSISTENCE — survive uninstall/reinstall
+  // ============================================================================
+
+  void _scheduleSyncToCloud() {
+    if (_cloudSyncScheduled) return;
+    _cloudSyncScheduled = true;
+    Future.delayed(_cloudSyncDebounce, () async {
+      _cloudSyncScheduled = false;
+      await syncToCloud();
+    });
+  }
+
+  Future<String?> _getUserId() async {
+    try {
+      final publicKey = await AuthService.instance.getPublicKeyString();
+      if (publicKey == null || publicKey.isEmpty) return null;
+      final bytes = utf8.encode(publicKey);
+      final hash = sha256.convert(bytes);
+      return hash.toString().substring(0, 16);
+    } catch (e) {
+      debugPrint('FolderWatchService._getUserId error: $e');
+      return null;
+    }
+  }
+
+  Future<void> syncToCloud() async {
+    if (!FulaApiService.instance.isConfigured) return;
+
+    try {
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      if (encryptionKey == null) return;
+
+      final userId = await _getUserId();
+      if (userId == null) return;
+
+      final allSyncs = LocalStorageService.instance.getAllFolderSyncs();
+      // Only persist enabled (non-disabled) configs — disabled means the user
+      // removed it; there is nothing to restore.
+      final configs = allSyncs
+          .where((fs) => fs.isEnabled)
+          .map((fs) => fs.toJson())
+          .toList();
+
+      final jsonStr = jsonEncode({
+        'folderSyncs': configs,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+      final data = Uint8List.fromList(utf8.encode(jsonStr));
+
+      try {
+        await FulaApiService.instance.createBucket(_metadataBucket);
+      } catch (_) {
+        // Ignore — bucket may already exist
+      }
+      final key = '.fula/folderSync/$userId.json';
+      await FulaApiService.instance.encryptAndUpload(
+        _metadataBucket,
+        key,
+        data,
+        encryptionKey,
+        contentType: 'application/json',
+      );
+      debugPrint('FolderWatchService: synced ${configs.length} folder configs to cloud');
+    } catch (e) {
+      debugPrint('FolderWatchService: syncToCloud error: $e');
+    }
+  }
+
+  Future<void> restoreFromCloud() async {
+    if (!FulaApiService.instance.isConfigured) return;
+
+    try {
+      final encryptionKey = await AuthService.instance.getEncryptionKey();
+      if (encryptionKey == null) return;
+
+      final userId = await _getUserId();
+      if (userId == null) return;
+
+      final key = '.fula/folderSync/$userId.json';
+      final data = await FulaApiService.instance.downloadAndDecrypt(
+        _metadataBucket,
+        key,
+        encryptionKey,
+      );
+
+      final jsonStr = utf8.decode(data);
+      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final configsList = json['folderSyncs'] as List<dynamic>? ?? [];
+
+      // Only restore if local storage has no folder syncs (fresh install)
+      final existingSyncs = LocalStorageService.instance.getAllFolderSyncs();
+      if (existingSyncs.isNotEmpty) {
+        debugPrint('FolderWatchService: local configs exist, skipping cloud restore');
+        return;
+      }
+
+      var restored = 0;
+      for (final configJson in configsList) {
+        try {
+          final config = FolderSync.fromJson(configJson as Map<String, dynamic>);
+          // Restore with "enabled" status so user can see them and trigger sync
+          // Category syncs can always be restored; directory syncs need the path to exist
+          if (config.isCategory || await Directory(config.path).exists()) {
+            await LocalStorageService.instance.addFolderSync(config.copyWith(
+              status: FolderSyncStatus.enabled,
+              syncedFiles: 0,
+              totalFiles: 0,
+              errorMessage: null,
+            ));
+            await _startWatching(config.path);
+            restored++;
+          } else {
+            debugPrint('FolderWatchService: skipping restore for missing dir: ${config.path}');
+          }
+        } catch (e) {
+          debugPrint('FolderWatchService: error restoring config: $e');
+        }
+      }
+
+      if (restored > 0) {
+        debugPrint('FolderWatchService: restored $restored/${configsList.length} folder configs from cloud');
+        // Trigger sync for all restored folders
+        final restoredSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
+        for (final sync in restoredSyncs) {
+          syncFolder(sync.path);
+        }
+      }
+    } catch (e) {
+      final errorStr = e.toString();
+      if (errorStr.contains('NoSuchKey') ||
+          errorStr.contains('Object not found') ||
+          errorStr.contains('404')) {
+        debugPrint('FolderWatchService: no cloud config found (new user)');
+      } else {
+        debugPrint('FolderWatchService: restoreFromCloud error: $e');
+      }
+    }
+  }
+
   void dispose() {
     for (final subscription in _watchers.values) {
       subscription.cancel();
     }
     _watchers.clear();
+
+    // Remove all active sync listeners from SyncService
+    for (final listener in _activeSyncListeners) {
+      SyncService.instance.removeListener(listener);
+    }
+    _activeSyncListeners.clear();
+
     _listeners.clear();
   }
 }

@@ -398,8 +398,26 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     });
     
     _combinedFiles = combined;
+
+    // Pre-compute tags for cloud-only files by remote key
+    if (_currentBucket != null) {
+      final cloudOnlyKeys = combined
+          .where((item) => item.isCloudOnly && item.cloudFile?.isDirectory != true)
+          .map((item) => '$_currentBucket/${item.cloudFile!.key}')
+          .toList();
+      if (cloudOnlyKeys.isNotEmpty) {
+        final cloudTags = TagStorageService.instance.getTagsForRemoteKeys(cloudOnlyKeys);
+        // Also compute tags for local files in the combined list
+        final localPaths = combined
+            .where((item) => !item.isCloudOnly && item.localFile?.isDirectory != true)
+            .map((item) => item.localFile!.path)
+            .toList();
+        final localTags = TagStorageService.instance.getTagsForFiles(localPaths);
+        _fileTags = {...localTags, ...cloudTags};
+      }
+    }
   }
-  
+
   Future<LocalFile?> _findLocalFileForCloudObject(FulaObject cloudObj) async {
     // 1. First check sync states to find local path for this cloud object
     final allSyncStates = LocalStorageService.instance.getAllSyncStates();
@@ -680,6 +698,17 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           .map((f) => f.path)
           .toList();
       final precomputedTags = TagStorageService.instance.getTagsForFiles(allPaths);
+
+      // Also pre-compute tags for cloud-only files by remote key
+      if (cloudOnlyFiles.isNotEmpty) {
+        final bucketName = category.bucketName;
+        final remoteKeys = cloudOnlyFiles
+            .where((cf) => !cf.isDirectory)
+            .map((cf) => '$bucketName/${cf.key}')
+            .toList();
+        final cloudTags = TagStorageService.instance.getTagsForRemoteKeys(remoteKeys);
+        precomputedTags.addAll(cloudTags);
+      }
 
       setState(() {
         _files = result.files;
@@ -1654,7 +1683,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Widget _buildCloudOnlyGridItem(FulaObject cloudFile) {
     final isLargeGrid = _viewMode == ViewMode.largeGrid;
-    
+
+    // Build remote key for tag lookup
+    final bucket = _isCloudMode
+        ? _currentBucket
+        : (widget.category != null ? _categoryFromString(widget.category!).bucketName : null);
+    final remoteKey = bucket != null ? '$bucket/${cloudFile.key}' : null;
+
     return GestureDetector(
       onTap: () => _showCloudFileOptions(cloudFile),
       onSecondaryTapUp: (details) => _showCloudFileOptions(cloudFile),
@@ -1724,6 +1759,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                         color: Colors.blue.shade700,
                       ),
                     ),
+                    if (remoteKey != null) _buildFileTags(remoteKey),
                   ],
                 ],
               ),
@@ -3113,6 +3149,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         ? _formatFileDate(cloudFile.lastModified!)
         : null;
 
+    // Build remote key for tag lookup
+    final bucket = _isCloudMode
+        ? _currentBucket
+        : (widget.category != null ? _categoryFromString(widget.category!).bucketName : null);
+    final remoteKey = bucket != null ? '$bucket/${cloudFile.key}' : null;
+
     return GestureDetector(
       onSecondaryTapUp: (details) => _showCloudFileOptions(cloudFile),
       child: ListTile(
@@ -3126,20 +3168,26 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           child: const Icon(LucideIcons.cloud, color: Colors.blue),
         ),
         title: Text(cloudFile.key, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Row(
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_formatFileSize(cloudFile.size)),
-            if (dateFormatted != null)
-              Text(
-                ' • $dateFormatted',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            const SizedBox(width: 8),
-            const Icon(LucideIcons.download, size: 14, color: Colors.blue),
-            const SizedBox(width: 4),
-            Text('Cloud only', style: TextStyle(color: Colors.blue.shade700, fontSize: 12)),
+            Row(
+              children: [
+                Text(_formatFileSize(cloudFile.size)),
+                if (dateFormatted != null)
+                  Text(
+                    ' • $dateFormatted',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                const Icon(LucideIcons.download, size: 14, color: Colors.blue),
+                const SizedBox(width: 4),
+                Text('Cloud only', style: TextStyle(color: Colors.blue.shade700, fontSize: 12)),
+              ],
+            ),
+            if (remoteKey != null) _buildFileTags(remoteKey),
           ],
         ),
         trailing: IconButton(

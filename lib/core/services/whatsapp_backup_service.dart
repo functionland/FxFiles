@@ -211,26 +211,30 @@ class WhatsAppBackupService {
     final basePath = dir.path;
     debugPrint('WhatsAppBackup: scanning $basePath');
 
-    List<FileSystemEntity> entities;
+    // Use async stream with .handleError() so permission errors on individual
+    // subdirectories are logged and skipped instead of killing the entire scan.
+    final files = <File>[];
+    int scanErrors = 0;
+    int dirCount = 0;
     try {
-      entities = dir.listSync(recursive: true, followLinks: false);
+      await for (final entity in dir.list(recursive: true, followLinks: false)
+          .handleError((error, stackTrace) {
+        scanErrors++;
+        debugPrint('WhatsAppBackup: error scanning path: $error');
+      })) {
+        if (entity is File) {
+          files.add(entity);
+        } else if (entity is Directory) {
+          dirCount++;
+        }
+      }
     } catch (e) {
-      debugPrint('WhatsAppBackup: listSync FAILED for $basePath: $e');
+      debugPrint('WhatsAppBackup: listing FAILED for $basePath: $e');
       return ScanResult(newFiles: [], changedFiles: [], unchangedCount: 0, totalSize: 0);
     }
 
-    final allCount = entities.length;
-    final files = entities.whereType<File>().toList();
     final fileCount = files.length;
-    final dirCount = entities.whereType<Directory>().length;
-    debugPrint('WhatsAppBackup: found $allCount entities ($fileCount files, $dirCount dirs)');
-
-    if (fileCount == 0) {
-      // Log first few entries to help diagnose
-      for (var i = 0; i < entities.length && i < 10; i++) {
-        debugPrint('WhatsAppBackup:   [$i] ${entities[i].runtimeType}: ${entities[i].path}');
-      }
-    }
+    debugPrint('WhatsAppBackup: found ${fileCount + dirCount} entities ($fileCount files, $dirCount dirs, $scanErrors scan errors)');
 
     var scanned = 0;
     for (final file in files) {

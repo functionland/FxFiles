@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
+import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
@@ -163,6 +164,7 @@ class AuthService {
           TagStorageService.instance.restoreFromCloud();
           WebsiteService.instance.restoreFromCloud();
           NftService.instance.restoreFromCloud();
+          FolderWatchService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -262,6 +264,7 @@ class AuthService {
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
+        FolderWatchService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -371,6 +374,7 @@ class AuthService {
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
+        FolderWatchService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -412,6 +416,7 @@ class AuthService {
         CloudSyncMappingService.instance.relinkMappings();
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
+        FolderWatchService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Browser sign-in post-setup error: $e');
@@ -581,6 +586,7 @@ class AuthService {
       TagStorageService.instance.restoreFromCloud();
       WebsiteService.instance.restoreFromCloud();
       NftService.instance.restoreFromCloud();
+      FolderWatchService.instance.restoreFromCloud();
     }
   }
 

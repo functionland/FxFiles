@@ -93,4 +93,28 @@ class FolderSync extends HiveObject {
   double get syncProgress => totalFiles > 0 ? syncedFiles / totalFiles : 0.0;
   
   String get displayName => categoryName ?? path.split('/').last;
+
+  Map<String, dynamic> toJson() => {
+    'path': path,
+    'categoryName': categoryName,
+    'targetBucket': targetBucket,
+    'status': status.index,
+    'lastSyncedAt': lastSyncedAt?.toIso8601String(),
+    'totalFiles': totalFiles,
+    'syncedFiles': syncedFiles,
+    'isCategory': isCategory,
+  };
+
+  factory FolderSync.fromJson(Map<String, dynamic> json) => FolderSync(
+    path: json['path'] as String,
+    categoryName: json['categoryName'] as String?,
+    targetBucket: json['targetBucket'] as String,
+    status: FolderSyncStatus.values[json['status'] as int? ?? 0],
+    lastSyncedAt: json['lastSyncedAt'] != null
+        ? DateTime.tryParse(json['lastSyncedAt'] as String)
+        : null,
+    totalFiles: json['totalFiles'] as int? ?? 0,
+    syncedFiles: json['syncedFiles'] as int? ?? 0,
+    isCategory: json['isCategory'] as bool? ?? false,
+  );
 }

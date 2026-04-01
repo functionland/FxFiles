@@ -29,6 +29,9 @@ class SyncService {
   // Map from localPath to persistent task ID for queue persistence
   final Map<String, String> _taskIdMap = {};
 
+  // Track cancelled buckets to prevent retry callbacks from re-queuing
+  final Set<String> _cancelledBuckets = {};
+
   List<SyncTask> get uploadQueue => List.unmodifiable(_uploadQueue);
   List<SyncTask> get downloadQueue => List.unmodifiable(_downloadQueue);
   Map<String, SyncProgress> get activeSync => Map.unmodifiable(_activeSync);
@@ -98,7 +101,15 @@ class SyncService {
       }
     }
 
+    // Prevent scheduled retry callbacks from re-queuing tasks for this bucket
+    _cancelledBuckets.add(bucket);
+
     debugPrint('Cancelled ${toRemove.length} pending uploads for bucket: $bucket');
+  }
+
+  /// Allow a previously cancelled bucket to accept new uploads (called when re-enabling sync)
+  void clearCancelledBucket(String bucket) {
+    _cancelledBuckets.remove(bucket);
   }
 
   void addListener(SyncStatusCallback callback) {
@@ -110,8 +121,12 @@ class SyncService {
   }
   
   void _notifyListeners(String localPath, SyncStatus status) {
-    for (final listener in _listeners) {
-      listener(localPath, status);
+    for (final listener in List.of(_listeners)) {
+      try {
+        listener(localPath, status);
+      } catch (e) {
+        debugPrint('SyncService: listener error for $localPath: $e');
+      }
     }
   }
 
@@ -628,7 +643,7 @@ class SyncService {
 
         // Schedule retry with exponential backoff
         Future.delayed(delay, () {
-          if (!_isPaused) {
+          if (!_isPaused && !_cancelledBuckets.contains(task.remoteBucket)) {
             _uploadQueue.add(task);
             _processUploadQueueAsync();
           }

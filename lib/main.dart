@@ -30,6 +30,7 @@ import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
+import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 /// Prevents GoRouter from processing deep links that DeepLinkService handles.
@@ -204,6 +205,13 @@ Future<ProviderContainer> _initializeApp() async {
     await BackgroundSyncService.instance.initialize().timeout(const Duration(seconds: 3));
   } catch (e) {
     debugPrint('BackgroundSyncService initialization failed: $e');
+  }
+
+  // Initialize folder watch service (restarts watchers for enabled folder syncs)
+  try {
+    await FolderWatchService.instance.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('FolderWatchService initialization failed: $e');
   }
 
   // Request notification permission early for sync notifications (Android 13+)

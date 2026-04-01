@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:open_filex/open_filex.dart';
 
 /// Screen for viewing all files with a specific tag
 class TaggedFilesScreen extends ConsumerWidget {
@@ -174,9 +175,13 @@ class TaggedFilesScreen extends ConsumerWidget {
     } else if (localFile.isTextViewable) {
       context.push('/viewer/text', extra: filePath);
     } else {
-      // No built-in viewer for this type; navigate to parent directory
-      final parentDir = File(filePath).parent.path;
-      context.push('/browser', extra: {'path': parentDir});
+      // No built-in viewer — open with native app selector
+      final result = await OpenFilex.open(filePath);
+      if (result.type != ResultType.done && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open file: ${result.message}')),
+        );
+      }
     }
   }
 

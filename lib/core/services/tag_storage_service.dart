@@ -322,6 +322,36 @@ class TagStorageService {
     return result;
   }
 
+  /// Get tags for multiple files by remote key in a single pass.
+  /// Returns a map of remoteKey -> list of tags for that file.
+  Map<String, List<FileTag>> getTagsForRemoteKeys(List<String> remoteKeys) {
+    if (!_isInitialized || remoteKeys.isEmpty) return {};
+
+    final keySet = remoteKeys.toSet();
+    // Single scan: group tag IDs by remote key
+    final keyToTagIds = <String, Set<String>>{};
+    for (final tf in _taggedFilesBox.values) {
+      if (tf.remoteKey != null && keySet.contains(tf.remoteKey)) {
+        (keyToTagIds[tf.remoteKey!] ??= <String>{}).add(tf.tagId);
+      }
+    }
+
+    // Resolve tag IDs to FileTag objects
+    final result = <String, List<FileTag>>{};
+    for (final entry in keyToTagIds.entries) {
+      final tags = <FileTag>[];
+      for (final tagId in entry.value) {
+        final tag = _tagsBox.get(tagId);
+        if (tag != null) tags.add(tag);
+      }
+      if (tags.isNotEmpty) {
+        tags.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        result[entry.key] = tags;
+      }
+    }
+    return result;
+  }
+
   /// Get all files with a specific tag
   Future<List<TaggedFile>> getFilesWithTag(String tagId) async {
     if (!_isInitialized) await init();
