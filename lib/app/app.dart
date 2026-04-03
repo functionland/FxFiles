@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/app/router.dart';
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
+import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart' show walletNavigatorKey;
+import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/onboarding/screens/terms_of_service_screen.dart';
+import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/shared/widgets/keyboard_shortcuts.dart';
 import 'package:fula_files/shared/widgets/mini_player.dart';
 
@@ -29,6 +36,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
 
   StreamSubscription<Map<String, String?>>? _bloxPairingSubscription;
   StreamSubscription<Map<String, String?>>? _nftClaimSubscription;
+  StreamSubscription<String>? _shellUploadSubscription;
+  StreamSubscription<String>? _shellShareSubscription;
 
   @override
   void initState() {
@@ -43,6 +52,12 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _nftClaimSubscription =
         DeepLinkService.instance.onNftClaimReceived.listen(_navigateToNftClaim);
 
+    // Listen for Windows shell context menu actions
+    _shellUploadSubscription =
+        DeepLinkService.instance.onShellUpload.listen(_handleShellUpload);
+    _shellShareSubscription =
+        DeepLinkService.instance.onShellShare.listen(_handleShellShare);
+
     // Check for pending params from cold-start deep links
     // (router not ready during initState, so defer to next frame)
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -55,6 +70,16 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       if (pendingNftClaim != null) {
         _navigateToNftClaim(pendingNftClaim);
       }
+
+      final pendingUpload = DeepLinkService.instance.consumePendingShellUpload();
+      if (pendingUpload != null) {
+        _handleShellUpload(pendingUpload);
+      }
+
+      final pendingShare = DeepLinkService.instance.consumePendingShellShare();
+      if (pendingShare != null) {
+        _handleShellShare(pendingShare);
+      }
     });
   }
 
@@ -62,6 +87,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   void dispose() {
     _bloxPairingSubscription?.cancel();
     _nftClaimSubscription?.cancel();
+    _shellUploadSubscription?.cancel();
+    _shellShareSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -98,6 +125,193 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       SyncService.instance.resumeIfPending();
       // Restart file watchers and scan for changes missed while backgrounded
       FolderWatchService.instance.onAppResumed();
+    }
+  }
+
+  /// Handle file/folder upload triggered from Windows Explorer context menu.
+  Future<void> _handleShellUpload(String filePath) async {
+    try {
+      final entityType = FileSystemEntity.typeSync(filePath);
+      if (entityType == FileSystemEntityType.notFound) {
+        debugPrint('ShellUpload: file not found: $filePath');
+        _showShellSnackBar('File not found: $filePath', isError: true);
+        return;
+      }
+
+      final name = filePath.split(Platform.pathSeparator).last;
+      final isDirectory = entityType == FileSystemEntityType.directory;
+
+      if (isDirectory) {
+        final dir = Directory(filePath);
+        int fileCount = 0;
+        await for (final entity in dir.list(recursive: true, followLinks: false)) {
+          if (entity is File) {
+            final relativePath = entity.path.substring(filePath.length + 1);
+            final remoteKey = '$name/$relativePath'.replaceAll('\\', '/');
+            final category = FileCategory.fromPath(entity.path);
+            await SyncService.instance.queueUpload(
+              localPath: entity.path,
+              remoteBucket: category.bucketName,
+              remoteKey: remoteKey,
+            );
+            fileCount++;
+          }
+        }
+        _showShellSnackBar('Queued $fileCount files from "$name" for upload');
+      } else {
+        final category = FileCategory.fromPath(filePath);
+        await SyncService.instance.queueUpload(
+          localPath: filePath,
+          remoteBucket: category.bucketName,
+          remoteKey: name,
+        );
+        _showShellSnackBar('Queued for upload: $name');
+      }
+    } catch (e) {
+      debugPrint('ShellUpload: error: $e');
+      _showShellSnackBar('Upload failed: $e', isError: true);
+    }
+  }
+
+  /// Handle share link creation triggered from Windows Explorer context menu.
+  Future<void> _handleShellShare(String filePath) async {
+    try {
+      final entityType = FileSystemEntity.typeSync(filePath);
+      if (entityType == FileSystemEntityType.notFound) {
+        _showShellSnackBar('File not found: $filePath', isError: true);
+        return;
+      }
+
+      final ctx = walletNavigatorKey.currentContext;
+      if (ctx == null) {
+        debugPrint('ShellShare: no navigator context available');
+        return;
+      }
+
+      final name = filePath.split(Platform.pathSeparator).last;
+      final isDirectory = entityType == FileSystemEntityType.directory;
+
+      // Check if file is synced to cloud (aggregate children for directories)
+      bool isSynced;
+      if (isDirectory) {
+        final children = LocalStorageService.instance.getSyncStatesUnderPath(filePath);
+        isSynced = children.isNotEmpty && children.every((s) => s.status == SyncStatus.synced);
+      } else {
+        final syncState = LocalStorageService.instance.getSyncState(filePath);
+        isSynced = syncState != null && syncState.status == SyncStatus.synced;
+      }
+
+      if (!isSynced) {
+        // Show dialog offering to upload first
+        if (!ctx.mounted) return;
+        final shouldUpload = await showDialog<bool>(
+          context: ctx,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Text('File Not Uploaded'),
+            content: Text(
+              '"$name" must be uploaded to Fula Network before creating a share link.\n\n'
+              'Would you like to upload it now?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogCtx, true),
+                child: const Text('Upload'),
+              ),
+            ],
+          ),
+        );
+        if (shouldUpload == true) {
+          await _handleShellUpload(filePath);
+          _showShellSnackBar('Upload "$name" first, then use Create Share Link again');
+        }
+        return;
+      }
+
+      // File is synced — show the public link dialog
+      final category = FileCategory.fromPath(filePath);
+      final bucket = category.bucketName;
+      final pathScope = isDirectory ? '$name/' : name;
+
+      final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+      const mimeTypes = {
+        'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+        'gif': 'image/gif', 'webp': 'image/webp', 'mp4': 'video/mp4',
+        'mov': 'video/quicktime', 'mp3': 'audio/mpeg', 'pdf': 'application/pdf',
+        'txt': 'text/plain', 'json': 'application/json', 'zip': 'application/zip',
+      };
+
+      if (!ctx.mounted) return;
+      final result = await showCreatePublicLinkDialog(
+        context: ctx,
+        pathScope: pathScope,
+        bucket: bucket,
+        fileName: name,
+        contentType: mimeTypes[ext],
+        localPath: filePath,
+      );
+
+      if (result != null && ctx.mounted) {
+        showDialog(
+          context: ctx,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Text('Link Created!'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Share this link:'),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(dialogCtx).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SelectableText(
+                    result.url,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Close'),
+              ),
+              FilledButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: result.url));
+                  Navigator.pop(dialogCtx);
+                  _showShellSnackBar('Link copied to clipboard');
+                },
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('Copy Link'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('ShellShare: error: $e');
+      _showShellSnackBar('Share failed: $e', isError: true);
+    }
+  }
+
+  /// Show a snackbar using the global navigator context.
+  void _showShellSnackBar(String message, {bool isError = false}) {
+    final ctx = walletNavigatorKey.currentContext;
+    if (ctx != null && ctx.mounted) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError ? Colors.red : null,
+        ),
+      );
     }
   }
 

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:fula_files/core/models/sync_state.dart';
@@ -182,6 +184,16 @@ class LocalStorageService {
       }
     }
     return null;
+  }
+
+  /// Get all sync states for files under a directory path
+  List<SyncState> getSyncStatesUnderPath(String directoryPath) {
+    final box = _syncStateBox;
+    if (box == null) return [];
+    final prefix = directoryPath.endsWith(Platform.pathSeparator)
+        ? directoryPath
+        : directoryPath + Platform.pathSeparator;
+    return box.values.where((s) => s.localPath.startsWith(prefix)).toList();
   }
 
   /// Get sync state by remote key and bucket (for checking if cloud file is linked to local)

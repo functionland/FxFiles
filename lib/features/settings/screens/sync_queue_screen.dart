@@ -219,7 +219,13 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
               tooltip: 'Retry',
               onPressed: () => _retryTask(task),
             )
-          : null,
+          : task.isPending
+              ? IconButton(
+                  icon: const Icon(LucideIcons.arrowUpToLine, size: 18),
+                  tooltip: 'Upload next',
+                  onPressed: () => _moveToFront(task),
+                )
+              : null,
     );
   }
 
@@ -246,6 +252,16 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
         return LucideIcons.alertCircle;
       case SyncTaskStatus.completed:
         return LucideIcons.checkCircle;
+    }
+  }
+
+  void _moveToFront(SyncTask task) {
+    final moved = SyncService.instance.prioritizeUpload(task.localPath);
+    if (moved && mounted) {
+      _loadTasks();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Moved to front of queue')),
+      );
     }
   }
 

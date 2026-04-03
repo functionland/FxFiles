@@ -22,6 +22,7 @@ import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
 import 'package:fula_files/features/apps/screens/apps_browser_screen.dart';
 import 'package:fula_files/features/apps/screens/whatsapp_backup_screen.dart';
 import 'package:fula_files/features/apps/screens/restore_screen.dart';
+import 'package:fula_files/features/sharing/screens/collaboration_detail_screen.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
@@ -76,6 +77,13 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/shared',
         builder: (context, state) => const ShareScreen(),
+      ),
+      GoRoute(
+        path: '/collab/:id',
+        builder: (context, state) {
+          final groupId = state.pathParameters['id']!;
+          return CollaborationDetailScreen(groupId: groupId);
+        },
       ),
       GoRoute(
         path: '/viewer/image',

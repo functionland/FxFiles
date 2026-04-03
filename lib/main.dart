@@ -61,8 +61,14 @@ class _DeepLinkNavigationFilter with WidgetsBindingObserver {
   }
 }
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // If launched from Windows shell context menu, main.cpp passes the
+  // constructed fxfiles:// URI via dart_entrypoint_arguments.
+  if (args.isNotEmpty && args[0].startsWith('fxfiles://')) {
+    DeepLinkService.instance.setInitialShellUri(args[0]);
+  }
 
   // Register deep link filter BEFORE GoRouter's PlatformRouteInformationProvider
   // so we intercept fxfiles:// links first (observers are checked in order).
@@ -428,7 +434,7 @@ class StartupErrorApp extends StatelessWidget {
                 ElevatedButton.icon(
                   onPressed: () {
                     // Try to restart the app
-                    main();
+                    main([]);
                   },
                   icon: const Icon(Icons.refresh),
                   label: const Text('Retry'),
@@ -444,7 +450,7 @@ class StartupErrorApp extends StatelessWidget {
                     } catch (e) {
                       debugPrint('Failed to clear data: $e');
                     }
-                    main();
+                    main([]);
                   },
                   child: const Text('Clear Sync Data & Retry'),
                 ),

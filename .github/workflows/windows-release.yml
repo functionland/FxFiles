@@ -29,6 +29,43 @@ jobs:
       - name: Create Store MSIX bundle (unsigned, for Microsoft Store)
         run: dart run msix:create --store
 
+      - name: Patch Store MSIX manifest for shell integration
+        shell: pwsh
+        run: |
+          $msixFile = Get-ChildItem "build\windows\x64\runner\Release\*.msix" | Select-Object -First 1
+          $tempDir = "build\msix_store_temp"
+          $sdkTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\MakeAppx.exe" | Sort-Object -Descending | Select-Object -First 1
+
+          & $sdkTool unpack /p $msixFile.FullName /d $tempDir /o
+
+          $manifestPath = "$tempDir\AppxManifest.xml"
+          $manifest = Get-Content $manifestPath -Raw
+
+          # Add desktop6 namespace if not present
+          if ($manifest -notmatch 'xmlns:desktop6=') {
+            $manifest = $manifest -replace '(xmlns:rescap="[^"]*")', 'xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6" $1'
+            # If no rescap namespace either, add both before IgnorableNamespaces
+            if ($manifest -notmatch 'xmlns:desktop6=') {
+              $manifest = $manifest -replace '(IgnorableNamespaces=")', 'xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6" $1'
+            }
+          }
+
+          # Add desktop6 to IgnorableNamespaces
+          if ($manifest -match 'IgnorableNamespaces="([^"]*)"' -and $Matches[1] -notmatch 'desktop6') {
+            $manifest = $manifest -replace '(IgnorableNamespaces="[^"]*)', '$1 desktop6'
+          }
+
+          # Add RegistryWriteVirtualization to Properties
+          if ($manifest -notmatch 'RegistryWriteVirtualization') {
+            $manifest = $manifest -replace '(</Properties>)', "    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>`n  `$1"
+          }
+
+          Set-Content $manifestPath $manifest
+
+          Remove-Item $msixFile.FullName
+          & $sdkTool pack /d $tempDir /p $msixFile.FullName /o
+          Remove-Item -Recurse $tempDir
+
       - name: Bundle MSIX into msixbundle
         shell: pwsh
         run: |
@@ -40,6 +77,39 @@ jobs:
 
       - name: Create sideload MSIX (signed, for direct download)
         run: dart run msix:create --install-certificate false
+
+      - name: Patch sideload MSIX manifest for shell integration
+        shell: pwsh
+        run: |
+          $msixFile = Get-ChildItem "build\windows\x64\runner\Release\*.msix" | Select-Object -First 1
+          $tempDir = "build\msix_sideload_temp"
+          $sdkTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\MakeAppx.exe" | Sort-Object -Descending | Select-Object -First 1
+
+          & $sdkTool unpack /p $msixFile.FullName /d $tempDir /o
+
+          $manifestPath = "$tempDir\AppxManifest.xml"
+          $manifest = Get-Content $manifestPath -Raw
+
+          if ($manifest -notmatch 'xmlns:desktop6=') {
+            $manifest = $manifest -replace '(xmlns:rescap="[^"]*")', 'xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6" $1'
+            if ($manifest -notmatch 'xmlns:desktop6=') {
+              $manifest = $manifest -replace '(IgnorableNamespaces=")', 'xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6" $1'
+            }
+          }
+
+          if ($manifest -match 'IgnorableNamespaces="([^"]*)"' -and $Matches[1] -notmatch 'desktop6') {
+            $manifest = $manifest -replace '(IgnorableNamespaces="[^"]*)', '$1 desktop6'
+          }
+
+          if ($manifest -notmatch 'RegistryWriteVirtualization') {
+            $manifest = $manifest -replace '(</Properties>)', "    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>`n  `$1"
+          }
+
+          Set-Content $manifestPath $manifest
+
+          Remove-Item $msixFile.FullName
+          & $sdkTool pack /d $tempDir /p $msixFile.FullName /o
+          Remove-Item -Recurse $tempDir
 
       - name: Save sideload MSIX
         run: |

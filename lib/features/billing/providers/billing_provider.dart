@@ -1,7 +1,12 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
@@ -168,6 +173,30 @@ class BillingNotifier extends Notifier<BillingState> {
       final message = WalletService.instance.generateLinkMessage(address);
       final signature = await WalletService.instance.signLinkMessage(message);
 
+      // Encrypt wallet address client-side before sending
+      String? encryptedAddress;
+      try {
+        final key = await AuthService.instance.getEncryptionKey();
+        if (key != null) {
+          final aesGcm = crypto.AesGcm.with256bits();
+          final secretKey = crypto.SecretKey(key);
+          final nonce = aesGcm.newNonce();
+          final secretBox = await aesGcm.encrypt(
+            utf8.encode(address.toLowerCase()),
+            secretKey: secretKey,
+            nonce: nonce,
+          );
+          final encrypted = Uint8List.fromList([
+            ...nonce,
+            ...secretBox.cipherText,
+            ...secretBox.mac.bytes,
+          ]);
+          encryptedAddress = base64Encode(encrypted);
+        }
+      } catch (e) {
+        debugPrint('BillingProvider: wallet address encryption failed (non-fatal): $e');
+      }
+
       // Link wallet on server
       final chainId = WalletService.instance.connectedChainId ?? 8453;
       await BillingApiService.instance.linkWallet(
@@ -175,6 +204,7 @@ class BillingNotifier extends Notifier<BillingState> {
         chainId: chainId,
         signature: signature,
         message: message,
+        encryptedAddress: encryptedAddress,
       );
 
       // Refresh wallet list

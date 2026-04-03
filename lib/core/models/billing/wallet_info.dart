@@ -5,12 +5,14 @@ class WalletInfo extends Equatable {
   final int chainId;
   final bool isVerified;
   final DateTime? connectedAt;
+  final String? encryptedAddress;
 
   const WalletInfo({
     required this.address,
     required this.chainId,
     this.isVerified = false,
     this.connectedAt,
+    this.encryptedAddress,
   });
 
   factory WalletInfo.fromJson(Map<String, dynamic> json) {
@@ -23,6 +25,8 @@ class WalletInfo extends Equatable {
           : json['connected_at'] != null
               ? DateTime.tryParse(json['connected_at'] as String)
               : null,
+      encryptedAddress: json['encryptedWalletAddress'] as String?
+          ?? json['encrypted_wallet_address'] as String?,
     );
   }
 
@@ -47,6 +51,7 @@ class WalletInfo extends Equatable {
       'chainId': chainId,
       'isVerified': isVerified,
       'connectedAt': connectedAt?.toIso8601String(),
+      if (encryptedAddress != null) 'encryptedAddress': encryptedAddress,
     };
   }
 
@@ -56,5 +61,5 @@ class WalletInfo extends Equatable {
   }
 
   @override
-  List<Object?> get props => [address, chainId, isVerified, connectedAt];
+  List<Object?> get props => [address, chainId, isVerified, connectedAt, encryptedAddress];
 }

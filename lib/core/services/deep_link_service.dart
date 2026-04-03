@@ -32,6 +32,13 @@ class DeepLinkService {
   final _nftClaimController = StreamController<Map<String, String?>>.broadcast();
   Stream<Map<String, String?>> get onNftClaimReceived => _nftClaimController.stream;
 
+  // Stream controllers for Windows shell context menu actions
+  final _shellUploadController = StreamController<String>.broadcast();
+  Stream<String> get onShellUpload => _shellUploadController.stream;
+
+  final _shellShareController = StreamController<String>.broadcast();
+  Stream<String> get onShellShare => _shellShareController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
@@ -40,6 +47,17 @@ class DeepLinkService {
   // Pending NFT claim params
   Map<String, String?>? _pendingNftClaim;
   Map<String, String?>? get pendingNftClaim => _pendingNftClaim;
+
+  // Pending shell action params (for cold start)
+  String? _pendingShellUpload;
+  String? get pendingShellUpload => _pendingShellUpload;
+
+  String? _pendingShellShare;
+  String? get pendingShellShare => _pendingShellShare;
+
+  /// URI from dart_entrypoint_arguments on cold start via shell context menu.
+  /// Set by main.dart before init() is called.
+  String? _initialShellUri;
 
   /// Returns and clears any pending blox pairing params (atomic read-and-clear).
   Map<String, String?>? consumePendingBloxPairing() {
@@ -53,6 +71,26 @@ class DeepLinkService {
     final params = _pendingNftClaim;
     _pendingNftClaim = null;
     return params;
+  }
+
+  /// Returns and clears any pending shell upload path (atomic read-and-clear).
+  String? consumePendingShellUpload() {
+    final p = _pendingShellUpload;
+    _pendingShellUpload = null;
+    return p;
+  }
+
+  /// Returns and clears any pending shell share path (atomic read-and-clear).
+  String? consumePendingShellShare() {
+    final p = _pendingShellShare;
+    _pendingShellShare = null;
+    return p;
+  }
+
+  /// Called from main.dart when the app is cold-started via shell context menu.
+  /// The URI is processed during init().
+  void setInitialShellUri(String uri) {
+    _initialShellUri = uri;
   }
 
   // Default pinning service URL for get-key endpoint
@@ -75,6 +113,18 @@ class DeepLinkService {
       }
     } catch (e) {
       debugPrint('DeepLinkService: Error getting initial link: $e');
+    }
+
+    // Handle shell URI passed via dart_entrypoint_arguments (cold start
+    // from Windows Explorer context menu). app_links won't pick this up
+    // because argc==3 when launched with --shell-upload/--shell-share.
+    if (_initialShellUri != null) {
+      final uri = Uri.tryParse(_initialShellUri!);
+      if (uri != null) {
+        debugPrint('DeepLinkService: Processing shell URI: $uri');
+        await _handleDeepLink(uri);
+      }
+      _initialShellUri = null;
     }
 
     // Listen for incoming links while app is running
@@ -126,6 +176,12 @@ class DeepLinkService {
     if (host == 'nft-claim') {
       debugPrint('DeepLinkService: NFT claim deeplink received');
       _handleNftClaim(uri);
+      return;
+    }
+
+    if (host == 'shell') {
+      debugPrint('DeepLinkService: Shell context menu action received');
+      _handleShellCommand(uri);
       return;
     }
 
@@ -329,17 +385,45 @@ class DeepLinkService {
   }
 
   void _handleNftClaim(Uri uri) {
+    // Parse secret from URL fragment (never sent to server) with query param fallback
+    final fragmentParams = uri.fragment.isNotEmpty
+        ? Uri.splitQueryString(uri.fragment)
+        : <String, String>{};
     final params = <String, String?>{
       'chain': uri.queryParameters['chain'],
       'contract': uri.queryParameters['contract'],
       'token': uri.queryParameters['token'],
-      'hash': uri.queryParameters['hash'],
+      'hash': fragmentParams['secret'] ?? uri.queryParameters['hash'],
     };
 
     _pendingNftClaim = params;
     _nftClaimController.add(params);
 
     debugPrint('DeepLinkService: NFT claim params stored');
+  }
+
+  /// Handle shell context menu deep links (fxfiles://shell/upload?path=... or fxfiles://shell/share?path=...)
+  void _handleShellCommand(Uri uri) {
+    final segments = uri.pathSegments; // e.g. ['upload'] or ['share']
+    final path = uri.queryParameters['path'];
+
+    if (path == null || path.isEmpty) {
+      debugPrint('DeepLinkService: shell command missing path param');
+      return;
+    }
+
+    // Uri.parse already URL-decoded the path query parameter
+    if (segments.isNotEmpty && segments.first == 'upload') {
+      debugPrint('DeepLinkService: shell upload request: $path');
+      _pendingShellUpload = path;
+      _shellUploadController.add(path);
+    } else if (segments.isNotEmpty && segments.first == 'share') {
+      debugPrint('DeepLinkService: shell share request: $path');
+      _pendingShellShare = path;
+      _shellShareController.add(path);
+    } else {
+      debugPrint('DeepLinkService: unknown shell command: $segments');
+    }
   }
 
   /// Register fxfiles:// URI scheme in the Windows registry for debug/unpackaged builds.
@@ -360,6 +444,40 @@ class DeepLinkService {
       debugPrint('DeepLinkService: Failed to register URI scheme: $e');
     }
 
+    // Also register Explorer context menu entries
+    _registerWindowsContextMenu();
+  }
+
+  /// Register "Upload to Fula Network" and "Create Share Link" context menu
+  /// entries in the Windows registry for both files and directories.
+  void _registerWindowsContextMenu() {
+    try {
+      final exePath = Platform.resolvedExecutable;
+      final commands = [
+        // "Upload to Fula Network" for files
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload', '/ve', '/d', 'Upload to Fula Network', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload\command', '/ve', '/d', '"$exePath" --shell-upload "%1"', '/f'],
+        // "Create Share Link" for files
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare', '/ve', '/d', 'Create Share Link', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare\command', '/ve', '/d', '"$exePath" --shell-share "%1"', '/f'],
+        // "Upload to Fula Network" for directories
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload', '/ve', '/d', 'Upload to Fula Network', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload\command', '/ve', '/d', '"$exePath" --shell-upload "%V"', '/f'],
+        // "Create Share Link" for directories
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare', '/ve', '/d', 'Create Share Link', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare\command', '/ve', '/d', '"$exePath" --shell-share "%V"', '/f'],
+      ];
+      for (final cmd in commands) {
+        Process.run(cmd.first, cmd.sublist(1));
+      }
+      debugPrint('DeepLinkService: Windows context menu entries registered');
+    } catch (e) {
+      debugPrint('DeepLinkService: Failed to register context menu: $e');
+    }
   }
 
   void dispose() {
@@ -368,5 +486,7 @@ class DeepLinkService {
     _orgNameReceivedController.close();
     _bloxPairingController.close();
     _nftClaimController.close();
+    _shellUploadController.close();
+    _shellShareController.close();
   }
 }

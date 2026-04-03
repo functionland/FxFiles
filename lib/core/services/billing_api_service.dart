@@ -95,6 +95,7 @@ class BillingApiService {
     required int chainId,
     required String signature,
     required String message,
+    String? encryptedAddress,
   }) async {
     final baseUrl = await _getBaseUrl();
     final token = await _getJwtToken();
@@ -106,8 +107,9 @@ class BillingApiService {
         'chainId': chainId,
         'signature': signature,
         'message': message,
+        if (encryptedAddress != null) 'encryptedAddress': encryptedAddress,
       };
-      debugPrint('BillingApiService: linkWallet request body: $requestBody');
+      debugPrint('BillingApiService: linkWallet request');
 
       final response = await http.post(
         Uri.parse('$baseUrl/api/v1/wallets/link'),

@@ -5,6 +5,9 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
+import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
+import 'package:fula_files/features/sharing/widgets/collaborate_tab.dart';
+import 'package:fula_files/features/sharing/widgets/create_collaboration_dialog.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 import 'package:fula_files/shared/widgets/skeleton_loaders.dart';
@@ -20,11 +23,17 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   bool _isSyncing = false;
+  int _currentTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index != _currentTabIndex) {
+        setState(() => _currentTabIndex = _tabController.index);
+      }
+    });
   }
 
   @override
@@ -66,6 +75,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
           tabs: const [
             Tab(text: 'Shared by Me'),
             Tab(text: 'Shared with Me'),
+            Tab(text: 'Collaborate'),
           ],
         ),
         actions: [
@@ -92,13 +102,20 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
         children: const [
           _OutgoingSharesTab(),
           _AcceptedSharesTab(),
+          CollaborateTab(),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _acceptShareFromLink,
-        icon: const Icon(LucideIcons.link),
-        label: const Text('Accept Share'),
-      ),
+      floatingActionButton: _currentTabIndex == 2
+          ? FloatingActionButton.extended(
+              onPressed: _createCollaborationGroup,
+              icon: const Icon(LucideIcons.folderPlus),
+              label: const Text('New Group'),
+            )
+          : FloatingActionButton.extended(
+              onPressed: _acceptShareFromLink,
+              icon: const Icon(LucideIcons.link),
+              label: const Text('Accept Share'),
+            ),
     );
   }
 
@@ -224,6 +241,16 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
         ],
       ),
     );
+  }
+
+  void _createCollaborationGroup() async {
+    final link = await showCreateCollaborationDialog(context, ref);
+    if (link != null && mounted) {
+      Clipboard.setData(ClipboardData(text: link));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Group created! Link copied to clipboard.')),
+      );
+    }
   }
 }
 

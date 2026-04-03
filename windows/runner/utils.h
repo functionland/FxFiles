@@ -16,4 +16,8 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string);
 // encoded in UTF-8. Returns an empty std::vector<std::string> on failure.
 std::vector<std::string> GetCommandLineArguments();
 
+// Percent-encodes a UTF-8 string for use in URI query parameters (RFC 3986).
+// All characters except unreserved (A-Z, a-z, 0-9, '-', '.', '_', '~') are encoded.
+std::string UrlEncodeUtf8(const std::string& utf8_string);
+
 #endif  // RUNNER_UTILS_H_

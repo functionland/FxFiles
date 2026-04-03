@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show WalletService, WalletServiceException, walletNavigatorKey;
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
@@ -130,12 +134,37 @@ class _PurchaseDialogState extends State<PurchaseDialog> {
 
         if (_isCancelled) return;
 
+        // Encrypt wallet address client-side before sending
+        String? encryptedAddress;
+        try {
+          final key = await AuthService.instance.getEncryptionKey();
+          if (key != null) {
+            final aesGcm = crypto.AesGcm.with256bits();
+            final secretKey = crypto.SecretKey(key);
+            final nonce = aesGcm.newNonce();
+            final secretBox = await aesGcm.encrypt(
+              utf8.encode(address.toLowerCase()),
+              secretKey: secretKey,
+              nonce: nonce,
+            );
+            final encrypted = Uint8List.fromList([
+              ...nonce,
+              ...secretBox.cipherText,
+              ...secretBox.mac.bytes,
+            ]);
+            encryptedAddress = base64Encode(encrypted);
+          }
+        } catch (e) {
+          debugPrint('PurchaseDialog: wallet address encryption failed (non-fatal): $e');
+        }
+
         final chainId = WalletService.instance.connectedChainId ?? widget.selectedChain.chainId;
         await BillingApiService.instance.linkWallet(
           address: address,
           chainId: chainId,
           signature: signature,
           message: message,
+          encryptedAddress: encryptedAddress,
         );
 
         debugPrint('PurchaseDialog: Wallet linked successfully');

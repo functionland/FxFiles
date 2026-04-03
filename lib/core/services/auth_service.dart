@@ -536,11 +536,10 @@ class AuthService {
         debugPrint('FulaApiService initialized successfully');
         debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
 
-        // Debug: Print public key for comparison with WebUI
+        // Verify public key is available (don't log key material)
         try {
-          final pubKey = await FulaApiService.instance.getPublicKey();
-          debugPrint('AuthService: Public key (first 8 bytes): ${pubKey.sublist(0, 8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
-          debugPrint('AuthService: Full public key (base64): ${base64Encode(pubKey)}');
+          await FulaApiService.instance.getPublicKey();
+          debugPrint('AuthService: Public key available');
         } catch (e) {
           debugPrint('AuthService: Could not get public key: $e');
         }

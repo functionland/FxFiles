@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -564,6 +567,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final signature = await WalletService.instance.signLinkMessage(message);
       debugPrint('HomeScreen: Signature received: ${signature.substring(0, 20)}...');
 
+      // Encrypt wallet address client-side before sending
+      String? encryptedAddress;
+      try {
+        final key = await AuthService.instance.getEncryptionKey();
+        if (key != null) {
+          final aesGcm = crypto.AesGcm.with256bits();
+          final secretKey = crypto.SecretKey(key);
+          final nonce = aesGcm.newNonce();
+          final secretBox = await aesGcm.encrypt(
+            utf8.encode(address.toLowerCase()),
+            secretKey: secretKey,
+            nonce: nonce,
+          );
+          final encrypted = Uint8List.fromList([
+            ...nonce,
+            ...secretBox.cipherText,
+            ...secretBox.mac.bytes,
+          ]);
+          encryptedAddress = base64Encode(encrypted);
+        }
+      } catch (e) {
+        debugPrint('HomeScreen: wallet address encryption failed (non-fatal): $e');
+      }
+
       // Link wallet on server
       debugPrint('HomeScreen: Linking wallet on server...');
       final chainId = WalletService.instance.connectedChainId ?? 8453;
@@ -572,6 +599,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         chainId: chainId,
         signature: signature,
         message: message,
+        encryptedAddress: encryptedAddress,
       );
       debugPrint('HomeScreen: Wallet linked successfully');
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
@@ -9,6 +10,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -55,6 +57,10 @@ class SyncService {
   int _consecutiveFailures = 0;
   static const int maxConsecutiveFailures = 3;
   bool _isPaused = false;
+
+  // Debounced folder share manifest update (supports multiple folders)
+  Timer? _folderShareUpdateTimer;
+  final Map<String, String> _pendingFolderShareUpdates = {}; // prefix → bucket
   DateTime? _pausedUntil;
 
   // Public getters for UI to show sync status
@@ -181,7 +187,41 @@ class SyncService {
     // Auto-process the queue
     _processUploadQueueAsync();
   }
-  
+
+  /// Move a queued upload to the front of the queue so it uploads next.
+  /// Returns true if the task was found and moved.
+  bool prioritizeUpload(String localPath) {
+    final index = _uploadQueue.indexWhere((t) => t.localPath == localPath);
+    if (index <= 0) return false; // not found or already first
+    final task = _uploadQueue.removeAt(index);
+    _uploadQueue.insert(0, task);
+    return true;
+  }
+
+  /// Debounced check: if a newly uploaded file falls under a folder with an
+  /// active temporal share, update the server manifest after a short delay.
+  /// Supports multiple folders concurrently — each prefix is tracked separately.
+  void _checkFolderShareUpdate(String bucket, String remoteKey) {
+    final lastSlash = remoteKey.lastIndexOf('/');
+    if (lastSlash < 0) return; // top-level file, no folder
+    final prefix = remoteKey.substring(0, lastSlash + 1);
+
+    _pendingFolderShareUpdates[prefix] = bucket;
+
+    // Debounce: wait 5s after last upload before updating manifests
+    _folderShareUpdateTimer?.cancel();
+    _folderShareUpdateTimer = Timer(const Duration(seconds: 5), () {
+      final updates = Map<String, String>.from(_pendingFolderShareUpdates);
+      _pendingFolderShareUpdates.clear();
+      for (final entry in updates.entries) {
+        debugPrint('[SyncService] Timer fired: updating folder share manifest for ${entry.value}/${entry.key}');
+        SharingService.instance.updateFolderShareManifest(entry.value, entry.key).catchError((e, stack) {
+          debugPrint('[SyncService] Folder share manifest update failed for ${entry.key}: $e\n$stack');
+        });
+      }
+    });
+  }
+
   void _processUploadQueueAsync() {
     if (_isProcessingUpload) return;
     _isProcessingUpload = true;
@@ -583,7 +623,12 @@ class SyncService {
           etag: etag,
           uploadedAt: DateTime.now(),
         ));
+
       }
+
+      // Check if this file is under an active temporal folder share
+      // (outside state block — always fires after successful upload)
+      _checkFolderShareUpdate(task.remoteBucket, task.remoteKey);
 
       // Remove completed task from persistent queue
       final taskId = _taskIdMap.remove(task.localPath);

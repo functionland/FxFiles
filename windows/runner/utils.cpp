@@ -5,7 +5,9 @@
 #include <stdio.h>
 #include <windows.h>
 
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 
 void CreateAndAttachConsole() {
   if (::AllocConsole()) {
@@ -62,4 +64,18 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string) {
     return std::string();
   }
   return utf8_string;
+}
+
+std::string UrlEncodeUtf8(const std::string& utf8_string) {
+  std::ostringstream encoded;
+  encoded.fill('0');
+  encoded << std::hex << std::uppercase;
+  for (unsigned char c : utf8_string) {
+    if (isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+      encoded << static_cast<char>(c);
+    } else {
+      encoded << '%' << std::setw(2) << static_cast<int>(c);
+    }
+  }
+  return encoded.str();
 }

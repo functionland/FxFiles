@@ -42,6 +42,8 @@ import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
+import 'package:fula_files/core/models/collaboration_group.dart';
 
 /// View mode for file browser
 enum ViewMode {
@@ -58,8 +60,8 @@ class FileBrowserScreen extends ConsumerStatefulWidget {
   final String? initialPrefix; // Initial prefix for cloud mode
 
   const FileBrowserScreen({
-    super.key, 
-    this.initialPath, 
+    super.key,
+    this.initialPath,
     this.category,
     this.cloudMode = false,
     this.initialBucket,
@@ -934,8 +936,24 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       final byAssetId = LocalStorageService.instance.getSyncStateByIosAssetId(file.iosAssetId!);
       if (byAssetId != null) return byAssetId;
     }
-    // Then try by display path / direct path
-    return LocalStorageService.instance.getSyncState(file.path);
+    // Direct lookup (works for individual files)
+    final direct = LocalStorageService.instance.getSyncState(file.path);
+    if (direct != null) return direct;
+
+    // For directories: aggregate children sync states
+    if (file.isDirectory) {
+      final children = LocalStorageService.instance.getSyncStatesUnderPath(file.path);
+      if (children.isEmpty) return null; // folder never uploaded
+      final allSynced = children.every((s) => s.status == SyncStatus.synced);
+      return SyncState(
+        localPath: file.path,
+        remotePath: children.first.remotePath,
+        bucket: children.first.bucket,
+        status: allSynced ? SyncStatus.synced : SyncStatus.notSynced,
+      );
+    }
+
+    return null;
   }
 
   void _navigateTo(LocalFile file) {
@@ -2072,6 +2090,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                         _showShareDisabledInfo(isLoggedIn);
                       },
                     ),
+                    ListTile(
+                      leading: Icon(LucideIcons.users, color: canShare ? Colors.purple : Colors.grey),
+                      title: Text('Add to Collaboration', style: TextStyle(color: canShare ? null : Colors.grey)),
+                      subtitle: Text(canShare ? 'Add to a shared group' : shareDisabledReason, style: const TextStyle(fontSize: 12)),
+                      onTap: canShare ? () {
+                        Navigator.pop(ctx);
+                        _addToCollaborationGroup(file);
+                      } : () {
+                        Navigator.pop(ctx);
+                        _showShareDisabledInfo(isLoggedIn);
+                      },
+                    ),
                   ],
                 );
               }),
@@ -2644,6 +2674,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  /// Resolve the correct bucket and pathScope for sharing a file.
+  /// For synced files, uses the actual upload bucket and remote key from SyncState.
+  /// Falls back to FileCategory-based derivation for unsynced files.
+  ({String bucket, String pathScope}) _resolveSharePath(LocalFile file) {
+    // Check if this file has sync state with the actual remote key and bucket
+    final syncState = LocalStorageService.instance.getSyncState(file.path);
+    if (syncState != null && syncState.bucket != null && syncState.remotePath != null) {
+      return (
+        bucket: syncState.bucket!,
+        pathScope: file.isDirectory ? '${syncState.remotePath!}/' : syncState.remotePath!,
+      );
+    }
+
+    // Fallback: derive from local file path
+    final category = FileCategory.fromPath(file.path);
+    return (
+      bucket: category.bucketName,
+      pathScope: file.isDirectory ? '${file.name}/' : file.name,
+    );
+  }
+
   /// Create a public link (anyone with link can access)
   Future<void> _createPublicLink(LocalFile file) async {
     final dek = await AuthService.instance.getEncryptionKey();
@@ -2659,9 +2710,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       return;
     }
 
-    final category = FileCategory.fromPath(file.path);
-    final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
+    final (:bucket, :pathScope) = _resolveSharePath(file);
 
     if (!mounted) return;
 
@@ -2695,9 +2744,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       return;
     }
 
-    final category = FileCategory.fromPath(file.path);
-    final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
+    final (:bucket, :pathScope) = _resolveSharePath(file);
 
     if (!mounted) return;
 
@@ -2731,9 +2778,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       return;
     }
 
-    final category = FileCategory.fromPath(file.path);
-    final bucket = category.bucketName;
-    final pathScope = file.isDirectory ? '${file.name}/' : file.name;
+    final (:bucket, :pathScope) = _resolveSharePath(file);
 
     if (!mounted) return;
 
@@ -2772,6 +2817,135 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       'zip': 'application/zip',
     };
     return mimeTypes[ext];
+  }
+
+  String? _getContentTypeFromExt(String ext) {
+    const mimeTypes = {
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+      'gif': 'image/gif', 'webp': 'image/webp', 'mp4': 'video/mp4',
+      'mov': 'video/quicktime', 'avi': 'video/x-msvideo', 'mp3': 'audio/mpeg',
+      'wav': 'audio/wav', 'pdf': 'application/pdf', 'txt': 'text/plain',
+      'json': 'application/json', 'zip': 'application/zip',
+    };
+    return mimeTypes[ext.toLowerCase()];
+  }
+
+  /// Add a local synced file to an existing collaboration group
+  Future<void> _addToCollaborationGroup(LocalFile file) async {
+    await ref.read(collaborationProvider.notifier).loadGroups();
+    final collabState = ref.read(collaborationProvider);
+    final ownedGroups = collabState.outgoingGroups.where((g) => g.isValid).toList();
+
+    if (ownedGroups.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No active collaboration groups. Create one from the Sharing tab first.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final selected = await showDialog<OutgoingCollaboration>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Add to Collaboration Group'),
+        children: ownedGroups.map((g) => SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, g),
+          child: ListTile(
+            leading: const Icon(LucideIcons.users, color: Colors.purple),
+            title: Text(g.name),
+            subtitle: Text('${g.group.fileCount} file${g.group.fileCount == 1 ? '' : 's'}'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        )).toList(),
+      ),
+    );
+
+    if (selected == null || !mounted) return;
+
+    final (:bucket, :pathScope) = _resolveSharePath(file);
+
+    final notifier = ref.read(collaborationProvider.notifier);
+    final success = await notifier.addFileToGroup(
+      groupId: selected.id,
+      pathScope: pathScope,
+      bucket: bucket,
+      fileName: file.name,
+      fileSize: file.size,
+      contentType: _getContentType(file),
+    );
+
+    if (mounted) {
+      final errorMsg = ref.read(collaborationProvider).error;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success
+              ? 'Added "${file.name}" to "${selected.name}"'
+              : 'Failed: ${errorMsg ?? "Unknown error"}'),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Add a cloud-only file to an existing collaboration group
+  Future<void> _addCloudFileToCollaborationGroup(FulaObject cloudFile, String bucket) async {
+    await ref.read(collaborationProvider.notifier).loadGroups();
+    final collabState = ref.read(collaborationProvider);
+    final ownedGroups = collabState.outgoingGroups.where((g) => g.isValid).toList();
+
+    if (ownedGroups.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No active collaboration groups. Create one from the Sharing tab first.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final selected = await showDialog<OutgoingCollaboration>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Add to Collaboration Group'),
+        children: ownedGroups.map((g) => SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, g),
+          child: ListTile(
+            leading: const Icon(LucideIcons.users, color: Colors.purple),
+            title: Text(g.name),
+            subtitle: Text('${g.group.fileCount} file${g.group.fileCount == 1 ? '' : 's'}'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        )).toList(),
+      ),
+    );
+
+    if (selected == null || !mounted) return;
+
+    final notifier = ref.read(collaborationProvider.notifier);
+    final success = await notifier.addFileToGroup(
+      groupId: selected.id,
+      pathScope: cloudFile.key,
+      bucket: bucket,
+      fileName: cloudFile.name,
+      fileSize: cloudFile.size,
+      contentType: _getContentTypeFromExt(cloudFile.extension),
+    );
+
+    if (mounted) {
+      final errorMsg = ref.read(collaborationProvider).error;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success
+              ? 'Added "${cloudFile.name}" to "${selected.name}"'
+              : 'Failed: ${errorMsg ?? "Unknown error"}'),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
   }
 
   /// Show dialog for generated share links (public or password-protected)
@@ -3203,7 +3377,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final bucket = _isCloudMode
         ? _currentBucket!
         : _categoryFromString(widget.category!).bucketName;
-    
+
     showAdaptiveSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -3218,6 +3392,16 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                 _downloadCloudFile(cloudFile);
               },
             ),
+            if (AuthService.instance.isAuthenticated)
+              ListTile(
+                leading: const Icon(LucideIcons.users, color: Colors.purple),
+                title: const Text('Add to Collaboration'),
+                subtitle: const Text('Add to a shared group', style: TextStyle(fontSize: 12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _addCloudFileToCollaborationGroup(cloudFile, bucket);
+                },
+              ),
             ListTile(
               leading: const Icon(LucideIcons.cloudOff, color: Colors.red),
               title: const Text('Delete from Cloud', style: TextStyle(color: Colors.red)),

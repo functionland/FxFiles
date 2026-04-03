@@ -3,11 +3,13 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
+import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// Gateway base URL for public share links
@@ -110,6 +112,14 @@ class SharingService {
     for (final o in objects) {
       debugPrint('SharingService:   - key="${o.key}", storageKey="${o.storageKey}"');
     }
+
+    // For folder prefixes (path ends with '/'), use the first child's storageKey
+    if (path.endsWith('/') && objects.isNotEmpty) {
+      final firstChild = objects.first;
+      debugPrint('SharingService: Folder share - using first child storageKey');
+      return firstChild.storageKey ?? firstChild.key;
+    }
+
     final obj = objects.firstWhere(
       (o) => o.key == path,
       orElse: () => throw SharingException('File not found: $path'),
@@ -323,8 +333,32 @@ class SharingService {
       contentType: contentType,
     );
 
+    // For folder shares, create per-file share tokens and include manifest
+    List<Map<String, dynamic>>? folderFiles;
+    if (pathScope.endsWith('/')) {
+      final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
+      final fileObjects = objects.where((o) => !o.isDirectory).toList();
+      folderFiles = [];
+      for (final obj in fileObjects) {
+        final fileStorageKey = obj.storageKey ?? obj.key;
+        final fileToken = await fula_service.FulaApiService.instance.createShareToken(
+          bucket, fileStorageKey, publicKeyBytes, shareMode, expiresAtUnix,
+        );
+        folderFiles.add(<String, dynamic>{
+          'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
+          'c': fileStorageKey,
+          's': obj.size,
+          't': fileToken,
+        });
+      }
+      debugPrint('SharingService.createPublicLink: folder share with ${folderFiles.length} files (per-file tokens)');
+    }
+
     // Build payload with fula token and private key (v2 format)
     // The private key is needed by the recipient to decrypt the share token
+    // For folder shares, file manifest is stored server-side (not in URL) to
+    // keep URLs short and enable temporal updates. The 'folder' flag tells the
+    // portal to fetch the manifest from /api/share/v2/manifest/:shareId.
     final payloadMap = {
       'v': 2,  // Version 2 = fula_client format
       't': fulaToken,
@@ -334,12 +368,30 @@ class SharingService {
       'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
       if (label != null) 'l': label,
       if (fileName != null) 'f': fileName,
+      if (folderFiles != null) 'folder': true,
+      // File manifest stored server-side only (not in URL fragment) to avoid
+      // URL length limits and to support temporal updates for folder shares.
     };
     final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
 
     // Build the URL
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     final url = '$baseUrl/view/$tokenId#$fragment';
+
+    // Post manifest to server for folder shares (enables temporal updates)
+    if (folderFiles != null) {
+      _postManifest(
+        baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
+        shareId: tokenId,
+        bucket: bucket,
+        pathScope: pathScope,
+        fulaToken: fulaToken,
+        folderFiles: folderFiles,
+        shareMode: shareMode,
+        expiresAt: expiresAt,
+        linkSecretKey: privateKeyBytes,
+      );
+    }
 
     // Save outgoing share with the private key and storage key for regeneration
     final outgoingShare = OutgoingShare(
@@ -439,8 +491,28 @@ class SharingService {
       contentType: contentType,
     );
 
+    // For folder shares, create per-file share tokens and include manifest
+    List<Map<String, dynamic>>? folderFiles;
+    if (pathScope.endsWith('/')) {
+      final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
+      final fileObjects = objects.where((o) => !o.isDirectory).toList();
+      folderFiles = [];
+      for (final obj in fileObjects) {
+        final fileStorageKey = obj.storageKey ?? obj.key;
+        final fileToken = await fula_service.FulaApiService.instance.createShareToken(
+          bucket, fileStorageKey, publicKeyBytes, shareMode, expiresAtUnix,
+        );
+        folderFiles.add(<String, dynamic>{
+          'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
+          'c': fileStorageKey,
+          's': obj.size,
+          't': fileToken,
+        });
+      }
+    }
+
     // Build inner payload with fula token and secret key (v2 format)
-    // The secret key is needed by the recipient to decrypt the share token
+    // File manifest stored server-side only for folder shares.
     final innerPayloadMap = {
       'v': 2,
       't': fulaToken,
@@ -450,6 +522,7 @@ class SharingService {
       'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
       if (label != null) 'l': label,
       if (fileName != null) 'f': fileName,
+      if (folderFiles != null) 'folder': true,
     };
 
     // Encrypt the inner payload with password-derived key
@@ -477,10 +550,26 @@ class SharingService {
     final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
     final url = '$baseUrl/view/$tokenId#$fragment';
 
+    // Post manifest to server for folder shares (enables temporal updates)
+    if (folderFiles != null) {
+      _postManifest(
+        baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
+        shareId: tokenId,
+        bucket: bucket,
+        pathScope: pathScope,
+        fulaToken: fulaToken,
+        folderFiles: folderFiles,
+        shareMode: shareMode,
+        expiresAt: expiresAt,
+        linkSecretKey: privateKeyBytes,
+      );
+    }
+
     // Save outgoing share with the encrypted fragment and storage key for regeneration
     final outgoingShare = OutgoingShare(
       token: token,
       recipientName: 'Password Protected',
+      linkSecretKey: privateKeyBytes,  // Store for temporal manifest updates
       passwordSalt: salt,
       encryptedFragment: fragment, // Store to regenerate same URL later
       storageKey: storageKey,  // Store CID for reference
@@ -938,6 +1027,185 @@ class SharingService {
   Future<void> _saveOutgoingShares(List<OutgoingShare> shares) async {
     final json = jsonEncode(shares.map((s) => s.toJson()).toList());
     await SecureStorageService.instance.write(_outgoingSharesKey, json);
+  }
+
+  /// Post folder manifest to server (non-blocking, fire-and-forget).
+  /// Enables temporal folder shares to be updated without changing the URL.
+  /// Note: secretKey is NOT sent — it stays in the URL fragment only (client-side).
+  void _postManifest({
+    required String baseUrl,
+    required String shareId,
+    required String bucket,
+    required String pathScope,
+    required String fulaToken,
+    required List<Map<String, dynamic>> folderFiles,
+    required ShareMode shareMode,
+    DateTime? expiresAt,
+    Uint8List? linkSecretKey,
+  }) {
+    Future(() async {
+      try {
+        final manifestUrl = '$baseUrl/api/share/v2/manifest/$shareId';
+        String manifestBody;
+
+        if (linkSecretKey != null) {
+          // Encrypted path: encrypt all metadata into opaque blob
+          final manifest = {
+            'bucket': bucket,
+            'pathScope': pathScope,
+            'tokenJson': fulaToken,
+            'files': folderFiles,
+            'shareMode': shareMode == ShareMode.temporal ? 'temporal' : 'snapshot',
+          };
+          final encrypted = await CollaborationService.instance
+              .encryptManifestPayload(manifest, linkSecretKey, shareId);
+          manifestBody = jsonEncode({
+            'encryptedManifest': encrypted,
+            'expiresAt': expiresAt?.toIso8601String(),
+          });
+        } else {
+          manifestBody = jsonEncode({
+            'bucket': bucket,
+            'pathScope': pathScope,
+            'tokenJson': fulaToken,
+            'files': folderFiles,
+            'shareMode': shareMode == ShareMode.temporal ? 'temporal' : 'snapshot',
+            'expiresAt': expiresAt?.toIso8601String(),
+          });
+        }
+
+        final response = await http.put(
+          Uri.parse(manifestUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: manifestBody,
+        );
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          debugPrint('SharingService: manifest posted for share $shareId');
+        } else {
+          debugPrint('SharingService: manifest post FAILED for share $shareId: ${response.statusCode} ${response.body}');
+        }
+      } catch (e) {
+        debugPrint('SharingService: manifest post failed (non-fatal): $e');
+      }
+    });
+  }
+
+  /// Update the server manifest for an active temporal folder share.
+  /// Called after a new file is uploaded to a folder with an active share.
+  /// [uploadedPrefix] is the immediate parent folder of the uploaded file,
+  /// but we match any ancestor share (e.g., share "A/" matches upload in "A/sub/").
+  Future<void> updateFolderShareManifest(String bucket, String uploadedPrefix) async {
+    debugPrint('[ManifestUpdate] START bucket=$bucket, prefix=$uploadedPrefix');
+    try {
+      final shares = await getActiveOutgoingShares();
+      debugPrint('[ManifestUpdate] Found ${shares.length} active shares');
+
+      final matchingShares = shares.where(
+        (s) => s.token.shareMode == ShareMode.temporal &&
+               s.pathScope.endsWith('/') &&
+               s.bucket == bucket &&
+               uploadedPrefix.startsWith(s.pathScope),
+      ).toList();
+
+      if (matchingShares.isEmpty) {
+        debugPrint('[ManifestUpdate] NO matching temporal folder share for bucket=$bucket, prefix=$uploadedPrefix');
+        for (final s in shares) {
+          debugPrint('[ManifestUpdate]   share: mode=${s.token.shareMode}, pathScope=${s.pathScope}, bucket=${s.bucket}, hasSecretKey=${s.linkSecretKey != null}');
+        }
+        return;
+      }
+      final folderShare = matchingShares.first;
+      final pathScope = folderShare.pathScope;
+      debugPrint('[ManifestUpdate] Matched share id=${folderShare.token.id}, pathScope=$pathScope');
+
+      final privateKeyBytes = folderShare.linkSecretKey;
+      if (privateKeyBytes == null) {
+        debugPrint('[ManifestUpdate] ABORT: no stored secret key for share ${folderShare.token.id}');
+        return;
+      }
+      if (folderShare.token.fulaShareToken == null) {
+        debugPrint('[ManifestUpdate] ABORT: no fula token for share ${folderShare.token.id}');
+        return;
+      }
+
+      debugPrint('[ManifestUpdate] Listing objects in bucket=$bucket, prefix=$pathScope...');
+      final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
+      final fileObjects = objects.where((o) => !o.isDirectory).toList();
+      debugPrint('[ManifestUpdate] Found ${fileObjects.length} files');
+
+      final publicKeyBytes = Uint8List.fromList(
+        await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
+      );
+      final expiresAtUnix = folderShare.token.expiresAt != null
+          ? folderShare.token.expiresAt!.millisecondsSinceEpoch ~/ 1000
+          : 0;
+
+      // Create per-file tokens — continue on individual failure so one bad file
+      // doesn't kill the entire manifest update
+      final folderFiles = <Map<String, dynamic>>[];
+      for (final obj in fileObjects) {
+        final fileStorageKey = obj.storageKey ?? obj.key;
+        debugPrint('[ManifestUpdate] Creating token for ${obj.key} (storageKey=$fileStorageKey)...');
+        try {
+          final fileToken = await fula_service.FulaApiService.instance.createShareToken(
+            bucket, fileStorageKey, publicKeyBytes, ShareMode.temporal, expiresAtUnix,
+          );
+          folderFiles.add({
+            'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
+            'c': fileStorageKey,
+            's': obj.size,
+            't': fileToken,
+          });
+        } catch (e) {
+          debugPrint('[ManifestUpdate] FAILED to create token for ${obj.key}: $e');
+        }
+      }
+
+      if (folderFiles.isEmpty) {
+        debugPrint('[ManifestUpdate] ABORT: no files with valid tokens');
+        return;
+      }
+
+      final manifestUrl = '$kShareGatewayBaseUrl/api/share/v2/manifest/${folderShare.token.id}';
+      debugPrint('[ManifestUpdate] PUTting ${folderFiles.length} files to $manifestUrl...');
+
+      // Encrypt manifest metadata so server stores only opaque blob
+      String manifestBody;
+      if (privateKeyBytes != null) {
+        final manifest = {
+          'bucket': bucket,
+          'pathScope': pathScope,
+          'tokenJson': folderShare.token.fulaShareToken,
+          'files': folderFiles,
+          'shareMode': 'temporal',
+        };
+        final encrypted = await CollaborationService.instance
+            .encryptManifestPayload(manifest, privateKeyBytes, folderShare.token.id);
+        manifestBody = jsonEncode({
+          'encryptedManifest': encrypted,
+          'expiresAt': folderShare.token.expiresAt?.toIso8601String(),
+        });
+      } else {
+        manifestBody = jsonEncode({
+          'bucket': bucket,
+          'pathScope': pathScope,
+          'tokenJson': folderShare.token.fulaShareToken,
+          'files': folderFiles,
+          'shareMode': 'temporal',
+          'expiresAt': folderShare.token.expiresAt?.toIso8601String(),
+        });
+      }
+
+      final response = await http.put(
+        Uri.parse(manifestUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: manifestBody,
+      );
+      debugPrint('[ManifestUpdate] PUT response: ${response.statusCode} ${response.body.substring(0, response.body.length.clamp(0, 200))}');
+    } catch (e, stack) {
+      debugPrint('[ManifestUpdate] EXCEPTION: $e');
+      debugPrint('[ManifestUpdate] Stack: $stack');
+    }
   }
 
   Future<void> _saveAcceptedShare(AcceptedShare share) async {

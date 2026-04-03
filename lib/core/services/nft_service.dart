@@ -55,7 +55,7 @@ class NftService {
     required int tokenId,
     required String secret,
   }) {
-    return 'https://$claimLinkHost/nft-claim?chain=$chainId&contract=$contractAddress&token=$tokenId&hash=$secret';
+    return 'https://$claimLinkHost/nft-claim?chain=$chainId&contract=$contractAddress&token=$tokenId#secret=$secret';
   }
 
   late Box<NftCollection> _collectionsBox;

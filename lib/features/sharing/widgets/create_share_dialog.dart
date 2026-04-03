@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -219,27 +220,38 @@ class _CreateShareForRecipientDialogState
   Future<String?> _getCidForFile() async {
     if (widget.localPath == null) return null;
 
+    // Try direct lookup first (works for individual files)
     final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
-    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+    if (syncState != null && syncState.status == SyncStatus.synced) {
+      final etag = syncState.etag;
+      if (etag != null && _isValidCid(etag)) {
+        return etag;
+      }
 
-    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
-    final etag = syncState.etag;
-    if (etag != null && _isValidCid(etag)) {
-      return etag;
+      // Fallback: fetch from API if local etag doesn't have CID
+      if (syncState.bucket != null && syncState.remotePath != null) {
+        try {
+          final metadata = await FulaApiService.instance.getObjectMetadata(
+            syncState.bucket!,
+            syncState.remotePath!,
+          );
+          if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+            return metadata.etag;
+          }
+        } catch (_) {}
+      }
     }
 
-    // Fallback: fetch from API if local etag doesn't have CID
-    if (syncState.bucket != null && syncState.remotePath != null) {
-      try {
-        final metadata = await FulaApiService.instance.getObjectMetadata(
-          syncState.bucket!,
-          syncState.remotePath!,
-        );
-        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
-          return metadata.etag;
+    // For folders: find first synced child's CID
+    if (FileSystemEntity.isDirectorySync(widget.localPath!)) {
+      final children = LocalStorageService.instance.getSyncStatesUnderPath(widget.localPath!);
+      for (final child in children) {
+        if (child.status == SyncStatus.synced && child.etag != null && _isValidCid(child.etag!)) {
+          return child.etag;
         }
-      } catch (_) {}
+      }
     }
+
     return null;
   }
 
@@ -473,27 +485,38 @@ class _CreatePublicLinkDialogState
   Future<String?> _getCidForFile() async {
     if (widget.localPath == null) return null;
 
+    // Try direct lookup first (works for individual files)
     final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
-    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+    if (syncState != null && syncState.status == SyncStatus.synced) {
+      final etag = syncState.etag;
+      if (etag != null && _isValidCid(etag)) {
+        return etag;
+      }
 
-    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
-    final etag = syncState.etag;
-    if (etag != null && _isValidCid(etag)) {
-      return etag;
+      // Fallback: fetch from API if local etag doesn't have CID
+      if (syncState.bucket != null && syncState.remotePath != null) {
+        try {
+          final metadata = await FulaApiService.instance.getObjectMetadata(
+            syncState.bucket!,
+            syncState.remotePath!,
+          );
+          if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+            return metadata.etag;
+          }
+        } catch (_) {}
+      }
     }
 
-    // Fallback: fetch from API if local etag doesn't have CID
-    if (syncState.bucket != null && syncState.remotePath != null) {
-      try {
-        final metadata = await FulaApiService.instance.getObjectMetadata(
-          syncState.bucket!,
-          syncState.remotePath!,
-        );
-        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
-          return metadata.etag;
+    // For folders: find first synced child's CID
+    if (FileSystemEntity.isDirectorySync(widget.localPath!)) {
+      final children = LocalStorageService.instance.getSyncStatesUnderPath(widget.localPath!);
+      for (final child in children) {
+        if (child.status == SyncStatus.synced && child.etag != null && _isValidCid(child.etag!)) {
+          return child.etag;
         }
-      } catch (_) {}
+      }
     }
+
     return null;
   }
 
@@ -779,27 +802,38 @@ class _CreatePasswordLinkDialogState
   Future<String?> _getCidForFile() async {
     if (widget.localPath == null) return null;
 
+    // Try direct lookup first (works for individual files)
     final syncState = LocalStorageService.instance.getSyncState(widget.localPath!);
-    if (syncState == null || syncState.status != SyncStatus.synced) return null;
+    if (syncState != null && syncState.status == SyncStatus.synced) {
+      final etag = syncState.etag;
+      if (etag != null && _isValidCid(etag)) {
+        return etag;
+      }
 
-    // ETag now contains the CID (bafybeig..., bafkr4i..., or Qm...)
-    final etag = syncState.etag;
-    if (etag != null && _isValidCid(etag)) {
-      return etag;
+      // Fallback: fetch from API if local etag doesn't have CID
+      if (syncState.bucket != null && syncState.remotePath != null) {
+        try {
+          final metadata = await FulaApiService.instance.getObjectMetadata(
+            syncState.bucket!,
+            syncState.remotePath!,
+          );
+          if (metadata.etag != null && _isValidCid(metadata.etag!)) {
+            return metadata.etag;
+          }
+        } catch (_) {}
+      }
     }
 
-    // Fallback: fetch from API if local etag doesn't have CID
-    if (syncState.bucket != null && syncState.remotePath != null) {
-      try {
-        final metadata = await FulaApiService.instance.getObjectMetadata(
-          syncState.bucket!,
-          syncState.remotePath!,
-        );
-        if (metadata.etag != null && _isValidCid(metadata.etag!)) {
-          return metadata.etag;
+    // For folders: find first synced child's CID
+    if (FileSystemEntity.isDirectorySync(widget.localPath!)) {
+      final children = LocalStorageService.instance.getSyncStatesUnderPath(widget.localPath!);
+      for (final child in children) {
+        if (child.status == SyncStatus.synced && child.etag != null && _isValidCid(child.etag!)) {
+          return child.etag;
         }
-      } catch (_) {}
+      }
     }
+
     return null;
   }
 
