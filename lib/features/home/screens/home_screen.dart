@@ -21,6 +21,8 @@ import 'package:fula_files/features/home/widgets/categories_section.dart';
 import 'package:fula_files/features/home/widgets/featured_section.dart';
 import 'package:fula_files/features/home/widgets/storage_section.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
+import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
+import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
@@ -723,6 +725,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       await AuthService.instance.signOut();
                       // Clear storage provider state (wallet info, etc.)
                       ref.read(storageProvider.notifier).clear();
+                      // Invalidate sharing/collab providers so they reload from (now empty) storage
+                      ref.invalidate(sharesProvider);
+                      ref.invalidate(collaborationProvider);
                       if (mounted) {
                         setState(() {
                           _jwtToken = null;

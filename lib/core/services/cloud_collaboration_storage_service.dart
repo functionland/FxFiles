@@ -143,6 +143,79 @@ class CloudCollaborationStorageService {
     }
   }
 
+  /// Upload accepted collaborations to cloud
+  Future<void> uploadAcceptedCollaborations(List<AcceptedCollaboration> collabs) async {
+    if (!FulaApiService.instance.isConfigured) return;
+
+    final userId = await _getUserId();
+    if (userId == null) return;
+
+    try {
+      final collabsJson = collabs.map((c) => c.toJson()).toList();
+      final jsonString = jsonEncode({
+        'version': 1,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'acceptedCollaborations': collabsJson,
+      });
+
+      await _ensureBucketExists();
+
+      final key = '$_collabsPrefix${userId}_accepted.json';
+      final data = Uint8List.fromList(utf8.encode(jsonString));
+      await FulaApiService.instance.uploadObject(
+        _metadataBucket,
+        key,
+        data,
+        contentType: 'application/json',
+      );
+
+      debugPrint('CloudCollabStorage: Uploaded ${collabs.length} accepted collaborations');
+    } catch (e) {
+      debugPrint('CloudCollabStorage: Failed to upload accepted collaborations: $e');
+    }
+  }
+
+  /// Download accepted collaborations from cloud
+  Future<List<AcceptedCollaboration>> downloadAcceptedCollaborations() async {
+    if (!FulaApiService.instance.isConfigured) return [];
+
+    final userId = await _getUserId();
+    if (userId == null) return [];
+
+    try {
+      await _ensureBucketExists();
+
+      final key = '$_collabsPrefix${userId}_accepted.json';
+      final data = await FulaApiService.instance.downloadObject(
+        _metadataBucket,
+        key,
+      );
+
+      final jsonString = utf8.decode(data);
+      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+
+      final collabsJson = json['acceptedCollaborations'] as List<dynamic>;
+      final collabs = collabsJson
+          .map((c) => AcceptedCollaboration.fromJson(c as Map<String, dynamic>))
+          .toList();
+
+      debugPrint('CloudCollabStorage: Downloaded ${collabs.length} accepted collaborations');
+      return collabs;
+    } on FulaApiException catch (e) {
+      if (e.message.contains('NoSuchKey') ||
+          e.message.contains('NoSuchBucket') ||
+          e.message.contains('bucket not found') ||
+          e.message.contains('404') ||
+          e.message.contains('not found')) {
+        return [];
+      }
+      rethrow;
+    } catch (e) {
+      debugPrint('CloudCollabStorage: Failed to download accepted collaborations: $e');
+      return [];
+    }
+  }
+
   Future<String?> _getUserId() async {
     final publicKey = await AuthService.instance.getPublicKeyString();
     if (publicKey == null) return null;

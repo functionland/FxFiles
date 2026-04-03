@@ -17,6 +17,8 @@ import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
+import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
+import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
@@ -801,6 +803,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _signOut() async {
     await AuthService.instance.signOut();
     ref.read(storageProvider.notifier).clear();
+    // Invalidate sharing/collab providers so they reload from (now empty) storage
+    ref.invalidate(sharesProvider);
+    ref.invalidate(collaborationProvider);
     setState(() {});
   }
 

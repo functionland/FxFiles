@@ -240,12 +240,20 @@ class OutgoingCollaboration {
   /// fula_client share token for the manifest (temporal mode)
   final String? manifestShareToken;
 
+  /// Local folder path mapped to this collab for bidirectional sync
+  final String? localFolderPath;
+
+  /// Whether auto-sync is active for the local folder
+  final bool syncEnabled;
+
   OutgoingCollaboration({
     required this.group,
     DateTime? sharedAt,
     this.linkSecretKey,
     this.encryptedFragment,
     this.manifestShareToken,
+    this.localFolderPath,
+    this.syncEnabled = false,
   }) : sharedAt = sharedAt ?? DateTime.now();
 
   String get id => group.id;
@@ -254,12 +262,33 @@ class OutgoingCollaboration {
   bool get isRevoked => group.isRevoked;
   bool get isValid => group.isValid;
 
+  OutgoingCollaboration copyWith({
+    CollaborationGroup? group,
+    DateTime? sharedAt,
+    Uint8List? linkSecretKey,
+    String? encryptedFragment,
+    String? manifestShareToken,
+    String? localFolderPath,
+    bool? syncEnabled,
+  }) =>
+      OutgoingCollaboration(
+        group: group ?? this.group,
+        sharedAt: sharedAt ?? this.sharedAt,
+        linkSecretKey: linkSecretKey ?? this.linkSecretKey,
+        encryptedFragment: encryptedFragment ?? this.encryptedFragment,
+        manifestShareToken: manifestShareToken ?? this.manifestShareToken,
+        localFolderPath: localFolderPath ?? this.localFolderPath,
+        syncEnabled: syncEnabled ?? this.syncEnabled,
+      );
+
   Map<String, dynamic> toJson() => {
     'group': group.toJson(),
     'sharedAt': sharedAt.toIso8601String(),
     if (linkSecretKey != null) 'linkSecretKey': base64Encode(linkSecretKey!),
     if (encryptedFragment != null) 'encryptedFragment': encryptedFragment,
     if (manifestShareToken != null) 'manifestShareToken': manifestShareToken,
+    if (localFolderPath != null) 'localFolderPath': localFolderPath,
+    if (syncEnabled) 'syncEnabled': syncEnabled,
   };
 
   factory OutgoingCollaboration.fromJson(Map<String, dynamic> json) =>
@@ -272,6 +301,8 @@ class OutgoingCollaboration {
             : null,
         encryptedFragment: json['encryptedFragment'] as String?,
         manifestShareToken: json['manifestShareToken'] as String?,
+        localFolderPath: json['localFolderPath'] as String?,
+        syncEnabled: json['syncEnabled'] as bool? ?? false,
       );
 }
 
@@ -287,11 +318,19 @@ class AcceptedCollaboration {
 
   final DateTime acceptedAt;
 
+  /// Local folder path mapped to this collab for bidirectional sync
+  final String? localFolderPath;
+
+  /// Whether auto-sync is active for the local folder
+  final bool syncEnabled;
+
   AcceptedCollaboration({
     required this.group,
     required this.manifestShareToken,
     this.linkSecretKey,
     DateTime? acceptedAt,
+    this.localFolderPath,
+    this.syncEnabled = false,
   }) : acceptedAt = acceptedAt ?? DateTime.now();
 
   String get id => group.id;
@@ -300,11 +339,30 @@ class AcceptedCollaboration {
   bool get isRevoked => group.isRevoked;
   bool get isValid => group.isValid;
 
+  AcceptedCollaboration copyWith({
+    CollaborationGroup? group,
+    String? manifestShareToken,
+    Uint8List? linkSecretKey,
+    DateTime? acceptedAt,
+    String? localFolderPath,
+    bool? syncEnabled,
+  }) =>
+      AcceptedCollaboration(
+        group: group ?? this.group,
+        manifestShareToken: manifestShareToken ?? this.manifestShareToken,
+        linkSecretKey: linkSecretKey ?? this.linkSecretKey,
+        acceptedAt: acceptedAt ?? this.acceptedAt,
+        localFolderPath: localFolderPath ?? this.localFolderPath,
+        syncEnabled: syncEnabled ?? this.syncEnabled,
+      );
+
   Map<String, dynamic> toJson() => {
     'group': group.toJson(),
     'manifestShareToken': manifestShareToken,
     if (linkSecretKey != null) 'linkSecretKey': base64Encode(linkSecretKey!),
     'acceptedAt': acceptedAt.toIso8601String(),
+    if (localFolderPath != null) 'localFolderPath': localFolderPath,
+    if (syncEnabled) 'syncEnabled': syncEnabled,
   };
 
   factory AcceptedCollaboration.fromJson(Map<String, dynamic> json) =>
@@ -316,5 +374,7 @@ class AcceptedCollaboration {
             ? base64Decode(json['linkSecretKey'] as String)
             : null,
         acceptedAt: DateTime.parse(json['acceptedAt'] as String),
+        localFolderPath: json['localFolderPath'] as String?,
+        syncEnabled: json['syncEnabled'] as bool? ?? false,
       );
 }

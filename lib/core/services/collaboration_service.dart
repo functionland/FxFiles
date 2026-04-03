@@ -485,6 +485,8 @@ class CollaborationService {
           linkSecretKey: outgoing.linkSecretKey,
           encryptedFragment: outgoing.encryptedFragment,
           manifestShareToken: outgoing.manifestShareToken,
+          localFolderPath: outgoing.localFolderPath,
+          syncEnabled: outgoing.syncEnabled,
         );
         await _updateOutgoingCollaboration(updated);
         return merged;
@@ -523,6 +525,8 @@ class CollaborationService {
           manifestShareToken: accepted.manifestShareToken,
           linkSecretKey: accepted.linkSecretKey,
           acceptedAt: accepted.acceptedAt,
+          localFolderPath: accepted.localFolderPath,
+          syncEnabled: accepted.syncEnabled,
         );
         await _updateAcceptedCollaboration(updated);
         return merged;
@@ -710,6 +714,16 @@ class CollaborationService {
     }
   }
 
+  /// Import outgoing collaborations (used for cloud sync restore)
+  Future<void> importOutgoingCollaborations(List<OutgoingCollaboration> collabs) async {
+    await _saveOutgoingCollaborations(collabs);
+  }
+
+  /// Import accepted collaborations (used for cloud sync restore)
+  Future<void> importAcceptedCollaborations(List<AcceptedCollaboration> collabs) async {
+    await _saveAcceptedCollaborations(collabs);
+  }
+
   Future<void> clearAll() async {
     await SecureStorageService.instance.delete(_outgoingCollabsKey);
     await SecureStorageService.instance.delete(_acceptedCollabsKey);
@@ -870,6 +884,117 @@ class CollaborationService {
   Future<void> _saveAcceptedCollaborations(List<AcceptedCollaboration> collabs) async {
     final json = jsonEncode(collabs.map((c) => c.toJson()).toList());
     await SecureStorageService.instance.write(_acceptedCollabsKey, json);
+  }
+
+  // ============================================================================
+  // FOLDER ASSIGNMENT
+  // ============================================================================
+
+  /// Update the local folder path and sync state for a collab group
+  Future<void> updateFolderAssignment(String groupId, {String? folderPath, bool? syncEnabled}) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    if (outgoing != null) {
+      final updated = outgoing.copyWith(
+        localFolderPath: folderPath ?? outgoing.localFolderPath,
+        syncEnabled: syncEnabled ?? outgoing.syncEnabled,
+      );
+      await _updateOutgoingCollaboration(updated);
+      return;
+    }
+
+    final accepted = await _findAcceptedCollab(groupId);
+    if (accepted != null) {
+      final updated = accepted.copyWith(
+        localFolderPath: folderPath ?? accepted.localFolderPath,
+        syncEnabled: syncEnabled ?? accepted.syncEnabled,
+      );
+      await _updateAcceptedCollaboration(updated);
+      return;
+    }
+
+    throw CollaborationException('Group not found: $groupId');
+  }
+
+  /// Upload a local file to a collab group using collab encryption.
+  ///
+  /// Used by CollabFolderSyncService for receiver-side uploads.
+  /// Encrypts file with HKDF-derived key, uploads to server, updates manifest.
+  Future<CollaborationFile> uploadCollabFileFromLocal({
+    required String groupId,
+    required String fileName,
+    required Uint8List fileData,
+    required Uint8List linkSecretKey,
+    String? contentType,
+    String? pathScope,
+  }) async {
+    final fileId = _uuid.v4();
+
+    // Derive per-file key and encrypt
+    final key = await deriveCollabFileKey(linkSecretKey, fileId);
+    final encrypted = await encryptCollabFile(fileData, key);
+
+    // Upload encrypted blob to server
+    final url = Uri.parse('$kCollabGatewayBaseUrl/api/collab/$groupId/upload');
+    final jwt = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'x-collab-file-id': fileId,
+        if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
+      },
+      body: encrypted,
+    );
+    if (response.statusCode != 200) {
+      throw CollaborationException('Failed to upload file: ${response.statusCode}');
+    }
+
+    final result = jsonDecode(response.body) as Map<String, dynamic>;
+    final publicKey = await AuthService.instance.getPublicKeyString();
+
+    final file = CollaborationFile(
+      id: fileId,
+      fileName: fileName,
+      contentType: contentType,
+      bucket: result['bucket'] as String? ?? _metadataBucket,
+      storageKey: result['storageKey'] as String,
+      pathScope: pathScope,
+      addedByPublicKey: publicKey ?? 'local-collaborator',
+      addedAt: DateTime.now(),
+      fileSize: fileData.length,
+      encType: 'collab',
+    );
+
+    // Update manifest
+    final outgoing = await _findOutgoingCollab(groupId);
+    final accepted = await _findAcceptedCollab(groupId);
+    CollaborationGroup? group;
+    Uint8List? groupLinkKey;
+
+    if (outgoing != null) {
+      group = outgoing.group;
+      groupLinkKey = outgoing.linkSecretKey;
+    } else if (accepted != null) {
+      group = accepted.group;
+      groupLinkKey = accepted.linkSecretKey;
+    }
+
+    if (group != null) {
+      final updatedGroup = group.copyWith(
+        files: [...group.files, file],
+        version: group.version + 1,
+        updatedAt: DateTime.now(),
+      );
+      await _uploadManifest(updatedGroup, linkSecretKey: groupLinkKey);
+
+      if (outgoing != null) {
+        await _updateOutgoingCollaboration(outgoing.copyWith(group: updatedGroup));
+      } else if (accepted != null) {
+        await _updateAcceptedCollaboration(accepted.copyWith(group: updatedGroup));
+      }
+    }
+
+    return file;
   }
 }
 

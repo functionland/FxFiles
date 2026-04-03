@@ -38,7 +38,7 @@ final userPublicKeyProvider = FutureProvider<String?>((ref) async {
 
 /// State notifier for managing shares
 class SharesNotifier extends Notifier<SharesState> {
-  late final SharingService _sharingService;
+  late SharingService _sharingService;
 
   @override
   SharesState build() {
@@ -53,20 +53,37 @@ class SharesNotifier extends Notifier<SharesState> {
 
     try {
       var outgoing = await _sharingService.getOutgoingShares();
-      final accepted = await _sharingService.getValidAcceptedShares();
+      var accepted = await _sharingService.getValidAcceptedShares();
 
       // Auto-restore from cloud if local is empty
       if (outgoing.isEmpty) {
         try {
           final cloudShares = await CloudShareStorageService.instance.downloadShares();
           if (cloudShares.isNotEmpty) {
-            // Merge cloud shares into local
-            await CloudShareStorageService.instance.syncShares(outgoing);
-            outgoing = await _sharingService.getOutgoingShares();
+            await _sharingService.importOutgoingShares(cloudShares);
+            outgoing = cloudShares;
           }
         } catch (e) {
           // Ignore errors - cloud sync is optional
         }
+      }
+
+      // Auto-restore accepted shares from cloud if local is empty
+      if (accepted.isEmpty) {
+        try {
+          final cloudAccepted = await CloudShareStorageService.instance.downloadAcceptedShares();
+          if (cloudAccepted.isNotEmpty) {
+            await _sharingService.importAcceptedShares(cloudAccepted);
+            accepted = cloudAccepted;
+          }
+        } catch (e) {
+          // Ignore errors - cloud sync is optional
+        }
+      }
+
+      // Ensure local data is backed up to cloud for future restores
+      if (outgoing.isNotEmpty || accepted.isNotEmpty) {
+        _syncToCloud();
       }
 
       state = state.copyWith(
@@ -264,9 +281,10 @@ class SharesNotifier extends Notifier<SharesState> {
     try {
       final shares = await _sharingService.getOutgoingShares();
       await CloudShareStorageService.instance.uploadShares(shares);
+      final accepted = await _sharingService.getAcceptedShares();
+      await CloudShareStorageService.instance.uploadAcceptedShares(accepted);
     } catch (e) {
       // Don't fail the operation if cloud sync fails
-      // Just log the error
     }
   }
 
@@ -295,13 +313,13 @@ class SharesNotifier extends Notifier<SharesState> {
   /// Accept a share from encoded string
   Future<AcceptedShare?> acceptShare(String encodedToken) async {
     state = state.copyWith(isLoading: true, error: null);
-    
+
     try {
       final accepted = await _sharingService.acceptShareFromString(encodedToken);
-      
-      // Reload shares
+
+      await _syncToCloud();
       await loadShares();
-      
+
       return accepted;
     } catch (e) {
       state = state.copyWith(
@@ -323,8 +341,8 @@ class SharesNotifier extends Notifier<SharesState> {
       }
       
       final accepted = await _sharingService.acceptShare(token);
-      
-      // Reload shares
+
+      await _syncToCloud();
       await loadShares();
       
       return accepted;

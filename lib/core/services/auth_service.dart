@@ -16,6 +16,9 @@ import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
+import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 enum AuthProvider { google, apple }
@@ -751,6 +754,13 @@ class AuthService {
       // Clear NFT collections, received NFTs, and tags (user-specific data)
       await NftService.instance.clearAll();
       await TagStorageService.instance.clearAll();
+
+      // Clear shares and collaborations (user-specific data)
+      await SharingService.instance.clearAll();
+      await CollaborationService.instance.clearAll();
+
+      // Stop collab folder syncs
+      CollabFolderSyncService.instance.dispose();
 
       // Reset FulaApiService
       FulaApiService.instance.reset();

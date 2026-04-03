@@ -1261,6 +1261,11 @@ class SharingService {
     await _saveOutgoingShares(shares);
   }
 
+  /// Import accepted shares (used for cloud sync restore)
+  Future<void> importAcceptedShares(List<AcceptedShare> shares) async {
+    await _saveAcceptedShares(shares);
+  }
+
   /// Clear all sharing data (for sign out)
   Future<void> clearAll() async {
     await SecureStorageService.instance.delete(_outgoingSharesKey);

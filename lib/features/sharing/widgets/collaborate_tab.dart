@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -15,6 +16,8 @@ class CollaborateTab extends ConsumerWidget {
     if (state.isLoading && state.isEmpty) {
       return const ShareListSkeleton(itemCount: 4);
     }
+
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
     if (state.isEmpty) {
       return Center(
@@ -43,6 +46,14 @@ class CollaborateTab extends ConsumerWidget {
                       color: Theme.of(context).colorScheme.outline,
                     ),
               ),
+              if (isDesktop) ...[
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: () => context.push('/collab/accept-link'),
+                  icon: const Icon(LucideIcons.link),
+                  label: const Text('Accept Collaboration Link'),
+                ),
+              ],
             ],
           ),
         ),
@@ -55,9 +66,23 @@ class CollaborateTab extends ConsumerWidget {
       onRefresh: () => ref.read(collaborationProvider.notifier).refreshAllGroups(),
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: groups.length,
+        itemCount: groups.length + (isDesktop ? 1 : 0),
         itemBuilder: (context, index) {
-          final entry = groups[index];
+          // Desktop: show "Accept Link" button at top
+          if (isDesktop && index == 0) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: OutlinedButton.icon(
+                onPressed: () => context.push('/collab/accept-link'),
+                icon: const Icon(LucideIcons.link, size: 16),
+                label: const Text('Accept Collaboration Link'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 40),
+                ),
+              ),
+            );
+          }
+          final entry = groups[isDesktop ? index - 1 : index];
           return _CollaborationGroupCard(entry: entry);
         },
       ),
@@ -145,6 +170,15 @@ class _CollaborationGroupCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
+              if (entry.hasFolderSync)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Icon(
+                    LucideIcons.folderSync,
+                    size: 16,
+                    color: Colors.blue.withValues(alpha: 0.6),
+                  ),
+                ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
@@ -154,7 +188,7 @@ class _CollaborationGroupCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  entry.isOwner ? 'Owner' : 'Shared',
+                  entry.isOwner ? 'Owner' : 'Received',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,

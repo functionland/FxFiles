@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,18 +12,31 @@ import 'package:fula_files/features/sharing/providers/collaboration_provider.dar
 /// Show the create collaboration group dialog.
 ///
 /// Returns the generated collaboration link URL, or null if cancelled.
+/// [initialFolderPath] and [initialName] can pre-fill the dialog when
+/// launched from the Windows Explorer context menu.
 Future<String?> showCreateCollaborationDialog(
   BuildContext context,
-  WidgetRef ref,
-) async {
+  WidgetRef ref, {
+  String? initialFolderPath,
+  String? initialName,
+}) async {
   return showDialog<String>(
     context: context,
-    builder: (context) => const _CreateCollaborationDialog(),
+    builder: (context) => _CreateCollaborationDialog(
+      initialFolderPath: initialFolderPath,
+      initialName: initialName,
+    ),
   );
 }
 
 class _CreateCollaborationDialog extends ConsumerStatefulWidget {
-  const _CreateCollaborationDialog();
+  final String? initialFolderPath;
+  final String? initialName;
+
+  const _CreateCollaborationDialog({
+    this.initialFolderPath,
+    this.initialName,
+  });
 
   @override
   ConsumerState<_CreateCollaborationDialog> createState() =>
@@ -34,9 +50,23 @@ class _CreateCollaborationDialogState
   bool _isLoading = false;
   String? _error;
   String? _generatedLink;
+  String? _localFolderPath; // Desktop: optional local folder for sync
 
   // Files selected for the group (added from cloud browser)
   final List<CollabFileInput> _selectedFiles = [];
+
+  final bool _isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialName != null) {
+      _nameController.text = widget.initialName!;
+    }
+    if (widget.initialFolderPath != null) {
+      _localFolderPath = widget.initialFolderPath;
+    }
+  }
 
   @override
   void dispose() {
@@ -199,6 +229,69 @@ class _CreateCollaborationDialogState
               ),
               const SizedBox(height: 12),
 
+              // Local folder picker (desktop only)
+              if (_isDesktop) ...[
+                Text(
+                  'Link Local Folder (optional)',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Files in this folder will auto-sync with the collaboration.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.outline,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () async {
+                    final result = await FilePicker.platform.getDirectoryPath(
+                      dialogTitle: 'Select folder for collaboration sync',
+                    );
+                    if (result != null) setState(() => _localFolderPath = result);
+                  },
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _localFolderPath != null ? LucideIcons.folderOpen : LucideIcons.folderPlus,
+                          size: 18,
+                          color: _localFolderPath != null ? Colors.blue : theme.colorScheme.outline,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _localFolderPath ?? 'Select folder...',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: _localFolderPath != null
+                                  ? theme.colorScheme.onSurface
+                                  : theme.colorScheme.outline,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (_localFolderPath != null)
+                          GestureDetector(
+                            onTap: () => setState(() => _localFolderPath = null),
+                            child: Icon(LucideIcons.x, size: 16, color: theme.colorScheme.outline),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+
               // Info box
               Container(
                 padding: const EdgeInsets.all(12),
@@ -273,6 +366,20 @@ class _CreateCollaborationDialogState
           );
 
       if (link != null && mounted) {
+        // If a local folder was selected, assign it and start sync
+        if (_localFolderPath != null) {
+          // Extract group ID from the link
+          try {
+            final payload = CollaborationService.parseCollaborationLink(link);
+            if (payload != null) {
+              final groupId = payload['g'] as String;
+              await ref.read(collaborationProvider.notifier).assignFolder(groupId, _localFolderPath!);
+            }
+          } catch (e) {
+            debugPrint('[CreateCollabDialog] Folder assignment failed: $e');
+          }
+        }
+
         setState(() {
           _generatedLink = link;
           _isLoading = false;

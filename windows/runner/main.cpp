@@ -78,7 +78,7 @@ bool SendAppLinkToInstance(const std::wstring& title) {
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
 
-  // --- Shell integration: detect --shell-upload / --shell-share arguments ---
+  // --- Shell integration: detect --shell-upload / --shell-share / --shell-collab arguments ---
   // When launched from Explorer context menu, argv looks like:
   //   FxFiles.exe --shell-upload "C:\Users\...\file.txt"
   // We convert this into a fxfiles:// URI for the deep link system.
@@ -89,8 +89,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     if (argv && argc == 3) {
       std::string flag = Utf8FromUtf16(argv[1]);
       std::string path = Utf8FromUtf16(argv[2]);
-      if (flag == "--shell-upload" || flag == "--shell-share") {
-        std::string action = (flag == "--shell-upload") ? "upload" : "share";
+      if (flag == "--shell-upload" || flag == "--shell-share" || flag == "--shell-collab") {
+        std::string action = (flag == "--shell-upload") ? "upload" : (flag == "--shell-share") ? "share" : "collab";
         std::string encodedPath = UrlEncodeUtf8(path);
         shellUri = "fxfiles://shell/" + action + "?path=" + encodedPath;
       }

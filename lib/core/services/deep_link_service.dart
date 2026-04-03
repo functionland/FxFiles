@@ -39,6 +39,9 @@ class DeepLinkService {
   final _shellShareController = StreamController<String>.broadcast();
   Stream<String> get onShellShare => _shellShareController.stream;
 
+  final _shellCollabController = StreamController<String>.broadcast();
+  Stream<String> get onShellCollab => _shellCollabController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
@@ -54,6 +57,9 @@ class DeepLinkService {
 
   String? _pendingShellShare;
   String? get pendingShellShare => _pendingShellShare;
+
+  String? _pendingShellCollab;
+  String? get pendingShellCollab => _pendingShellCollab;
 
   /// URI from dart_entrypoint_arguments on cold start via shell context menu.
   /// Set by main.dart before init() is called.
@@ -84,6 +90,13 @@ class DeepLinkService {
   String? consumePendingShellShare() {
     final p = _pendingShellShare;
     _pendingShellShare = null;
+    return p;
+  }
+
+  /// Returns and clears any pending shell collab path (atomic read-and-clear).
+  String? consumePendingShellCollab() {
+    final p = _pendingShellCollab;
+    _pendingShellCollab = null;
     return p;
   }
 
@@ -421,6 +434,10 @@ class DeepLinkService {
       debugPrint('DeepLinkService: shell share request: $path');
       _pendingShellShare = path;
       _shellShareController.add(path);
+    } else if (segments.isNotEmpty && segments.first == 'collab') {
+      debugPrint('DeepLinkService: shell collab request: $path');
+      _pendingShellCollab = path;
+      _shellCollabController.add(path);
     } else {
       debugPrint('DeepLinkService: unknown shell command: $segments');
     }
@@ -448,28 +465,59 @@ class DeepLinkService {
     _registerWindowsContextMenu();
   }
 
-  /// Register "Upload to Fula Network" and "Create Share Link" context menu
-  /// entries in the Windows registry for both files and directories.
+  /// Register cascading "FxFiles" context menu with sub-items in the Windows
+  /// registry for both files and directories.
   void _registerWindowsContextMenu() {
     try {
       final exePath = Platform.resolvedExecutable;
+
+      // Remove old flat entries from previous versions
+      final cleanupKeys = [
+        r'HKCU\Software\Classes\*\shell\FxFilesUpload',
+        r'HKCU\Software\Classes\*\shell\FxFilesShare',
+        r'HKCU\Software\Classes\Directory\shell\FxFilesUpload',
+        r'HKCU\Software\Classes\Directory\shell\FxFilesShare',
+      ];
+      for (final key in cleanupKeys) {
+        Process.run('reg', ['delete', key, '/f']);
+      }
+
+      // Also remove any stale parent key from previous attempt (without MUIVerb)
+      Process.run('reg', ['delete', r'HKCU\Software\Classes\*\shell\FxFiles', '/f']);
+      Process.run('reg', ['delete', r'HKCU\Software\Classes\Directory\shell\FxFiles', '/f']);
+
       final commands = [
-        // "Upload to Fula Network" for files
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload', '/ve', '/d', 'Upload to Fula Network', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesUpload\command', '/ve', '/d', '"$exePath" --shell-upload "%1"', '/f'],
-        // "Create Share Link" for files
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare', '/ve', '/d', 'Create Share Link', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFilesShare\command', '/ve', '/d', '"$exePath" --shell-share "%1"', '/f'],
-        // "Upload to Fula Network" for directories
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload', '/ve', '/d', 'Upload to Fula Network', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesUpload\command', '/ve', '/d', '"$exePath" --shell-upload "%V"', '/f'],
-        // "Create Share Link" for directories
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare', '/ve', '/d', 'Create Share Link', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
-        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFilesShare\command', '/ve', '/d', '"$exePath" --shell-share "%V"', '/f'],
+        // ── Files (*) ──
+        // Parent "FxFiles" cascading menu (MUIVerb + SubCommands required for submenus)
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles', '/v', 'MUIVerb', '/d', 'FxFiles', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles', '/v', 'SubCommands', '/t', 'REG_SZ', '/d', '', '/f'],
+        // Sub-item: Upload to Fula Network
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\01Upload', '/ve', '/d', 'Upload to Fula Network', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\01Upload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\01Upload\command', '/ve', '/d', '"$exePath" --shell-upload "%1"', '/f'],
+        // Sub-item: Create Share Link
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\02Share', '/ve', '/d', 'Create Share Link', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\02Share', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\*\shell\FxFiles\shell\02Share\command', '/ve', '/d', '"$exePath" --shell-share "%1"', '/f'],
+
+        // ── Directories ──
+        // Parent "FxFiles" cascading menu
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles', '/v', 'MUIVerb', '/d', 'FxFiles', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles', '/v', 'SubCommands', '/t', 'REG_SZ', '/d', '', '/f'],
+        // Sub-item: Upload to Fula Network
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\01Upload', '/ve', '/d', 'Upload to Fula Network', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\01Upload', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\01Upload\command', '/ve', '/d', '"$exePath" --shell-upload "%V"', '/f'],
+        // Sub-item: Create Share Link
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\02Share', '/ve', '/d', 'Create Share Link', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\02Share', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\02Share\command', '/ve', '/d', '"$exePath" --shell-share "%V"', '/f'],
+        // Sub-item: Add to Collaborate (directories only)
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab', '/ve', '/d', 'Add to Collaborate', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab\command', '/ve', '/d', '"$exePath" --shell-collab "%V"', '/f'],
       ];
       for (final cmd in commands) {
         Process.run(cmd.first, cmd.sublist(1));
@@ -488,5 +536,6 @@ class DeepLinkService {
     _nftClaimController.close();
     _shellUploadController.close();
     _shellShareController.close();
+    _shellCollabController.close();
   }
 }

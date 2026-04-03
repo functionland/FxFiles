@@ -18,6 +18,7 @@ import 'package:fula_files/core/services/wallet_service.dart' show walletNavigat
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/onboarding/screens/terms_of_service_screen.dart';
+import 'package:fula_files/features/sharing/widgets/create_collaboration_dialog.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/shared/widgets/keyboard_shortcuts.dart';
 import 'package:fula_files/shared/widgets/mini_player.dart';
@@ -38,6 +39,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   StreamSubscription<Map<String, String?>>? _nftClaimSubscription;
   StreamSubscription<String>? _shellUploadSubscription;
   StreamSubscription<String>? _shellShareSubscription;
+  StreamSubscription<String>? _shellCollabSubscription;
 
   @override
   void initState() {
@@ -57,6 +59,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         DeepLinkService.instance.onShellUpload.listen(_handleShellUpload);
     _shellShareSubscription =
         DeepLinkService.instance.onShellShare.listen(_handleShellShare);
+    _shellCollabSubscription =
+        DeepLinkService.instance.onShellCollab.listen(_handleShellCollab);
 
     // Check for pending params from cold-start deep links
     // (router not ready during initState, so defer to next frame)
@@ -80,6 +84,11 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       if (pendingShare != null) {
         _handleShellShare(pendingShare);
       }
+
+      final pendingCollab = DeepLinkService.instance.consumePendingShellCollab();
+      if (pendingCollab != null) {
+        _handleShellCollab(pendingCollab);
+      }
     });
   }
 
@@ -89,6 +98,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _nftClaimSubscription?.cancel();
     _shellUploadSubscription?.cancel();
     _shellShareSubscription?.cancel();
+    _shellCollabSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -299,6 +309,37 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     } catch (e) {
       debugPrint('ShellShare: error: $e');
       _showShellSnackBar('Share failed: $e', isError: true);
+    }
+  }
+
+  /// Handle "Add to Collaborate" triggered from Windows Explorer context menu
+  /// for directories. Opens the create collaboration dialog pre-filled with
+  /// the folder path and name.
+  void _handleShellCollab(String folderPath) {
+    try {
+      final entityType = FileSystemEntity.typeSync(folderPath);
+      if (entityType != FileSystemEntityType.directory) {
+        _showShellSnackBar('Not a folder: $folderPath', isError: true);
+        return;
+      }
+
+      final ctx = walletNavigatorKey.currentContext;
+      if (ctx == null || !ctx.mounted) {
+        debugPrint('ShellCollab: no navigator context available');
+        return;
+      }
+
+      final folderName = folderPath.split(Platform.pathSeparator).last;
+
+      showCreateCollaborationDialog(
+        ctx,
+        ref,
+        initialFolderPath: folderPath,
+        initialName: folderName,
+      );
+    } catch (e) {
+      debugPrint('ShellCollab: error: $e');
+      _showShellSnackBar('Collaborate failed: $e', isError: true);
     }
   }
 

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/services/cloud_collaboration_storage_service.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
@@ -12,7 +13,7 @@ final collaborationServiceProvider = Provider<CollaborationService>((ref) {
 
 /// State notifier for managing collaboration groups
 class CollaborationNotifier extends Notifier<CollaborationState> {
-  late final CollaborationService _service;
+  late CollaborationService _service;
 
   @override
   CollaborationState build() {
@@ -26,7 +27,7 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
 
     try {
       var outgoing = await _service.getOutgoingCollaborations();
-      final accepted = await _service.getAcceptedCollaborations();
+      var accepted = await _service.getAcceptedCollaborations();
 
       // Auto-restore from cloud if local is empty
       if (outgoing.isEmpty) {
@@ -34,13 +35,31 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
           final cloudCollabs =
               await CloudCollaborationStorageService.instance.downloadCollaborations();
           if (cloudCollabs.isNotEmpty) {
-            await CloudCollaborationStorageService.instance
-                .syncCollaborations(outgoing);
-            outgoing = await _service.getOutgoingCollaborations();
+            await _service.importOutgoingCollaborations(cloudCollabs);
+            outgoing = cloudCollabs;
           }
         } catch (_) {
           // Cloud sync is optional
         }
+      }
+
+      // Auto-restore accepted collaborations from cloud if local is empty
+      if (accepted.isEmpty) {
+        try {
+          final cloudAccepted =
+              await CloudCollaborationStorageService.instance.downloadAcceptedCollaborations();
+          if (cloudAccepted.isNotEmpty) {
+            await _service.importAcceptedCollaborations(cloudAccepted);
+            accepted = cloudAccepted;
+          }
+        } catch (_) {
+          // Cloud sync is optional
+        }
+      }
+
+      // Ensure local data is backed up to cloud for future restores
+      if (outgoing.isNotEmpty || accepted.isNotEmpty) {
+        _syncToCloud();
       }
 
       state = state.copyWith(
@@ -128,6 +147,7 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
 
     try {
       final accepted = await _service.acceptCollaboration(url);
+      await _syncToCloud();
       await loadGroups();
       return accepted;
     } catch (e) {
@@ -235,11 +255,7 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
           .syncCollaborations(localCollabs);
 
       if (merged.length != localCollabs.length) {
-        // Re-save merged list
-        for (final c in merged) {
-          // This is a simplified approach; ideally we'd have an importCollaborations method
-          await _service.getOutgoingCollaborations();
-        }
+        await _service.importOutgoingCollaborations(merged);
       }
 
       await loadGroups();
@@ -255,8 +271,43 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
     try {
       final collabs = await _service.getOutgoingCollaborations();
       await CloudCollaborationStorageService.instance.uploadCollaborations(collabs);
+      final accepted = await _service.getAcceptedCollaborations();
+      await CloudCollaborationStorageService.instance.uploadAcceptedCollaborations(accepted);
     } catch (_) {
       // Don't fail the operation if cloud sync fails
+    }
+  }
+
+  /// Assign a local folder to a collab group and start sync
+  Future<void> assignFolder(String groupId, String folderPath) async {
+    try {
+      await CollabFolderSyncService.instance.assignFolder(groupId, folderPath);
+      await loadGroups();
+    } catch (e) {
+      debugPrint('[CollabProvider] assignFolder failed: $e');
+      state = state.copyWith(error: ErrorMessages.forSync(e));
+    }
+  }
+
+  /// Remove local folder assignment and stop sync
+  Future<void> unassignFolder(String groupId) async {
+    try {
+      await CollabFolderSyncService.instance.unassignFolder(groupId);
+      await loadGroups();
+    } catch (e) {
+      debugPrint('[CollabProvider] unassignFolder failed: $e');
+      state = state.copyWith(error: ErrorMessages.forSync(e));
+    }
+  }
+
+  /// Trigger immediate sync for a group
+  Future<void> syncNow(String groupId) async {
+    try {
+      await CollabFolderSyncService.instance.syncNow(groupId);
+      await loadGroups();
+    } catch (e) {
+      debugPrint('[CollabProvider] syncNow failed: $e');
+      state = state.copyWith(error: ErrorMessages.forSync(e));
     }
   }
 
@@ -307,6 +358,8 @@ class CollaborationState {
         group: c.group,
         isOwner: true,
         updatedAt: c.group.updatedAt,
+        localFolderPath: c.localFolderPath,
+        syncEnabled: c.syncEnabled,
       ));
     }
     for (final c in acceptedGroups) {
@@ -314,6 +367,8 @@ class CollaborationState {
         group: c.group,
         isOwner: false,
         updatedAt: c.group.updatedAt,
+        localFolderPath: c.localFolderPath,
+        syncEnabled: c.syncEnabled,
       ));
     }
     entries.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
@@ -328,17 +383,22 @@ class CollabGroupEntry {
   final CollaborationGroup group;
   final bool isOwner;
   final DateTime updatedAt;
+  final String? localFolderPath;
+  final bool syncEnabled;
 
   CollabGroupEntry({
     required this.group,
     required this.isOwner,
     required this.updatedAt,
+    this.localFolderPath,
+    this.syncEnabled = false,
   });
 
   String get id => group.id;
   String get name => group.name;
   int get fileCount => group.fileCount;
   bool get isValid => group.isValid;
+  bool get hasFolderSync => localFolderPath != null && syncEnabled;
 }
 
 /// Provider for collaboration state

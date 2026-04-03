@@ -159,6 +159,79 @@ class CloudShareStorageService {
     }
   }
 
+  /// Upload accepted shares to cloud
+  Future<void> uploadAcceptedShares(List<AcceptedShare> shares) async {
+    if (!FulaApiService.instance.isConfigured) return;
+
+    final userId = await _getUserId();
+    if (userId == null) return;
+
+    try {
+      final sharesJson = shares.map((s) => s.toJson()).toList();
+      final jsonString = jsonEncode({
+        'version': 1,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'acceptedShares': sharesJson,
+      });
+
+      await _ensureBucketExists();
+
+      final key = '$_sharesPrefix${userId}_accepted.json';
+      final data = Uint8List.fromList(utf8.encode(jsonString));
+      await FulaApiService.instance.uploadObject(
+        _metadataBucket,
+        key,
+        data,
+        contentType: 'application/json',
+      );
+
+      debugPrint('CloudShareStorage: Uploaded ${shares.length} accepted shares to cloud');
+    } catch (e) {
+      debugPrint('CloudShareStorage: Failed to upload accepted shares: $e');
+    }
+  }
+
+  /// Download accepted shares from cloud
+  Future<List<AcceptedShare>> downloadAcceptedShares() async {
+    if (!FulaApiService.instance.isConfigured) return [];
+
+    final userId = await _getUserId();
+    if (userId == null) return [];
+
+    try {
+      await _ensureBucketExists();
+
+      final key = '$_sharesPrefix${userId}_accepted.json';
+      final data = await FulaApiService.instance.downloadObject(
+        _metadataBucket,
+        key,
+      );
+
+      final jsonString = utf8.decode(data);
+      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+
+      final sharesJson = json['acceptedShares'] as List<dynamic>;
+      final shares = sharesJson
+          .map((s) => AcceptedShare.fromJson(s as Map<String, dynamic>))
+          .toList();
+
+      debugPrint('CloudShareStorage: Downloaded ${shares.length} accepted shares from cloud');
+      return shares;
+    } on FulaApiException catch (e) {
+      if (e.message.contains('NoSuchKey') ||
+          e.message.contains('NoSuchBucket') ||
+          e.message.contains('bucket not found') ||
+          e.message.contains('404') ||
+          e.message.contains('not found')) {
+        return [];
+      }
+      rethrow;
+    } catch (e) {
+      debugPrint('CloudShareStorage: Failed to download accepted shares: $e');
+      return [];
+    }
+  }
+
   /// Delete shares from cloud
   Future<void> deleteShares() async {
     if (!FulaApiService.instance.isConfigured) return;

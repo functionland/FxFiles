@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +24,7 @@ class _CollaborationDetailScreenState
   bool _isRefreshing = false;
   String? _downloadingFileId;
   String _currentPath = '';
+  final bool _isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   @override
   void initState() {
@@ -82,22 +84,67 @@ class _CollaborationDetailScreenState
             tooltip: 'Refresh',
             onPressed: _isRefreshing ? null : _refreshGroup,
           ),
-          if (isOwner)
-            PopupMenuButton<String>(
-              onSelected: (value) => _handleMenuAction(value, notifier),
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'revoke',
-                  child: Row(
-                    children: [
-                      Icon(LucideIcons.ban, size: 18, color: Colors.red),
-                      SizedBox(width: 8),
-                      Text('Revoke Group'),
-                    ],
+          PopupMenuButton<String>(
+            onSelected: (value) => _handleMenuAction(value, notifier),
+            itemBuilder: (context) {
+              final allGroups = ref.read(collaborationProvider).allGroups;
+              CollabGroupEntry? entry;
+              for (final e in allGroups) {
+                if (e.id == widget.groupId) { entry = e; break; }
+              }
+              final hasFolder = entry?.localFolderPath != null;
+              final isSyncing = entry?.syncEnabled ?? false;
+
+              return [
+                if (_isDesktop) ...[
+                  PopupMenuItem(
+                    value: 'assign_folder',
+                    child: Row(
+                      children: [
+                        Icon(hasFolder ? LucideIcons.folderOpen : LucideIcons.folderPlus, size: 18),
+                        const SizedBox(width: 8),
+                        Text(hasFolder ? 'Change Local Folder' : 'Assign Local Folder'),
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ),
+                  if (hasFolder)
+                    PopupMenuItem(
+                      value: 'unlink_folder',
+                      child: Row(
+                        children: [
+                          Icon(LucideIcons.folderOutput, size: 18, color: Colors.orange),
+                          const SizedBox(width: 8),
+                          const Text('Unlink Folder', style: TextStyle(color: Colors.orange)),
+                        ],
+                      ),
+                    ),
+                  if (isSyncing)
+                    const PopupMenuItem(
+                      value: 'sync_now',
+                      child: Row(
+                        children: [
+                          Icon(LucideIcons.refreshCw, size: 18),
+                          SizedBox(width: 8),
+                          Text('Sync Now'),
+                        ],
+                      ),
+                    ),
+                  const PopupMenuDivider(),
+                ],
+                if (isOwner)
+                  const PopupMenuItem(
+                    value: 'revoke',
+                    child: Row(
+                      children: [
+                        Icon(LucideIcons.ban, size: 18, color: Colors.red),
+                        SizedBox(width: 8),
+                        Text('Revoke Group'),
+                      ],
+                    ),
+                  ),
+              ];
+            },
+          ),
         ],
       ),
       body: RefreshIndicator(
@@ -178,6 +225,51 @@ class _CollaborationDetailScreenState
     final totalFiles = group.files.where((f) => f.contentType != 'application/x-directory').length;
 
     final headerWidgets = <Widget>[];
+
+    // Sync status bar (desktop only)
+    if (_isDesktop) {
+      final allGroupsForSync = ref.watch(collaborationProvider).allGroups;
+      CollabGroupEntry? entry;
+      for (final e in allGroupsForSync) {
+        if (e.id == widget.groupId) { entry = e; break; }
+      }
+      if (entry?.localFolderPath != null) {
+        headerWidgets.add(
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.blue.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.blue.withValues(alpha: 0.15)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  entry!.syncEnabled ? LucideIcons.folderSync : LucideIcons.folderOpen,
+                  size: 16,
+                  color: Colors.blue,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    entry.localFolderPath!,
+                    style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (entry.syncEnabled)
+                  const Text(
+                    'Syncing',
+                    style: TextStyle(fontSize: 11, color: Colors.blue, fontWeight: FontWeight.w500),
+                  ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
 
     // Breadcrumb
     if (_currentPath.isNotEmpty) {
@@ -491,6 +583,55 @@ class _CollaborationDetailScreenState
             const SnackBar(content: Text('Group revoked')),
           );
         }
+      }
+    } else if (action == 'assign_folder') {
+      final result = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select folder for collaboration sync',
+      );
+      if (result != null) {
+        await notifier.assignFolder(widget.groupId, result);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Syncing to: $result')),
+          );
+        }
+      }
+    } else if (action == 'unlink_folder') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Unlink Folder?'),
+          content: const Text(
+            'This will stop syncing files to the local folder. '
+            'Downloaded files will remain on disk.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Unlink'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed == true) {
+        await notifier.unassignFolder(widget.groupId);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Folder unlinked')),
+          );
+        }
+      }
+    } else if (action == 'sync_now') {
+      await notifier.syncNow(widget.groupId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync triggered')),
+        );
       }
     }
   }

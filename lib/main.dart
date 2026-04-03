@@ -31,6 +31,7 @@ import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 /// Prevents GoRouter from processing deep links that DeepLinkService handles.
@@ -218,6 +219,13 @@ Future<ProviderContainer> _initializeApp() async {
     await FolderWatchService.instance.init().timeout(const Duration(seconds: 3));
   } catch (e) {
     debugPrint('FolderWatchService initialization failed: $e');
+  }
+
+  // Initialize collab folder sync service (restarts syncs for collab groups with assigned folders)
+  try {
+    await CollabFolderSyncService.instance.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('CollabFolderSyncService initialization failed: $e');
   }
 
   // Request notification permission early for sync notifications (Android 13+)
