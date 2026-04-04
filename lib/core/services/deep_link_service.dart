@@ -42,6 +42,9 @@ class DeepLinkService {
   final _shellCollabController = StreamController<String>.broadcast();
   Stream<String> get onShellCollab => _shellCollabController.stream;
 
+  final _shellAcceptCollabController = StreamController<String>.broadcast();
+  Stream<String> get onShellAcceptCollab => _shellAcceptCollabController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
@@ -60,6 +63,9 @@ class DeepLinkService {
 
   String? _pendingShellCollab;
   String? get pendingShellCollab => _pendingShellCollab;
+
+  String? _pendingShellAcceptCollab;
+  String? get pendingShellAcceptCollab => _pendingShellAcceptCollab;
 
   /// URI from dart_entrypoint_arguments on cold start via shell context menu.
   /// Set by main.dart before init() is called.
@@ -97,6 +103,13 @@ class DeepLinkService {
   String? consumePendingShellCollab() {
     final p = _pendingShellCollab;
     _pendingShellCollab = null;
+    return p;
+  }
+
+  /// Returns and clears any pending shell accept-collab path (atomic read-and-clear).
+  String? consumePendingShellAcceptCollab() {
+    final p = _pendingShellAcceptCollab;
+    _pendingShellAcceptCollab = null;
     return p;
   }
 
@@ -438,6 +451,10 @@ class DeepLinkService {
       debugPrint('DeepLinkService: shell collab request: $path');
       _pendingShellCollab = path;
       _shellCollabController.add(path);
+    } else if (segments.isNotEmpty && segments.first == 'accept-collab') {
+      debugPrint('DeepLinkService: shell accept-collab request: $path');
+      _pendingShellAcceptCollab = path;
+      _shellAcceptCollabController.add(path);
     } else {
       debugPrint('DeepLinkService: unknown shell command: $segments');
     }
@@ -518,6 +535,10 @@ class DeepLinkService {
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab', '/ve', '/d', 'Add to Collaborate', '/f'],
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\03Collab\command', '/ve', '/d', '"$exePath" --shell-collab "%V"', '/f'],
+        // Sub-item: Accept Collaboration (directories only)
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab', '/ve', '/d', 'Accept collab on this folder', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab\command', '/ve', '/d', '"$exePath" --shell-accept-collab "%V"', '/f'],
       ];
       for (final cmd in commands) {
         Process.run(cmd.first, cmd.sublist(1));
@@ -537,5 +558,6 @@ class DeepLinkService {
     _shellUploadController.close();
     _shellShareController.close();
     _shellCollabController.close();
+    _shellAcceptCollabController.close();
   }
 }

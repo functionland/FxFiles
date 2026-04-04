@@ -89,8 +89,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     if (argv && argc == 3) {
       std::string flag = Utf8FromUtf16(argv[1]);
       std::string path = Utf8FromUtf16(argv[2]);
-      if (flag == "--shell-upload" || flag == "--shell-share" || flag == "--shell-collab") {
-        std::string action = (flag == "--shell-upload") ? "upload" : (flag == "--shell-share") ? "share" : "collab";
+      if (flag == "--shell-upload" || flag == "--shell-share" || flag == "--shell-collab" || flag == "--shell-accept-collab") {
+        std::string action;
+        if (flag == "--shell-upload") action = "upload";
+        else if (flag == "--shell-share") action = "share";
+        else if (flag == "--shell-collab") action = "collab";
+        else action = "accept-collab";
         std::string encodedPath = UrlEncodeUtf8(path);
         shellUri = "fxfiles://shell/" + action + "?path=" + encodedPath;
       }

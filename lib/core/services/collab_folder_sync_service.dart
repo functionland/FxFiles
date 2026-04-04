@@ -15,13 +15,15 @@ class CollabFolderSyncService {
   CollabFolderSyncService._();
   static final CollabFolderSyncService instance = CollabFolderSyncService._();
 
-  static const Duration _pollInterval = Duration(seconds: 60);
+  static const Duration _minPollInterval = Duration(seconds: 60);
+  static const Duration _maxPollInterval = Duration(minutes: 5);
   static const int _maxFileSize = 100 * 1024 * 1024; // 100MB (server limit)
   static const String _syncMetaFile = '.collab-sync.json';
 
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _pollTimers = {};
   final Map<String, bool> _syncing = {};
+  final Map<String, Duration> _currentPollInterval = {}; // adaptive per group
   final Map<String, Timer> _uploadDebounce = {}; // debounce per file path
   final Set<String> _permanentlyFailed = {}; // files that failed with non-retryable errors (413, etc.)
 
@@ -110,10 +112,9 @@ class CollabFolderSyncService {
       }
     }
 
-    // Start poll timer
-    _pollTimers[groupId] = Timer.periodic(_pollInterval, (_) {
-      _pollForNewFiles(groupId);
-    });
+    // Start poll timer with adaptive interval
+    _currentPollInterval[groupId] = _minPollInterval;
+    _schedulePoll(groupId);
 
     _emitStatus(groupId, CollabSyncState.synced);
   }
@@ -124,10 +125,12 @@ class CollabFolderSyncService {
     _watchers.remove(groupId);
     _pollTimers[groupId]?.cancel();
     _pollTimers.remove(groupId);
+    _currentPollInterval.remove(groupId);
   }
 
   /// Trigger a manual sync (poll + download).
   Future<void> syncNow(String groupId) async {
+    _currentPollInterval[groupId] = _minPollInterval; // reset to fast polling
     _emitStatus(groupId, CollabSyncState.syncing);
     await _pollForNewFiles(groupId);
     _emitStatus(groupId, CollabSyncState.synced);
@@ -145,6 +148,15 @@ class CollabFolderSyncService {
   // ============================================================================
   // DOWNLOAD SYNC (remote → local)
   // ============================================================================
+
+  /// Schedule the next poll using the current adaptive interval for this group.
+  void _schedulePoll(String groupId) {
+    _pollTimers[groupId]?.cancel();
+    final interval = _currentPollInterval[groupId] ?? _minPollInterval;
+    _pollTimers[groupId] = Timer(interval, () {
+      _pollForNewFiles(groupId);
+    });
+  }
 
   Future<void> _pollForNewFiles(String groupId) async {
     if (_syncing[groupId] == true) return;
@@ -168,9 +180,21 @@ class CollabFolderSyncService {
       }).toList();
 
       if (filesToDownload.isEmpty) {
-        debugPrint('[CollabFolderSync] No new files for $groupId');
+        // No changes — back off poll interval (double, up to max)
+        final current = _currentPollInterval[groupId] ?? _minPollInterval;
+        if (current < _maxPollInterval) {
+          _currentPollInterval[groupId] = Duration(
+            seconds: (current.inSeconds * 2).clamp(
+              _minPollInterval.inSeconds,
+              _maxPollInterval.inSeconds,
+            ),
+          );
+        }
         return;
       }
+
+      // Changes found — reset to fast polling
+      _currentPollInterval[groupId] = _minPollInterval;
 
       debugPrint('[CollabFolderSync] Downloading ${filesToDownload.length} files for $groupId');
 
@@ -213,6 +237,10 @@ class CollabFolderSyncService {
       debugPrint('[CollabFolderSync] Poll error ($groupId): $e');
     } finally {
       _syncing[groupId] = false;
+      // Reschedule next poll (only if sync is still active for this group)
+      if (_watchers.containsKey(groupId)) {
+        _schedulePoll(groupId);
+      }
     }
   }
 
@@ -386,6 +414,7 @@ class CollabFolderSyncService {
   }
 
   void dispose() {
+    _currentPollInterval.clear();
     for (final w in _watchers.values) {
       w.cancel();
     }

@@ -40,6 +40,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   StreamSubscription<String>? _shellUploadSubscription;
   StreamSubscription<String>? _shellShareSubscription;
   StreamSubscription<String>? _shellCollabSubscription;
+  StreamSubscription<String>? _shellAcceptCollabSubscription;
 
   @override
   void initState() {
@@ -61,6 +62,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         DeepLinkService.instance.onShellShare.listen(_handleShellShare);
     _shellCollabSubscription =
         DeepLinkService.instance.onShellCollab.listen(_handleShellCollab);
+    _shellAcceptCollabSubscription =
+        DeepLinkService.instance.onShellAcceptCollab.listen(_handleShellAcceptCollab);
 
     // Check for pending params from cold-start deep links
     // (router not ready during initState, so defer to next frame)
@@ -75,20 +78,10 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         _navigateToNftClaim(pendingNftClaim);
       }
 
-      final pendingUpload = DeepLinkService.instance.consumePendingShellUpload();
-      if (pendingUpload != null) {
-        _handleShellUpload(pendingUpload);
-      }
-
-      final pendingShare = DeepLinkService.instance.consumePendingShellShare();
-      if (pendingShare != null) {
-        _handleShellShare(pendingShare);
-      }
-
-      final pendingCollab = DeepLinkService.instance.consumePendingShellCollab();
-      if (pendingCollab != null) {
-        _handleShellCollab(pendingCollab);
-      }
+      // Shell context menu actions need the navigator to be fully mounted.
+      // On cold start, walletNavigatorKey.currentContext may still be null
+      // after the first frame, so retry until it's available.
+      _processShellPendingCommands();
     });
   }
 
@@ -99,6 +92,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _shellUploadSubscription?.cancel();
     _shellShareSubscription?.cancel();
     _shellCollabSubscription?.cancel();
+    _shellAcceptCollabSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -136,6 +130,39 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       // Restart file watchers and scan for changes missed while backgrounded
       FolderWatchService.instance.onAppResumed();
     }
+  }
+
+  /// Process pending shell context menu commands, retrying until the navigator
+  /// is mounted (cold start may need a few hundred ms for the router to build).
+  void _processShellPendingCommands({int attempt = 0}) {
+    if (!mounted) return;
+
+    final hasAnyPending =
+        DeepLinkService.instance.pendingShellUpload != null ||
+        DeepLinkService.instance.pendingShellShare != null ||
+        DeepLinkService.instance.pendingShellCollab != null ||
+        DeepLinkService.instance.pendingShellAcceptCollab != null;
+    if (!hasAnyPending) return;
+
+    // Wait for the GoRouter navigator to be mounted
+    if (walletNavigatorKey.currentContext == null && attempt < 10) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        _processShellPendingCommands(attempt: attempt + 1);
+      });
+      return;
+    }
+
+    final pendingUpload = DeepLinkService.instance.consumePendingShellUpload();
+    if (pendingUpload != null) _handleShellUpload(pendingUpload);
+
+    final pendingShare = DeepLinkService.instance.consumePendingShellShare();
+    if (pendingShare != null) _handleShellShare(pendingShare);
+
+    final pendingCollab = DeepLinkService.instance.consumePendingShellCollab();
+    if (pendingCollab != null) _handleShellCollab(pendingCollab);
+
+    final pendingAcceptCollab = DeepLinkService.instance.consumePendingShellAcceptCollab();
+    if (pendingAcceptCollab != null) _handleShellAcceptCollab(pendingAcceptCollab);
   }
 
   /// Handle file/folder upload triggered from Windows Explorer context menu.
@@ -340,6 +367,24 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     } catch (e) {
       debugPrint('ShellCollab: error: $e');
       _showShellSnackBar('Collaborate failed: $e', isError: true);
+    }
+  }
+
+  /// Handle "Accept Collaboration" triggered from Windows Explorer context menu
+  /// for directories. Opens the accept collaboration screen with the folder
+  /// path pre-filled for sync.
+  void _handleShellAcceptCollab(String folderPath) {
+    try {
+      final entityType = FileSystemEntity.typeSync(folderPath);
+      if (entityType != FileSystemEntityType.directory) {
+        _showShellSnackBar('Not a folder: $folderPath', isError: true);
+        return;
+      }
+
+      ref.read(routerProvider).push('/collab/accept-link', extra: folderPath);
+    } catch (e) {
+      debugPrint('ShellAcceptCollab: error: $e');
+      _showShellSnackBar('Accept collaboration failed: $e', isError: true);
     }
   }
 

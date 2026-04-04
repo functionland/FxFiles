@@ -11,7 +11,9 @@ import 'package:fula_files/features/sharing/providers/collaboration_provider.dar
 /// Screen for pasting a collaboration link and selecting a local folder.
 /// Desktop only (Windows / macOS / Linux).
 class AcceptCollabScreen extends ConsumerStatefulWidget {
-  const AcceptCollabScreen({super.key});
+  final String? initialFolderPath;
+
+  const AcceptCollabScreen({super.key, this.initialFolderPath});
 
   @override
   ConsumerState<AcceptCollabScreen> createState() => _AcceptCollabScreenState();
@@ -25,6 +27,14 @@ class _AcceptCollabScreenState extends ConsumerState<AcceptCollabScreen> {
   bool _isParsing = false;
   bool _isAccepting = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialFolderPath != null) {
+      _selectedFolder = widget.initialFolderPath;
+    }
+  }
 
   @override
   void dispose() {

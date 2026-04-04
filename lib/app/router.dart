@@ -81,7 +81,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/collab/accept-link',
-        builder: (context, state) => const AcceptCollabScreen(),
+        builder: (context, state) => AcceptCollabScreen(
+          initialFolderPath: state.extra as String?,
+        ),
       ),
       GoRoute(
         path: '/collab/:id',
