@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show walletNavigatorKey;
 import 'package:fula_files/core/models/sync_state.dart';
@@ -129,6 +130,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       SyncService.instance.resumeIfPending();
       // Restart file watchers and scan for changes missed while backgrounded
       FolderWatchService.instance.onAppResumed();
+      // Restart collab folder watchers (stale after sleep/wake on Windows)
+      CollabFolderSyncService.instance.onAppResumed();
     }
   }
 

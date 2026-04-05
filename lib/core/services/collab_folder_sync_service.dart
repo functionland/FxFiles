@@ -26,6 +26,7 @@ class CollabFolderSyncService {
   final Map<String, Duration> _currentPollInterval = {}; // adaptive per group
   final Map<String, Timer> _uploadDebounce = {}; // debounce per file path
   final Set<String> _permanentlyFailed = {}; // files that failed with non-retryable errors (413, etc.)
+  DateTime? _lastResumeTime; // cooldown for onAppResumed
 
   // Listeners for sync status changes
   final _statusController = StreamController<CollabSyncStatus>.broadcast();
@@ -40,12 +41,18 @@ class CollabFolderSyncService {
 
       for (final c in outgoing) {
         if (c.syncEnabled && c.localFolderPath != null) {
+          debugPrint('[CollabFolderSync] Starting sync for outgoing "${c.name}" → ${c.localFolderPath}');
           await startSync(c.id);
+        } else {
+          debugPrint('[CollabFolderSync] Skipping outgoing "${c.name}" (syncEnabled=${c.syncEnabled}, folder=${c.localFolderPath})');
         }
       }
       for (final c in accepted) {
         if (c.syncEnabled && c.localFolderPath != null) {
+          debugPrint('[CollabFolderSync] Starting sync for accepted "${c.name}" → ${c.localFolderPath}');
           await startSync(c.id);
+        } else {
+          debugPrint('[CollabFolderSync] Skipping accepted "${c.name}" (syncEnabled=${c.syncEnabled}, folder=${c.localFolderPath})');
         }
       }
       debugPrint('[CollabFolderSync] Initialized. Active syncs: ${_watchers.length}');
@@ -146,6 +153,24 @@ class CollabFolderSyncService {
     _pollTimers[groupId]?.cancel();
     _pollTimers.remove(groupId);
     _currentPollInterval.remove(groupId);
+  }
+
+  /// Restart all active watchers after app resume.
+  /// Windows directory watchers can go stale after sleep/wake cycles.
+  /// Debounced to avoid excessive restarts from rapid focus changes on Windows.
+  Future<void> onAppResumed() async {
+    final now = DateTime.now();
+    if (_lastResumeTime != null && now.difference(_lastResumeTime!) < const Duration(seconds: 30)) {
+      return; // cooldown — skip if resumed within last 30s
+    }
+    _lastResumeTime = now;
+
+    final activeGroupIds = _watchers.keys.toList();
+    if (activeGroupIds.isEmpty) return;
+    debugPrint('[CollabFolderSync] onAppResumed - restarting ${activeGroupIds.length} watchers');
+    for (final groupId in activeGroupIds) {
+      await startSync(groupId);
+    }
   }
 
   /// Trigger a manual sync (poll + download).
@@ -406,22 +431,32 @@ class CollabFolderSyncService {
       final syncMeta = await _readSyncMeta(folderPath);
       final fileName = filePath.split(Platform.pathSeparator).last;
 
-      // Skip if any entry with same fileName already uploaded
-      final alreadyUploaded = syncMeta.values.any(
-        (e) => e.fileName == fileName && e.direction == 'upload',
-      );
-      if (alreadyUploaded) {
-        debugPrint('[CollabFolderSync] Skipping $fileName: already uploaded');
-        return;
+      // Find any existing sync entry for this fileName
+      String? existingSyncId;
+      _SyncedFileEntry? existingEntry;
+      for (final entry in syncMeta.entries) {
+        if (entry.value.fileName == fileName) {
+          existingSyncId = entry.key;
+          existingEntry = entry.value;
+          break;
+        }
       }
 
-      // Also skip if the file was just downloaded (avoid re-uploading downloads)
-      final justDownloaded = syncMeta.values.any(
-        (e) => e.fileName == fileName && e.direction == 'download',
-      );
-      if (justDownloaded) {
-        debugPrint('[CollabFolderSync] Skipping $fileName: was downloaded');
-        return;
+      if (existingEntry != null && existingSyncId != null) {
+        // Check if this file was tombstoned (deleted from manifest).
+        // If so, clear the stale sync metadata so the re-add is treated as new.
+        final tombstoned = info.group.removedFileIds.contains(existingSyncId);
+        if (tombstoned) {
+          debugPrint('[CollabFolderSync] Clearing stale sync entry for re-added file: $fileName');
+          syncMeta.remove(existingSyncId);
+          await _writeSyncMeta(folderPath, groupId, syncMeta);
+        } else if (existingEntry.direction == 'upload') {
+          debugPrint('[CollabFolderSync] Skipping $fileName: already uploaded');
+          return;
+        } else if (existingEntry.direction == 'download') {
+          debugPrint('[CollabFolderSync] Skipping $fileName: was downloaded');
+          return;
+        }
       }
 
       // Skip files that previously failed with non-retryable errors
