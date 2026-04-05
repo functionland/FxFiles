@@ -192,15 +192,77 @@ class CollabFolderSyncService {
       final folderPath = info.folderPath!;
       final group = info.group;
       final syncMeta = await _readSyncMeta(folderPath);
+      bool hasChanges = false;
 
-      // Find files not yet downloaded
+      // --- Download new files ---
       final filesToDownload = group.files.where((f) {
-        if (f.contentType == 'application/x-directory') return false; // skip folder markers
+        if (f.contentType == 'application/x-directory') return false;
         return !syncMeta.containsKey(f.id);
       }).toList();
 
-      if (filesToDownload.isEmpty) {
-        // No changes — back off poll interval (double, up to max)
+      if (filesToDownload.isNotEmpty) {
+        hasChanges = true;
+        debugPrint('[CollabFolderSync] Downloading ${filesToDownload.length} files for $groupId');
+
+        for (final file in filesToDownload) {
+          try {
+            final data = await CollaborationService.instance.downloadCollabFile(groupId, file);
+            final localPath = _resolveLocalPath(folderPath, file);
+            final localFile = File(localPath);
+            await localFile.parent.create(recursive: true);
+            await localFile.writeAsBytes(data);
+
+            syncMeta[file.id] = _SyncedFileEntry(
+              fileName: file.fileName,
+              direction: 'download',
+              syncedAt: DateTime.now(),
+            );
+            debugPrint('[CollabFolderSync] Downloaded: ${file.fileName}');
+          } catch (e) {
+            debugPrint('[CollabFolderSync] Download failed (${file.fileName}): $e');
+            final errStr = e.toString();
+            if (errStr.contains('404')) {
+              syncMeta[file.id] = _SyncedFileEntry(
+                fileName: file.fileName,
+                direction: 'download_failed',
+                syncedAt: DateTime.now(),
+              );
+            }
+          }
+        }
+      }
+
+      // --- Propagate remote deletions (tombstones) to local ---
+      final removedIds = group.removedFileIds.toSet();
+      if (removedIds.isNotEmpty) {
+        final entriesToRemove = <String>[];
+        for (final entry in syncMeta.entries) {
+          if (entry.value.direction == 'download_failed') continue;
+          if (removedIds.contains(entry.key)) {
+            final localPath = '$folderPath${Platform.pathSeparator}${entry.value.fileName}';
+            final localFile = File(localPath);
+            if (await localFile.exists()) {
+              try {
+                await localFile.delete();
+                debugPrint('[CollabFolderSync] Deleted local file (remote removal): ${entry.value.fileName}');
+                hasChanges = true;
+              } catch (e) {
+                debugPrint('[CollabFolderSync] Failed to delete local file: $localPath: $e');
+              }
+            }
+            entriesToRemove.add(entry.key);
+          }
+        }
+        for (final id in entriesToRemove) {
+          syncMeta.remove(id);
+        }
+      }
+
+      // --- Adjust poll interval ---
+      if (hasChanges) {
+        _currentPollInterval[groupId] = _minPollInterval;
+        await _writeSyncMeta(folderPath, groupId, syncMeta);
+      } else {
         final current = _currentPollInterval[groupId] ?? _minPollInterval;
         if (current < _maxPollInterval) {
           _currentPollInterval[groupId] = Duration(
@@ -210,54 +272,11 @@ class CollabFolderSyncService {
             ),
           );
         }
-        return;
       }
-
-      // Changes found — reset to fast polling
-      _currentPollInterval[groupId] = _minPollInterval;
-
-      debugPrint('[CollabFolderSync] Downloading ${filesToDownload.length} files for $groupId');
-
-      for (final file in filesToDownload) {
-        try {
-          final data = await CollaborationService.instance.downloadCollabFile(groupId, file);
-
-          // Determine local file path (handle pathScope subfolders)
-          final localPath = _resolveLocalPath(folderPath, file);
-          final localFile = File(localPath);
-
-          // Ensure parent directory exists
-          await localFile.parent.create(recursive: true);
-          await localFile.writeAsBytes(data);
-
-          // Track in sync metadata
-          syncMeta[file.id] = _SyncedFileEntry(
-            fileName: file.fileName,
-            direction: 'download',
-            syncedAt: DateTime.now(),
-          );
-
-          debugPrint('[CollabFolderSync] Downloaded: ${file.fileName}');
-        } catch (e) {
-          debugPrint('[CollabFolderSync] Download failed (${file.fileName}): $e');
-          // Track 404 failures to avoid retrying missing files every poll
-          final errStr = e.toString();
-          if (errStr.contains('404')) {
-            syncMeta[file.id] = _SyncedFileEntry(
-              fileName: file.fileName,
-              direction: 'download_failed',
-              syncedAt: DateTime.now(),
-            );
-          }
-        }
-      }
-
-      await _writeSyncMeta(folderPath, groupId, syncMeta);
     } catch (e) {
       debugPrint('[CollabFolderSync] Poll error ($groupId): $e');
     } finally {
       _syncing[groupId] = false;
-      // Reschedule next poll (only if sync is still active for this group)
       if (_watchers.containsKey(groupId)) {
         _schedulePoll(groupId);
       }
@@ -289,8 +308,10 @@ class CollabFolderSyncService {
   }
 
   void _handleLocalFileChange(String groupId, FileSystemEvent event) {
-    // Only handle file creation/modification
-    if (event is! FileSystemCreateEvent && event is! FileSystemModifyEvent) return;
+    // Handle file creation, modification, and deletion
+    if (event is! FileSystemCreateEvent &&
+        event is! FileSystemModifyEvent &&
+        event is! FileSystemDeleteEvent) return;
 
     final path = event.path;
     final fileName = path.split(Platform.pathSeparator).last;
@@ -298,7 +319,14 @@ class CollabFolderSyncService {
     // Skip sync metadata and hidden files
     if (fileName == _syncMetaFile || fileName.startsWith('.')) return;
 
-    // Skip directories
+    // Handle deletions immediately (file no longer exists on disk)
+    if (event is FileSystemDeleteEvent) {
+      debugPrint('[CollabFolderSync] File deletion detected: $fileName for group $groupId');
+      _handleLocalFileDeletion(groupId, path);
+      return;
+    }
+
+    // Skip directories (only for create/modify — deleted paths can't be checked)
     if (FileSystemEntity.isDirectorySync(path)) return;
 
     debugPrint('[CollabFolderSync] File change detected: $fileName (${event.runtimeType}) for group $groupId');
@@ -309,6 +337,51 @@ class CollabFolderSyncService {
       _uploadDebounce.remove(path);
       _uploadLocalFileIfNew(groupId, path);
     });
+  }
+
+  /// Handle deletion of a local file: find its collab ID from sync metadata,
+  /// remove from the collaboration manifest, and clean up sync metadata.
+  Future<void> _handleLocalFileDeletion(String groupId, String filePath) async {
+    try {
+      final info = await _getGroupInfo(groupId);
+      if (info == null || info.folderPath == null) return;
+
+      final folderPath = info.folderPath!;
+      final fileName = filePath.split(Platform.pathSeparator).last;
+      final syncMeta = await _readSyncMeta(folderPath);
+
+      // Find the file ID by matching fileName in sync metadata
+      String? matchedFileId;
+      for (final entry in syncMeta.entries) {
+        if (entry.value.fileName == fileName &&
+            (entry.value.direction == 'upload' || entry.value.direction == 'download')) {
+          matchedFileId = entry.key;
+          break;
+        }
+      }
+
+      if (matchedFileId == null) {
+        debugPrint('[CollabFolderSync] Deleted file not found in sync metadata: $fileName');
+        return;
+      }
+
+      debugPrint('[CollabFolderSync] Propagating deletion: $fileName (fileId=$matchedFileId)');
+      _emitStatus(groupId, CollabSyncState.syncing);
+
+      await CollaborationService.instance.removeFileFromGroup(
+        groupId: groupId,
+        fileId: matchedFileId,
+      );
+
+      syncMeta.remove(matchedFileId);
+      await _writeSyncMeta(folderPath, groupId, syncMeta);
+
+      debugPrint('[CollabFolderSync] Deletion propagated: $fileName');
+      _emitStatus(groupId, CollabSyncState.synced);
+    } catch (e) {
+      debugPrint('[CollabFolderSync] Deletion propagation error ($filePath): $e');
+      _emitStatus(groupId, CollabSyncState.error);
+    }
   }
 
   Future<void> _uploadLocalFileIfNew(String groupId, String filePath) async {

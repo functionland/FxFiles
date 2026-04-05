@@ -113,6 +113,9 @@ class CollaborationGroup extends Equatable {
   /// Files in this group
   final List<CollaborationFile> files;
 
+  /// IDs of files that have been removed (tombstones for merge correctness)
+  final List<String> removedFileIds;
+
   /// Version counter for conflict resolution (incremented on each update)
   final int version;
 
@@ -129,6 +132,7 @@ class CollaborationGroup extends Equatable {
     this.expiresAt,
     this.isRevoked = false,
     required this.files,
+    this.removedFileIds = const [],
     required this.version,
     required this.updatedAt,
   });
@@ -152,6 +156,7 @@ class CollaborationGroup extends Equatable {
     DateTime? expiresAt,
     bool? isRevoked,
     List<CollaborationFile>? files,
+    List<String>? removedFileIds,
     int? version,
     DateTime? updatedAt,
   }) =>
@@ -165,12 +170,19 @@ class CollaborationGroup extends Equatable {
         expiresAt: expiresAt ?? this.expiresAt,
         isRevoked: isRevoked ?? this.isRevoked,
         files: files ?? this.files,
+        removedFileIds: removedFileIds ?? this.removedFileIds,
         version: version ?? this.version,
         updatedAt: updatedAt ?? this.updatedAt,
       );
 
-  /// Merge file lists from two versions (union by file ID)
+  /// Merge file lists from two versions.
+  /// Uses tombstone-based deletion: files in [removedFileIds] from either
+  /// side are excluded from the merged result.
   CollaborationGroup mergeWith(CollaborationGroup other) {
+    // Union tombstones from both sides
+    final mergedTombstones = <String>{...removedFileIds, ...other.removedFileIds};
+
+    // Union files by ID, then filter out tombstoned files
     final mergedFiles = <String, CollaborationFile>{};
     for (final f in files) {
       mergedFiles[f.id] = f;
@@ -178,10 +190,13 @@ class CollaborationGroup extends Equatable {
     for (final f in other.files) {
       mergedFiles.putIfAbsent(f.id, () => f);
     }
+    mergedFiles.removeWhere((id, _) => mergedTombstones.contains(id));
+
     final higherVersion = version >= other.version ? this : other;
     return higherVersion.copyWith(
       files: mergedFiles.values.toList()
         ..sort((a, b) => a.addedAt.compareTo(b.addedAt)),
+      removedFileIds: mergedTombstones.toList(),
       version: (version > other.version ? version : other.version) + 1,
       updatedAt: DateTime.now(),
     );
@@ -197,6 +212,7 @@ class CollaborationGroup extends Equatable {
     if (expiresAt != null) 'expiresAt': expiresAt!.toIso8601String(),
     'isRevoked': isRevoked,
     'files': files.map((f) => f.toJson()).toList(),
+    if (removedFileIds.isNotEmpty) 'removedFileIds': removedFileIds,
     'version': version,
     'updatedAt': updatedAt.toIso8601String(),
   };
@@ -218,12 +234,16 @@ class CollaborationGroup extends Equatable {
                     CollaborationFile.fromJson(f as Map<String, dynamic>))
                 .toList() ??
             [],
+        removedFileIds: (json['removedFileIds'] as List<dynamic>?)
+                ?.map((e) => e as String)
+                .toList() ??
+            [],
         version: json['version'] as int? ?? 1,
         updatedAt: DateTime.parse(json['updatedAt'] as String),
       );
 
   @override
-  List<Object?> get props => [id, name, ownerPublicKey, version];
+  List<Object?> get props => [id, name, ownerPublicKey, version, removedFileIds];
 }
 
 /// A collaboration group created by this user (outgoing)

@@ -998,6 +998,71 @@ class CollaborationService {
   }
 }
 
+  /// Remove a file from a collaboration group by adding it to the tombstone list.
+  ///
+  /// Updates the manifest in S3 and server DB. The file entry is removed
+  /// from [files] and its ID is added to [removedFileIds] so that
+  /// [mergeWith] correctly suppresses it across all manifest sources.
+  Future<void> removeFileFromGroup({
+    required String groupId,
+    required String fileId,
+    bool deleteFromStorage = true,
+  }) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    final accepted = await _findAcceptedCollab(groupId);
+    CollaborationGroup? group;
+    Uint8List? linkSecretKey;
+
+    if (outgoing != null) {
+      group = outgoing.group;
+      linkSecretKey = outgoing.linkSecretKey;
+    } else if (accepted != null) {
+      group = accepted.group;
+      linkSecretKey = accepted.linkSecretKey;
+    }
+
+    if (group == null) {
+      throw CollaborationException('Group not found: $groupId');
+    }
+
+    final updatedFiles = group.files.where((f) => f.id != fileId).toList();
+    final updatedTombstones = [...group.removedFileIds, fileId];
+
+    final updatedGroup = group.copyWith(
+      files: updatedFiles,
+      removedFileIds: updatedTombstones,
+      version: group.version + 1,
+      updatedAt: DateTime.now(),
+    );
+
+    await _uploadManifest(updatedGroup, linkSecretKey: linkSecretKey);
+
+    if (outgoing != null) {
+      await _updateOutgoingCollaboration(outgoing.copyWith(group: updatedGroup));
+    } else if (accepted != null) {
+      await _updateAcceptedCollaboration(accepted.copyWith(group: updatedGroup));
+    }
+
+    // Clean up encrypted file blob from S3 (non-fatal on failure)
+    if (deleteFromStorage) {
+      try {
+        final jwt = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+        final url = '$kCollabGatewayBaseUrl/api/collab/$groupId/file/$fileId';
+        await http.delete(
+          Uri.parse(url),
+          headers: {
+            if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
+          },
+        );
+      } catch (e) {
+        debugPrint('[CollabService] S3 file deletion failed (non-fatal): $e');
+      }
+    }
+
+    debugPrint('[CollabService] Removed file $fileId from group $groupId');
+  }
+}
+
 /// Input data for a file being added to a collaboration group
 class CollabFileInput {
   final String fileName;
