@@ -269,9 +269,26 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       }
 
       // File is synced — show the public link dialog
-      final category = FileCategory.fromPath(filePath);
-      final bucket = category.bucketName;
-      final pathScope = isDirectory ? '$name/' : name;
+      final String bucket;
+      final String pathScope;
+      if (isDirectory) {
+        // Determine bucket from actual uploaded files, not folder name
+        final children = LocalStorageService.instance.getSyncStatesUnderPath(filePath);
+        final bucketCounts = <String, int>{};
+        for (final s in children) {
+          if (s.bucket != null && s.bucket!.isNotEmpty) {
+            bucketCounts[s.bucket!] = (bucketCounts[s.bucket!] ?? 0) + 1;
+          }
+        }
+        bucket = bucketCounts.isEmpty
+            ? FileCategory.other.bucketName
+            : bucketCounts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+        pathScope = '$name/';
+      } else {
+        final category = FileCategory.fromPath(filePath);
+        bucket = category.bucketName;
+        pathScope = name;
+      }
 
       final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
       const mimeTypes = {

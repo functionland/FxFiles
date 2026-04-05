@@ -285,42 +285,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildSetupBanner(BuildContext context, bool isLoggedIn, String? jwtToken, StorageState storageState) {
     final steps = <_SetupStep>[];
 
-    if (!isLoggedIn) {
-      steps.add(_SetupStep(
-        icon: LucideIcons.userCircle,
-        title: 'Sign in to your account',
-        subtitle: 'Required for cloud sync and sharing',
-        action: 'Sign In',
-        onTap: () => _showProfileSheet(context),
-        isComplete: false,
-      ));
+    // On desktop, sign-in and API key are a single step (browser handles both).
+    // On mobile, they are separate steps (native OAuth first, then get API key).
+    if (PlatformCapabilities.isDesktop) {
+      if (jwtToken == null || jwtToken.isEmpty) {
+        steps.add(_SetupStep(
+          icon: LucideIcons.key,
+          title: 'Get API Key',
+          subtitle: 'Sign in via browser and configure cloud access',
+          action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
+          onTap: _isGettingApiKey ? null : () => _getApiKey(context),
+          onCancel: _isGettingApiKey ? () => _cancelGettingApiKey() : null,
+          isComplete: false,
+          isLoading: _isGettingApiKey,
+        ));
+      } else {
+        steps.add(_SetupStep(
+          icon: LucideIcons.checkCircle,
+          title: 'Signed in & API Key configured',
+          subtitle: AuthService.instance.currentUser?.email ?? 'Cloud storage is ready',
+          isComplete: true,
+        ));
+      }
     } else {
-      steps.add(_SetupStep(
-        icon: LucideIcons.checkCircle,
-        title: 'Signed in',
-        subtitle: AuthService.instance.currentUser?.email ?? '',
-        isComplete: true,
-      ));
-    }
+      // Mobile: separate sign-in and API key steps
+      if (!isLoggedIn) {
+        steps.add(_SetupStep(
+          icon: LucideIcons.userCircle,
+          title: 'Sign in to your account',
+          subtitle: 'Required for cloud sync and sharing',
+          action: 'Sign In',
+          onTap: () => _showProfileSheet(context),
+          isComplete: false,
+        ));
+      } else {
+        steps.add(_SetupStep(
+          icon: LucideIcons.checkCircle,
+          title: 'Signed in',
+          subtitle: AuthService.instance.currentUser?.email ?? '',
+          isComplete: true,
+        ));
+      }
 
-    if (jwtToken == null || jwtToken.isEmpty) {
-      steps.add(_SetupStep(
-        icon: LucideIcons.key,
-        title: 'Set up API Key',
-        subtitle: 'Required for cloud storage access',
-        action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
-        onTap: _isGettingApiKey ? null : () => _getApiKey(context),
-        onCancel: _isGettingApiKey ? () => _cancelGettingApiKey() : null,
-        isComplete: false,
-        isLoading: _isGettingApiKey,
-      ));
-    } else {
-      steps.add(_SetupStep(
-        icon: LucideIcons.checkCircle,
-        title: 'API Key configured',
-        subtitle: 'Cloud storage is ready',
-        isComplete: true,
-      ));
+      if (jwtToken == null || jwtToken.isEmpty) {
+        steps.add(_SetupStep(
+          icon: LucideIcons.key,
+          title: 'Set up API Key',
+          subtitle: 'Required for cloud storage access',
+          action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
+          onTap: _isGettingApiKey ? null : () => _getApiKey(context),
+          onCancel: _isGettingApiKey ? () => _cancelGettingApiKey() : null,
+          isComplete: false,
+          isLoading: _isGettingApiKey,
+        ));
+      } else {
+        steps.add(_SetupStep(
+          icon: LucideIcons.checkCircle,
+          title: 'API Key configured',
+          subtitle: 'Cloud storage is ready',
+          isComplete: true,
+        ));
+      }
     }
 
     // Wallet linking step - only show if API key is configured and no error fetching wallets
@@ -823,12 +848,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ],
                 if (PlatformCapabilities.isDesktop) ...[
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Text(
-                      'On desktop, use "Get API Key" below to sign in via your browser.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
-                    ),
+                  ListTile(
+                    leading: const Icon(LucideIcons.key),
+                    title: const Text('Get API Key'),
+                    subtitle: const Text('Sign in via your browser'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _getApiKey(context);
+                    },
                   ),
                 ],
               ],

@@ -2687,11 +2687,26 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       );
     }
 
+    // For directories, determine bucket from child files' sync states
+    if (file.isDirectory) {
+      final children = LocalStorageService.instance.getSyncStatesUnderPath(file.path);
+      final bucketCounts = <String, int>{};
+      for (final s in children) {
+        if (s.bucket != null && s.bucket!.isNotEmpty) {
+          bucketCounts[s.bucket!] = (bucketCounts[s.bucket!] ?? 0) + 1;
+        }
+      }
+      final bucket = bucketCounts.isEmpty
+          ? FileCategory.other.bucketName
+          : bucketCounts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+      return (bucket: bucket, pathScope: '${file.name}/');
+    }
+
     // Fallback: derive from local file path
     final category = FileCategory.fromPath(file.path);
     return (
       bucket: category.bucketName,
-      pathScope: file.isDirectory ? '${file.name}/' : file.name,
+      pathScope: file.name,
     );
   }
 

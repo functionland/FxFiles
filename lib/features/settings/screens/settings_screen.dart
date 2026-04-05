@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +23,7 @@ import 'package:fula_files/features/sharing/providers/collaboration_provider.dar
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
+import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
@@ -43,11 +45,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _isEditingApi = false;
   bool _isLoading = false;
   bool _showPrivateKey = false;
+  StreamSubscription<String>? _apiKeySubscription;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _apiKeySubscription = DeepLinkService.instance.onApiKeyReceived.listen((apiKey) {
+      if (mounted) {
+        setState(() {
+          _jwtTokenController.text = apiKey;
+        });
+      }
+    });
   }
 
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
@@ -76,6 +86,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   @override
   void dispose() {
+    _apiKeySubscription?.cancel();
     _apiGatewayController.dispose();
     _ipfsServerController.dispose();
     _billingServerController.dispose();
@@ -786,12 +797,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
             if (PlatformCapabilities.isDesktop) ...[
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text(
-                  'On desktop, use "Get API Key" below to sign in via your browser.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
-                ),
+              ListTile(
+                leading: const Icon(LucideIcons.key),
+                title: const Text('Get API Key'),
+                subtitle: const Text('Sign in via your browser'),
+                onTap: () {
+                  Navigator.pop(dialogContext);
+                  DeepLinkService.instance.openGetApiKeyPage();
+                },
               ),
             ],
           ],

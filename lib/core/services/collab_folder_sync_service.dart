@@ -61,6 +61,9 @@ class CollabFolderSyncService {
       await dir.create(recursive: true);
     }
 
+    // Clear stale sync metadata from a previous collab group on this folder
+    await _resetSyncMetaIfDifferentGroup(groupId, folderPath);
+
     // Update persistence
     await CollaborationService.instance.updateFolderAssignment(
       groupId,
@@ -68,13 +71,30 @@ class CollabFolderSyncService {
       syncEnabled: true,
     );
 
-    // Initial download of existing files
-    await _pollForNewFiles(groupId);
-
-    // Start watching + polling
+    // Start watching + polling immediately so the caller isn't blocked
     await startSync(groupId);
 
-    _emitStatus(groupId, CollabSyncState.synced);
+    // Download remote files and upload existing local files in the background.
+    // The collab link is valid immediately — files appear as they're synced.
+    unawaited(_initialSyncInBackground(groupId, folderPath));
+  }
+
+  /// Runs the initial download + upload scan without blocking [assignFolder].
+  Future<void> _initialSyncInBackground(String groupId, String folderPath) async {
+    try {
+      _emitStatus(groupId, CollabSyncState.syncing);
+
+      // Download any existing remote files first
+      await _pollForNewFiles(groupId);
+
+      // Then upload local files not yet in the manifest
+      await _scanAndUploadExistingFiles(groupId, folderPath);
+
+      _emitStatus(groupId, CollabSyncState.synced);
+    } catch (e) {
+      debugPrint('[CollabFolderSync] Background initial sync error ($groupId): $e');
+      _emitStatus(groupId, CollabSyncState.error);
+    }
   }
 
   /// Remove folder assignment and stop sync.
@@ -248,6 +268,26 @@ class CollabFolderSyncService {
   // UPLOAD SYNC (local → remote)
   // ============================================================================
 
+  /// Scan existing files in the folder and upload any not yet in the manifest.
+  Future<void> _scanAndUploadExistingFiles(String groupId, String folderPath) async {
+    final dir = Directory(folderPath);
+    if (!await dir.exists()) return;
+
+    debugPrint('[CollabFolderSync] Scanning existing files in $folderPath');
+    int uploaded = 0;
+
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final fileName = entity.path.split(Platform.pathSeparator).last;
+      if (fileName == _syncMetaFile || fileName.startsWith('.')) continue;
+
+      await _uploadLocalFileIfNew(groupId, entity.path);
+      uploaded++;
+    }
+
+    debugPrint('[CollabFolderSync] Scan complete: processed $uploaded files');
+  }
+
   void _handleLocalFileChange(String groupId, FileSystemEvent event) {
     // Only handle file creation/modification
     if (event is! FileSystemCreateEvent && event is! FileSystemModifyEvent) return;
@@ -261,6 +301,8 @@ class CollabFolderSyncService {
     // Skip directories
     if (FileSystemEntity.isDirectorySync(path)) return;
 
+    debugPrint('[CollabFolderSync] File change detected: $fileName (${event.runtimeType}) for group $groupId');
+
     // Debounce: cancel any pending upload for this path, reschedule
     _uploadDebounce[path]?.cancel();
     _uploadDebounce[path] = Timer(const Duration(seconds: 3), () {
@@ -272,7 +314,10 @@ class CollabFolderSyncService {
   Future<void> _uploadLocalFileIfNew(String groupId, String filePath) async {
     try {
       final info = await _getGroupInfo(groupId);
-      if (info == null || info.folderPath == null || info.linkSecretKey == null) return;
+      if (info == null || info.folderPath == null || info.linkSecretKey == null) {
+        debugPrint('[CollabFolderSync] Skipping upload: group info missing (info=${info != null}, folder=${info?.folderPath != null}, key=${info?.linkSecretKey != null})');
+        return;
+      }
 
       final folderPath = info.folderPath!;
       final file = File(filePath);
@@ -292,13 +337,19 @@ class CollabFolderSyncService {
       final alreadyUploaded = syncMeta.values.any(
         (e) => e.fileName == fileName && e.direction == 'upload',
       );
-      if (alreadyUploaded) return;
+      if (alreadyUploaded) {
+        debugPrint('[CollabFolderSync] Skipping $fileName: already uploaded');
+        return;
+      }
 
       // Also skip if the file was just downloaded (avoid re-uploading downloads)
       final justDownloaded = syncMeta.values.any(
         (e) => e.fileName == fileName && e.direction == 'download',
       );
-      if (justDownloaded) return;
+      if (justDownloaded) {
+        debugPrint('[CollabFolderSync] Skipping $fileName: was downloaded');
+        return;
+      }
 
       // Skip files that previously failed with non-retryable errors
       if (_permanentlyFailed.contains(filePath)) return;
@@ -384,6 +435,24 @@ class CollabFolderSyncService {
     }
 
     return null;
+  }
+
+  /// Clear sync metadata if it belongs to a different collab group.
+  /// This prevents stale entries from a previous group on the same folder
+  /// from blocking uploads for the new group.
+  Future<void> _resetSyncMetaIfDifferentGroup(String groupId, String folderPath) async {
+    final file = File('$folderPath${Platform.pathSeparator}$_syncMetaFile');
+    if (!await file.exists()) return;
+    try {
+      final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final storedGroupId = json['groupId'] as String?;
+      if (storedGroupId != null && storedGroupId != groupId) {
+        debugPrint('[CollabFolderSync] Clearing stale sync meta (was group $storedGroupId, now $groupId)');
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('[CollabFolderSync] Failed to check sync meta group: $e');
+    }
   }
 
   Future<Map<String, _SyncedFileEntry>> _readSyncMeta(String folderPath) async {
