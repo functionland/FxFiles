@@ -39,20 +39,35 @@ class CollabFolderSyncService {
       final outgoing = await service.getOutgoingCollaborations();
       final accepted = await service.getAcceptedCollaborations();
 
+      // Collect all groups that need sync, deduplicating by folder path
+      // (multiple collabs may point to the same folder — only watch once per folder)
+      final groupsToSync = <String, String>{}; // groupId → folderPath
       for (final c in outgoing) {
         if (c.syncEnabled && c.localFolderPath != null) {
-          debugPrint('[CollabFolderSync] Starting sync for outgoing "${c.name}" → ${c.localFolderPath}');
-          await startSync(c.id);
-        } else {
-          debugPrint('[CollabFolderSync] Skipping outgoing "${c.name}" (syncEnabled=${c.syncEnabled}, folder=${c.localFolderPath})');
+          if (groupsToSync.values.contains(c.localFolderPath)) {
+            debugPrint('[CollabFolderSync] Skipping duplicate folder for outgoing "${c.name}" → ${c.localFolderPath}');
+            continue;
+          }
+          groupsToSync[c.id] = c.localFolderPath!;
         }
       }
       for (final c in accepted) {
         if (c.syncEnabled && c.localFolderPath != null) {
-          debugPrint('[CollabFolderSync] Starting sync for accepted "${c.name}" → ${c.localFolderPath}');
-          await startSync(c.id);
-        } else {
-          debugPrint('[CollabFolderSync] Skipping accepted "${c.name}" (syncEnabled=${c.syncEnabled}, folder=${c.localFolderPath})');
+          if (groupsToSync.values.contains(c.localFolderPath)) {
+            debugPrint('[CollabFolderSync] Skipping duplicate folder for accepted "${c.name}" → ${c.localFolderPath}');
+            continue;
+          }
+          groupsToSync[c.id] = c.localFolderPath!;
+        }
+      }
+
+      // Start sync for each group, catching per-group errors so one failure
+      // doesn't abort the rest (SecureStorage file locks can cause transient errors)
+      for (final entry in groupsToSync.entries) {
+        try {
+          await _startSyncDirect(entry.key, entry.value);
+        } catch (e) {
+          debugPrint('[CollabFolderSync] Failed to start sync for ${entry.key}: $e');
         }
       }
       debugPrint('[CollabFolderSync] Initialized. Active syncs: ${_watchers.length}');
@@ -116,13 +131,15 @@ class CollabFolderSyncService {
 
   /// Start watching and polling for a group.
   Future<void> startSync(String groupId) async {
-    // Prevent duplicates
-    await stopSync(groupId);
-
     final info = await _getGroupInfo(groupId);
     if (info == null || info.folderPath == null) return;
+    await _startSyncDirect(groupId, info.folderPath!);
+  }
 
-    final folderPath = info.folderPath!;
+  /// Start watching and polling with a known folder path (avoids SecureStorage re-read).
+  Future<void> _startSyncDirect(String groupId, String folderPath) async {
+    // Prevent duplicates
+    await stopSync(groupId);
 
     // Start directory watcher
     final dir = Directory(folderPath);
@@ -385,8 +402,21 @@ class CollabFolderSyncService {
         }
       }
 
+      // If not in sync metadata, fall back to searching the manifest by fileName
+      // (handles files added before sync metadata tracking or after a metadata reset)
       if (matchedFileId == null) {
-        debugPrint('[CollabFolderSync] Deleted file not found in sync metadata: $fileName');
+        debugPrint('[CollabFolderSync] File not in sync metadata, checking manifest: $fileName');
+        final group = info.group;
+        for (final f in group.files) {
+          if (f.fileName == fileName) {
+            matchedFileId = f.id;
+            break;
+          }
+        }
+      }
+
+      if (matchedFileId == null) {
+        debugPrint('[CollabFolderSync] Deleted file not found in sync metadata or manifest: $fileName');
         return;
       }
 
