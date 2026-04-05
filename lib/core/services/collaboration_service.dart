@@ -996,7 +996,6 @@ class CollaborationService {
 
     return file;
   }
-}
 
   /// Remove a file from a collaboration group by adding it to the tombstone list.
   ///
