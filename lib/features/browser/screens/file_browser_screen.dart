@@ -41,6 +41,8 @@ import 'package:fula_files/features/tags/widgets/tag_selector_dialog.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
@@ -2105,6 +2107,17 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   ],
                 );
               }),
+              // Share Publicly via IPFS (files only, no cloud sync required)
+              if (!file.isDirectory)
+                ListTile(
+                  leading: const Icon(LucideIcons.globe, color: Colors.teal),
+                  title: const Text('Share Publicly'),
+                  subtitle: const Text('Pin to IPFS (unencrypted)'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _sharePubliclyViaIpfs(file);
+                  },
+                ),
               const Divider(height: 1),
               // Archive actions - only for archive files
               if (!file.isDirectory && ArchiveService.instance.isArchive(file.path))
@@ -2647,6 +2660,146 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   // ============================================================================
 
   /// Show info message when share is disabled
+  Future<void> _sharePubliclyViaIpfs(LocalFile file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Share Publicly?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will upload the file to IPFS without any encryption. '
+              'Anyone with the link will be able to access it.',
+            ),
+            const SizedBox(height: 16),
+            Text('File: ${file.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('Size: ${file.sizeFormatted}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Share Publicly'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 20, height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            const SizedBox(width: 16),
+            Expanded(child: Text('Uploading ${file.name} to IPFS...')),
+          ],
+        ),
+        duration: const Duration(seconds: 60),
+      ),
+    );
+
+    try {
+      final result = await IpfsPublicService.instance.pinFile(file.path, file.name);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      _showPublicIpfsLinkDialog(result.gatewayUrl, file.name);
+    } catch (e, st) {
+      debugPrint('Share publicly failed: $e\n$st');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      // Show the actual exception message — our service throws clear messages
+      final msg = e is Exception
+          ? e.toString().replaceFirst('Exception: ', '')
+          : ErrorMessages.forPublicShare(e);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 8),
+          showCloseIcon: true,
+          closeIconColor: Colors.white,
+        ),
+      );
+    }
+  }
+
+  void _showPublicIpfsLinkDialog(String gatewayUrl, String fileName) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(LucideIcons.checkCircle, color: Colors.green, size: 24),
+            SizedBox(width: 8),
+            Text('Shared Publicly'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$fileName is now publicly accessible via IPFS.'),
+            const SizedBox(height: 8),
+            const Text(
+              'Anyone with this link can access the file:',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                gatewayUrl,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          OutlinedButton.icon(
+            icon: const Icon(LucideIcons.externalLink, size: 16),
+            label: const Text('Open'),
+            onPressed: () {
+              launchUrl(Uri.parse(gatewayUrl), mode: LaunchMode.externalApplication);
+            },
+          ),
+          FilledButton.icon(
+            icon: const Icon(LucideIcons.copy, size: 16),
+            label: const Text('Copy URL'),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: gatewayUrl));
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('IPFS URL copied to clipboard')),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showShareDisabledInfo(bool isLoggedIn) {
     if (!mounted) return;
 

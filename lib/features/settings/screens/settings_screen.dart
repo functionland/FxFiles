@@ -40,6 +40,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _billingServerController = TextEditingController();
   final _aiEndpointController = TextEditingController();
   final _ipfsGatewayController = TextEditingController();
+  final _ipfsEndpointController = TextEditingController();
   final _jwtTokenController = TextEditingController();
 
   bool _isEditingApi = false;
@@ -65,6 +66,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   static const String _defaultBillingServer = 'https://cloud.fx.land';
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
   static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
+  static const String _defaultIpfsEndpoint = 'https://ipfs.cloud.fx.land';
 
   Future<void> _loadSettings() async {
     final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
@@ -72,6 +74,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final billingServer = await SecureStorageService.instance.read(SecureStorageKeys.billingServerUrl);
     final aiEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.aiEndpointUrl);
     final ipfsGateway = await SecureStorageService.instance.read(SecureStorageKeys.ipfsGatewayUrl);
+    final ipfsEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.ipfsEndpointUrl);
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
 
     setState(() {
@@ -80,6 +83,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _billingServerController.text = billingServer ?? _defaultBillingServer;
       _aiEndpointController.text = aiEndpoint ?? _defaultAiEndpoint;
       _ipfsGatewayController.text = ipfsGateway ?? _defaultIpfsGateway;
+      _ipfsEndpointController.text = ipfsEndpoint ?? _defaultIpfsEndpoint;
       _jwtTokenController.text = jwtToken ?? '';
     });
   }
@@ -92,6 +96,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _billingServerController.dispose();
     _aiEndpointController.dispose();
     _ipfsGatewayController.dispose();
+    _ipfsEndpointController.dispose();
     _jwtTokenController.dispose();
     super.dispose();
   }
@@ -223,6 +228,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                 ),
                 ListTile(
+                  leading: const Icon(LucideIcons.hardDrive),
+                  title: const Text('IPFS Endpoint'),
+                  subtitle: Text(
+                    _ipfsEndpointController.text.isEmpty
+                        ? 'Not configured'
+                        : _ipfsEndpointController.text,
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(LucideIcons.key),
                   title: const Text('API Key'),
                   subtitle: Text(
@@ -279,6 +293,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           labelText: 'IPFS Gateway URL',
                           hintText: 'https://ipfs.cloud.fx.land/gateway/',
                           prefixIcon: Icon(LucideIcons.link),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _ipfsEndpointController,
+                        decoration: const InputDecoration(
+                          labelText: 'IPFS Endpoint URL',
+                          hintText: 'https://ipfs.cloud.fx.land',
+                          prefixIcon: Icon(LucideIcons.hardDrive),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -712,6 +735,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await SecureStorageService.instance.write(
         SecureStorageKeys.ipfsGatewayUrl,
         _ipfsGatewayController.text,
+      );
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.ipfsEndpointUrl,
+        _ipfsEndpointController.text,
       );
       await SecureStorageService.instance.write(
         SecureStorageKeys.jwtToken,

@@ -84,6 +84,9 @@ class SecureStorageKeys {
   static const String aiEndpointUrl = 'ai_endpoint_url';
   static const String ipfsGatewayUrl = 'ipfs_gateway_url';
 
+  // IPFS upload endpoint (ipfs-server with /upload and /gateway)
+  static const String ipfsEndpointUrl = 'ipfs_endpoint_url';
+
   // NFT wallet keys
   static const String nftWalletPrivateKey = 'nft_wallet_private_key';
 

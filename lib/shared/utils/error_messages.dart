@@ -362,6 +362,11 @@ class ErrorMessages {
     return getUserFriendlyMessage(error, context: 'share');
   }
 
+  /// Get error message for public IPFS share operations
+  static String forPublicShare(dynamic error) {
+    return getUserFriendlyMessage(error, context: 'share publicly');
+  }
+
   /// Get error message for delete operations
   static String forDelete(dynamic error) {
     return getUserFriendlyMessage(error, context: 'delete');

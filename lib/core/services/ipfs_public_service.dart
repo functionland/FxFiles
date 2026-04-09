@@ -1,0 +1,89 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:fula_files/core/services/secure_storage_service.dart';
+
+class IpfsPublicService {
+  IpfsPublicService._();
+  static final instance = IpfsPublicService._();
+
+  static const String _defaultIpfsEndpoint = 'https://ipfs.cloud.fx.land';
+  static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
+  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
+
+  /// Upload a file publicly to IPFS and pin it.
+  ///
+  /// 1. POST {ipfsEndpoint}/upload  (multipart file) → returns CID
+  /// 2. POST {ipfsServer}/api/pins  (JSON {cid, name}) → pins for persistence
+  /// 3. Build public gateway URL from CID
+  Future<({String cid, String gatewayUrl})> pinFile(
+    String localPath,
+    String fileName,
+  ) async {
+    final ipfsEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.ipfsEndpointUrl) ??
+        _defaultIpfsEndpoint;
+    final ipfsServer = await SecureStorageService.instance
+            .read(SecureStorageKeys.ipfsServerUrl) ??
+        _defaultIpfsServer;
+    final jwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    final ipfsGateway = await SecureStorageService.instance
+            .read(SecureStorageKeys.ipfsGatewayUrl) ??
+        _defaultIpfsGateway;
+
+    if (jwt == null || jwt.isEmpty) {
+      throw Exception(
+          'No API key configured. Please set your API key in Settings.');
+    }
+
+    // Step 1: Upload file to IPFS endpoint to get CID
+    final uploadUri = Uri.parse('$ipfsEndpoint/upload');
+    debugPrint('IPFS upload → $uploadUri');
+    final request = http.MultipartRequest('POST', uploadUri)
+      ..headers['Authorization'] = 'Bearer $jwt'
+      ..files.add(
+          await http.MultipartFile.fromPath('file', localPath,
+              filename: fileName));
+
+    final streamed = await request.send();
+    final body = await streamed.stream.bytesToString();
+
+    if (streamed.statusCode != 200) {
+      throw Exception(
+          'Upload failed (${streamed.statusCode}): $body');
+    }
+
+    final uploadJson = jsonDecode(body.trim()) as Map<String, dynamic>;
+    final cid = uploadJson['cid'] as String?;
+    if (cid == null || cid.isEmpty) {
+      throw Exception('Upload succeeded but no CID returned');
+    }
+    debugPrint('IPFS upload OK  cid=$cid');
+
+    // Step 2: Pin the CID via pinning service for persistence
+    try {
+      final pinUri = Uri.parse('$ipfsServer/api/pins');
+      debugPrint('IPFS pin → $pinUri');
+      final pinResponse = await http.post(
+        pinUri,
+        headers: {
+          'Authorization': 'Bearer $jwt',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'cid': cid, 'name': fileName}),
+      );
+      debugPrint('Pin response (${pinResponse.statusCode}): ${pinResponse.body}');
+    } catch (e) {
+      // Pin failure is non-fatal — the file is already on IPFS
+      debugPrint('Pin request failed (non-fatal): $e');
+    }
+
+    // Step 3: Build gateway URL
+    final base = ipfsGateway.endsWith('/') ? ipfsGateway : '$ipfsGateway/';
+    final gatewayUrl = '$base$cid';
+
+    debugPrint('IPFS public share OK  url=$gatewayUrl');
+    return (cid: cid, gatewayUrl: gatewayUrl);
+  }
+}
