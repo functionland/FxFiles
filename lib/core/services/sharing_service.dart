@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -10,6 +11,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/core/services/cloud_share_storage_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// Gateway base URL for public share links
@@ -1078,7 +1080,7 @@ class SharingService {
           Uri.parse(manifestUrl),
           headers: {'Content-Type': 'application/json'},
           body: manifestBody,
-        );
+        ).timeout(const Duration(seconds: 30));
         if (response.statusCode == 200 || response.statusCode == 201) {
           debugPrint('SharingService: manifest posted for share $shareId');
         } else {
@@ -1200,8 +1202,8 @@ class SharingService {
         Uri.parse(manifestUrl),
         headers: {'Content-Type': 'application/json'},
         body: manifestBody,
-      );
-      debugPrint('[ManifestUpdate] PUT response: ${response.statusCode} ${response.body.substring(0, response.body.length.clamp(0, 200))}');
+      ).timeout(const Duration(seconds: 30));
+      debugPrint('[ManifestUpdate] PUT response: ${response.statusCode}');
     } catch (e, stack) {
       debugPrint('[ManifestUpdate] EXCEPTION: $e');
       debugPrint('[ManifestUpdate] Stack: $stack');
@@ -1229,7 +1231,24 @@ class SharingService {
         _revokedSharesKey,
         jsonEncode(revokedIds),
       );
+      // Propagate the revocation to cloud so other devices restoring from
+      // cloud also honour it. Best-effort — network failures stay local.
+      unawaited(CloudShareStorageService.instance
+          .uploadRevokedList(revokedIds));
     }
+  }
+
+  /// Merge a cloud-sourced revoked ID list into local storage. Used on
+  /// restore so that revokes made on another device are respected here.
+  Future<void> importRevokedShareIds(List<String> cloudIds) async {
+    if (cloudIds.isEmpty) return;
+    final local = await _getRevokedShareIds();
+    final merged = {...local, ...cloudIds}.toList();
+    if (merged.length == local.length) return;
+    await SecureStorageService.instance.write(
+      _revokedSharesKey,
+      jsonEncode(merged),
+    );
   }
 
   Future<List<String>> _getRevokedShareIds() async {

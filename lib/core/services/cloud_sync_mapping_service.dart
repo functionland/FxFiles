@@ -211,14 +211,31 @@ class CloudSyncMappingService {
         key,
       );
 
-      // Parse JSON
+      // Parse JSON defensively
       final jsonString = utf8.decode(data);
-      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudSyncMapping: mappings manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudSyncMapping: mappings manifest parse failed: $e');
+        return [];
+      }
 
-      final mappingsJson = json['mappings'] as List<dynamic>;
-      final mappings = mappingsJson
-          .map((m) => SyncMapping.fromJson(m as Map<String, dynamic>))
-          .toList();
+      final mappingsJson = json['mappings'] as List<dynamic>? ?? <dynamic>[];
+      final mappings = <SyncMapping>[];
+      for (final entry in mappingsJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          mappings.add(SyncMapping.fromJson(entry));
+        } catch (e) {
+          debugPrint('CloudSyncMapping: skipping malformed mapping: $e');
+        }
+      }
 
       debugPrint('CloudSyncMapping: Downloaded ${mappings.length} mappings from cloud');
       return mappings;

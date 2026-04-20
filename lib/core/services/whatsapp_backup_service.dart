@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
+import 'package:fula_files/core/utils/safe_path.dart';
 
 /// Progress of an ongoing backup or restore operation.
 class BackupProgress {
@@ -666,6 +667,15 @@ class WhatsAppBackupService {
           currentFile: entry.relativePath,
         ));
 
+        // Reject traversal attempts before any network work.
+        final String safeTargetPath;
+        try {
+          safeTargetPath = safeJoin(targetDir.path, entry.relativePath);
+        } on FormatException catch (e) {
+          debugPrint('WhatsAppBackup: skipping unsafe entry: ${e.message}');
+          continue;
+        }
+
         // Download from cloud
         var data = await FulaApiService.instance.downloadAndDecrypt(
           _backupBucket,
@@ -679,14 +689,14 @@ class WhatsAppBackupService {
         }
 
         // Write file to restore directory
-        final targetFile = File('${targetDir.path}/${entry.relativePath}');
+        final targetFile = File(safeTargetPath);
         await targetFile.parent.create(recursive: true);
         await targetFile.writeAsBytes(data);
 
         completed++;
         completedBytes += entry.sizeBytes;
       } catch (e) {
-        debugPrint('WhatsAppBackup: restore error for ${entry.relativePath}: $e');
+        debugPrint('WhatsAppBackup: restore error: $e');
       }
     }
 

@@ -82,12 +82,29 @@ class CloudCollaborationStorageService {
       );
 
       final jsonString = utf8.decode(data);
-      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudCollabStorage: collaborations manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudCollabStorage: collaborations manifest parse failed: $e');
+        return [];
+      }
 
-      final collabsJson = json['collaborations'] as List<dynamic>;
-      final collabs = collabsJson
-          .map((c) => OutgoingCollaboration.fromJson(c as Map<String, dynamic>))
-          .toList();
+      final collabsJson = json['collaborations'] as List<dynamic>? ?? <dynamic>[];
+      final collabs = <OutgoingCollaboration>[];
+      for (final entry in collabsJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          collabs.add(OutgoingCollaboration.fromJson(entry));
+        } catch (e) {
+          debugPrint('CloudCollabStorage: skipping malformed collaboration: $e');
+        }
+      }
 
       debugPrint('CloudCollabStorage: Downloaded ${collabs.length} collaborations');
       return collabs;
@@ -192,12 +209,29 @@ class CloudCollaborationStorageService {
       );
 
       final jsonString = utf8.decode(data);
-      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudCollabStorage: accepted collaborations manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudCollabStorage: accepted collaborations manifest parse failed: $e');
+        return [];
+      }
 
-      final collabsJson = json['acceptedCollaborations'] as List<dynamic>;
-      final collabs = collabsJson
-          .map((c) => AcceptedCollaboration.fromJson(c as Map<String, dynamic>))
-          .toList();
+      final collabsJson = json['acceptedCollaborations'] as List<dynamic>? ?? <dynamic>[];
+      final collabs = <AcceptedCollaboration>[];
+      for (final entry in collabsJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          collabs.add(AcceptedCollaboration.fromJson(entry));
+        } catch (e) {
+          debugPrint('CloudCollabStorage: skipping malformed accepted collaboration: $e');
+        }
+      }
 
       debugPrint('CloudCollabStorage: Downloaded ${collabs.length} accepted collaborations');
       return collabs;

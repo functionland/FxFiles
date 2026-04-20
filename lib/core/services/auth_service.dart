@@ -527,8 +527,8 @@ class AuthService {
         SecureStorageKeys.jwtToken,
       );
 
-      debugPrint('AuthService: endpoint = $endpoint');
-      debugPrint('AuthService: accessToken = ${accessToken != null ? "${accessToken.substring(0, 20)}..." : "null"}');
+      debugPrint('AuthService: endpoint configured = ${endpoint != null && endpoint.isNotEmpty}');
+      debugPrint('AuthService: accessToken present = ${accessToken != null && accessToken.isNotEmpty}');
 
       if (endpoint != null && endpoint.isNotEmpty) {
         await FulaApiService.instance.initialize(

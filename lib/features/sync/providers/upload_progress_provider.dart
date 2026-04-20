@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/upload_progress.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
@@ -9,17 +10,23 @@ class UploadProgressNotifier extends Notifier<BatchUploadProgress?> {
 
   @override
   BatchUploadProgress? build() {
-    // Subscribe to progress updates from the manager
-    _subscription = UploadProgressManager.instance.progressStream.listen((progress) {
-      state = progress;
-    });
+    _subscription = UploadProgressManager.instance.progressStream.listen(
+      (progress) {
+        try {
+          state = progress;
+        } catch (e) {
+          debugPrint('UploadProgressNotifier: failed to apply tick: $e');
+        }
+      },
+      onError: (Object e) {
+        debugPrint('UploadProgressNotifier: stream error: $e');
+      },
+    );
 
-    // Clean up on dispose
     ref.onDispose(() {
       _subscription?.cancel();
     });
 
-    // Return current state immediately
     return UploadProgressManager.instance.batchProgress;
   }
 }

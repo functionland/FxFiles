@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:fula_files/core/utils/safe_path.dart';
 
 /// Result of an archive operation
 class ArchiveResult {
@@ -309,8 +310,16 @@ Map<String, dynamic> _extractZipIsolate(Map<String, String> params) {
     final archive = ZipDecoder().decodeBytes(bytes);
 
     int fileCount = 0;
+    int skippedCount = 0;
     for (final file in archive) {
-      final filePath = p.join(outputDir, file.name);
+      final String filePath;
+      try {
+        filePath = safeJoin(outputDir, file.name);
+      } on FormatException catch (e) {
+        debugPrint('Archive entry rejected: ${e.message}');
+        skippedCount++;
+        continue;
+      }
 
       if (file.isFile) {
         final outFile = File(filePath);
@@ -322,7 +331,11 @@ Map<String, dynamic> _extractZipIsolate(Map<String, String> params) {
       }
     }
 
-    return {'success': true, 'fileCount': fileCount};
+    return {
+      'success': true,
+      'fileCount': fileCount,
+      if (skippedCount > 0) 'skippedCount': skippedCount,
+    };
   } catch (e) {
     return {'success': false, 'error': e.toString()};
   }

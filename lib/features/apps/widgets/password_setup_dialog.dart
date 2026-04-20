@@ -18,6 +18,10 @@ class _PasswordSetupDialogState extends State<PasswordSetupDialog> {
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   String? _error;
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
+
+  static const int _minPasswordLength = 12;
 
   @override
   void dispose() {
@@ -43,19 +47,30 @@ class _PasswordSetupDialogState extends State<PasswordSetupDialog> {
           const SizedBox(height: 16),
           TextField(
             controller: _passwordController,
-            obscureText: true,
-            decoration: const InputDecoration(
+            obscureText: _obscurePassword,
+            decoration: InputDecoration(
               labelText: 'Password',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
+              helperText: 'At least $_minPasswordLength characters. 16+ recommended.',
+              suffixIcon: IconButton(
+                icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility),
+                tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+              ),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _confirmController,
-            obscureText: true,
-            decoration: const InputDecoration(
+            obscureText: _obscureConfirm,
+            decoration: InputDecoration(
               labelText: 'Confirm Password',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(_obscureConfirm ? Icons.visibility_off : Icons.visibility),
+                tooltip: _obscureConfirm ? 'Show password' : 'Hide password',
+                onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+              ),
             ),
           ),
           if (_error != null) ...[
@@ -106,8 +121,9 @@ class _PasswordSetupDialogState extends State<PasswordSetupDialog> {
     final password = _passwordController.text;
     final confirm = _confirmController.text;
 
-    if (password.length < 6) {
-      setState(() => _error = 'Password must be at least 6 characters');
+    if (password.length < _minPasswordLength) {
+      setState(() => _error =
+          'Password must be at least $_minPasswordLength characters. This password cannot be recovered — use a strong one.');
       return;
     }
     if (password != confirm) {

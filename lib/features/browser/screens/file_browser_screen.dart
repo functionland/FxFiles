@@ -24,6 +24,7 @@ import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/utils/safe_path.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
@@ -1588,8 +1589,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                     if (isSelected)
                       Container(
                         color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-                        child: const Center(
-                          child: Icon(LucideIcons.check, color: Colors.white, size: 32),
+                        child: Center(
+                          child: Icon(
+                            LucideIcons.check,
+                            color: Theme.of(context).colorScheme.onPrimary,
+                            size: 32,
+                          ),
                         ),
                       ),
                     // Sync status indicator
@@ -2698,9 +2703,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       SnackBar(
         content: Row(
           children: [
-            const SizedBox(
-              width: 20, height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Theme.of(context).colorScheme.onInverseSurface,
+              ),
             ),
             const SizedBox(width: 16),
             Expanded(child: Text('Uploading ${file.name} to IPFS...')),
@@ -3697,22 +3706,48 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   Future<void> _renameFile(LocalFile file) async {
     final controller = TextEditingController(text: file.name);
+
+    String? validate(String value) {
+      final trimmed = value.trim();
+      if (trimmed.isEmpty) return 'Name cannot be empty';
+      if (trimmed == '.' || trimmed == '..') return 'Invalid name';
+      if (Platform.isWindows && isReservedWindowsName(trimmed)) {
+        return 'This name is reserved on Windows';
+      }
+      return null;
+    }
+
     final newName = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'New name'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('Rename'),
-          ),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final error = validate(controller.text);
+          return AlertDialog(
+            title: const Text('Rename'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 200,
+              inputFormatters: [
+                FilteringTextInputFormatter.deny(invalidFilenameCharsPattern),
+              ],
+              decoration: InputDecoration(
+                labelText: 'New name',
+                errorText: error,
+              ),
+              onChanged: (_) => setDialogState(() {}),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(
+                onPressed: error == null
+                    ? () => Navigator.pop(ctx, controller.text.trim())
+                    : null,
+                child: const Text('Rename'),
+              ),
+            ],
+          );
+        },
       ),
     );
 

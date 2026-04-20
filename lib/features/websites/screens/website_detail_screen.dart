@@ -232,6 +232,9 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
                   onRetry: gen.status == WebsiteGenStatus.error
                       ? () => _retryGeneration(gen, currentTag)
                       : null,
+                  onRecreate: gen.status == WebsiteGenStatus.completed
+                      ? () => _recreateWithContext(gen, currentTag)
+                      : null,
                 )),
             const SizedBox(height: 80),
           ],
@@ -439,17 +442,30 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
   ];
 
   Future<({String websiteName, String category, String prompt})?>
-      _showPromptDialog(BuildContext context, String defaultName) async {
-    final nameController = TextEditingController(text: defaultName);
+      _showPromptDialog(
+    BuildContext context,
+    String defaultName, {
+    String? initialName,
+    String? initialCategory,
+    String? initialPrompt,
+  }) async {
+    final nameController = TextEditingController(
+      text: (initialName != null && initialName.isNotEmpty)
+          ? initialName
+          : defaultName,
+    );
     final promptController = TextEditingController(
-      text:
+      text: initialPrompt ??
           'Create a clean, modern portfolio website showcasing these assets with a gallery layout.',
     );
 
     return showDialog<({String websiteName, String category, String prompt})>(
       context: context,
       builder: (ctx) {
-        var selectedCategory = _categoryOptions.first;
+        var selectedCategory =
+            (initialCategory != null && _categoryOptions.contains(initialCategory))
+                ? initialCategory
+                : _categoryOptions.first;
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             final nameEmpty = nameController.text.trim().isEmpty;
@@ -543,6 +559,50 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           prompt: gen.prompt,
           files: files,
         );
+  }
+
+  Future<void> _recreateWithContext(
+      WebsiteGeneration gen, FileTag? currentTag) async {
+    final accepted = await showLegalDisclaimerDialog(context);
+    if (accepted != true || !mounted) return;
+
+    final parsed = parseStoredPrompt(gen.prompt);
+    final priorUrl = gen.gatewayUrl ?? '';
+    final priorPromptForRef =
+        parsed.userBody.isNotEmpty ? parsed.userBody : gen.prompt.trim();
+    final seededPrompt =
+        'The website "$priorUrl" was created for prompt: "$priorPromptForRef"\n\n'
+        '[Describe what to change or add for the new version]';
+
+    final displayName =
+        (currentTag?.name ?? 'website').replaceFirst('websites-', '');
+
+    final result = await _showPromptDialog(
+      context,
+      displayName,
+      initialName: parsed.websiteName,
+      initialCategory: parsed.category,
+      initialPrompt: seededPrompt,
+    );
+    if (result == null || !mounted) return;
+
+    final files = await ref.read(taggedFilesProvider(widget.tagId).future);
+    if (!mounted) return;
+
+    final enrichedPrompt =
+        'Website Name: ${result.websiteName}\nCategory: ${result.category}\n\n${result.prompt}';
+    await ref.read(websiteProvider.notifier).startGeneration(
+          tagId: widget.tagId,
+          tagName: displayName,
+          prompt: enrichedPrompt.trim(),
+          files: files,
+        );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Website generation started')),
+      );
+    }
   }
 }
 

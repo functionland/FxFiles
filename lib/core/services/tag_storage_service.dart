@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/utils/hive_cipher.dart';
 
 /// Service for storing and managing file tags locally and in S3
 class TagStorageService {
@@ -43,13 +44,27 @@ class TagStorageService {
         Hive.registerAdapter(TaggedFileAdapter());
       }
 
-      _tagsBox = await Hive.openBox<FileTag>('file_tags');
-      _taggedFilesBox = await Hive.openBox<TaggedFile>('tagged_files');
+      final cipher = await getHiveMetadataCipher();
+      _tagsBox = await _openEncryptedBox<FileTag>('file_tags', cipher);
+      _taggedFilesBox = await _openEncryptedBox<TaggedFile>('tagged_files', cipher);
 
       _isInitialized = true;
       debugPrint('TagStorageService initialized with ${_tagsBox.length} tags and ${_taggedFilesBox.length} tagged files');
     } catch (e) {
       debugPrint('Failed to initialize TagStorageService: $e');
+    }
+  }
+
+  /// Open [name] with [cipher]. If the on-disk box is legacy plaintext (or
+  /// otherwise corrupt), delete it and reopen fresh — tags are re-derivable by
+  /// rescanning files, so we never block startup on a migration.
+  Future<Box<T>> _openEncryptedBox<T>(String name, HiveAesCipher cipher) async {
+    try {
+      return await Hive.openBox<T>(name, encryptionCipher: cipher);
+    } catch (e) {
+      debugPrint('TagStorageService: reopening "$name" fresh after open error: $e');
+      await Hive.deleteBoxFromDisk(name);
+      return await Hive.openBox<T>(name, encryptionCipher: cipher);
     }
   }
 

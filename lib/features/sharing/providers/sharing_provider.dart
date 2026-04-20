@@ -81,6 +81,17 @@ class SharesNotifier extends Notifier<SharesState> {
         }
       }
 
+      // Merge cloud revocation list so revokes from other devices apply here.
+      try {
+        final cloudRevoked =
+            await CloudShareStorageService.instance.downloadRevokedList();
+        if (cloudRevoked.isNotEmpty) {
+          await _sharingService.importRevokedShareIds(cloudRevoked);
+        }
+      } catch (_) {
+        // Optional sync — ignore failures.
+      }
+
       // Ensure local data is backed up to cloud for future restores
       if (outgoing.isNotEmpty || accepted.isNotEmpty) {
         _syncToCloud();

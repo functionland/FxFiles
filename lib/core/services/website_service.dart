@@ -522,7 +522,7 @@ User request:
 
       // Save thumbnail to temp file for ML Kit
       final tempDir = await getTemporaryDirectory();
-      final tempFile = File(p.join(tempDir.path, 'website_video_thumb_${DateTime.now().millisecondsSinceEpoch}.jpg'));
+      final tempFile = File(p.join(tempDir.path, 'website_video_thumb_${_uuid.v4()}.jpg'));
       await tempFile.writeAsBytes(thumbnailBytes);
 
       try {

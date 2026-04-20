@@ -7,6 +7,7 @@ import 'package:fula_files/core/models/face_data.dart';
 import 'package:fula_files/core/services/face_embedding_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/utils/hive_cipher.dart';
 
 /// Service for storing and managing face data locally and in S3
 class FaceStorageService {
@@ -43,14 +44,31 @@ class FaceStorageService {
         Hive.registerAdapter(FaceProcessingStatusAdapter());
       }
 
-      _facesBox = await Hive.openBox<DetectedFace>('detected_faces');
-      _personsBox = await Hive.openBox<Person>('persons');
-      _processingStateBox = await Hive.openBox<FaceProcessingState>('face_processing_states');
+      final cipher = await getHiveMetadataCipher();
+      _facesBox = await _openEncryptedBox<DetectedFace>('detected_faces', cipher);
+      _personsBox = await _openEncryptedBox<Person>('persons', cipher);
+      _processingStateBox = await _openEncryptedBox<FaceProcessingState>(
+        'face_processing_states',
+        cipher,
+      );
 
       _isInitialized = true;
       debugPrint('FaceStorageService initialized');
     } catch (e) {
       debugPrint('Failed to initialize FaceStorageService: $e');
+    }
+  }
+
+  /// Open [name] with [cipher]. If the on-disk box is legacy plaintext (or
+  /// otherwise corrupt), delete it and reopen fresh — face data is re-derivable
+  /// by rescanning photos, so we never block startup on a migration.
+  Future<Box<T>> _openEncryptedBox<T>(String name, HiveAesCipher cipher) async {
+    try {
+      return await Hive.openBox<T>(name, encryptionCipher: cipher);
+    } catch (e) {
+      debugPrint('FaceStorageService: reopening "$name" fresh after open error: $e');
+      await Hive.deleteBoxFromDisk(name);
+      return await Hive.openBox<T>(name, encryptionCipher: cipher);
     }
   }
 

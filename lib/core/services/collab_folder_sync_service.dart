@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/core/utils/safe_path.dart';
 
 /// Bidirectional sync between local folders and collab groups.
 ///
@@ -23,6 +24,7 @@ class CollabFolderSyncService {
   final Map<String, StreamSubscription<FileSystemEvent>> _watchers = {};
   final Map<String, Timer> _pollTimers = {};
   final Map<String, bool> _syncing = {};
+  final Set<String> _startingSync = {}; // guard against concurrent startSync()
   final Map<String, Duration> _currentPollInterval = {}; // adaptive per group
   final Map<String, Timer> _uploadDebounce = {}; // debounce per file path
   final Set<String> _permanentlyFailed = {}; // files that failed with non-retryable errors (413, etc.)
@@ -131,14 +133,20 @@ class CollabFolderSyncService {
 
   /// Start watching and polling for a group.
   Future<void> startSync(String groupId) async {
-    final info = await _getGroupInfo(groupId);
-    if (info == null || info.folderPath == null) return;
-    await _startSyncDirect(groupId, info.folderPath!);
+    if (_startingSync.contains(groupId)) return;
+    _startingSync.add(groupId);
+    try {
+      final info = await _getGroupInfo(groupId);
+      if (info == null || info.folderPath == null) return;
+      await _startSyncDirect(groupId, info.folderPath!);
+    } finally {
+      _startingSync.remove(groupId);
+    }
   }
 
   /// Start watching and polling with a known folder path (avoids SecureStorage re-read).
   Future<void> _startSyncDirect(String groupId, String folderPath) async {
-    // Prevent duplicates
+    // Cancel any existing watcher/timer for this group before registering a new one.
     await stopSync(groupId);
 
     // Start directory watcher
@@ -248,8 +256,18 @@ class CollabFolderSyncService {
 
         for (final file in filesToDownload) {
           try {
-            final data = await CollaborationService.instance.downloadCollabFile(groupId, file);
             final localPath = _resolveLocalPath(folderPath, file);
+            if (localPath == null) {
+              // Mark as download_failed so we don't retry unsafe entries
+              // on every poll.
+              syncMeta[file.id] = _SyncedFileEntry(
+                fileName: file.fileName,
+                direction: 'download_failed',
+                syncedAt: DateTime.now(),
+              );
+              continue;
+            }
+            final data = await CollaborationService.instance.downloadCollabFile(groupId, file);
             final localFile = File(localPath);
             await localFile.parent.create(recursive: true);
             await localFile.writeAsBytes(data);
@@ -281,7 +299,19 @@ class CollabFolderSyncService {
         for (final entry in syncMeta.entries) {
           if (entry.value.direction == 'download_failed') continue;
           if (removedIds.contains(entry.key)) {
-            final localPath = '$folderPath${Platform.pathSeparator}${entry.value.fileName}';
+            final sanitizedName = sanitizeFileName(entry.value.fileName);
+            if (sanitizedName.isEmpty) {
+              // Stale unsafe entry — drop from meta without touching fs.
+              entriesToRemove.add(entry.key);
+              continue;
+            }
+            String? localPath;
+            try {
+              localPath = safeJoin(folderPath, sanitizedName);
+            } on FormatException {
+              entriesToRemove.add(entry.key);
+              continue;
+            }
             final localFile = File(localPath);
             if (await localFile.exists()) {
               try {
@@ -289,7 +319,7 @@ class CollabFolderSyncService {
                 debugPrint('[CollabFolderSync] Deleted local file (remote removal): ${entry.value.fileName}');
                 hasChanges = true;
               } catch (e) {
-                debugPrint('[CollabFolderSync] Failed to delete local file: $localPath: $e');
+                debugPrint('[CollabFolderSync] Failed to delete local file: $e');
               }
             }
             entriesToRemove.add(entry.key);
@@ -539,11 +569,32 @@ class CollabFolderSyncService {
   // HELPERS
   // ============================================================================
 
-  String _resolveLocalPath(String folderPath, CollaborationFile file) {
-    if (file.pathScope != null && file.pathScope!.isNotEmpty) {
-      return '$folderPath${Platform.pathSeparator}${file.pathScope!.replaceAll('/', Platform.pathSeparator)}${Platform.pathSeparator}${file.fileName}';
+  /// Resolves the local target path for a remote-manifest-supplied file, or
+  /// returns null if the supplied [pathScope] / [fileName] would escape
+  /// [folderPath]. Callers must skip the file on null.
+  String? _resolveLocalPath(String folderPath, CollaborationFile file) {
+    final sanitizedName = sanitizeFileName(file.fileName);
+    if (sanitizedName.isEmpty) {
+      debugPrint('[CollabFolderSync] Skipping unsafe fileName: ${file.fileName}');
+      return null;
     }
-    return '$folderPath${Platform.pathSeparator}${file.fileName}';
+    final parts = <String>[];
+    final rawScope = file.pathScope;
+    if (rawScope != null && rawScope.isNotEmpty) {
+      for (final segment in rawScope.split(RegExp(r'[\\/]'))) {
+        final s = sanitizeFileName(segment);
+        if (s.isEmpty) continue;
+        parts.add(s);
+      }
+    }
+    parts.add(sanitizedName);
+    final relative = parts.join(Platform.pathSeparator);
+    try {
+      return safeJoin(folderPath, relative);
+    } on FormatException catch (e) {
+      debugPrint('[CollabFolderSync] Skipping unsafe path: ${e.message}');
+      return null;
+    }
   }
 
   Future<_GroupInfo?> _getGroupInfo(String groupId) async {

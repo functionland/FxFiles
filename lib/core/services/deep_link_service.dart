@@ -7,6 +7,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 
 class DeepLinkService {
@@ -19,6 +20,16 @@ class DeepLinkService {
   // Stream controller for API key received events
   final _apiKeyReceivedController = StreamController<String>.broadcast();
   Stream<String> get onApiKeyReceived => _apiKeyReceivedController.stream;
+
+  // Fires only when an incoming deep link would REPLACE a different, already
+  // stored JWT. The UI must confirm via [confirmApiKeyReplace]. First-time
+  // login and idempotent re-login write silently without emitting this.
+  final _apiKeyReplaceProposedController = StreamController<void>.broadcast();
+  Stream<void> get onApiKeyReplaceProposed =>
+      _apiKeyReplaceProposedController.stream;
+
+  // Holds a proposed replacement key until the user confirms or rejects it.
+  String? _pendingReplacementApiKey;
 
   // Stream controller for org name received events
   final _orgNameReceivedController = StreamController<String>.broadcast();
@@ -288,6 +299,45 @@ class DeepLinkService {
   }
 
   Future<void> _storeApiKey(String apiKey) async {
+    // First-time login (no stored token) or idempotent re-login (same token)
+    // proceeds silently — this is the legitimate cloud.fx.land → redirect
+    // flow. Only when we'd overwrite a DIFFERENT existing token do we prompt
+    // the user, to block an attacker-supplied JWT from hijacking an active
+    // session.
+    try {
+      final existing = await SecureStorageService.instance
+          .read(SecureStorageKeys.jwtToken);
+      if (existing != null && existing.isNotEmpty && existing != apiKey) {
+        debugPrint(
+            'DeepLinkService: incoming API key differs from stored token — awaiting user confirmation');
+        _pendingReplacementApiKey = apiKey;
+        _apiKeyReplaceProposedController.add(null);
+        return;
+      }
+    } catch (e) {
+      debugPrint('DeepLinkService: error reading existing token: $e');
+      // Fall through and attempt the write; if SecureStorage is unreadable
+      // we have no basis for a "replacement" decision anyway.
+    }
+
+    await _writeAndAnnounceApiKey(apiKey);
+  }
+
+  /// Confirm the pending replacement-JWT write after the UI has obtained user
+  /// approval. Called by the app-level dialog; see app.dart.
+  Future<void> confirmApiKeyReplace() async {
+    final pending = _pendingReplacementApiKey;
+    _pendingReplacementApiKey = null;
+    if (pending == null) return;
+    await _writeAndAnnounceApiKey(pending);
+  }
+
+  /// Reject and drop a pending replacement-JWT proposal.
+  void rejectApiKeyReplace() {
+    _pendingReplacementApiKey = null;
+  }
+
+  Future<void> _writeAndAnnounceApiKey(String apiKey) async {
     try {
       // Store the API key with timeout protection — keychain can hang on some iOS versions
       await Future.any([
@@ -428,8 +478,51 @@ class DeepLinkService {
     debugPrint('DeepLinkService: NFT claim params stored');
   }
 
+  /// Resolve the current user's home/profile directory. Returns null if the
+  /// environment lookup fails — callers must treat that as "reject".
+  String? _userProfileDir() {
+    final env = Platform.environment;
+    if (Platform.isWindows) {
+      final profile = env['USERPROFILE'];
+      if (profile != null && profile.isNotEmpty) return profile;
+    }
+    final home = env['HOME'];
+    if (home != null && home.isNotEmpty) return home;
+    return null;
+  }
+
+  /// Reject any shell-supplied path that escapes the current user's profile
+  /// directory. This is the second line of defence against
+  /// `fxfiles://shell/upload?path=C:\Windows\...` style exfil requests — even
+  /// if the UI layer's confirmation dialog is accidentally bypassed, obvious
+  /// exfil targets never reach the handler.
+  bool _isShellPathAllowed(String rawPath) {
+    try {
+      final profile = _userProfileDir();
+      if (profile == null) return false;
+      final normalizedProfile = p.normalize(p.absolute(profile));
+      final normalizedPath = p.normalize(p.absolute(rawPath));
+      return normalizedPath == normalizedProfile ||
+          p.isWithin(normalizedProfile, normalizedPath);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Handle shell context menu deep links (fxfiles://shell/upload?path=... or fxfiles://shell/share?path=...)
   void _handleShellCommand(Uri uri) {
+    // Shell context-menu integration is Windows-only: the Explorer registry
+    // entries and the MSIX `--shell-*` launcher args in windows/runner/main.cpp
+    // are the only legitimate producers of `fxfiles://shell/*`. On
+    // iOS/Android the `fxfiles://` scheme is registered without host scoping
+    // (Info.plist, AndroidManifest autoVerify), so a third-party app or
+    // webpage tap-handler could fire this URI. Reject on non-Windows.
+    if (!Platform.isWindows) {
+      debugPrint(
+          'DeepLinkService: shell command rejected on non-Windows platform');
+      return;
+    }
+
     final segments = uri.pathSegments; // e.g. ['upload'] or ['share']
     final path = uri.queryParameters['path'];
 
@@ -438,21 +531,29 @@ class DeepLinkService {
       return;
     }
 
+    // Path scoping: reject anything outside the user's profile dir.
+    // Any UI-layer confirmation dialog is still expected on top of this.
+    if (!_isShellPathAllowed(path)) {
+      debugPrint(
+          'DeepLinkService: shell path rejected (outside user profile)');
+      return;
+    }
+
     // Uri.parse already URL-decoded the path query parameter
     if (segments.isNotEmpty && segments.first == 'upload') {
-      debugPrint('DeepLinkService: shell upload request: $path');
+      debugPrint('DeepLinkService: shell upload request received');
       _pendingShellUpload = path;
       _shellUploadController.add(path);
     } else if (segments.isNotEmpty && segments.first == 'share') {
-      debugPrint('DeepLinkService: shell share request: $path');
+      debugPrint('DeepLinkService: shell share request received');
       _pendingShellShare = path;
       _shellShareController.add(path);
     } else if (segments.isNotEmpty && segments.first == 'collab') {
-      debugPrint('DeepLinkService: shell collab request: $path');
+      debugPrint('DeepLinkService: shell collab request received');
       _pendingShellCollab = path;
       _shellCollabController.add(path);
     } else if (segments.isNotEmpty && segments.first == 'accept-collab') {
-      debugPrint('DeepLinkService: shell accept-collab request: $path');
+      debugPrint('DeepLinkService: shell accept-collab request received');
       _pendingShellAcceptCollab = path;
       _shellAcceptCollabController.add(path);
     } else {

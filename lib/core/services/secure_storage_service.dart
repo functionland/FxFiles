@@ -13,8 +13,13 @@ class SecureStorageService {
       preferencesKeyPrefix: 'fula_',
     );
     
+    // `first_unlock` requires the device to have been unlocked at least once
+    // since boot — same semantics we need for WorkManager / BGTaskScheduler
+    // background access, but it narrows the `accessible` class to the
+    // smallest one compatible with background reads. Do NOT downgrade to
+    // `passcode_this_device`: users without a passcode would lose access.
     const iosOptions = IOSOptions(
-      accessibility: KeychainAccessibility.first_unlock_this_device,
+      accessibility: KeychainAccessibility.first_unlock,
       accountName: 'fula_files',
     );
 
@@ -107,4 +112,14 @@ class SecureStorageKeys {
   // Derived encryption key — stored in SecureStorage so background tasks can use it.
   // The OS secure enclave protects it at rest. The raw password is never stored.
   static const String appDerivedKeyPrefix = 'app_derived_key_';
+
+  // AES-256 key (base64 of 32 random bytes) for encrypting local Hive boxes
+  // that hold sensitive metadata (face embeddings, OCR tags). Generated once
+  // per install and never leaves SecureStorage.
+  static const String hiveMetadataKey = 'hive_metadata_key';
+
+  // ISO-8601 timestamp until which the sync upload queue is paused. Persisted
+  // so a pause survives app kill — without this, a force-kill mid-pause would
+  // lose the resume callback and leave _consecutiveFailures stale on relaunch.
+  static const String syncPausedUntil = 'sync_paused_until';
 }

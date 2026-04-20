@@ -5,18 +5,28 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 
 /// Card showing the status of a website generation job
-class GenerationStatusCard extends StatelessWidget {
+class GenerationStatusCard extends StatefulWidget {
   final WebsiteGeneration generation;
   final VoidCallback? onRetry;
+  final VoidCallback? onRecreate;
 
   const GenerationStatusCard({
     super.key,
     required this.generation,
     this.onRetry,
+    this.onRecreate,
   });
 
   @override
+  State<GenerationStatusCard> createState() => _GenerationStatusCardState();
+}
+
+class _GenerationStatusCardState extends State<GenerationStatusCard> {
+  bool _promptExpanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final generation = widget.generation;
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Padding(
@@ -26,7 +36,7 @@ class GenerationStatusCard extends StatelessWidget {
           children: [
             _buildHeader(context),
             const SizedBox(height: 8),
-            _buildPromptPreview(context),
+            _buildPromptSection(context),
             if (generation.status == WebsiteGenStatus.uploading ||
                 generation.status == WebsiteGenStatus.parsing ||
                 generation.status == WebsiteGenStatus.generating)
@@ -44,6 +54,7 @@ class GenerationStatusCard extends StatelessWidget {
   }
 
   Widget _buildHeader(BuildContext context) {
+    final generation = widget.generation;
     final (icon, color, label) = switch (generation.status) {
       WebsiteGenStatus.uploading => (LucideIcons.upload, Colors.blue, 'Uploading'),
       WebsiteGenStatus.parsing => (LucideIcons.scan, Colors.orange, 'Parsing'),
@@ -94,18 +105,50 @@ class GenerationStatusCard extends StatelessWidget {
     );
   }
 
-  Widget _buildPromptPreview(BuildContext context) {
-    return Text(
-      generation.prompt,
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: Colors.grey[600],
+  Widget _buildPromptSection(BuildContext context) {
+    final fullPrompt = widget.generation.prompt;
+    final userPortion = extractUserPrompt(fullPrompt);
+    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Colors.grey[700],
+        );
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: InkWell(
+            onTap: () => setState(() => _promptExpanded = !_promptExpanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                fullPrompt,
+                maxLines: _promptExpanded ? null : 2,
+                overflow: _promptExpanded
+                    ? TextOverflow.visible
+                    : TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
           ),
+        ),
+        IconButton(
+          tooltip: 'Copy prompt',
+          icon: const Icon(LucideIcons.copy, size: 16),
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () => _copyText(
+            context,
+            userPortion,
+            'Prompt copied to clipboard',
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildProgress(BuildContext context) {
+    final generation = widget.generation;
     if (generation.status == WebsiteGenStatus.uploading && generation.totalAssets > 0) {
       final progress = generation.uploadedAssets / generation.totalAssets;
       return Padding(
@@ -123,15 +166,15 @@ class GenerationStatusCard extends StatelessWidget {
         ),
       );
     }
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: const LinearProgressIndicator(),
+    return const Padding(
+      padding: EdgeInsets.only(top: 8),
+      child: LinearProgressIndicator(),
     );
   }
 
   Widget _buildCompletedSection(BuildContext context) {
     // M3: Use gatewayUrl getter which prefers resultGatewayUrl over resultCid
-    final url = generation.gatewayUrl;
+    final url = widget.generation.gatewayUrl;
     if (url == null) return const SizedBox.shrink();
 
     return Padding(
@@ -174,13 +217,28 @@ class GenerationStatusCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => _copyUrl(context, url),
+                  onPressed: () => _copyText(
+                    context,
+                    url,
+                    'URL copied to clipboard',
+                  ),
                   icon: const Icon(LucideIcons.copy, size: 16),
                   label: const Text('Copy URL'),
                 ),
               ),
             ],
           ),
+          if (widget.onRecreate != null) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: widget.onRecreate,
+                icon: const Icon(LucideIcons.refreshCw, size: 16),
+                label: const Text('Recreate'),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -199,14 +257,14 @@ class GenerationStatusCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
-              generation.errorMessage ?? 'An unknown error occurred',
+              widget.generation.errorMessage ?? 'An unknown error occurred',
               style: const TextStyle(fontSize: 12, color: Colors.red),
             ),
           ),
-          if (onRetry != null) ...[
+          if (widget.onRetry != null) ...[
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: onRetry,
+              onPressed: widget.onRetry,
               icon: const Icon(LucideIcons.refreshCw, size: 16),
               label: const Text('Retry'),
             ),
@@ -218,7 +276,7 @@ class GenerationStatusCard extends StatelessWidget {
 
   Widget _buildTimestamp(BuildContext context) {
     return Text(
-      _formatDate(generation.createdAt),
+      _formatDate(widget.generation.createdAt),
       style: TextStyle(fontSize: 11, color: Colors.grey[500]),
     );
   }
@@ -235,10 +293,10 @@ class GenerationStatusCard extends StatelessWidget {
     }
   }
 
-  void _copyUrl(BuildContext context, String url) {
-    Clipboard.setData(ClipboardData(text: url));
+  void _copyText(BuildContext context, String text, String message) {
+    Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('URL copied to clipboard')),
+      SnackBar(content: Text(message)),
     );
   }
 
@@ -257,4 +315,40 @@ class GenerationStatusCard extends StatelessWidget {
       return '${date.day}/${date.month}/${date.year}';
     }
   }
+}
+
+/// Strip the auto-prepended "Website Name: …\nCategory: …\n\n" prefix and
+/// return only what the user typed. Falls back to the full string for older
+/// records or unexpected formats.
+String extractUserPrompt(String stored) {
+  final parsed = parseStoredPrompt(stored);
+  return parsed.userBody;
+}
+
+/// Parse a stored prompt back into its components. Tolerates older records
+/// that lack the enriched prefix by returning empty name/category and the
+/// original string as the user body.
+({String websiteName, String category, String userBody}) parseStoredPrompt(
+    String stored) {
+  final namePattern = RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
+  final categoryPattern = RegExp(r'^Category:\s*(.*)$', multiLine: true);
+
+  final nameMatch = namePattern.firstMatch(stored);
+  final categoryMatch = categoryPattern.firstMatch(stored);
+
+  if (nameMatch == null || categoryMatch == null) {
+    return (websiteName: '', category: '', userBody: stored.trim());
+  }
+
+  // User body is everything after the first blank line.
+  final blankLineIdx = stored.indexOf('\n\n');
+  final body = blankLineIdx >= 0
+      ? stored.substring(blankLineIdx + 2).trim()
+      : '';
+
+  return (
+    websiteName: nameMatch.group(1)?.trim() ?? '',
+    category: categoryMatch.group(1)?.trim() ?? '',
+    userBody: body,
+  );
 }

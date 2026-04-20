@@ -13,6 +13,7 @@ import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 enum SyncDirection { upload, download, bidirectional }
@@ -393,19 +394,74 @@ class SyncService {
     }
   }
 
-  /// Pause the upload queue due to consecutive failures or no network
+  /// Pause the upload queue due to consecutive failures or no network.
+  ///
+  /// Persists [_pausedUntil] to SecureStorage so a force-kill mid-pause
+  /// doesn't strand `_consecutiveFailures`. Caps max pause at 10 minutes so
+  /// a stale persisted value can't keep the queue stuck forever.
   void _pauseQueue(Duration duration) {
-    _isPaused = true;
-    _pausedUntil = DateTime.now().add(duration);
-    debugPrint('Sync queue paused for ${duration.inSeconds}s');
+    const maxPause = Duration(minutes: 10);
+    final effective = duration > maxPause ? maxPause : duration;
 
-    Future.delayed(duration, () {
-      _isPaused = false;
-      _pausedUntil = null;
-      _consecutiveFailures = 0;
-      debugPrint('Sync queue resumed');
-      _processUploadQueueAsync();
-    });
+    _isPaused = true;
+    _pausedUntil = DateTime.now().add(effective);
+    debugPrint('Sync queue paused for ${effective.inSeconds}s');
+
+    // Fire-and-forget persist — don't block the caller on SecureStorage I/O.
+    SecureStorageService.instance
+        .write(SecureStorageKeys.syncPausedUntil, _pausedUntil!.toIso8601String())
+        .catchError((e) => debugPrint('Failed to persist pausedUntil: $e'));
+
+    Future.delayed(effective, _resumeQueue);
+  }
+
+  /// Clear pause state and resume processing.
+  void _resumeQueue() {
+    if (!_isPaused) return;
+    _isPaused = false;
+    _pausedUntil = null;
+    _consecutiveFailures = 0;
+    SecureStorageService.instance
+        .delete(SecureStorageKeys.syncPausedUntil)
+        .catchError((e) => debugPrint('Failed to clear pausedUntil: $e'));
+    debugPrint('Sync queue resumed');
+    _processUploadQueueAsync();
+  }
+
+  /// Restore pause state from SecureStorage. Called from [restoreQueue].
+  Future<void> _restorePauseState() async {
+    try {
+      final iso = await SecureStorageService.instance
+          .read(SecureStorageKeys.syncPausedUntil);
+      if (iso == null || iso.isEmpty) return;
+
+      final pausedUntil = DateTime.tryParse(iso);
+      if (pausedUntil == null) {
+        await SecureStorageService.instance
+            .delete(SecureStorageKeys.syncPausedUntil);
+        return;
+      }
+
+      final now = DateTime.now();
+      const maxPause = Duration(minutes: 10);
+      if (pausedUntil.isBefore(now) ||
+          pausedUntil.difference(now) > maxPause) {
+        // Expired or suspiciously far in the future — clear and move on.
+        await SecureStorageService.instance
+            .delete(SecureStorageKeys.syncPausedUntil);
+        _consecutiveFailures = 0;
+        return;
+      }
+
+      _isPaused = true;
+      _pausedUntil = pausedUntil;
+      final remaining = pausedUntil.difference(now);
+      debugPrint('Sync queue resuming from persisted pause; '
+          '${remaining.inSeconds}s remaining');
+      Future.delayed(remaining, _resumeQueue);
+    } catch (e) {
+      debugPrint('Failed to restore pause state: $e');
+    }
   }
 
   /// Calculate retry delay with exponential backoff
@@ -902,6 +958,8 @@ class SyncService {
     _isRestoring = true;
 
     try {
+      await _restorePauseState();
+
       final pendingTasks = LocalStorageService.instance.getPendingSyncTasks();
       if (pendingTasks.isEmpty) {
         debugPrint('SyncService: No pending tasks to restore');

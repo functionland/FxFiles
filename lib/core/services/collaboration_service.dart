@@ -33,6 +33,15 @@ class CollaborationService {
   final _uuid = const Uuid();
   final _random = Random.secure();
 
+  /// Rejects any action against an expired collaboration group. Expiry is an
+  /// owner-set window (`CollaborationGroup.expiresAt`); once past, all reads
+  /// and writes from either side must stop.
+  void _assertNotExpired(CollaborationGroup group) {
+    if (group.isExpired) {
+      throw CollaborationException('Collaboration has expired');
+    }
+  }
+
   // ============================================================================
   // COLLABORATION KEY DERIVATION (matching Web Crypto API HKDF)
   // ============================================================================
@@ -250,6 +259,7 @@ class CollaborationService {
       debugPrint('[CollabService] Group $groupId not found in local storage');
       throw CollaborationException('Group not found.');
     }
+    _assertNotExpired(outgoing.group);
     if (outgoing.linkSecretKey == null) {
       debugPrint('[CollabService] Group $groupId has no linkSecretKey');
       throw CollaborationException('Missing link secret key.');
@@ -347,7 +357,8 @@ class CollaborationService {
   Future<CollaborationGroup?> _fetchManifestFromServer(String groupId, Uint8List? linkSecretKey) async {
     try {
       final url = '$kCollabGatewayBaseUrl/api/collab/$groupId/manifest-sync';
-      final response = await http.get(Uri.parse(url));
+      final response = await http.get(Uri.parse(url))
+          .timeout(const Duration(seconds: 30));
       if (response.statusCode != 200) return null;
 
       final json = jsonDecode(response.body) as Map<String, dynamic>;
@@ -382,17 +393,22 @@ class CollaborationService {
     // Find the link secret key for decryption
     Uint8List? linkSecretKey;
     final outgoing = await _findOutgoingCollab(groupId);
+    CollaborationGroup? group;
     if (outgoing != null) {
       linkSecretKey = outgoing.linkSecretKey;
+      group = outgoing.group;
     } else {
       final accepted = await _findAcceptedCollab(groupId);
       linkSecretKey = accepted?.linkSecretKey;
+      group = accepted?.group;
     }
+    if (group != null) _assertNotExpired(group);
 
     if (file.encType == 'collab') {
       // Portal-uploaded file: fetch encrypted bytes from server, decrypt with collab key
       final url = '$kCollabGatewayBaseUrl/api/collab/$groupId/file/${file.id}';
-      final response = await http.get(Uri.parse(url));
+      final response = await http.get(Uri.parse(url))
+          .timeout(const Duration(seconds: 60));
       if (response.statusCode != 200) {
         throw CollaborationException('Failed to download file: ${response.statusCode}');
       }
@@ -458,6 +474,7 @@ class CollaborationService {
     // Try outgoing first
     final outgoing = await _findOutgoingCollab(groupId);
     if (outgoing != null) {
+      _assertNotExpired(outgoing.group);
       try {
         // Source 1: S3 manifest (written by Flutter)
         CollaborationGroup? s3Manifest;
@@ -499,6 +516,7 @@ class CollaborationService {
     // Try accepted
     final accepted = await _findAcceptedCollab(groupId);
     if (accepted != null) {
+      _assertNotExpired(accepted.group);
       try {
         // Source 1: S3 manifest
         CollaborationGroup? s3Manifest;
@@ -801,7 +819,7 @@ class CollaborationService {
           if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
         },
         body: jsonEncode(body),
-      );
+      ).timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         debugPrint('[CollabService] Manifest synced to server for group ${group.id}');
       } else {
@@ -927,6 +945,11 @@ class CollaborationService {
     String? contentType,
     String? pathScope,
   }) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    final accepted = outgoing == null ? await _findAcceptedCollab(groupId) : null;
+    final group = outgoing?.group ?? accepted?.group;
+    if (group != null) _assertNotExpired(group);
+
     final fileId = _uuid.v4();
 
     // Derive per-file key and encrypt
@@ -944,7 +967,7 @@ class CollaborationService {
         if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
       },
       body: encrypted,
-    );
+    ).timeout(const Duration(minutes: 5));
     if (response.statusCode != 200) {
       throw CollaborationException('Failed to upload file: ${response.statusCode}');
     }
@@ -1023,6 +1046,7 @@ class CollaborationService {
     if (group == null) {
       throw CollaborationException('Group not found: $groupId');
     }
+    _assertNotExpired(group);
 
     final updatedFiles = group.files.where((f) => f.id != fileId).toList();
     final updatedTombstones = [...group.removedFileIds, fileId];
@@ -1052,7 +1076,7 @@ class CollaborationService {
           headers: {
             if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
           },
-        );
+        ).timeout(const Duration(seconds: 30));
       } catch (e) {
         debugPrint('[CollabService] S3 file deletion failed (non-fatal): $e');
       }

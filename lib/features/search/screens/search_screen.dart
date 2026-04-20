@@ -137,12 +137,13 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        _searchController.text.isEmpty
+                        _searchController.text.trim().isEmpty
                             ? 'Search for files or people'
-                            : 'No results found',
+                            : 'No results for "${_searchController.text.trim()}"',
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                               color: Theme.of(context).colorScheme.outline,
                             ),
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),

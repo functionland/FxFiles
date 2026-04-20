@@ -10,6 +10,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/core/utils/safe_path.dart';
 
 class FileService {
   FileService._();
@@ -274,6 +275,10 @@ class FileService {
   }
 
   Future<void> createDirectory(String path) async {
+    if (Platform.isWindows && isReservedWindowsName(p.basename(path))) {
+      throw FileServiceException(
+          '"${p.basename(path)}" is a reserved Windows filename');
+    }
     final dir = Directory(path);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -299,8 +304,17 @@ class FileService {
   }
 
   Future<void> renameFile(String path, String newName) async {
+    if (newName.isEmpty || newName.trim().isEmpty) {
+      throw FileServiceException('Name cannot be empty');
+    }
+    if (invalidFilenameCharsPattern.hasMatch(newName)) {
+      throw FileServiceException(r'Name contains invalid characters (\ / : * ? " < > |)');
+    }
+    if (Platform.isWindows && isReservedWindowsName(newName)) {
+      throw FileServiceException('"$newName" is a reserved Windows filename');
+    }
     final newPath = p.join(p.dirname(path), newName);
-    
+
     // Check if target already exists
     if (await File(newPath).exists() || await Directory(newPath).exists()) {
       throw FileServiceException('A file or folder with that name already exists');

@@ -89,14 +89,31 @@ class CloudShareStorageService {
         key,
       );
 
-      // Parse JSON
+      // Parse JSON defensively — a corrupted manifest must not crash the app.
       final jsonString = utf8.decode(data);
-      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudShareStorage: shares manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudShareStorage: shares manifest parse failed: $e');
+        return [];
+      }
 
-      final sharesJson = json['shares'] as List<dynamic>;
-      final shares = sharesJson
-          .map((s) => OutgoingShare.fromJson(s as Map<String, dynamic>))
-          .toList();
+      final sharesJson = json['shares'] as List<dynamic>? ?? <dynamic>[];
+      final shares = <OutgoingShare>[];
+      for (final entry in sharesJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          shares.add(OutgoingShare.fromJson(entry));
+        } catch (e) {
+          debugPrint('CloudShareStorage: skipping malformed share entry: $e');
+        }
+      }
 
       debugPrint('CloudShareStorage: Downloaded ${shares.length} shares from cloud');
       return shares;
@@ -208,12 +225,29 @@ class CloudShareStorageService {
       );
 
       final jsonString = utf8.decode(data);
-      final json = jsonDecode(jsonString) as Map<String, dynamic>;
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudShareStorage: accepted shares manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudShareStorage: accepted shares manifest parse failed: $e');
+        return [];
+      }
 
-      final sharesJson = json['acceptedShares'] as List<dynamic>;
-      final shares = sharesJson
-          .map((s) => AcceptedShare.fromJson(s as Map<String, dynamic>))
-          .toList();
+      final sharesJson = json['acceptedShares'] as List<dynamic>? ?? <dynamic>[];
+      final shares = <AcceptedShare>[];
+      for (final entry in sharesJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          shares.add(AcceptedShare.fromJson(entry));
+        } catch (e) {
+          debugPrint('CloudShareStorage: skipping malformed accepted share: $e');
+        }
+      }
 
       debugPrint('CloudShareStorage: Downloaded ${shares.length} accepted shares from cloud');
       return shares;
@@ -228,6 +262,81 @@ class CloudShareStorageService {
       rethrow;
     } catch (e) {
       debugPrint('CloudShareStorage: Failed to download accepted shares: $e');
+      return [];
+    }
+  }
+
+  /// Upload the revoked-share-ID list to cloud so that revokes propagate to
+  /// other devices after a restore.
+  Future<void> uploadRevokedList(List<String> revokedIds) async {
+    if (!FulaApiService.instance.isConfigured) return;
+    final userId = await _getUserId();
+    if (userId == null) return;
+    try {
+      final jsonString = jsonEncode({
+        'version': 1,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'revokedShareIds': revokedIds,
+      });
+      await _ensureBucketExists();
+      final key = '$_sharesPrefix${userId}_revoked.json';
+      final data = Uint8List.fromList(utf8.encode(jsonString));
+      await FulaApiService.instance.uploadObject(
+        _metadataBucket,
+        key,
+        data,
+        contentType: 'application/json',
+      );
+      debugPrint(
+          'CloudShareStorage: Uploaded ${revokedIds.length} revoked IDs to cloud');
+    } catch (e) {
+      debugPrint('CloudShareStorage: Failed to upload revoked list: $e');
+    }
+  }
+
+  /// Download the revoked-share-ID list from cloud. Returns an empty list if
+  /// no remote list is stored yet.
+  Future<List<String>> downloadRevokedList() async {
+    if (!FulaApiService.instance.isConfigured) return [];
+    final userId = await _getUserId();
+    if (userId == null) return [];
+    try {
+      await _ensureBucketExists();
+      final key = '$_sharesPrefix${userId}_revoked.json';
+      final data = await FulaApiService.instance.downloadObject(
+        _metadataBucket,
+        key,
+      );
+      final jsonString = utf8.decode(data);
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(jsonString);
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudShareStorage: revoked manifest is not an object');
+          return [];
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudShareStorage: revoked manifest parse failed: $e');
+        return [];
+      }
+      final raw = json['revokedShareIds'] as List<dynamic>? ?? <dynamic>[];
+      final ids = raw.map((e) => e.toString()).toList();
+      debugPrint(
+          'CloudShareStorage: Downloaded ${ids.length} revoked IDs from cloud');
+      return ids;
+    } on FulaApiException catch (e) {
+      if (e.message.contains('NoSuchKey') ||
+          e.message.contains('NoSuchBucket') ||
+          e.message.contains('bucket not found') ||
+          e.message.contains('404') ||
+          e.message.contains('not found')) {
+        return [];
+      }
+      debugPrint('CloudShareStorage: Failed to download revoked list: $e');
+      return [];
+    } catch (e) {
+      debugPrint('CloudShareStorage: Failed to download revoked list: $e');
       return [];
     }
   }

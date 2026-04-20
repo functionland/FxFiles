@@ -47,7 +47,7 @@ class BillingApiService {
       final response = await http.get(
         Uri.parse('$baseUrl/api/v1/storage'),
         headers: await _getHeaders(),
-      );
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
@@ -73,7 +73,7 @@ class BillingApiService {
       final response = await http.get(
         Uri.parse('$baseUrl/api/v1/wallets'),
         headers: await _getHeaders(),
-      );
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
@@ -115,9 +115,9 @@ class BillingApiService {
         Uri.parse('$baseUrl/api/v1/wallets/link'),
         headers: await _getHeaders(),
         body: jsonEncode(requestBody),
-      );
+      ).timeout(const Duration(seconds: 30));
 
-      debugPrint('BillingApiService: linkWallet response: ${response.statusCode} - ${response.body}');
+      debugPrint('BillingApiService: linkWallet response: ${response.statusCode}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return true;
@@ -150,7 +150,7 @@ class BillingApiService {
           'txHash': txHash,
           'chainId': chainId,
         }),
-      );
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
@@ -178,13 +178,13 @@ class BillingApiService {
 
     try {
       final url = '$baseUrl/api/v1/credits/history?page=$page&limit=$limit';
-      debugPrint('BillingAPI: GET $url');
+      debugPrint('BillingAPI: GET credit history');
       final response = await http.get(
         Uri.parse(url),
         headers: await _getHeaders(),
-      );
+      ).timeout(const Duration(seconds: 15));
 
-      debugPrint('BillingAPI: credit history response ${response.statusCode}: ${response.body}');
+      debugPrint('BillingAPI: credit history response ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;

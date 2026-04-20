@@ -178,6 +178,8 @@ Future<ProviderContainer> _initializeApp() async {
   // Initialize face detection services (non-blocking)
   FaceStorageService.instance.init().then((_) {
     FaceDetectionService.instance.init();
+  }).catchError((e) {
+    debugPrint('FaceStorageService/FaceDetectionService init failed: $e');
   });
 
   // Initialize tag storage service (non-blocking)
@@ -254,7 +256,11 @@ Future<ProviderContainer> _initializeApp() async {
     // Defer sync queue restoration to AFTER UI renders
     // This prevents blocking the splash screen on large sync queues
     Future.microtask(() async {
-      await SyncService.instance.restoreQueue();
+      try {
+        await SyncService.instance.restoreQueue();
+      } catch (e) {
+        debugPrint('SyncService.restoreQueue failed: $e');
+      }
     });
   }
 
@@ -266,8 +272,12 @@ Future<ProviderContainer> _initializeApp() async {
 
   // If JWT is available, trigger initial storage load (non-blocking)
   if (jwtToken != null && jwtToken.isNotEmpty) {
-    Future.microtask(() {
-      container.read(storageProvider.notifier).loadStorageInfo();
+    Future.microtask(() async {
+      try {
+        await container.read(storageProvider.notifier).loadStorageInfo();
+      } catch (e) {
+        debugPrint('Initial storage load failed: $e');
+      }
     });
   }
 

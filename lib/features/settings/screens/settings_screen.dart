@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -841,18 +842,124 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: const Text(
+          'You will be signed out of this device. Cloud data remains intact and can be restored by signing back in.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (!mounted) return;
+
     await AuthService.instance.signOut();
     ref.read(storageProvider.notifier).clear();
     // Invalidate sharing/collab providers so they reload from (now empty) storage
     ref.invalidate(sharesProvider);
     ref.invalidate(collaborationProvider);
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   Future<void> _clearCache() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Cache cleared')),
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear cache?'),
+        content: const Text(
+          'Removes temporary files and thumbnails. Your synced files, login, and settings are not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
     );
+    if (confirmed != true || !mounted) return;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    int bytesFreed = 0;
+    try {
+      final tempDir = await getTemporaryDirectory();
+      bytesFreed += await _clearDirectory(tempDir);
+      try {
+        final cacheDir = await getApplicationCacheDirectory();
+        if (cacheDir.path != tempDir.path) {
+          bytesFreed += await _clearDirectory(cacheDir);
+        }
+      } catch (_) {
+        // getApplicationCacheDirectory may be unsupported on some platforms
+      }
+    } catch (e) {
+      debugPrint('_clearCache: failed to clear temp/cache: $e');
+    }
+
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    final freedKb = (bytesFreed / 1024).toStringAsFixed(bytesFreed > 1024 * 1024 ? 0 : 1);
+    final freedText = bytesFreed > 1024 * 1024
+        ? '${(bytesFreed / (1024 * 1024)).toStringAsFixed(1)} MB'
+        : '$freedKb KB';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Cache cleared ($freedText freed)')),
+    );
+  }
+
+  Future<int> _clearDirectory(Directory dir) async {
+    var freed = 0;
+    if (!await dir.exists()) return 0;
+    await for (final entity in dir.list(followLinks: false)) {
+      try {
+        if (entity is File) {
+          freed += await entity.length();
+          await entity.delete();
+        } else if (entity is Directory) {
+          freed += await _directorySize(entity);
+          await entity.delete(recursive: true);
+        }
+      } catch (e) {
+        // Skip files/dirs that are in use or otherwise locked.
+        debugPrint('_clearCache: could not remove ${entity.path}: $e');
+      }
+    }
+    return freed;
+  }
+
+  Future<int> _directorySize(Directory dir) async {
+    var total = 0;
+    try {
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          try {
+            total += await entity.length();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return total;
   }
 
   Widget _buildNftWalletSection() {

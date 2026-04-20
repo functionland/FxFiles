@@ -39,19 +39,20 @@ class IpfsPublicService {
 
     // Step 1: Upload file to IPFS endpoint to get CID
     final uploadUri = Uri.parse('$ipfsEndpoint/upload');
-    debugPrint('IPFS upload → $uploadUri');
+    debugPrint('IPFS upload: starting');
     final request = http.MultipartRequest('POST', uploadUri)
       ..headers['Authorization'] = 'Bearer $jwt'
       ..files.add(
           await http.MultipartFile.fromPath('file', localPath,
               filename: fileName));
 
-    final streamed = await request.send();
-    final body = await streamed.stream.bytesToString();
+    final streamed = await request.send().timeout(const Duration(minutes: 5));
+    final body = await streamed.stream
+        .bytesToString()
+        .timeout(const Duration(minutes: 5));
 
     if (streamed.statusCode != 200) {
-      throw Exception(
-          'Upload failed (${streamed.statusCode}): $body');
+      throw Exception('Upload failed (${streamed.statusCode})');
     }
 
     final uploadJson = jsonDecode(body.trim()) as Map<String, dynamic>;
@@ -59,12 +60,12 @@ class IpfsPublicService {
     if (cid == null || cid.isEmpty) {
       throw Exception('Upload succeeded but no CID returned');
     }
-    debugPrint('IPFS upload OK  cid=$cid');
+    debugPrint('IPFS upload: ok');
 
     // Step 2: Pin the CID via pinning service for persistence
     try {
       final pinUri = Uri.parse('$ipfsServer/api/pins');
-      debugPrint('IPFS pin → $pinUri');
+      debugPrint('IPFS pin: starting');
       final pinResponse = await http.post(
         pinUri,
         headers: {
@@ -72,18 +73,18 @@ class IpfsPublicService {
           'Content-Type': 'application/json',
         },
         body: jsonEncode({'cid': cid, 'name': fileName}),
-      );
-      debugPrint('Pin response (${pinResponse.statusCode}): ${pinResponse.body}');
+      ).timeout(const Duration(seconds: 30));
+      debugPrint('IPFS pin: status ${pinResponse.statusCode}');
     } catch (e) {
       // Pin failure is non-fatal — the file is already on IPFS
-      debugPrint('Pin request failed (non-fatal): $e');
+      debugPrint('IPFS pin failed (non-fatal)');
     }
 
     // Step 3: Build gateway URL
     final base = ipfsGateway.endsWith('/') ? ipfsGateway : '$ipfsGateway/';
     final gatewayUrl = '$base$cid';
 
-    debugPrint('IPFS public share OK  url=$gatewayUrl');
+    debugPrint('IPFS public share: ok');
     return (cid: cid, gatewayUrl: gatewayUrl);
   }
 }

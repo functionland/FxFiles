@@ -42,6 +42,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   StreamSubscription<String>? _shellShareSubscription;
   StreamSubscription<String>? _shellCollabSubscription;
   StreamSubscription<String>? _shellAcceptCollabSubscription;
+  StreamSubscription<void>? _apiKeyReplaceSubscription;
 
   @override
   void initState() {
@@ -65,6 +66,13 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         DeepLinkService.instance.onShellCollab.listen(_handleShellCollab);
     _shellAcceptCollabSubscription =
         DeepLinkService.instance.onShellAcceptCollab.listen(_handleShellAcceptCollab);
+
+    // Prompt the user whenever an incoming deep link proposes replacing the
+    // stored API key with a different one (attacker-driven account hijack).
+    _apiKeyReplaceSubscription =
+        DeepLinkService.instance.onApiKeyReplaceProposed.listen((_) {
+      _promptApiKeyReplace();
+    });
 
     // Check for pending params from cold-start deep links
     // (router not ready during initState, so defer to next frame)
@@ -94,6 +102,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _shellShareSubscription?.cancel();
     _shellCollabSubscription?.cancel();
     _shellAcceptCollabSubscription?.cancel();
+    _apiKeyReplaceSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -168,18 +177,123 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     if (pendingAcceptCollab != null) _handleShellAcceptCollab(pendingAcceptCollab);
   }
 
+  /// Ask the user to confirm a shell-initiated action. Shell deep links can
+  /// be fired by any running app or visited website; never act on one
+  /// silently.
+  Future<bool> _confirmShellAction({
+    required String title,
+    required String action,
+    required String filePath,
+  }) async {
+    final ctx = walletNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return false;
+    final approved = await showDialog<bool>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(action),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color:
+                    Theme.of(dialogCtx).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                filePath,
+                style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Only proceed if you started this action yourself.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(dialogCtx).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return approved ?? false;
+  }
+
+  /// Confirmation dialog for when an incoming deep link proposes replacing
+  /// the stored API key with a different one.
+  Future<void> _promptApiKeyReplace() async {
+    final ctx = walletNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) {
+      DeepLinkService.instance.rejectApiKeyReplace();
+      return;
+    }
+    final approved = await showDialog<bool>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Switch account?'),
+        content: const Text(
+          'A deep link is asking FxFiles to switch to a different account '
+          'and replace your current API key.\n\n'
+          'Only continue if you started this sign-in yourself. Otherwise '
+          'your uploads could be sent to an attacker\'s account.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('Keep current'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+    if (approved == true) {
+      await DeepLinkService.instance.confirmApiKeyReplace();
+    } else {
+      DeepLinkService.instance.rejectApiKeyReplace();
+    }
+  }
+
   /// Handle file/folder upload triggered from Windows Explorer context menu.
   Future<void> _handleShellUpload(String filePath) async {
     try {
       final entityType = FileSystemEntity.typeSync(filePath);
       if (entityType == FileSystemEntityType.notFound) {
-        debugPrint('ShellUpload: file not found: $filePath');
+        debugPrint('ShellUpload: file not found');
         _showShellSnackBar('File not found: $filePath', isError: true);
         return;
       }
 
-      final name = filePath.split(Platform.pathSeparator).last;
       final isDirectory = entityType == FileSystemEntityType.directory;
+      final confirmed = await _confirmShellAction(
+        title: 'Upload to Fula Network?',
+        action: isDirectory
+            ? 'FxFiles is being asked to upload this folder:'
+            : 'FxFiles is being asked to upload this file:',
+        filePath: filePath,
+      );
+      if (!confirmed) return;
+
+      final name = filePath.split(Platform.pathSeparator).last;
 
       if (isDirectory) {
         final dir = Directory(filePath);
@@ -222,6 +336,15 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         return;
       }
 
+      final isDirectory = entityType == FileSystemEntityType.directory;
+      final confirmed = await _confirmShellAction(
+        title: 'Create share link?',
+        action:
+            'FxFiles is being asked to create a public share link for:',
+        filePath: filePath,
+      );
+      if (!confirmed) return;
+
       final ctx = walletNavigatorKey.currentContext;
       if (ctx == null) {
         debugPrint('ShellShare: no navigator context available');
@@ -229,7 +352,6 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       }
 
       final name = filePath.split(Platform.pathSeparator).last;
-      final isDirectory = entityType == FileSystemEntityType.directory;
 
       // Check if file is synced to cloud (aggregate children for directories)
       bool isSynced;
@@ -362,13 +484,20 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   /// Handle "Add to Collaborate" triggered from Windows Explorer context menu
   /// for directories. Opens the create collaboration dialog pre-filled with
   /// the folder path and name.
-  void _handleShellCollab(String folderPath) {
+  Future<void> _handleShellCollab(String folderPath) async {
     try {
       final entityType = FileSystemEntity.typeSync(folderPath);
       if (entityType != FileSystemEntityType.directory) {
         _showShellSnackBar('Not a folder: $folderPath', isError: true);
         return;
       }
+
+      final confirmed = await _confirmShellAction(
+        title: 'Create collaboration?',
+        action: 'FxFiles is being asked to start a collaboration on:',
+        filePath: folderPath,
+      );
+      if (!confirmed) return;
 
       final ctx = walletNavigatorKey.currentContext;
       if (ctx == null || !ctx.mounted) {
@@ -393,13 +522,21 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   /// Handle "Accept Collaboration" triggered from Windows Explorer context menu
   /// for directories. Opens the accept collaboration screen with the folder
   /// path pre-filled for sync.
-  void _handleShellAcceptCollab(String folderPath) {
+  Future<void> _handleShellAcceptCollab(String folderPath) async {
     try {
       final entityType = FileSystemEntity.typeSync(folderPath);
       if (entityType != FileSystemEntityType.directory) {
         _showShellSnackBar('Not a folder: $folderPath', isError: true);
         return;
       }
+
+      final confirmed = await _confirmShellAction(
+        title: 'Accept collaboration?',
+        action:
+            'FxFiles is being asked to use this folder for an incoming collaboration:',
+        filePath: folderPath,
+      );
+      if (!confirmed) return;
 
       ref.read(routerProvider).push('/collab/accept-link', extra: folderPath);
     } catch (e) {

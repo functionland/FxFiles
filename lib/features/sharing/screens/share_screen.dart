@@ -246,9 +246,19 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
   void _createCollaborationGroup() async {
     final link = await showCreateCollaborationDialog(context, ref);
     if (link != null && mounted) {
-      Clipboard.setData(ClipboardData(text: link));
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Group created! Link copied to clipboard.')),
+        SnackBar(
+          content: const Text('Group created'),
+          action: SnackBarAction(
+            label: 'Copy link',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: link));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Link copied')),
+              );
+            },
+          ),
+        ),
       );
     }
   }
@@ -637,15 +647,18 @@ class _PermissionChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: Colors.grey[200],
+        color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         permissions.displayName,
-        style: const TextStyle(fontSize: 12),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
       ),
     );
   }
