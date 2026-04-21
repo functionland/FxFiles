@@ -17,9 +17,13 @@ import 'package:fula_files/core/services/wallet_service.dart' show WalletService
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/features/home/widgets/recent_files_section.dart';
-import 'package:fula_files/features/home/widgets/categories_section.dart';
-import 'package:fula_files/features/home/widgets/featured_section.dart';
+import 'package:fula_files/features/home/widgets/on_this_phone_section.dart';
+import 'package:fula_files/features/home/widgets/in_the_cloud_section.dart';
+import 'package:fula_files/features/home/widgets/create_section.dart';
+import 'package:fula_files/features/home/widgets/more_section.dart';
 import 'package:fula_files/features/home/widgets/storage_section.dart';
+import 'package:fula_files/features/home/widgets/setup_status_bar.dart';
+import 'package:fula_files/features/home/widgets/setup_unlock_sheet.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
@@ -38,14 +42,17 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  bool _setupBannerDismissed = false;
   bool _lowStorageWarningDismissed = false;
   String? _jwtToken;
   bool _isLoadingJwt = true;
   bool _isGettingApiKey = false;
   bool _isLinkingWallet = false;
+  bool _setupSheetOpen = false;
+  bool _setupSheetUserDismissed = false;
+  bool _autoOpenAttempted = false;
   StreamSubscription<String>? _apiKeySubscription;
   StreamSubscription<String>? _orgNameSubscription;
+  StreamSubscription? _authSubscription;
 
   @override
   void initState() {
@@ -53,6 +60,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _loadJwtToken();
     _setupApiKeyListener();
     _setupOrgNameListener();
+    _authSubscription = AuthService.instance.authStateChanges.listen((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _setupApiKeyListener() {
@@ -85,6 +95,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     _apiKeySubscription?.cancel();
     _orgNameSubscription?.cancel();
+    _authSubscription?.cancel();
     super.dispose();
   }
   
@@ -100,7 +111,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (token != null && token.isNotEmpty) {
         ref.read(storageProvider.notifier).loadStorageInfo();
       }
+
+      // Try to ensure auth state is restored before deciding whether to nag
+      // about setup, so we don't auto-open the sheet on a stale "logged out"
+      // reading right after launch.
+      _scheduleAutoOpenSetupIfNeeded();
     }
+  }
+
+  Future<void> _scheduleAutoOpenSetupIfNeeded() async {
+    if (_autoOpenAttempted) return;
+    _autoOpenAttempted = true;
+    // Brief delay so providers and AuthService can settle.
+    await AuthService.instance.ensureAuthRestored();
+    if (!mounted) return;
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (!mounted) return;
+    _maybeAutoOpenSetup();
+  }
+
+  void _maybeAutoOpenSetup() {
+    if (!mounted) return;
+    if (_setupSheetOpen) return;
+    if (_setupSheetUserDismissed) return;
+    final isLoggedIn = AuthService.instance.isAuthenticated;
+    final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
+    final mandatoryIncomplete = !isLoggedIn || !hasJwt;
+    if (!mandatoryIncomplete) return;
+    _openSetupUnlockSheet(context);
   }
 
   Future<void> _getApiKey(BuildContext context) async {
@@ -118,20 +156,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
       return;
     }
-
-    // Auto-cancel after 180 seconds if no deep link callback received
-    // (user may need time to log in, verify email, etc.)
-    Future.delayed(const Duration(seconds: 180), () {
-      if (mounted && _isGettingApiKey) {
-        setState(() => _isGettingApiKey = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('API Key request timed out. Please try again.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-    });
+    // No auto-cancel: the deep-link stream (_setupApiKeyListener) closes the
+    // spinner when the browser callback arrives. Users can cancel manually.
   }
 
   void _cancelGettingApiKey() {
@@ -157,12 +183,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final hasWallet = storageState.wallets.isNotEmpty;
     final hasAnyWallet = hasWallet || NftWalletService.instance.hasWallet;
 
-    // Show setup banner if any step is incomplete (and we're done loading)
-    final needsSetup = !_isLoadingJwt && (
-      !isLoggedIn ||
-      !hasJwt ||
-      (hasJwt && !hasAnyWallet && storageState.error == null)
-    );
+    // Show setup banner only while a mandatory step (sign-in or cloud) is
+    // incomplete. Linking a wallet is optional and shouldn't keep the bar up.
+    final needsSetup = !_isLoadingJwt && (!isLoggedIn || !hasJwt);
     final isFullySetup = isLoggedIn && hasJwt && hasAnyWallet;
 
     final showLowStorageWarning = isLoggedIn && hasJwt &&
@@ -207,7 +230,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             if (!Platform.isIOS)
               TutorialShowcase(
                 showcaseKey: TutorialService.instance.searchKey,
-                stepIndex: 10,
+                stepIndex: 8,
                 targetShapeBorder: const CircleBorder(),
                 child: IconButton(
                   icon: const Icon(LucideIcons.search),
@@ -227,7 +250,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             TutorialShowcase(
               showcaseKey: TutorialService.instance.settingsKey,
-              stepIndex: 9,
+              stepIndex: 7,
               targetShapeBorder: const CircleBorder(),
               child: IconButton(
                 icon: const Icon(LucideIcons.settings),
@@ -237,274 +260,117 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ],
         ),
-        body: RefreshIndicator(
-        onRefresh: () async {
-          ref.invalidate(recentFilesProvider);
-          ref.invalidate(storageInfoProvider);
-          await _loadJwtToken(); // Refresh JWT token state
-          if (_jwtToken != null && _jwtToken!.isNotEmpty) {
-            ref.read(storageProvider.notifier).loadStorageInfo();
-          }
-        },
-        child: ListView(
+        body: Column(
           children: [
-            // Low storage warning banner
-            if (showLowStorageWarning)
-              _buildLowStorageWarning(context, storageState),
-            // Setup TODO banner - only show if any setup step is incomplete and not dismissed
-            if (needsSetup && !_setupBannerDismissed)
+            if (needsSetup)
               TutorialShowcase(
                 showcaseKey: TutorialService.instance.setupBannerKey,
                 stepIndex: 0,
-                targetBorderRadius: BorderRadius.circular(12),
-                child: _buildSetupBanner(context, isLoggedIn, _jwtToken, storageState),
+                targetBorderRadius: BorderRadius.zero,
+                child: SetupStatusBar(
+                  stepsLeft: _pendingStepCount(isLoggedIn, hasJwt),
+                  stepsDone: 2 - _pendingStepCount(isLoggedIn, hasJwt),
+                  stepsTotal: 2,
+                  onTap: () => _openSetupUnlockSheet(context),
+                ),
               ),
-            TutorialShowcase(
-              showcaseKey: TutorialService.instance.recentFilesKey,
-              stepIndex: 1,
-              targetBorderRadius: BorderRadius.circular(12),
-              child: const RecentFilesSection(),
-            ),
-            const SizedBox(height: 8),
-            const CategoriesSection(),
-            const SizedBox(height: 8),
-            FeaturedSection(
-              isWebsiteEnabled: isLoggedIn && hasJwt,
-              isNftEnabled: isLoggedIn && hasJwt && hasAnyWallet,
-            ),
-            const SizedBox(height: 8),
-            const StorageSection(),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-      ),
-    );
-  }
-  
-  Widget _buildSetupBanner(BuildContext context, bool isLoggedIn, String? jwtToken, StorageState storageState) {
-    final steps = <_SetupStep>[];
-
-    // On desktop, sign-in and API key are a single step (browser handles both).
-    // On mobile, they are separate steps (native OAuth first, then get API key).
-    if (PlatformCapabilities.isDesktop) {
-      if (jwtToken == null || jwtToken.isEmpty) {
-        steps.add(_SetupStep(
-          icon: LucideIcons.key,
-          title: 'Get API Key',
-          subtitle: 'Sign in via browser and configure cloud access',
-          action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
-          onTap: _isGettingApiKey ? null : () => _getApiKey(context),
-          onCancel: _isGettingApiKey ? () => _cancelGettingApiKey() : null,
-          isComplete: false,
-          isLoading: _isGettingApiKey,
-        ));
-      } else {
-        steps.add(_SetupStep(
-          icon: LucideIcons.checkCircle,
-          title: 'Signed in & API Key configured',
-          subtitle: AuthService.instance.currentUser?.email ?? 'Cloud storage is ready',
-          isComplete: true,
-        ));
-      }
-    } else {
-      // Mobile: separate sign-in and API key steps
-      if (!isLoggedIn) {
-        steps.add(_SetupStep(
-          icon: LucideIcons.userCircle,
-          title: 'Sign in to your account',
-          subtitle: 'Required for cloud sync and sharing',
-          action: 'Sign In',
-          onTap: () => _showProfileSheet(context),
-          isComplete: false,
-        ));
-      } else {
-        steps.add(_SetupStep(
-          icon: LucideIcons.checkCircle,
-          title: 'Signed in',
-          subtitle: AuthService.instance.currentUser?.email ?? '',
-          isComplete: true,
-        ));
-      }
-
-      if (jwtToken == null || jwtToken.isEmpty) {
-        steps.add(_SetupStep(
-          icon: LucideIcons.key,
-          title: 'Set up API Key',
-          subtitle: 'Required for cloud storage access',
-          action: _isGettingApiKey ? 'Getting...' : 'Get API Key',
-          onTap: _isGettingApiKey ? null : () => _getApiKey(context),
-          onCancel: _isGettingApiKey ? () => _cancelGettingApiKey() : null,
-          isComplete: false,
-          isLoading: _isGettingApiKey,
-        ));
-      } else {
-        steps.add(_SetupStep(
-          icon: LucideIcons.checkCircle,
-          title: 'API Key configured',
-          subtitle: 'Cloud storage is ready',
-          isComplete: true,
-        ));
-      }
-    }
-
-    // Wallet linking step - only show if API key is configured and no error fetching wallets
-    final hasJwt = jwtToken != null && jwtToken.isNotEmpty;
-    if (hasJwt && storageState.error == null) {
-      if (storageState.wallets.isEmpty) {
-        steps.add(_SetupStep(
-          icon: LucideIcons.wallet,
-          title: 'Link your wallet',
-          subtitle: 'Optional: Enable getting storage credits',
-          action: _isLinkingWallet ? 'Linking...' : 'Link',
-          onTap: _isLinkingWallet ? null : () => _linkWallet(),
-          onCancel: _isLinkingWallet ? () => _cancelLinkingWallet() : null,
-          isComplete: false,
-          isLoading: _isLinkingWallet,
-        ));
-      } else {
-        steps.add(_SetupStep(
-          icon: LucideIcons.checkCircle,
-          title: 'Wallet linked',
-          subtitle: storageState.wallets.first.shortAddress,
-          isComplete: true,
-        ));
-      }
-    }
-    
-    final pendingSteps = steps.where((s) => !s.isComplete).toList();
-    
-    return Container(
-      margin: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            const Color(0xFF06B597).withValues(alpha: 0.15),
-            const Color(0xFF049B8F).withValues(alpha: 0.08),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: const Color(0xFF06B597).withValues(alpha: 0.3),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-            child: Row(
-              children: [
-                Icon(
-                  LucideIcons.listTodo,
-                  color: const Color(0xFF06B597),
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Complete Setup (${pendingSteps.length} remaining)',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.onSurface,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(LucideIcons.x, size: 18),
-                  onPressed: () => setState(() => _setupBannerDismissed = true),
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Dismiss',
-                ),
-              ],
-            ),
-          ),
-          ...steps.map((step) => _buildSetupStepTile(context, step)),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildSetupStepTile(BuildContext context, _SetupStep step) {
-    return InkWell(
-      onTap: step.onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          children: [
-            Icon(
-              step.icon,
-              size: 20,
-              color: step.isComplete 
-                  ? const Color(0xFF06B597) 
-                  : Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    step.title,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w500,
-                      decoration: step.isComplete ? TextDecoration.lineThrough : null,
-                      color: step.isComplete 
-                          ? Theme.of(context).colorScheme.onSurfaceVariant 
-                          : Theme.of(context).colorScheme.onSurface,
+              child: RefreshIndicator(
+                onRefresh: () async {
+                  ref.invalidate(recentFilesProvider);
+                  ref.invalidate(storageInfoProvider);
+                  await _loadJwtToken();
+                  if (_jwtToken != null && _jwtToken!.isNotEmpty) {
+                    ref.read(storageProvider.notifier).loadStorageInfo();
+                  }
+                },
+                child: ListView(
+                  children: [
+                    if (showLowStorageWarning)
+                      _buildLowStorageWarning(context, storageState),
+                    TutorialShowcase(
+                      showcaseKey: TutorialService.instance.recentFilesKey,
+                      stepIndex: 1,
+                      targetBorderRadius: BorderRadius.circular(12),
+                      child: const RecentFilesSection(),
                     ),
-                  ),
-                  Text(
-                    step.subtitle,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    const OnThisPhoneSection(),
+                    CreateSection(
+                      isWebsiteEnabled: isLoggedIn && hasJwt,
+                      isNftEnabled: isLoggedIn && hasJwt && hasAnyWallet,
+                      onLockedTap: () => _openSetupUnlockSheet(context),
                     ),
-                  ),
-                ],
+                    const InTheCloudSection(),
+                    const MoreSection(),
+                    const StorageSection(),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
             ),
-            if (step.action != null && !step.isComplete)
-              step.isLoading
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Color(0xFF06B597),
-                          ),
-                        ),
-                        if (step.onCancel != null) ...[
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(LucideIcons.x, size: 18),
-                            onPressed: step.onCancel,
-                            visualDensity: VisualDensity.compact,
-                            tooltip: 'Cancel',
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ],
-                      ],
-                    )
-                  : TextButton(
-                      onPressed: step.onTap,
-                      style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF06B597),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                      ),
-                      child: Text(step.action!),
-                    ),
           ],
         ),
       ),
     );
   }
+
+  int _pendingStepCount(bool isLoggedIn, bool hasJwt) {
+    var n = 0;
+    if (!isLoggedIn) n++;
+    if (!hasJwt) n++;
+    return n;
+  }
+
+  Future<void> _openSetupUnlockSheet(BuildContext context) async {
+    if (_setupSheetOpen) return;
+    _setupSheetOpen = true;
+    final wasLoggedInBefore = AuthService.instance.isAuthenticated;
+    try {
+      await SetupUnlockSheet.show(
+        context,
+        initialHasJwt: _jwtToken != null && _jwtToken!.isNotEmpty,
+        onSignInRequested: () => _showProfileSheet(context),
+        onLinkWalletRequested: () async {
+          await _linkWallet();
+          return ref.read(storageProvider).wallets.isNotEmpty ||
+              NftWalletService.instance.hasWallet;
+        },
+        onJwtReceived: (apiKey) {
+          if (mounted) {
+            setState(() {
+              _jwtToken = apiKey;
+              _isGettingApiKey = false;
+            });
+          }
+        },
+      );
+    } finally {
+      _setupSheetOpen = false;
+    }
+
+    if (!mounted) return;
+
+    // If the user just signed in inside the sheet but cloud connect is still
+    // pending, reopen automatically so the flow stays in front of them.
+    final isLoggedInNow = AuthService.instance.isAuthenticated;
+    final hasJwt = _jwtToken != null && _jwtToken!.isNotEmpty;
+    final justSignedIn = !wasLoggedInBefore && isLoggedInNow;
+    final mandatoryIncomplete = !isLoggedInNow || !hasJwt;
+
+    if (justSignedIn && mandatoryIncomplete) {
+      // Reopen — user hasn't actually finished mandatory setup yet.
+      // Reset the user-dismissed flag because the dismissal was incidental
+      // to the sign-in flow, not an intentional "leave me alone".
+      _setupSheetUserDismissed = false;
+      // Slight delay so the previous sheet's dismissal animation completes.
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (mounted) _openSetupUnlockSheet(context);
+      });
+    } else if (mandatoryIncomplete) {
+      _setupSheetUserDismissed = true;
+    }
+  }
+  
 
   Widget _buildLowStorageWarning(BuildContext context, StorageState storageState) {
     return Container(
@@ -677,8 +543,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       (hasJwt && !hasAnyWallet && storageState.error == null)
     );
 
-    // Only include setup step if setup is still needed and banner is visible
-    final includeSetup = needsSetup && !_setupBannerDismissed;
+    // Only include setup step if setup is still needed (bar visible).
+    final includeSetup = needsSetup;
 
     // Store the include setup state for TutorialShowcase to use
     TutorialService.instance.setIncludeSetup(includeSetup);
@@ -688,8 +554,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _showProfileSheet(BuildContext context) {
-    showAdaptiveSheet(
+  Future<void> _showProfileSheet(BuildContext context) {
+    return showAdaptiveSheet(
       context: context,
       builder: (ctx) {
         // Read auth state inside builder to ensure we get latest state
@@ -868,24 +734,3 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 }
 
-class _SetupStep {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String? action;
-  final VoidCallback? onTap;
-  final VoidCallback? onCancel;
-  final bool isComplete;
-  final bool isLoading;
-
-  const _SetupStep({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.action,
-    this.onTap,
-    this.onCancel,
-    this.isComplete = false,
-    this.isLoading = false,
-  });
-}

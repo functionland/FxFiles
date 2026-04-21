@@ -946,9 +946,9 @@ class CollaborationService {
     String? pathScope,
   }) async {
     final outgoing = await _findOutgoingCollab(groupId);
-    final accepted = outgoing == null ? await _findAcceptedCollab(groupId) : null;
-    final group = outgoing?.group ?? accepted?.group;
-    if (group != null) _assertNotExpired(group);
+    final accepted = await _findAcceptedCollab(groupId);
+    final preCheckGroup = outgoing?.group ?? accepted?.group;
+    if (preCheckGroup != null) _assertNotExpired(preCheckGroup);
 
     final fileId = _uuid.v4();
 
@@ -989,8 +989,6 @@ class CollaborationService {
     );
 
     // Update manifest
-    final outgoing = await _findOutgoingCollab(groupId);
-    final accepted = await _findAcceptedCollab(groupId);
     CollaborationGroup? group;
     Uint8List? groupLinkKey;
 

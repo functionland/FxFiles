@@ -122,4 +122,11 @@ class SecureStorageKeys {
   // so a pause survives app kill — without this, a force-kill mid-pause would
   // lose the resume callback and leave _consecutiveFailures stale on relaunch.
   static const String syncPausedUntil = 'sync_paused_until';
+
+  // Sentinel set when the user explicitly signs out. Suppresses Google's
+  // silent lightweight re-authentication, which would otherwise undo the sign
+  // out the next time `checkExistingSession` runs (because the on-device
+  // Google account stays alive even after `disconnect()`).
+  // Cleared on a successful interactive sign-in.
+  static const String authSignedOut = 'auth_signed_out';
 }

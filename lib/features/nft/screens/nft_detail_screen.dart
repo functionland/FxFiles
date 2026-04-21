@@ -23,6 +23,7 @@ import 'package:fula_files/features/nft/widgets/address_qr_scanner_dialog.dart';
 import 'package:fula_files/features/nft/widgets/nft_card.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
+import 'package:fula_files/app/theme/app_colors.dart';
 
 /// Detail screen for a single NFT collection: shows assets + minted NFTs
 class NftDetailScreen extends ConsumerStatefulWidget {
@@ -403,15 +404,6 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
   // ============================================================================
 
   Future<void> _startMintFlow(List<TaggedFile> files) async {
-    // Show mint config dialog
-    final config = await showMintConfigDialog(context);
-    if (config == null || !mounted) return;
-
-    // Pick wallet source
-    final walletSource = await _showWalletPicker();
-    if (walletSource == null || !mounted) return;
-
-    // Resolve the first tagged file to use as the NFT asset
     final firstFile = files.first;
     final localPath = firstFile.localPath;
     if (localPath == null) {
@@ -420,6 +412,18 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       );
       return;
     }
+
+    // Show mint config sheet (image preview + stepped config)
+    final config = await showMintConfigDialog(
+      context,
+      previewPath: await _resolveFilePath(localPath),
+      defaultEventName: p.basenameWithoutExtension(firstFile.fileName),
+    );
+    if (config == null || !mounted) return;
+
+    // Pick wallet source
+    final walletSource = await _showWalletPicker();
+    if (walletSource == null || !mounted) return;
 
     final result = await _withProgressDialog<NftMintRecord>(
       title: 'Preparing...',
@@ -503,7 +507,7 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       context: context,
       builder: (ctx) {
         var expiryDays = 7;
-        var openClaim = true;
+        var openClaim = false;
         var sponsorGas = false;
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
@@ -512,6 +516,44 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOut,
+                    child: openClaim
+                        ? Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.warnFaint,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppColors.warnBorder),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(
+                                  LucideIcons.alertTriangle,
+                                  size: 16,
+                                  color: Color(0xFFF59E0B),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Open claims travel as far as the link does. '
+                                    'A Telegram preview or screenshot is enough. '
+                                    'Treat it like cash.',
+                                    style: Theme.of(ctx)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(height: 1.3),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Anyone can claim'),

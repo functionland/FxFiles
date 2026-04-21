@@ -106,10 +106,10 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
         ],
       ),
       floatingActionButton: _currentTabIndex == 2
-          ? FloatingActionButton.extended(
-              onPressed: _createCollaborationGroup,
-              icon: const Icon(LucideIcons.folderPlus),
-              label: const Text('New Group'),
+          ? FloatingActionButton(
+              onPressed: _showCollaborateActions,
+              tooltip: 'Collaborate',
+              child: const Icon(LucideIcons.plus),
             )
           : FloatingActionButton.extended(
               onPressed: _acceptShareFromLink,
@@ -260,6 +260,37 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
           ),
         ),
       );
+    }
+  }
+
+  Future<void> _showCollaborateActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.folderPlus),
+              title: const Text('New Collaborate'),
+              subtitle: const Text('Create a group to share files with others'),
+              onTap: () => Navigator.pop(sheetContext, 'new'),
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.link),
+              title: const Text('Accept Collaborate'),
+              subtitle: const Text('Join a group from a collaboration link'),
+              onTap: () => Navigator.pop(sheetContext, 'accept'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'new') {
+      _createCollaborationGroup();
+    } else if (action == 'accept') {
+      context.push('/collab/accept-link');
     }
   }
 }

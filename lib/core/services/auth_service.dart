@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -79,9 +80,24 @@ class AuthService {
   AuthUser? _currentUser;
   Uint8List? _encryptionKey;
 
+  // Broadcast auth state changes so UI listening outside the main provider
+  // tree (e.g. modal sheets) can react when sign-in or sign-out completes
+  // — necessary because the profile sheet pops before awaiting the actual
+  // sign-in, which leaves any caller awaiting the modal close with stale state.
+  final StreamController<AuthUser?> _authStateController =
+      StreamController<AuthUser?>.broadcast();
+  Stream<AuthUser?> get authStateChanges => _authStateController.stream;
+
   AuthUser? get currentUser => _currentUser;
   bool get isAuthenticated => _currentUser != null;
   Uint8List? get encryptionKey => _encryptionKey;
+
+  void _setCurrentUser(AuthUser? user) {
+    _currentUser = user;
+    if (!_authStateController.isClosed) {
+      _authStateController.add(user);
+    }
+  }
 
   /// Quickly verify if we have stored credentials (doesn't initialize services)
   /// This is useful for UI checks when isAuthenticated might return false
@@ -156,7 +172,7 @@ class AuthService {
       debugPrint('AuthService: userJson = ${userJson != null ? "found" : "null"}');
 
       if (userJson != null) {
-        _currentUser = AuthUser.fromJson(userJson);
+        _setCurrentUser(AuthUser.fromJson(userJson));
         debugPrint('AuthService: Restored user: ${_currentUser!.email}');
         await _deriveEncryptionKey();
         debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
@@ -170,6 +186,17 @@ class AuthService {
           FolderWatchService.instance.restoreFromCloud();
         }
         return true;
+      }
+
+      // Skip silent re-auth if the user explicitly signed out. Google's
+      // attemptLightweightAuthentication will happily restore the on-device
+      // account otherwise, undoing the sign-out.
+      final signedOutSentinel = await SecureStorageService.instance.read(
+        SecureStorageKeys.authSignedOut,
+      );
+      if (signedOutSentinel == 'true') {
+        debugPrint('AuthService: signed-out sentinel set, skipping lightweight auth');
+        return false;
       }
 
       // Google lightweight auth is not available on desktop
@@ -237,13 +264,13 @@ class AuthService {
   }
 
   Future<void> _handleGoogleSignIn(GoogleSignInAccount account) async {
-    _currentUser = AuthUser(
+    _setCurrentUser(AuthUser(
       id: account.id,
       email: account.email,
       displayName: account.displayName,
       photoUrl: account.photoUrl,
       provider: AuthProvider.google,
-    );
+    ));
 
     await SecureStorageService.instance.writeJson(
       SecureStorageKeys.userCredentials,
@@ -254,6 +281,10 @@ class AuthService {
       SecureStorageKeys.authProvider,
       AuthProvider.google.name,
     );
+
+    // Clear the explicit-sign-out sentinel — the user is interactively signing
+    // back in, so silent re-auth on subsequent launches is desired again.
+    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
 
     // Encryption key derivation and Fula client initialization depend on RustLib
     // If these fail (e.g., RustLib not initialized), sign-in still succeeds
@@ -347,13 +378,13 @@ class AuthService {
     required String email,
     String? displayName,
   }) async {
-    _currentUser = AuthUser(
+    _setCurrentUser(AuthUser(
       id: userId,
       email: email,
       displayName: displayName,
       photoUrl: null, // Apple doesn't provide profile photos
       provider: AuthProvider.apple,
-    );
+    ));
 
     await SecureStorageService.instance.writeJson(
       SecureStorageKeys.userCredentials,
@@ -364,6 +395,10 @@ class AuthService {
       SecureStorageKeys.authProvider,
       AuthProvider.apple.name,
     );
+
+    // Clear the explicit-sign-out sentinel — the user is interactively signing
+    // back in, so silent re-auth on subsequent launches is desired again.
+    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
 
     // Encryption key derivation and Fula client initialization depend on RustLib
     // If these fail (e.g., RustLib not initialized), sign-in still succeeds
@@ -394,13 +429,13 @@ class AuthService {
     String? photoUrl,
     required AuthProvider provider,
   }) async {
-    _currentUser = AuthUser(
+    _setCurrentUser(AuthUser(
       id: id,
       email: email,
       displayName: displayName,
       photoUrl: photoUrl,
       provider: provider,
-    );
+    ));
 
     await SecureStorageService.instance.writeJson(
       SecureStorageKeys.userCredentials,
@@ -411,6 +446,10 @@ class AuthService {
       SecureStorageKeys.authProvider,
       provider.name,
     );
+
+    // Clear the explicit-sign-out sentinel — the user is interactively signing
+    // back in, so silent re-auth on subsequent launches is desired again.
+    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
 
     try {
       await _deriveEncryptionKey();
@@ -719,6 +758,16 @@ class AuthService {
       if (provider == AuthProvider.google.name) {
         try {
           await _ensureGoogleInitialized();
+          // signOut() clears the cached account so attemptLightweightAuthentication
+          // won't return the same user on the next launch. disconnect() additionally
+          // revokes the OAuth grant. Run both — disconnect alone is not enough on
+          // every platform/SDK version, and cached-account state is what drives
+          // lightweight re-auth.
+          try {
+            await _googleSignIn.signOut();
+          } catch (e) {
+            debugPrint('Google signOut() failed (continuing): $e');
+          }
           await _googleSignIn.disconnect();
         } catch (e) {
           // Google disconnect may fail if not properly initialized or user already disconnected
@@ -766,15 +815,34 @@ class AuthService {
       FulaApiService.instance.reset();
 
       // Always clear internal state last
-      _currentUser = null;
+      _setCurrentUser(null);
       _encryptionKey = null;
       _cachedShareId = null;
+
+      // Mark the user as explicitly signed-out so checkExistingSession won't
+      // silently restore them via Google's lightweight auth on the next launch.
+      // Cleared on the next successful interactive sign-in.
+      try {
+        await SecureStorageService.instance.write(
+          SecureStorageKeys.authSignedOut,
+          'true',
+        );
+      } catch (e) {
+        debugPrint('Failed to set auth_signed_out sentinel: $e');
+      }
     } catch (e) {
       debugPrint('Sign out error: $e');
       // Still clear internal state even on error to ensure UI updates
-      _currentUser = null;
+      _setCurrentUser(null);
       _encryptionKey = null;
       _cachedShareId = null;
+      // Best-effort sentinel write so the next launch still respects sign-out.
+      try {
+        await SecureStorageService.instance.write(
+          SecureStorageKeys.authSignedOut,
+          'true',
+        );
+      } catch (_) {}
       rethrow;
     }
   }

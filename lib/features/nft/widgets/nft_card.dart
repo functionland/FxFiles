@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/services/nft_service.dart';
+import 'package:fula_files/shared/widgets/destructive_list_tile.dart';
 
 /// Card displaying a minted NFT with its status, thumbnail, and token info
 class NftCard extends StatefulWidget {
@@ -181,12 +182,6 @@ class _NftCardState extends State<NftCard> {
                     tooltip: 'Retry mint',
                     onPressed: widget.onRetry,
                   ),
-                if (record.status == NftMintStatus.completed && widget.onBurn != null)
-                  IconButton(
-                    icon: const Icon(LucideIcons.flame, size: 20),
-                    tooltip: 'Burn NFT',
-                    onPressed: widget.onBurn,
-                  ),
                 if (record.status == NftMintStatus.completed && widget.onShareClaim != null)
                   IconButton(
                     icon: const Icon(LucideIcons.share2, size: 20),
@@ -227,6 +222,17 @@ class _NftCardState extends State<NftCard> {
                       ? () => widget.onCancelClaim!(claim)
                       : null,
                 )),
+              ],
+              if (widget.onBurn != null) ...[
+                const SizedBox(height: 12),
+                DestructiveListTile(
+                  icon: LucideIcons.flame,
+                  title: 'Burn to release FULA',
+                  subtitle:
+                      'Permanent. Destroys the NFT to unlock ${record.fulaPerNft} FULA.',
+                  margin: EdgeInsets.zero,
+                  onTap: widget.onBurn,
+                ),
               ],
             ],
           ],

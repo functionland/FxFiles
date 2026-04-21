@@ -26,6 +26,14 @@ class AppColors {
   static const Color errorBase = Color(0xFFEF4444);
   static const Color errorLight = Color(0xFFFEE2E2);
 
+  // Faint alpha variants used by UX redesigns — tile/info/warning/destructive backgrounds.
+  static const Color primaryFaint = Color(0x1F06B597); // ~12% alpha
+  static const Color primary10    = Color(0x1A06B597); // ~10% alpha
+  static const Color errorFaint   = Color(0x14EF4444); // ~8%  alpha
+  static const Color errorBorder  = Color(0x40EF4444); // ~25% alpha
+  static const Color warnFaint    = Color(0x14F59E0B); // ~8%  alpha
+  static const Color warnBorder   = Color(0x40F59E0B); // ~25% alpha
+
   // Green tones for usage/pool indicators (Fx style)
   static const Color greenBase = Color(0xFF049B8F);     // Match Fx green base
   static const Color greenHover = Color(0xFF06B597);    // Hover variant

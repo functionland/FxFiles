@@ -15,15 +15,19 @@ class TutorialService {
   // GlobalKeys for all tutorial target widgets
   final GlobalKey setupBannerKey = GlobalKey(debugLabel: 'tutorial_setup');
   final GlobalKey recentFilesKey = GlobalKey(debugLabel: 'tutorial_recent');
-  final GlobalKey categoriesKey = GlobalKey(debugLabel: 'tutorial_categories');
-  final GlobalKey starredKey = GlobalKey(debugLabel: 'tutorial_starred');
-  final GlobalKey cloudKey = GlobalKey(debugLabel: 'tutorial_cloud');
-  final GlobalKey sharedKey = GlobalKey(debugLabel: 'tutorial_shared');
-  final GlobalKey playlistsKey = GlobalKey(debugLabel: 'tutorial_playlists');
+  final GlobalKey categoriesKey = GlobalKey(debugLabel: 'tutorial_on_this_phone');
+  final GlobalKey cloudKey = GlobalKey(debugLabel: 'tutorial_in_the_cloud');
+  final GlobalKey createKey = GlobalKey(debugLabel: 'tutorial_create');
   final GlobalKey storageKey = GlobalKey(debugLabel: 'tutorial_storage');
-  final GlobalKey trashKey = GlobalKey(debugLabel: 'tutorial_trash');
+  final GlobalKey moreKey = GlobalKey(debugLabel: 'tutorial_more');
   final GlobalKey settingsKey = GlobalKey(debugLabel: 'tutorial_settings');
   final GlobalKey searchKey = GlobalKey(debugLabel: 'tutorial_search');
+
+  // Legacy keys kept only to preserve existing GlobalKey references; no longer part of the sequence.
+  final GlobalKey starredKey = GlobalKey(debugLabel: 'tutorial_starred_legacy');
+  final GlobalKey sharedKey = GlobalKey(debugLabel: 'tutorial_shared_legacy');
+  final GlobalKey playlistsKey = GlobalKey(debugLabel: 'tutorial_playlists_legacy');
+  final GlobalKey trashKey = GlobalKey(debugLabel: 'tutorial_trash_legacy');
 
   // GlobalKeys for browser/category screen tutorial
   final GlobalKey browserRefreshKey = GlobalKey(debugLabel: 'browser_refresh');
@@ -73,12 +77,10 @@ class TutorialService {
       if (includeSetup) setupBannerKey,
       recentFilesKey,
       categoriesKey,
-      starredKey,
       cloudKey,
-      sharedKey,
-      playlistsKey,
+      createKey,
       storageKey,
-      trashKey,
+      moreKey,
       settingsKey,
       searchKey,
     ];
@@ -92,46 +94,38 @@ class TutorialService {
   /// Tutorial step descriptions for home screen
   static const Map<int, TutorialStep> steps = {
     0: TutorialStep(
-      title: 'Complete Setup',
-      description: 'Complete these tasks to get started with FxFiles. Sign in, configure your API key, and link your wallet.',
+      title: 'Finish Setup',
+      description: 'Sign in, connect cloud storage, and link a wallet to unlock all features. Tap the bar to see what\'s left.',
     ),
     1: TutorialStep(
       title: 'Recent Files',
       description: 'Your recently opened files appear here for quick access. Tap any file to open it again.',
     ),
     2: TutorialStep(
-      title: 'Categories',
-      description: 'Browse different file types on your phone. Tap any category to view images, videos, audio, documents, and more.',
+      title: 'On this phone',
+      description: 'Browse files stored locally on your device — Photos, Videos, Audio, Docs, Downloads, and Archives.',
     ),
     3: TutorialStep(
-      title: 'Starred Files',
-      description: 'Star your important files for quick access. All starred files appear here.',
+      title: 'In the cloud',
+      description: 'Your cloud files, shared folders, and starred items live here. Upload items to back them up to the Fula network.',
     ),
     4: TutorialStep(
-      title: 'Cloud Storage',
-      description: 'Upload local files to Fula network for secure backup. Uploaded files are listed here but also accessible from their original category.',
+      title: 'Create',
+      description: 'Build a personal Website or mint NFTs from your photos. Some features need your wallet linked first.',
     ),
     5: TutorialStep(
-      title: 'Shared Files',
-      description: 'Create share links for uploaded files and share them with others. Your sharing history appears here.',
+      title: 'Storage',
+      description: 'See how much space is used on your phone, SD card, and cloud — with a friendly bar for each.',
     ),
     6: TutorialStep(
-      title: 'Playlists',
-      description: 'Create and manage audio playlists from your music files.',
+      title: 'More',
+      description: 'Trash, Tags, Apps, and Playlists live here. Deleted files stay in Trash until you empty it.',
     ),
     7: TutorialStep(
-      title: 'Storage',
-      description: 'Directly explore your phone\'s file system. Access internal storage and external drives.',
-    ),
-    8: TutorialStep(
-      title: 'Trash',
-      description: 'Deleted files are moved here. Empty trash manually to free up storage space.',
-    ),
-    9: TutorialStep(
       title: 'Settings',
       description: 'Access additional settings including billing, credits, and face tagging management.',
     ),
-    10: TutorialStep(
+    8: TutorialStep(
       title: 'Search',
       description: 'Search files by name or by tagged people in your photos.',
     ),
