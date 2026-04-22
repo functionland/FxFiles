@@ -60,6 +60,8 @@ class FulaApiService {
         accessToken: accessToken,
         timeoutSeconds: BigInt.from(60),
         maxRetries: 3,
+        perChunkDownloadTimeoutSeconds: BigInt.from(300),
+        bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -334,6 +336,8 @@ class FulaApiService {
         accessToken: accessToken,
         timeoutSeconds: BigInt.from(3),
         maxRetries: 1,
+        perChunkDownloadTimeoutSeconds: BigInt.from(300),
+        bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -624,9 +628,13 @@ class FulaApiService {
   }
 
   /// Download a shared file
+  ///
+  /// [originalKey] is the plaintext file path — used by fula_client to validate
+  /// that the request is within the share's path scope.
   Future<Uint8List> downloadSharedFile(
     String bucket,
     String storageKey,
+    String originalKey,
     fula.AcceptedShareHandle share,
   ) async {
     _ensureConfigured();
@@ -634,6 +642,7 @@ class FulaApiService {
       client: _client!,
       bucket: bucket,
       storageKey: storageKey,
+      originalKey: originalKey,
       share: share,
     );
     return Uint8List.fromList(data);

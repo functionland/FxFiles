@@ -811,6 +811,7 @@ class SharingService {
     return await fula_service.FulaApiService.instance.downloadSharedFile(
       share.bucket,
       storageKey,
+      share.pathScope,
       handle,
     );
   }

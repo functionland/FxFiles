@@ -431,6 +431,8 @@ class CollaborationService {
           endpoint: proxyEndpoint,
           timeoutSeconds: BigInt.from(120),
           maxRetries: 3,
+          perChunkDownloadTimeoutSeconds: BigInt.from(300),
+          bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
         );
         final encConfig = fula.EncryptionConfig(
           secretKey: linkSecretKey,
@@ -445,6 +447,7 @@ class CollaborationService {
           client: shareClient,
           bucket: file.bucket,
           storageKey: file.storageKey,
+          originalKey: file.pathScope ?? file.fileName,
           tokenJson: file.shareTokenJson!,
         );
       } else {

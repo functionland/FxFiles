@@ -557,6 +557,11 @@ class AuthService {
       return;
     }
 
+    // When the encryption key was loaded from SecureStorage (cached path),
+    // _deriveEncryptionKey — the usual RustLib bootstrap site — is skipped.
+    // Ensure RustLib is ready before any fula_client call.
+    await ensureRustLibInitialized();
+
     try {
       // Get stored endpoint and token
       final endpoint = await SecureStorageService.instance.read(
