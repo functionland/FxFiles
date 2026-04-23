@@ -2,6 +2,12 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 part 'website_generation.g.dart';
 
+/// Fixed public IPFS gateway used for the *displayed* website URL (copy /
+/// open buttons). Intentionally not user-configurable: a generated site's
+/// shared link must resolve from any device regardless of the local IPFS
+/// gateway setting, so we pin it to a well-known public gateway.
+const String _publicIpfsGatewayPrefix = 'https://ipfs.io/ipfs/';
+
 /// Status of a website generation job
 @HiveType(typeId: 26)
 enum WebsiteGenStatus {
@@ -170,12 +176,27 @@ class WebsiteGeneration extends HiveObject {
     );
   }
 
-  /// Gateway URL for the completed website
+  /// Public URL for the completed website, always under the fixed public
+  /// IPFS gateway (see `_publicIpfsGatewayPrefix`). Prefers `resultCid`;
+  /// falls back to extracting the CID from a legacy `resultGatewayUrl`.
   String? get gatewayUrl {
-    if (resultGatewayUrl != null && resultGatewayUrl!.isNotEmpty) {
-      return resultGatewayUrl;
-    }
-    return resultCid;
+    final cid = (resultCid != null && resultCid!.isNotEmpty)
+        ? resultCid
+        : _extractCidFromUrl(resultGatewayUrl);
+    if (cid == null || cid.isEmpty) return null;
+    return '$_publicIpfsGatewayPrefix$cid';
+  }
+
+  /// Extract the trailing CID from a gateway-style URL such as
+  /// `http://host/gateway/<cid>` or `https://host/ipfs/<cid>`. Returns null
+  /// when the input is null/empty or can't be parsed.
+  static String? _extractCidFromUrl(String? url) {
+    if (url == null || url.isEmpty) return null;
+    final trimmed = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+    final lastSlash = trimmed.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == trimmed.length - 1) return null;
+    final tail = trimmed.substring(lastSlash + 1);
+    return tail.isEmpty ? null : tail;
   }
 
   Map<String, dynamic> toJson() {

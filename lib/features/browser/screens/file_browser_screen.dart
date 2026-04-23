@@ -2403,6 +2403,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   String _formatDateTime(DateTime dt) {
     final now = DateTime.now();
     final diff = now.difference(dt);
+    if (diff.isNegative) {
+      final until = -diff;
+      if (until.inMinutes < 1) return 'in <1m';
+      if (until.inHours < 1) return 'in ${until.inMinutes}m';
+      if (until.inDays < 1) return 'in ${until.inHours}h';
+      return 'in ${until.inDays}d';
+    }
     if (diff.inMinutes < 1) return 'Just now';
     if (diff.inHours < 1) return '${diff.inMinutes}m ago';
     if (diff.inDays < 1) return '${diff.inHours}h ago';
@@ -3130,6 +3137,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true,
         title: Row(
           children: [
             Icon(LucideIcons.checkCircle, color: Colors.green),

@@ -23,41 +23,13 @@ class StepperInput extends StatelessWidget {
   });
 
   Future<void> _editValue(BuildContext context) async {
-    final controller = TextEditingController(text: value.toString());
     final newValue = await showDialog<int>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Enter value'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: InputDecoration(
-            border: const OutlineInputBorder(),
-            suffixText: suffix,
-          ),
-          onSubmitted: (v) {
-            final parsed = int.tryParse(v);
-            Navigator.of(ctx).pop(parsed);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final parsed = int.tryParse(controller.text);
-              Navigator.of(ctx).pop(parsed);
-            },
-            child: const Text('OK'),
-          ),
-        ],
+      builder: (ctx) => _StepperEditDialog(
+        initialValue: value,
+        suffix: suffix,
       ),
     );
-    controller.dispose();
     if (newValue != null) {
       var v = newValue;
       if (v < min) v = min;
@@ -154,6 +126,68 @@ class StepperInput extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _StepperEditDialog extends StatefulWidget {
+  final int initialValue;
+  final String? suffix;
+
+  const _StepperEditDialog({
+    required this.initialValue,
+    this.suffix,
+  });
+
+  @override
+  State<_StepperEditDialog> createState() => _StepperEditDialogState();
+}
+
+class _StepperEditDialogState extends State<_StepperEditDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue.toString());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final parsed = int.tryParse(_controller.text);
+    Navigator.of(context).pop(parsed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Enter value'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: InputDecoration(
+          border: const OutlineInputBorder(),
+          suffixText: widget.suffix,
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('OK'),
+        ),
+      ],
     );
   }
 }
