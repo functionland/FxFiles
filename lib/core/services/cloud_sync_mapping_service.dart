@@ -318,7 +318,7 @@ class CloudSyncMappingService {
 
         await LocalStorageService.instance.addSyncState(SyncState(
           localPath: localPath,
-          remotePath: '${mapping.bucket}/${mapping.remoteKey}',
+          remotePath: mapping.remoteKey,
           remoteKey: mapping.remoteKey,
           bucket: mapping.bucket,
           status: SyncStatus.synced,
@@ -351,7 +351,7 @@ class CloudSyncMappingService {
 
         await LocalStorageService.instance.addSyncState(SyncState(
           localPath: mapping.localPath!,
-          remotePath: '${mapping.bucket}/${mapping.remoteKey}',
+          remotePath: mapping.remoteKey,
           remoteKey: mapping.remoteKey,
           bucket: mapping.bucket,
           status: SyncStatus.synced,

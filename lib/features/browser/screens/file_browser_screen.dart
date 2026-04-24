@@ -629,7 +629,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               if (currentState == null) {
                 await LocalStorageService.instance.addSyncState(SyncState(
                   localPath: localFile.path,
-                  remotePath: '$bucketName/${localFile.name}',
+                  remotePath: localFile.name,
                   remoteKey: localFile.name,
                   bucket: bucketName,
                   status: SyncStatus.synced,
@@ -2849,10 +2849,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   ({String bucket, String pathScope}) _resolveSharePath(LocalFile file) {
     // Check if this file has sync state with the actual remote key and bucket
     final syncState = LocalStorageService.instance.getSyncState(file.path);
-    if (syncState != null && syncState.bucket != null && syncState.remotePath != null) {
+    if (syncState != null && syncState.bucket != null &&
+        (syncState.remoteKey != null || syncState.remotePath != null)) {
+      final bucket = syncState.bucket!;
+      var key = syncState.remoteKey ?? syncState.remotePath!;
+      // Strip legacy "$bucket/" prefix written by older builds.
+      final legacyPrefix = '$bucket/';
+      if (key.startsWith(legacyPrefix)) {
+        key = key.substring(legacyPrefix.length);
+      }
       return (
-        bucket: syncState.bucket!,
-        pathScope: file.isDirectory ? '${syncState.remotePath!}/' : syncState.remotePath!,
+        bucket: bucket,
+        pathScope: file.isDirectory ? '$key/' : key,
       );
     }
 
@@ -3650,7 +3658,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       // Add sync state for the downloaded file
       await LocalStorageService.instance.addSyncState(SyncState(
         localPath: downloadPath,
-        remotePath: '$bucket/${cloudFile.key}',
+        remotePath: cloudFile.key,
         remoteKey: cloudFile.key,
         bucket: bucket,
         status: SyncStatus.synced,
@@ -3706,9 +3714,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       fileName: file.name,
     );
 
-    // Refresh the file list to show updated tags
+    // _fileTags is a cached snapshot populated at list-load; refresh it here so the tile re-renders.
     if (mounted) {
-      setState(() {});
+      final updated = TagStorageService.instance.getTagsForFiles([file.path]);
+      setState(() {
+        _fileTags[file.path] = updated[file.path] ?? [];
+      });
     }
   }
 
