@@ -2,11 +2,12 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 part 'website_generation.g.dart';
 
-/// Fixed public IPFS gateway used for the *displayed* website URL (copy /
-/// open buttons). Intentionally not user-configurable: a generated site's
-/// shared link must resolve from any device regardless of the local IPFS
-/// gateway setting, so we pin it to a well-known public gateway.
-const String _publicIpfsGatewayPrefix = 'https://ipfs.io/ipfs/';
+/// Build the public dweb.link subdomain URL for a CID, used for the
+/// *displayed* website URL (copy / open buttons). Intentionally not
+/// user-configurable: a generated site's shared link must resolve from any
+/// device regardless of the local IPFS gateway setting, so we pin it to a
+/// well-known public gateway.
+String _publicGatewayUrlForCid(String cid) => 'https://$cid.ipfs.dweb.link/';
 
 /// Status of a website generation job
 @HiveType(typeId: 26)
@@ -176,15 +177,15 @@ class WebsiteGeneration extends HiveObject {
     );
   }
 
-  /// Public URL for the completed website, always under the fixed public
-  /// IPFS gateway (see `_publicIpfsGatewayPrefix`). Prefers `resultCid`;
+  /// Public URL for the completed website, always under the dweb.link
+  /// subdomain gateway (see `_publicGatewayUrlForCid`). Prefers `resultCid`;
   /// falls back to extracting the CID from a legacy `resultGatewayUrl`.
   String? get gatewayUrl {
     final cid = (resultCid != null && resultCid!.isNotEmpty)
         ? resultCid
         : _extractCidFromUrl(resultGatewayUrl);
     if (cid == null || cid.isEmpty) return null;
-    return '$_publicIpfsGatewayPrefix$cid';
+    return _publicGatewayUrlForCid(cid);
   }
 
   /// Extract the trailing CID from a gateway-style URL such as
