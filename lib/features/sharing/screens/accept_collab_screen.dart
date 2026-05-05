@@ -99,10 +99,9 @@ class _AcceptCollabScreenState extends ConsumerState<AcceptCollabScreen> {
       final accepted = await notifier.acceptCollaborationLink(url);
 
       if (accepted == null) {
-        setState(() {
-          _error = 'Failed to accept collaboration link.';
-          _isAccepting = false;
-        });
+        if (mounted) {
+          setState(() => _error = 'Failed to accept collaboration link.');
+        }
         return;
       }
 
@@ -112,13 +111,22 @@ class _AcceptCollabScreenState extends ConsumerState<AcceptCollabScreen> {
       }
 
       if (mounted) {
-        context.push('/collab/${accepted.id}');
+        // pushReplacement (not push): after a successful accept the accept
+        // screen has nothing more to do, and leaving it on the stack means
+        // Back from the detail screen lands on a stale "Accepting..." button.
+        context.pushReplacement('/collab/${accepted.id}');
       }
     } catch (e) {
-      setState(() {
-        _error = 'Error: $e';
-        _isAccepting = false;
-      });
+      if (mounted) {
+        setState(() => _error = 'Error: $e');
+      }
+    } finally {
+      // Always clear the accepting flag so the button can never get stuck
+      // showing the spinner — covers both the success path (where we
+      // navigate away) and any unexpected exits.
+      if (mounted) {
+        setState(() => _isAccepting = false);
+      }
     }
   }
 

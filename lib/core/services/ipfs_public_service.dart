@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:fula_files/core/models/website_generation.dart'
+    show publicGatewayUrlForCid;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 class IpfsPublicService {
@@ -9,13 +11,13 @@ class IpfsPublicService {
 
   static const String _defaultIpfsEndpoint = 'https://ipfs.cloud.fx.land';
   static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
-  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
 
   /// Upload a file publicly to IPFS and pin it.
   ///
   /// 1. POST {ipfsEndpoint}/upload  (multipart file) → returns CID
   /// 2. POST {ipfsServer}/api/pins  (JSON {cid, name}) → pins for persistence
-  /// 3. Build public gateway URL from CID
+  /// 3. Build public dweb.link gateway URL from CID (NOT the configured local
+  ///    gateway — public shares must resolve from any device).
   Future<({String cid, String gatewayUrl})> pinFile(
     String localPath,
     String fileName,
@@ -28,9 +30,6 @@ class IpfsPublicService {
         _defaultIpfsServer;
     final jwt =
         await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
-    final ipfsGateway = await SecureStorageService.instance
-            .read(SecureStorageKeys.ipfsGatewayUrl) ??
-        _defaultIpfsGateway;
 
     if (jwt == null || jwt.isEmpty) {
       throw Exception(
@@ -80,9 +79,10 @@ class IpfsPublicService {
       debugPrint('IPFS pin failed (non-fatal)');
     }
 
-    // Step 3: Build gateway URL
-    final base = ipfsGateway.endsWith('/') ? ipfsGateway : '$ipfsGateway/';
-    final gatewayUrl = '$base$cid';
+    // Step 3: Build public gateway URL using the dweb.link subdomain gateway
+    // — the same gateway used for website-generator results — so the link
+    // resolves from any device regardless of the user's local gateway setting.
+    final gatewayUrl = publicGatewayUrlForCid(cid);
 
     debugPrint('IPFS public share: ok');
     return (cid: cid, gatewayUrl: gatewayUrl);

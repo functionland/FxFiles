@@ -70,6 +70,16 @@ Hosting constraints (IPFS — static only):
 - NO external CDN links, NO server-side code, NO forms with action URLs.
 - All provided asset URLs are already hosted — use them exactly as-is (img src="https://...").
 
+Images (CRITICAL — must fit container on every viewport):
+- Every image MUST fit fully inside its container on both mobile (narrow portrait) and desktop (wide) — never cropped off, cut, or overflowing the container box.
+- Apply max-width:100%; height:auto; display:block on every <img> as the baseline to prevent overflow.
+- When the image's aspect ratio does not match the container, pick the BEST fit strategy for that specific image — do not blindly default to one:
+  - PREFERRED when a clean matching background color is identifiable: object-fit:contain on the <img> plus a background-color on the container that matches the image's natural background (e.g. #fff for product shots on a white backdrop, #000 for dark/letterbox photos, or a color sampled from the image's edge pixels). This preserves the entire image without visible letterbox bars.
+  - When minor cropping is acceptable AND the focal point is roughly centered (e.g. hero banners, decorative photos): object-fit:cover. Do NOT use cover for logos, screenshots, diagrams, or any image where edge content matters.
+  - When neither of the above is right: constrain only ONE dimension (width OR height) on the container and let the other flow with the image's natural aspect ratio.
+- For images of unknown content/aspect ratio (user-supplied assets), default to object-fit:contain with a neutral background, since contain never crops.
+- Set explicit aspect-ratio or min-height on image containers where layout shift would otherwise occur; ensure responsive breakpoints re-check fit (a layout that fits desktop may clip on phone, and vice versa).
+
 Design:
 - Mobile-responsive layout with clean typography.
 - Visually appealing with good use of whitespace and color.
