@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
+import 'package:fula_files/core/services/bucket_cache_service.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
@@ -13,6 +14,37 @@ export 'package:fula_client/fula_client.dart' show
     DirectoryListing,
     DirectoryEntry,
     FileMetadata;
+
+// ============================================================================
+// Server-down read config (fula-client v0.4 "offline-download" feature).
+//
+// Two modes coexist:
+//   - Warm-cache: covers the "I used the app, master went down" case via the
+//     local block cache + public-gateway fallback. Lights up as soon as the
+//     user has read a file at least once with master up.
+//   - Cold-start: covers the "fresh install while master is down" case via an
+//     on-chain anchor + IPNS lookup that maps the user to their CID set.
+//
+// The four cold-start fields below act as a single switch: ALL FOUR must be
+// non-empty for cold-start to engage. Leaving any one empty cleanly disables
+// it and the SDK falls back to warm-cache only — that is the current state.
+//
+// To enable cold-start in production:
+//   1. Run `setup-users-index-publisher.sh` on the master and copy the
+//      `k51qzi5...` IPNS NAME it prints.
+//   2. Paste it into `kUsersIndexIpnsName` below.
+//   3. Cold-start activates on the next sign-in (the per-user key is derived
+//      from the user's email by `initialize` below).
+// ============================================================================
+const String kUsersIndexChainRpcUrl = 'https://mainnet.base.org';
+const String kUsersIndexAnchorAddress =
+    '0x00fB6AD1B42Fb37a0Ac7C2977fC1fa4462C36Af9';
+const String kUsersIndexIpnsName =
+    'k51qzi5uqu5dkkd6tv8slgoouzzs505qdcr4cb5egc9rlx7qwq0e794yxj9cg4'; // TODO: paste k51qzi5... from setup-users-index-publisher.sh
+// 128 MiB cap — half the SDK default. Mobile devices have tighter storage
+// budgets; the cache is content-addressed so fills mostly stop on its own
+// once the working set is covered.
+const int kBlockCacheMaxBytes = 128 * 1024 * 1024;
 
 class FulaApiService {
   static final FulaApiService instance = FulaApiService._();
@@ -48,13 +80,62 @@ class FulaApiService {
   /// [secretKey] - 32-byte encryption key (derived from user credentials)
   /// [accessToken] - Optional JWT token for authentication
   /// [defaultBucket] - Optional default bucket name
+  /// [userEmail] - The pinned derivation email (see SecureStorageKeys.derivationEmail).
+  ///   Required for cold-start: used to derive a per-user `usersIndexUserKey`
+  ///   so the on-chain registry resolver can locate this user's anchor.
+  ///   Pass `null` to skip derivation; cold-start then falls back to
+  ///   warm-cache-only mode.
+  /// [chainRpcUrl] / [usersIndexAnchorAddress] / [usersIndexIpnsName] -
+  ///   Optional overrides for the cold-start resolver, typically sourced
+  ///   from user-editable settings. Empty/null values fall back to the
+  ///   built-in defaults ([kUsersIndexChainRpcUrl] / [kUsersIndexAnchorAddress]
+  ///   / [kUsersIndexIpnsName]). Cold-start activates only when all four
+  ///   resolver fields (these three plus the derived user key) are non-empty.
   Future<void> initialize({
     required String endpoint,
     required Uint8List secretKey,
     String? accessToken,
     String? defaultBucket,
+    String? userEmail,
+    String? chainRpcUrl,
+    String? usersIndexAnchorAddress,
+    String? usersIndexIpnsName,
   }) async {
     try {
+      // Derive the per-user cold-start key from the pinned email. Wrap in
+      // try/catch — a derivation failure must NOT prevent client init; we
+      // simply fall back to warm-cache-only by passing an empty userKey
+      // (any one of the four usersIndex* fields being empty cleanly
+      // disables cold-start in the SDK).
+      String usersIndexUserKey = '';
+      if (userEmail != null && userEmail.isNotEmpty) {
+        try {
+          usersIndexUserKey =
+              await fula.deriveUserKeyFromEmail(email: userEmail);
+        } catch (e) {
+          debugPrint(
+              'FulaApiService: deriveUserKeyFromEmail failed, '
+              'cold-start disabled: $e');
+        }
+      }
+
+      // Resolve cold-start values: prefer the caller's override, fall back
+      // to the build-in default. Empty strings (user cleared the setting)
+      // also fall through to the default to avoid silently disabling
+      // cold-start when the user never opened the settings screen.
+      final resolvedChainRpc =
+          (chainRpcUrl == null || chainRpcUrl.isEmpty)
+              ? kUsersIndexChainRpcUrl
+              : chainRpcUrl;
+      final resolvedAnchor =
+          (usersIndexAnchorAddress == null || usersIndexAnchorAddress.isEmpty)
+              ? kUsersIndexAnchorAddress
+              : usersIndexAnchorAddress;
+      final resolvedIpnsName =
+          (usersIndexIpnsName == null || usersIndexIpnsName.isEmpty)
+              ? kUsersIndexIpnsName
+              : usersIndexIpnsName;
+
       final config = fula.FulaConfig(
         endpoint: endpoint,
         accessToken: accessToken,
@@ -62,6 +143,28 @@ class FulaApiService {
         maxRetries: 3,
         perChunkDownloadTimeoutSeconds: BigInt.from(300),
         bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+        // Warm-cache: detect master-down once via a 30s-cached probe so
+        // every read isn't paying the latency tax. Block cache populates
+        // the (bucket,key)->cid map needed for offline reads later;
+        // gateway fallback only kicks in when the health gate says
+        // master is actually down.
+        healthGateEnabled: true,
+        healthGateTtlSeconds: BigInt.from(30),
+        blockCacheEnabled: true,
+        blockCachePath: '', // empty -> SDK platform default (app sandbox)
+        blockCacheMaxBytes: BigInt.from(kBlockCacheMaxBytes),
+        gatewayFallbackEnabled: true,
+        gatewayFallbackUrls: const [], // empty -> SDK curated 6-gateway list
+        gatewayRaceConcurrency: 3,
+        // Cold-start: chain RPC + anchor are pre-populated; IPNS name is
+        // the deploy-specific switch. Until it is set, these three values
+        // sit ready and cold-start stays disabled.
+        usersIndexChainRpcUrl: resolvedChainRpc,
+        usersIndexAnchorAddress: resolvedAnchor,
+        usersIndexIpnsName: resolvedIpnsName,
+        usersIndexUserKey: usersIndexUserKey,
+        usersIndexIpnsGatewayUrls: const [], // empty -> SDK IPNS-aware subset
+        usersIndexIpfsGatewayUrls: const [], // empty -> SDK 6-gateway list
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -200,6 +303,46 @@ class FulaApiService {
     }
   }
 
+  /// Same as [listBuckets] but falls back to the per-user
+  /// [BucketCacheService] snapshot when the live call errors. The SDK
+  /// cannot enumerate buckets offline (privacy invariant — see
+  /// fula-client docs), so the snapshot is the only way the Cloud Files
+  /// screen can render anything when the master gateway is unreachable.
+  ///
+  /// Retries the live call once after a 500 ms pause before falling
+  /// back, so a single transient blip (DNS hiccup, brief 5xx) doesn't
+  /// flip the UI into the "stale" state.
+  Future<({List<String> buckets, bool stale, DateTime? fetchedAt})>
+      listBucketsCached() async {
+    try {
+      final fresh = await listBuckets();
+      await BucketCacheService.persist(fresh);
+      return (buckets: fresh, stale: false, fetchedAt: DateTime.now());
+    } catch (firstErr) {
+      try {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        final fresh = await listBuckets();
+        await BucketCacheService.persist(fresh);
+        return (buckets: fresh, stale: false, fetchedAt: DateTime.now());
+      } catch (retryErr) {
+        debugPrint(
+          'listBucketsCached: live call failed twice, falling back to cache: $retryErr',
+        );
+        final cached = await BucketCacheService.readCache();
+        if (cached != null) {
+          return (
+            buckets: cached.buckets,
+            stale: true,
+            fetchedAt: cached.fetchedAt,
+          );
+        }
+        // No cache to serve — surface the original error, not the retry one,
+        // since the first failure is the more representative diagnostic.
+        throw firstErr;
+      }
+    }
+  }
+
   Future<void> createBucket(String bucket) async {
     _ensureConfigured();
     try {
@@ -226,7 +369,15 @@ class FulaApiService {
   // ENCRYPTED FILE OPERATIONS (using FlatNamespace)
   // ============================================================================
 
-  /// List all files in a bucket (from the encrypted forest index)
+  /// List all files in a bucket from the encrypted forest index.
+  ///
+  /// Uses [fula.listFromForest] which reads from the SDK's in-memory
+  /// forest state populated by [fula.loadForest]. For sharded forests
+  /// the SDK swallows the marker error in `loadForest` and the I/O
+  /// path handles sharding transparently (see forest.dart loadForest
+  /// doc). Do **not** swap this for `fula.listDecrypted` — that is a
+  /// raw S3 LIST that returns internal `__fula_forest_v7_nodes/...`
+  /// entries alongside user files and is not offline-capable.
   Future<List<FulaObject>> listObjects(
     String bucket, {
     String prefix = '',
@@ -236,12 +387,20 @@ class FulaApiService {
     try {
       await _ensureForestLoaded(bucket);
 
-      final files = await fula.listFromForest(client: _client!, bucket: bucket);
+      final files = await fula.listFromForest(
+        client: _client!,
+        bucket: bucket,
+      );
 
-      // Filter by prefix if specified
+      // Filter by prefix if specified (listFromForest returns the whole
+      // bucket; the prefix is a Dart-side narrowing).
       final filtered = prefix.isEmpty
           ? files
           : files.where((f) => f.originalKey.startsWith(prefix)).toList();
+
+      debugPrint(
+        'listObjects($bucket, prefix="$prefix"): ${filtered.length} files (raw forest=${files.length})',
+      );
 
       return filtered.map((meta) => FulaObject(
         key: meta.originalKey,
@@ -257,6 +416,7 @@ class FulaApiService {
         },
       )).toList();
     } catch (e) {
+      debugPrint('listObjects($bucket, prefix="$prefix") error: $e');
       throw FulaApiException('Failed to list objects: $e');
     }
   }
@@ -338,6 +498,29 @@ class FulaApiService {
         maxRetries: 1,
         perChunkDownloadTimeoutSeconds: BigInt.from(300),
         bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+        // Warm-cache: enable health gate + block cache so LAN reads also
+        // populate the shared on-disk cache used by the cloud client.
+        // Gateway fallback stays OFF — when the LAN endpoint fails, the
+        // upstream `downloadWithLocalFallback` falls through to the cloud
+        // client which has its own gateway fallback. Public gateways
+        // can't reach the local blox by design.
+        healthGateEnabled: true,
+        healthGateTtlSeconds: BigInt.from(30),
+        blockCacheEnabled: true,
+        blockCachePath: '', // shared default path with the cloud client
+        blockCacheMaxBytes: BigInt.from(kBlockCacheMaxBytes),
+        gatewayFallbackEnabled: false,
+        gatewayFallbackUrls: const [],
+        gatewayRaceConcurrency: 3,
+        // Cold-start does not apply to the LAN client — it is configured
+        // via a pairing secret and reaches a known LAN endpoint, not a
+        // user-scoped on-chain registry.
+        usersIndexChainRpcUrl: '',
+        usersIndexAnchorAddress: '',
+        usersIndexIpnsName: '',
+        usersIndexUserKey: '',
+        usersIndexIpnsGatewayUrls: const [],
+        usersIndexIpfsGatewayUrls: const [],
       );
 
       final encConfig = fula.EncryptionConfig(

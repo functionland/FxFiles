@@ -3,6 +3,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/widgets/master_health_banner.dart';
 
 class FulaBrowserScreen extends StatefulWidget {
   final String? bucket;
@@ -17,6 +18,8 @@ class FulaBrowserScreen extends StatefulWidget {
 class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
   List<FulaObject> _objects = [];
   List<String> _buckets = [];
+  bool _bucketsAreStale = false;
+  DateTime? _bucketsFetchedAt;
   String? _currentBucket;
   String _currentPrefix = '';
   bool _isLoading = true;
@@ -46,7 +49,10 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
 
     try {
       if (_currentBucket == null) {
-        _buckets = await FulaApiService.instance.listBuckets();
+        final result = await FulaApiService.instance.listBucketsCached();
+        _buckets = result.buckets;
+        _bucketsAreStale = result.stale;
+        _bucketsFetchedAt = result.fetchedAt;
         setState(() => _isLoading = false);
       } else {
         _objects = await FulaApiService.instance.listObjects(
@@ -109,7 +115,15 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: Column(
+        children: [
+          MasterHealthBanner(
+            staleBucketList: _currentBucket == null && _bucketsAreStale,
+            bucketsFetchedAt: _bucketsFetchedAt,
+          ),
+          Expanded(child: _buildBody()),
+        ],
+      ),
     );
   }
 
@@ -127,37 +141,59 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
   }
 
   Widget _buildBucketList() {
-    if (_buckets.isEmpty) {
-      return const Center(child: Text('No buckets found'));
-    }
-    return ListView.builder(
-      itemCount: _buckets.length,
-      itemBuilder: (context, index) {
-        final bucket = _buckets[index];
-        return ListTile(
-          leading: const Icon(LucideIcons.database),
-          title: Text(bucket),
-          onTap: () => _selectBucket(bucket),
-        );
-      },
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: _buckets.isEmpty
+          ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: const [
+                SizedBox(height: 200),
+                Center(child: Text('No buckets found')),
+              ],
+            )
+          : ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: _buckets.length,
+              itemBuilder: (context, index) {
+                final bucket = _buckets[index];
+                return ListTile(
+                  leading: const Icon(LucideIcons.database),
+                  title: Text(bucket),
+                  onTap: () => _selectBucket(bucket),
+                );
+              },
+            ),
     );
   }
 
   Widget _buildObjectList() {
     if (_objects.isEmpty) {
-      return const Center(child: Text('Empty'));
+      return RefreshIndicator(
+        onRefresh: _loadData,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 200),
+            Center(child: Text('Empty')),
+          ],
+        ),
+      );
     }
-    return ListView.builder(
-      itemCount: _objects.length,
-      itemBuilder: (context, index) {
-        final obj = _objects[index];
-        return ListTile(
-          leading: Icon(obj.isDirectory ? LucideIcons.folder : LucideIcons.file),
-          title: Text(obj.name),
-          subtitle: Text(obj.isDirectory ? 'Folder' : obj.sizeFormatted),
-          onTap: () => _navigateTo(obj),
-        );
-      },
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: _objects.length,
+        itemBuilder: (context, index) {
+          final obj = _objects[index];
+          return ListTile(
+            leading: Icon(obj.isDirectory ? LucideIcons.folder : LucideIcons.file),
+            title: Text(obj.name),
+            subtitle: Text(obj.isDirectory ? 'Folder' : obj.sizeFormatted),
+            onTap: () => _navigateTo(obj),
+          );
+        },
+      ),
     );
   }
 }

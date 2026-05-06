@@ -10,13 +10,13 @@ import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
-import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/settings/screens/face_management_screen.dart';
+import 'package:fula_files/features/settings/screens/fula_api_config_screen.dart';
 import 'package:fula_files/features/billing/screens/billing_screen.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
@@ -36,89 +36,16 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  final _apiGatewayController = TextEditingController();
-  final _ipfsServerController = TextEditingController();
-  final _billingServerController = TextEditingController();
-  final _aiEndpointController = TextEditingController();
-  final _ipfsGatewayController = TextEditingController();
-  final _ipfsEndpointController = TextEditingController();
-  final _jwtTokenController = TextEditingController();
-
-  bool _isEditingApi = false;
-  bool _isLoading = false;
   bool _showPrivateKey = false;
-  StreamSubscription<String>? _apiKeySubscription;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSettings();
-    _apiKeySubscription = DeepLinkService.instance.onApiKeyReceived.listen((apiKey) {
-      if (mounted) {
-        setState(() {
-          _jwtTokenController.text = apiKey;
-        });
-      }
-    });
-  }
-
-  static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
-  static const String _defaultIpfsServer = 'https://api.cloud.fx.land';
-  static const String _defaultBillingServer = 'https://cloud.fx.land';
-  static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
-  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
-  static const String _defaultIpfsEndpoint = 'https://ipfs.cloud.fx.land';
-
-  Future<void> _loadSettings() async {
-    final apiGateway = await SecureStorageService.instance.read(SecureStorageKeys.apiGatewayUrl);
-    final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl);
-    final billingServer = await SecureStorageService.instance.read(SecureStorageKeys.billingServerUrl);
-    final aiEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.aiEndpointUrl);
-    final ipfsGateway = await SecureStorageService.instance.read(SecureStorageKeys.ipfsGatewayUrl);
-    final ipfsEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.ipfsEndpointUrl);
-    final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
-
-    setState(() {
-      _apiGatewayController.text = apiGateway ?? _defaultApiGateway;
-      _ipfsServerController.text = ipfsServer ?? _defaultIpfsServer;
-      _billingServerController.text = billingServer ?? _defaultBillingServer;
-      _aiEndpointController.text = aiEndpoint ?? _defaultAiEndpoint;
-      _ipfsGatewayController.text = ipfsGateway ?? _defaultIpfsGateway;
-      _ipfsEndpointController.text = ipfsEndpoint ?? _defaultIpfsEndpoint;
-      _jwtTokenController.text = jwtToken ?? '';
-    });
-  }
-
-  @override
-  void dispose() {
-    _apiKeySubscription?.cancel();
-    _apiGatewayController.dispose();
-    _ipfsServerController.dispose();
-    _billingServerController.dispose();
-    _aiEndpointController.dispose();
-    _ipfsGatewayController.dispose();
-    _ipfsEndpointController.dispose();
-    _jwtTokenController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _openCloudFxLand() async {
-    final uri = Uri.parse('https://cloud.fx.land');
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open website'))),
-        );
-      }
-    }
-  }
 
   Future<void> _openProfileForDeletion() async {
-    final billingServer = _billingServerController.text.isNotEmpty
-        ? _billingServerController.text
-        : _defaultBillingServer;
+    // Prefer the user's customised billing server (from secure storage) and
+    // fall back to the same default the FulaApiConfigScreen uses.
+    final stored = await SecureStorageService.instance
+        .read(SecureStorageKeys.billingServerUrl);
+    final billingServer = (stored != null && stored.isNotEmpty)
+        ? stored
+        : kDefaultBillingServer;
     final uri = Uri.parse('$billingServer/login?returnTo=%2Fprofile');
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -126,26 +53,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open profile'))),
-        );
-      }
-    }
-  }
-
-  Future<void> _pasteJwtFromClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data?.text != null && data!.text!.isNotEmpty) {
-      setState(() {
-        _jwtTokenController.text = data.text!.trim();
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('API Key pasted')),
-        );
-      }
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Clipboard is empty')),
         );
       }
     }
@@ -177,186 +84,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildSection(
             title: 'Fula API Configuration',
             children: [
-              if (!_isEditingApi) ...[
-                ListTile(
-                  leading: const Icon(LucideIcons.server),
-                  title: const Text('API Gateway URL'),
-                  subtitle: Text(
-                    _apiGatewayController.text.isEmpty 
-                        ? 'Not configured' 
-                        : _apiGatewayController.text,
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(LucideIcons.edit),
-                    tooltip: 'Edit',
-                    onPressed: () => _startEditingApi(),
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.globe),
-                  title: const Text('IPFS Pinning Server'),
-                  subtitle: Text(
-                    _ipfsServerController.text.isEmpty
-                        ? 'Not configured'
-                        : _ipfsServerController.text,
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.wallet),
-                  title: const Text('Billing Server'),
-                  subtitle: Text(
-                    _billingServerController.text.isEmpty
-                        ? 'Not configured'
-                        : _billingServerController.text,
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.brain),
-                  title: const Text('AI Endpoint'),
-                  subtitle: Text(
-                    _aiEndpointController.text.isEmpty
-                        ? 'Not configured'
-                        : _aiEndpointController.text,
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.link),
-                  title: const Text('IPFS Gateway'),
-                  subtitle: Text(
-                    _ipfsGatewayController.text.isEmpty
-                        ? 'Not configured'
-                        : _ipfsGatewayController.text,
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.hardDrive),
-                  title: const Text('IPFS Endpoint'),
-                  subtitle: Text(
-                    _ipfsEndpointController.text.isEmpty
-                        ? 'Not configured'
-                        : _ipfsEndpointController.text,
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(LucideIcons.key),
-                  title: const Text('API Key'),
-                  subtitle: Text(
-                    _jwtTokenController.text.isEmpty 
-                        ? 'Not configured' 
-                        : '••••••••',
-                  ),
-                ),
-              ] else ...[
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextField(
-                        controller: _apiGatewayController,
-                        decoration: const InputDecoration(
-                          labelText: 'API Gateway URL',
-                          hintText: 'https://api.gateway.cloud.fx.land',
-                          prefixIcon: Icon(LucideIcons.server),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _ipfsServerController,
-                        decoration: const InputDecoration(
-                          labelText: 'IPFS Pinning Server URL',
-                          hintText: 'https://ipfs.gateway.cloud.fx.land',
-                          prefixIcon: Icon(LucideIcons.globe),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _billingServerController,
-                        decoration: const InputDecoration(
-                          labelText: 'Billing Server URL',
-                          hintText: 'https://cloud.fx.land',
-                          prefixIcon: Icon(LucideIcons.wallet),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _aiEndpointController,
-                        decoration: const InputDecoration(
-                          labelText: 'AI Endpoint URL',
-                          hintText: 'https://ai.cloud.fx.land',
-                          prefixIcon: Icon(LucideIcons.brain),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _ipfsGatewayController,
-                        decoration: const InputDecoration(
-                          labelText: 'IPFS Gateway URL',
-                          hintText: 'https://ipfs.cloud.fx.land/gateway/',
-                          prefixIcon: Icon(LucideIcons.link),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _ipfsEndpointController,
-                        decoration: const InputDecoration(
-                          labelText: 'IPFS Endpoint URL',
-                          hintText: 'https://ipfs.cloud.fx.land',
-                          prefixIcon: Icon(LucideIcons.hardDrive),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _jwtTokenController,
-                        decoration: InputDecoration(
-                          labelText: 'API Key',
-                          hintText: 'Your API Key',
-                          prefixIcon: const Icon(LucideIcons.key),
-                          suffixIcon: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_jwtTokenController.text.isEmpty)
-                                IconButton(
-                                  icon: const Icon(LucideIcons.externalLink),
-                                  tooltip: 'Get token from cloud.fx.land',
-                                  onPressed: () => _openCloudFxLand(),
-                                ),
-                              IconButton(
-                                icon: const Icon(LucideIcons.clipboard),
-                                tooltip: 'Paste from clipboard',
-                                onPressed: () => _pasteJwtFromClipboard(),
-                              ),
-                            ],
-                          ),
-                        ),
-                        obscureText: true,
-                        onChanged: (_) => setState(() {}),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: _cancelEditingApi,
-                            child: const Text('Cancel'),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: _isLoading ? null : _saveApiSettings,
-                            child: _isLoading
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Text('Save'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+              ListTile(
+                leading: const Icon(LucideIcons.server),
+                title: const Text('Endpoints, gateways & API key'),
+                subtitle: const Text(
+                    'API gateway, IPFS, AI, cold-start resolver, API key'),
+                trailing: const Icon(LucideIcons.chevronRight),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const FulaApiConfigScreen()),
+                  );
+                },
+              ),
             ],
           ),
           _buildSection(
@@ -668,107 +409,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         Navigator.pop(dialogContext);
       },
     );
-  }
-
-  void _startEditingApi() {
-    _showApiWarningDialog();
-  }
-
-  void _showApiWarningDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(LucideIcons.alertTriangle, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('Warning'),
-          ],
-        ),
-        content: const Text(
-          'Changing API Gateway, IPFS Server, or API Key settings may affect '
-          'accessibility of your previously uploaded data.\n\n'
-          'Make sure you have the correct credentials before making changes. '
-          'Data uploaded to different servers cannot be accessed after switching.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() => _isEditingApi = true);
-            },
-            child: const Text('I Understand, Continue'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _cancelEditingApi() {
-    _loadSettings();
-    setState(() => _isEditingApi = false);
-  }
-
-  Future<void> _saveApiSettings() async {
-    setState(() => _isLoading = true);
-
-    try {
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.apiGatewayUrl,
-        _apiGatewayController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.ipfsServerUrl,
-        _ipfsServerController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.billingServerUrl,
-        _billingServerController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.aiEndpointUrl,
-        _aiEndpointController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.ipfsGatewayUrl,
-        _ipfsGatewayController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.ipfsEndpointUrl,
-        _ipfsEndpointController.text,
-      );
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.jwtToken,
-        _jwtTokenController.text,
-      );
-
-      // Reinitialize FulaApiService with the new settings
-      if (_apiGatewayController.text.isNotEmpty && _jwtTokenController.text.isNotEmpty) {
-        await AuthService.instance.reinitializeFulaClient();
-      }
-
-      setState(() {
-        _isEditingApi = false;
-        _isLoading = false;
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Settings saved')),
-        );
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(ErrorMessages.forSettings(e))),
-        );
-      }
-    }
   }
 
   void _showSignInDialog() {

@@ -26,6 +26,7 @@ import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/utils/safe_path.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:fula_files/shared/widgets/master_health_banner.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/fula_object.dart';
@@ -104,6 +105,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   String? _currentBucket;
   String _currentPrefix = '';
   List<String> _buckets = [];
+  bool _bucketsAreStale = false;
+  DateTime? _bucketsFetchedAt;
   List<FulaObject> _cloudObjects = [];
   
   // Pagination & sorting state
@@ -344,8 +347,14 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     try {
       if (_currentBucket == null) {
-        // Load bucket list (treated as root folders)
-        _buckets = await FulaApiService.instance.listBuckets();
+        // Load bucket list (treated as root folders). Falls back to the
+        // last-known cached snapshot when the master gateway is down —
+        // the SDK can't enumerate buckets offline by design (privacy
+        // invariant). The MasterHealthBanner surfaces the staleness.
+        final result = await FulaApiService.instance.listBucketsCached();
+        _buckets = result.buckets;
+        _bucketsAreStale = result.stale;
+        _bucketsFetchedAt = result.fetchedAt;
         setState(() => _isLoading = false);
       } else {
         // Load objects in current bucket/prefix
@@ -353,13 +362,21 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           _currentBucket!,
           prefix: _currentPrefix,
         );
-        
+
         // Build combined list with local file info where available
         await _buildCloudCombinedList();
-        
+
         setState(() => _isLoading = false);
       }
     } catch (e) {
+      // Stale-cache bucket-list reads return successfully (with stale=true)
+      // and never reach this catch. Anything that *does* land here is a
+      // genuine failure — either a bucket-list call with no cache to fall
+      // back to, or a sub-bucket listObjects throw. Always surface it; the
+      // earlier `!_bucketsAreStale` guard was sticky across navigation and
+      // silently hid sub-bucket failures while the user stared at "no
+      // files" with no explanation.
+      debugPrint('_loadCloudData: $e');
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1176,7 +1193,19 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
               ),
           ],
         ),
-        body: _buildBody(),
+        body: Column(
+          children: [
+            MasterHealthBanner(
+              // The "from cache — pull to refresh" hint is only meaningful
+              // on the bucket-list view. Once the user navigates into a
+              // bucket, the banner falls back to the master-health state
+              // alone (offline / severelyDegraded / hidden).
+              staleBucketList: _currentBucket == null && _bucketsAreStale,
+              bucketsFetchedAt: _bucketsFetchedAt,
+            ),
+            Expanded(child: _buildBody()),
+          ],
+        ),
         ),
       ),
     );

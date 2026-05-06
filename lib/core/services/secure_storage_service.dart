@@ -92,6 +92,18 @@ class SecureStorageKeys {
   // IPFS upload endpoint (ipfs-server with /upload and /gateway)
   static const String ipfsEndpointUrl = 'ipfs_endpoint_url';
 
+  // fula-client cold-start resolver fields (read at sign-in, used by the
+  // SDK to locate this user's anchor when the master gateway is down).
+  // EVM chain RPC URL the resolver reads the on-chain anchor from
+  // (Base mainnet by default).
+  static const String baseRpcUrl = 'base_rpc_url';
+  // Address of the deployed users-index anchor contract on the chain above.
+  static const String usersIndexAnchorAddress = 'users_index_anchor_address';
+  // IPNS name (`k51qzi5...`) printed by `setup-users-index-publisher.sh` on
+  // the master. Same value for every user; bake the deploy default into the
+  // app and let advanced users override here.
+  static const String usersIndexIpnsName = 'users_index_ipns_name';
+
   // NFT wallet keys
   static const String nftWalletPrivateKey = 'nft_wallet_private_key';
 

@@ -433,6 +433,29 @@ class CollaborationService {
           maxRetries: 3,
           perChunkDownloadTimeoutSeconds: BigInt.from(300),
           bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+          // Share-fetch is an ephemeral, anonymous-ish client created per
+          // download against the share proxy. Enable health gate so a
+          // proxy outage is detected fast. Block cache stays OFF: share
+          // fetches use a different bucket + transient linkSecretKey per
+          // share, which doesn't fit the user-scoped offline path.
+          // Gateway fallback stays OFF: share tokens are validated by
+          // the proxy, raw IPFS gateways can't decrypt them.
+          healthGateEnabled: true,
+          healthGateTtlSeconds: BigInt.from(30),
+          blockCacheEnabled: false,
+          blockCachePath: '',
+          blockCacheMaxBytes: BigInt.from(256 * 1024 * 1024),
+          gatewayFallbackEnabled: false,
+          gatewayFallbackUrls: const [],
+          gatewayRaceConcurrency: 3,
+          // Cold-start does not apply to share-fetch — there is no
+          // signed-in user identity to anchor against.
+          usersIndexChainRpcUrl: '',
+          usersIndexAnchorAddress: '',
+          usersIndexIpnsName: '',
+          usersIndexUserKey: '',
+          usersIndexIpnsGatewayUrls: const [],
+          usersIndexIpfsGatewayUrls: const [],
         );
         final encConfig = fula.EncryptionConfig(
           secretKey: linkSecretKey,

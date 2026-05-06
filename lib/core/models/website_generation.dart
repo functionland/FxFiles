@@ -1,13 +1,16 @@
 import 'package:hive_flutter/hive_flutter.dart';
 
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
+
 part 'website_generation.g.dart';
 
-/// Build the public dweb.link subdomain URL for a CID, used for any
-/// *displayed* / shared IPFS link (website results, public-share dialogs,
-/// copy-URL buttons). Intentionally not user-configurable: a shared link
-/// must resolve from any device regardless of the local IPFS gateway
-/// setting, so we pin it to a well-known public gateway.
-String publicGatewayUrlForCid(String cid) => 'https://$cid.ipfs.dweb.link/';
+/// Build the public IPFS gateway URL for a CID, used for any *displayed* /
+/// shared link (website results, public-share dialogs, copy-URL buttons).
+/// Reads the user-configured template from [IpfsGatewayHelper] so the same
+/// gateway powers both private fetches and public shares — defaults to
+/// `https://{cid}.ipfs.dweb.link/`.
+String publicGatewayUrlForCid(String cid) =>
+    IpfsGatewayHelper.buildUrlForCid(cid);
 
 /// Status of a website generation job
 @HiveType(typeId: 26)
@@ -177,9 +180,9 @@ class WebsiteGeneration extends HiveObject {
     );
   }
 
-  /// Public URL for the completed website, always under the dweb.link
-  /// subdomain gateway (see `publicGatewayUrlForCid`). Prefers `resultCid`;
-  /// falls back to extracting the CID from a legacy `resultGatewayUrl`.
+  /// Public URL for the completed website built via [publicGatewayUrlForCid].
+  /// Prefers `resultCid`; falls back to extracting the CID from a legacy
+  /// `resultGatewayUrl`.
   String? get gatewayUrl {
     final cid = (resultCid != null && resultCid!.isNotEmpty)
         ? resultCid

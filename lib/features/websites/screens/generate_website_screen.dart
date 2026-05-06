@@ -1,0 +1,594 @@
+import 'package:flutter/material.dart';
+import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fula_files/app/theme/app_colors.dart';
+
+/// Result returned by [GenerateWebsiteScreen] when the user taps Publish.
+typedef GenerateWebsitePromptResult = ({
+  String websiteName,
+  String category,
+  List<String> styles,
+  String prompt,
+});
+
+/// Style options shown in the generator. Labels are stored verbatim in the
+/// generation prompt; corresponding hidden instructions live in
+/// [WebsiteService._styleInstructions]. Order, labels, and swatch palette match
+/// the design handoff (`STYLE_OPTIONS` in `screens.jsx`).
+class _StyleOption {
+  final String label;
+  final String description;
+  final Color bg;
+  final Color fg;
+  final Color accent;
+  final double titleH;
+
+  const _StyleOption({
+    required this.label,
+    required this.description,
+    required this.bg,
+    required this.fg,
+    required this.accent,
+    required this.titleH,
+  });
+}
+
+const List<_StyleOption> _styleOptions = [
+  _StyleOption(
+    label: 'Minimal',
+    description: 'Lots of whitespace',
+    bg: Color(0xFFF5F2EC),
+    fg: Color(0xFF1A1A1A),
+    accent: Color(0xFF1A1A1A),
+    titleH: 10,
+  ),
+  _StyleOption(
+    label: 'Editorial',
+    description: 'Magazine-style',
+    bg: Color(0xFFFFFFFF),
+    fg: Color(0xFF0E0E0E),
+    accent: Color(0xFFC73838),
+    titleH: 12,
+  ),
+  _StyleOption(
+    label: 'Bold',
+    description: 'Big type, high contrast',
+    bg: Color(0xFF0E0E0E),
+    fg: Color(0xFFFFD84D),
+    accent: Color(0xFFFF5C8A),
+    titleH: 14,
+  ),
+  _StyleOption(
+    label: 'Playful',
+    description: 'Soft, rounded, fun',
+    bg: Color(0xFFFFE9D6),
+    fg: Color(0xFF3C2417),
+    accent: Color(0xFFFF8A4C),
+    titleH: 10,
+  ),
+  _StyleOption(
+    label: 'Glassy',
+    description: 'Translucent, layered',
+    bg: Color(0xFF0B2E4A),
+    fg: Color(0xFFFFFFFF),
+    accent: Color(0xFF7DD3FC),
+    titleH: 9,
+  ),
+  _StyleOption(
+    label: 'Monospace',
+    description: 'Technical, terminal',
+    bg: Color(0xFF0E1A12),
+    fg: Color(0xFF7CFFB2),
+    accent: Color(0xFF7CFFB2),
+    titleH: 8,
+  ),
+  _StyleOption(
+    label: 'Brutalist',
+    description: 'Raw, gridded, stark',
+    bg: Color(0xFFFFFFFF),
+    fg: Color(0xFF000000),
+    accent: Color(0xFFFF3B00),
+    titleH: 12,
+  ),
+  _StyleOption(
+    label: 'Gallery',
+    description: 'Image-first grid',
+    bg: Color(0xFF1A1A1A),
+    fg: Color(0xFFF0EBE0),
+    accent: Color(0xFFF0EBE0),
+    titleH: 7,
+  ),
+];
+
+const List<String> _categoryOptions = [
+  'Personal',
+  'Real Estate',
+  'Automotives',
+  'Shop',
+  'Corporation',
+  'Technology',
+  'Resume',
+  'Other',
+];
+
+const int _maxStyles = 3;
+
+/// Full-screen replacement for the previous "Generate website" dialog.
+///
+/// Pop the screen with the [GenerateWebsitePromptResult] payload to publish,
+/// or with `null` (Cancel / system back) to abandon the draft.
+class GenerateWebsiteScreen extends StatefulWidget {
+  final String defaultName;
+  final String? initialName;
+  final String? initialCategory;
+  final List<String>? initialStyles;
+  final String? initialPrompt;
+
+  const GenerateWebsiteScreen({
+    super.key,
+    required this.defaultName,
+    this.initialName,
+    this.initialCategory,
+    this.initialStyles,
+    this.initialPrompt,
+  });
+
+  @override
+  State<GenerateWebsiteScreen> createState() => _GenerateWebsiteScreenState();
+}
+
+class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _promptController;
+  late String _category;
+  late final Set<String> _selectedStyles;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(
+      text: (widget.initialName != null && widget.initialName!.isNotEmpty)
+          ? widget.initialName!
+          : widget.defaultName,
+    );
+    _promptController = TextEditingController(text: widget.initialPrompt ?? '');
+    _category = (widget.initialCategory != null &&
+            _categoryOptions.contains(widget.initialCategory))
+        ? widget.initialCategory!
+        : _categoryOptions.first;
+    final knownLabels = _styleOptions.map((s) => s.label).toSet();
+    _selectedStyles = {
+      if (widget.initialStyles != null)
+        ...widget.initialStyles!.where(knownLabels.contains),
+    };
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _promptController.dispose();
+    super.dispose();
+  }
+
+  void _toggleStyle(String label) {
+    setState(() {
+      if (_selectedStyles.contains(label)) {
+        _selectedStyles.remove(label);
+      } else if (_selectedStyles.length < _maxStyles) {
+        _selectedStyles.add(label);
+      }
+    });
+  }
+
+  void _submit() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return;
+    final result = (
+      websiteName: name,
+      category: _category,
+      styles: _styleOptions
+          .map((s) => s.label)
+          .where(_selectedStyles.contains)
+          .toList(),
+      prompt: _promptController.text.trim(),
+    );
+    Navigator.of(context).pop<GenerateWebsitePromptResult>(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final nameEmpty = _nameController.text.trim().isEmpty;
+    final atMax = _selectedStyles.length >= _maxStyles;
+
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(LucideIcons.arrowLeft),
+          tooltip: 'Back',
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
+        title: const Text('Generate Website'),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+              children: [
+                TextField(
+                  controller: _nameController,
+                  maxLength: 60,
+                  decoration: const InputDecoration(
+                    labelText: 'Website Name',
+                    hintText: 'e.g. "My Portfolio"',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _category,
+                  decoration: const InputDecoration(
+                    labelText: 'Category',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: _categoryOptions
+                      .map(
+                        (c) => DropdownMenuItem(value: c, child: Text(c)),
+                      )
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setState(() => _category = v);
+                  },
+                ),
+                const SizedBox(height: 24),
+                _buildStyleHeader(theme),
+                const SizedBox(height: 10),
+                _buildStyleCardsRow(atMax: atMax),
+                if (_selectedStyles.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _buildSelectedChipsRow(theme),
+                ],
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _promptController,
+                  maxLines: 6,
+                  minLines: 4,
+                  maxLength: 9000,
+                  decoration: const InputDecoration(
+                    labelText: 'Your creative direction',
+                    hintText:
+                        'Add anything specific about content, layout, or theme — leave blank to use only the category and styles above.',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Category- and style-specific instructions plus technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _buildFooter(nameEmpty: nameEmpty),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStyleHeader(ThemeData theme) {
+    final secondary = theme.colorScheme.onSurface.withValues(alpha: 0.7);
+    final tertiary = theme.colorScheme.onSurface.withValues(alpha: 0.5);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
+      children: [
+        Text(
+          'Style ',
+          style: theme.textTheme.labelMedium?.copyWith(color: secondary),
+        ),
+        Text(
+          '· pick up to $_maxStyles',
+          style: theme.textTheme.labelMedium?.copyWith(color: tertiary),
+        ),
+        const Spacer(),
+        Text(
+          '${_selectedStyles.length}/$_maxStyles',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: AppColors.primary,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStyleCardsRow({required bool atMax}) {
+    return SizedBox(
+      height: 156,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        itemCount: _styleOptions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final option = _styleOptions[i];
+          final selected = _selectedStyles.contains(option.label);
+          final dimmed = atMax && !selected;
+          return _StyleCard(
+            option: option,
+            selected: selected,
+            dimmed: dimmed,
+            onTap: dimmed ? null : () => _toggleStyle(option.label),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSelectedChipsRow(ThemeData theme) {
+    final secondary = theme.colorScheme.onSurface.withValues(alpha: 0.7);
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Text(
+            'Selected:',
+            style: theme.textTheme.labelMedium?.copyWith(color: secondary),
+          ),
+        ),
+        ..._styleOptions
+            .where((s) => _selectedStyles.contains(s.label))
+            .map(
+              (s) => InputChip(
+                label: Text(s.label),
+                onDeleted: () => _toggleStyle(s.label),
+                deleteIconColor: AppColors.primary,
+                backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+                side: BorderSide(
+                  color: AppColors.primary.withValues(alpha: 0.45),
+                ),
+                labelStyle: const TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+      ],
+    );
+  }
+
+  Widget _buildFooter({required bool nameEmpty}) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        border: Border(
+          top: BorderSide(
+            color: theme.dividerColor.withValues(alpha: 0.5),
+            width: 1,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Text('Cancel'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: nameEmpty ? null : _submit,
+              icon: const Icon(LucideIcons.sparkles, size: 18),
+              label: const Text('Publish'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StyleCard extends StatelessWidget {
+  final _StyleOption option;
+  final bool selected;
+  final bool dimmed;
+  final VoidCallback? onTap;
+
+  const _StyleCard({
+    required this.option,
+    required this.selected,
+    required this.dimmed,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final borderColor = selected
+        ? AppColors.primary
+        : theme.colorScheme.outlineVariant;
+    final fillColor = selected
+        ? AppColors.primary.withValues(alpha: 0.12)
+        : theme.colorScheme.surfaceContainerHighest;
+    final labelColor = selected
+        ? AppColors.primary
+        : theme.colorScheme.onSurface;
+
+    final card = Material(
+      color: fillColor,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: 140,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(9),
+                ),
+                child: SizedBox(
+                  height: 78,
+                  child: Stack(
+                    children: [
+                      _StyleSwatch(option: option),
+                      if (selected)
+                        const Positioned(
+                          top: 6,
+                          right: 6,
+                          child: _SelectedBadge(),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      option.label,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      option.description,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 11,
+                        height: 1.3,
+                        color: theme.colorScheme.onSurface
+                            .withValues(alpha: 0.6),
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    return Opacity(opacity: dimmed ? 0.4 : 1, child: card);
+  }
+}
+
+class _StyleSwatch extends StatelessWidget {
+  final _StyleOption option;
+  const _StyleSwatch({required this.option});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: option.bg,
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 22,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: option.fg.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Container(
+                width: 12,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: option.accent,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+            ],
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              FractionallySizedBox(
+                widthFactor: 0.9,
+                child: Container(
+                  height: option.titleH,
+                  decoration: BoxDecoration(
+                    color: option.fg,
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 3),
+              FractionallySizedBox(
+                widthFactor: 0.6,
+                child: Container(
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: option.fg.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 3),
+              FractionallySizedBox(
+                widthFactor: 0.7,
+                child: Container(
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: option.fg.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SelectedBadge extends StatelessWidget {
+  const _SelectedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 22,
+      decoration: const BoxDecoration(
+        color: AppColors.primary,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: const Icon(LucideIcons.check, size: 14, color: Colors.white),
+    );
+  }
+}

@@ -16,8 +16,8 @@ class IpfsPublicService {
   ///
   /// 1. POST {ipfsEndpoint}/upload  (multipart file) → returns CID
   /// 2. POST {ipfsServer}/api/pins  (JSON {cid, name}) → pins for persistence
-  /// 3. Build public dweb.link gateway URL from CID (NOT the configured local
-  ///    gateway — public shares must resolve from any device).
+  /// 3. Build the public gateway URL from CID via the user-configured
+  ///    template (defaults to dweb.link).
   Future<({String cid, String gatewayUrl})> pinFile(
     String localPath,
     String fileName,
@@ -79,9 +79,8 @@ class IpfsPublicService {
       debugPrint('IPFS pin failed (non-fatal)');
     }
 
-    // Step 3: Build public gateway URL using the dweb.link subdomain gateway
-    // — the same gateway used for website-generator results — so the link
-    // resolves from any device regardless of the user's local gateway setting.
+    // Step 3: Build the public gateway URL via the user-configured template
+    // (default dweb.link) — same code path as website-generator results.
     final gatewayUrl = publicGatewayUrlForCid(cid);
 
     debugPrint('IPFS public share: ok');

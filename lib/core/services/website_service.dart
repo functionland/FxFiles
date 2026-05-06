@@ -20,6 +20,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
@@ -51,7 +52,6 @@ class WebsiteService {
 
   // Default endpoints (used when nothing is configured in SecureStorage)
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
-  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
 
   /// System instructions auto-prepended to every user prompt.
@@ -85,9 +85,110 @@ Design:
 - Visually appealing with good use of whitespace and color.
 - The user will provide a "Website Name" and "Category" at the start of their request. Use the website name as the site title/heading. Tailor the layout, color scheme, and content structure to fit the specified category.
 === END SYSTEM CONSTRAINTS ===
-
-User request:
 ''';
+
+  /// Hidden category-specific instructions, injected as a separate system block
+  /// when the stored prompt has a `Category:` line matching one of these keys.
+  /// Not shown to the user — drives generator behavior at backend send time.
+  /// Common rule: use ONLY information that is explicitly provided in the
+  /// prompt or attached files; do not fabricate names, prices, stats, claims,
+  /// testimonials, or any other content. Omit fields when data is missing.
+  static const Map<String, String> _categoryInstructions = {
+    'Resume':
+        'It should match a professional style resume format with the information included in prompt and attached files for job hunting in North America solely based on the details that are in the attached file and entered in the prompt and no guessing or made up information should exist. Use a single-page layout with clear sections (summary, experience, education, skills, contact) and ATS-friendly typography.',
+    'Shop':
+        'Read pricing and details that are attached or in the prompt and only use those information and add to website without any guessing or made up information and pricing. Also for images of products use a touched up version of the images that are in the attached files for each product you add. Render a product grid with consistent card sizing, clear product name, price, and short description for each item; if a detail is missing, omit it rather than guessing.',
+    'Personal':
+        'A personal website highlighting the individual described in the prompt and attached files. Use only the supplied biography, photos, links, and contact information. Structure with a hero/intro, an about section, highlights or portfolio of work, and a contact block. Do not invent biographical details, social links, education, employers, or contact information that is not explicitly provided.',
+    'Real Estate':
+        'A real estate listing or agency site. For each property, use the photos and listing details (location, price, beds, baths, square footage, year built, key features) exactly as provided in the attached files and prompt. Do not invent properties, prices, addresses, or specs. If a field is missing for a property, omit that field rather than guessing. Include a clear listings section with consistent cards and a contact block using only the supplied agent/agency information.',
+    'Automotives':
+        'An automotive listing or dealership site. For each vehicle, use the photos and specs (make, model, year, trim, mileage, price, transmission, drivetrain, key features) exactly as provided in the attached files and prompt. Do not invent vehicles, prices, or specifications. If a field is missing, omit it rather than guessing. Include a clear inventory grid and a contact block using only the supplied dealer/seller information.',
+    'Corporation':
+        'A professional corporate website. Use the company name, value proposition, services/products, and team/contact information exactly as provided in the attached files and prompt. Structure with a hero, about, services or solutions, and a contact section appropriate to the supplied information. Do not invent services, awards, statistics, partners, testimonials, employee names, or claims that are not explicitly provided. Use a trust-building, business-appropriate visual tone.',
+    'Technology':
+        'A technology product or service landing page. Use the product name, key features, benefits, and any screenshots/diagrams exactly as provided in the attached files and prompt. Structure with hero (headline + sub-headline + primary CTA only if a target is supplied), key features, how-it-works or use cases, and a closing CTA or contact section. Do not invent features, metrics, integrations, customer logos, testimonials, or pricing that are not explicitly provided.',
+    'Other':
+        'Use only the information explicitly provided in the prompt and attached files. Do not invent names, dates, prices, statistics, testimonials, or any factual claims. If a typical section would require data that is not supplied, either omit that section or keep it minimal using only what is provided.',
+  };
+
+  /// Hidden style-specific instructions, injected per selected style. Multiple
+  /// styles can apply at once. Not shown to the user. Keys are kept stable so
+  /// older generations stored with `Interactive` / `Theme support` continue to
+  /// receive their hidden instruction blocks when re-opened via "Recreate".
+  static const Map<String, String> _styleInstructions = {
+    'Minimal':
+        'Use a minimalist visual language with generous whitespace, restrained typography, and a quiet color palette — think Google and Apple landing pages. Avoid decorative flourishes, gradients, and shadows unless they serve hierarchy.',
+    'Editorial':
+        'Lay out the page like a print magazine: confident serif or high-contrast display headings, multi-column body copy where appropriate, pull-quotes, and structured sections separated by hairline rules. Treat imagery with editorial framing (captions, credits) and let typography carry the visual identity.',
+    'Bold':
+        'Lead with oversized display type, high color contrast, and strong primary blocks. Use thick weights, vivid accent colors, and confident layout choices — sections should feel decisive, not subtle.',
+    'Playful':
+        'Adopt a soft, friendly visual tone: rounded corners, warm pastel or candy colors, hand-drawn or organic accents, and generous, rounded type. Sections should feel inviting and casual rather than corporate.',
+    'Glassy':
+        'Apply a translucent, layered visual style: frosted-glass panels with subtle backdrop blur, soft glows, layered cards over a richly colored or gradient background. Use semi-transparent surfaces with thin highlight borders to suggest depth.',
+    'Monospace':
+        'Use a technical, terminal-inspired aesthetic: monospaced typography throughout, dark background with a single accent color (mint/green/amber on near-black), grid-aligned blocks, and crisp 1px borders. Treat the layout like a well-designed CLI or developer doc.',
+    'Brutalist':
+        'Embrace raw, gridded, stark design: heavy borders, exposed grid lines, default-feeling typography, high contrast, and unapologetically large blocks. Avoid rounded corners, soft shadows, or decorative ornament — let the structure itself be the visual.',
+    'Gallery':
+        'Make imagery the protagonist: image-first grid layouts, large media tiles, generous gutters, minimal chrome around photos. Text plays a supporting role — short captions, small metadata, and clear sectioning so the assets dominate the page.',
+    'Interactive':
+        'Ensure that you add some interesting and interactive elements on the page.',
+    'Theme support':
+        'Add light/dark theme switch support at the top in a nice way.',
+  };
+
+  static final RegExp _categoryLinePattern =
+      RegExp(r'^Category:\s*(.*)$', multiLine: true);
+  static final RegExp _stylesLinePattern =
+      RegExp(r'^Styles:\s*(.*)$', multiLine: true);
+
+  /// Build the prompt sent to the AI: system constraints, optional hidden
+  /// category/style blocks, then `User request:` and the stored prompt.
+  String _buildAiPrompt(String storedPrompt) {
+    final buffer = StringBuffer(_systemInstructions);
+
+    final categoryMatch = _categoryLinePattern.firstMatch(storedPrompt);
+    final category = categoryMatch?.group(1)?.trim() ?? '';
+    final categoryHidden = _categoryInstructions[category];
+    if (categoryHidden != null && categoryHidden.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('=== TYPE-SPECIFIC CONSTRAINTS (auto-added) ===')
+        ..writeln(categoryHidden)
+        ..writeln('=== END TYPE-SPECIFIC CONSTRAINTS ===');
+    }
+
+    final stylesMatch = _stylesLinePattern.firstMatch(storedPrompt);
+    final stylesRaw = stylesMatch?.group(1)?.trim() ?? '';
+    if (stylesRaw.isNotEmpty) {
+      final selected = stylesRaw
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      final styleLines = <String>[
+        for (final s in selected)
+          if (_styleInstructions[s] != null) _styleInstructions[s]!,
+      ];
+      if (styleLines.isNotEmpty) {
+        buffer
+          ..writeln()
+          ..writeln('=== STYLE PREFERENCES (auto-added) ===');
+        for (final line in styleLines) {
+          buffer.writeln(line);
+        }
+        buffer.writeln('=== END STYLE PREFERENCES ===');
+      }
+    }
+
+    buffer
+      ..writeln()
+      ..writeln('User request:')
+      ..write(storedPrompt);
+    return buffer.toString();
+  }
 
   /// Initialize Hive box and register adapters
   Future<void> init() async {
@@ -599,7 +700,7 @@ User request:
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
-        'prompt': '$_systemInstructions$prompt',
+        'prompt': _buildAiPrompt(prompt),
         'assets': assets,
       }),
       ).timeout(const Duration(seconds: 30));
@@ -714,11 +815,8 @@ User request:
   Future<String> _buildGatewayUrl(String cid) async {
     final gateway = await SecureStorageService.instance
             .read(SecureStorageKeys.ipfsGatewayUrl) ??
-        _defaultIpfsGateway;
-
-    // Ensure gateway ends with /
-    final base = gateway.endsWith('/') ? gateway : '$gateway/';
-    return '$base$cid';
+        IpfsGatewayHelper.defaultTemplate;
+    return IpfsGatewayHelper.buildUrl(gateway, cid);
   }
 
   /// L4: Format ML Kit labels into a readable string

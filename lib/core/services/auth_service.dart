@@ -11,7 +11,9 @@ import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/master_health_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
@@ -575,13 +577,45 @@ class AuthService {
       debugPrint('AuthService: accessToken present = ${accessToken != null && accessToken.isNotEmpty}');
 
       if (endpoint != null && endpoint.isNotEmpty) {
+        // Read the pinned derivation email — same value used by
+        // _deriveEncryptionKey above, persisted at first sign-in. The
+        // FulaApiService uses it (when set) to derive a per-user
+        // cold-start key so the on-chain registry resolver can locate
+        // this user's anchor.
+        final derivationEmail = await SecureStorageService.instance.read(
+          SecureStorageKeys.derivationEmail,
+        );
+
+        // User-editable cold-start resolver overrides (Settings > Fula API
+        // Configuration). Empty/null values fall back to the build-in
+        // defaults inside FulaApiService.initialize.
+        final baseRpcUrl = await SecureStorageService.instance.read(
+          SecureStorageKeys.baseRpcUrl,
+        );
+        final usersIndexAnchor = await SecureStorageService.instance.read(
+          SecureStorageKeys.usersIndexAnchorAddress,
+        );
+        final usersIndexIpns = await SecureStorageService.instance.read(
+          SecureStorageKeys.usersIndexIpnsName,
+        );
+
         await FulaApiService.instance.initialize(
           endpoint: endpoint,
           secretKey: _encryptionKey!,
           accessToken: accessToken,
+          userEmail: derivationEmail,
+          chainRpcUrl: baseRpcUrl,
+          usersIndexAnchorAddress: usersIndexAnchor,
+          usersIndexIpnsName: usersIndexIpns,
         );
         debugPrint('FulaApiService initialized successfully');
         debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
+
+        // Start polling the SDK's Phase 19 health channel so the UI can
+        // render an offline banner when the master gateway goes down.
+        // No-op if already started (re-init via settings save just keeps
+        // the existing poller alive against the new client handle).
+        unawaited(MasterHealthService.instance.start());
 
         // Verify public key is available (don't log key material)
         try {
@@ -800,6 +834,13 @@ class AuthService {
 
       // Clear cached sync mappings
       CloudSyncMappingService.instance.clear();
+
+      // Drop the cached bucket-list snapshot — it's keyed by derivationEmail
+      // and would otherwise leak bucket names to a different user signing in.
+      await BucketCacheService.clear();
+
+      // Stop the health-event poll loop; resumes on next sign-in.
+      await MasterHealthService.instance.stop();
 
       // Clear NFT wallet state and secure storage key
       NftWalletService.instance.clear();

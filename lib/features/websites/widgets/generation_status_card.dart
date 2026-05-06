@@ -326,18 +326,40 @@ String extractUserPrompt(String stored) {
 }
 
 /// Parse a stored prompt back into its components. Tolerates older records
-/// that lack the enriched prefix by returning empty name/category and the
-/// original string as the user body.
-({String websiteName, String category, String userBody}) parseStoredPrompt(
-    String stored) {
+/// that lack the enriched prefix by returning empty name/category/styles and
+/// the original string as the user body. The `Styles:` line is optional and
+/// returns an empty list when absent.
+({
+  String websiteName,
+  String category,
+  List<String> styles,
+  String userBody,
+}) parseStoredPrompt(String stored) {
   final namePattern = RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
   final categoryPattern = RegExp(r'^Category:\s*(.*)$', multiLine: true);
+  final stylesPattern = RegExp(r'^Styles:\s*(.*)$', multiLine: true);
 
   final nameMatch = namePattern.firstMatch(stored);
   final categoryMatch = categoryPattern.firstMatch(stored);
 
   if (nameMatch == null || categoryMatch == null) {
-    return (websiteName: '', category: '', userBody: stored.trim());
+    return (
+      websiteName: '',
+      category: '',
+      styles: const <String>[],
+      userBody: stored.trim(),
+    );
+  }
+
+  final stylesMatch = stylesPattern.firstMatch(stored);
+  final styles = <String>[];
+  if (stylesMatch != null) {
+    final raw = stylesMatch.group(1)?.trim() ?? '';
+    if (raw.isNotEmpty) {
+      styles.addAll(
+        raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty),
+      );
+    }
   }
 
   // User body is everything after the first blank line.
@@ -349,6 +371,7 @@ String extractUserPrompt(String stored) {
   return (
     websiteName: nameMatch.group(1)?.trim() ?? '',
     category: categoryMatch.group(1)?.trim() ?? '',
+    styles: styles,
     userBody: body,
   );
 }

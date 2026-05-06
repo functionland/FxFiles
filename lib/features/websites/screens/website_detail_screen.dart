@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/websites/providers/website_provider.dart';
+import 'package:fula_files/features/websites/screens/generate_website_screen.dart';
 import 'package:fula_files/features/websites/widgets/generation_status_card.dart';
 import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
@@ -411,16 +412,20 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     // Step 2: Prompt input (with website name + category)
     final displayName =
         (currentTag?.name ?? 'website').replaceFirst('websites-', '');
-    final result = await _showPromptDialog(context, displayName);
+    final result = await _openGenerateScreen(context, displayName);
     if (result == null || !mounted) return;
 
     // Step 3: Build enriched prompt and start generation
-    final enrichedPrompt =
-        'Website Name: ${result.websiteName}\nCategory: ${result.category}\n\n${result.prompt}';
+    final enrichedPrompt = _composeEnrichedPrompt(
+      websiteName: result.websiteName,
+      category: result.category,
+      styles: result.styles,
+      body: result.prompt,
+    );
     await ref.read(websiteProvider.notifier).startGeneration(
           tagId: widget.tagId,
           tagName: displayName,
-          prompt: enrichedPrompt.trim(),
+          prompt: enrichedPrompt,
           files: files,
         );
 
@@ -431,118 +436,46 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     }
   }
 
-  static const _categoryOptions = [
-    'Personal',
-    'Real Estate',
-    'Automotives',
-    'Shop',
-    'Corporation',
-    'Technology',
-    'Other',
-  ];
+  /// Compose the prompt that gets stored on the generation record.
+  /// Header lines (Website Name, Category, optional Styles) are followed by a
+  /// blank line and the user's body. Hidden category/style instructions are
+  /// added later by [WebsiteService] when calling the AI endpoint.
+  String _composeEnrichedPrompt({
+    required String websiteName,
+    required String category,
+    required List<String> styles,
+    required String body,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln('Website Name: $websiteName')
+      ..writeln('Category: $category');
+    if (styles.isNotEmpty) {
+      buffer.writeln('Styles: ${styles.join(', ')}');
+    }
+    buffer
+      ..writeln()
+      ..write(body);
+    return buffer.toString().trim();
+  }
 
-  Future<({String websiteName, String category, String prompt})?>
-      _showPromptDialog(
+  Future<GenerateWebsitePromptResult?> _openGenerateScreen(
     BuildContext context,
     String defaultName, {
     String? initialName,
     String? initialCategory,
+    List<String>? initialStyles,
     String? initialPrompt,
-  }) async {
-    final nameController = TextEditingController(
-      text: (initialName != null && initialName.isNotEmpty)
-          ? initialName
-          : defaultName,
-    );
-    final promptController = TextEditingController(
-      text: initialPrompt ??
-          'Create a clean, modern portfolio website showcasing these assets with a gallery layout.',
-    );
-
-    return showDialog<({String websiteName, String category, String prompt})>(
-      context: context,
-      builder: (ctx) {
-        var selectedCategory =
-            (initialCategory != null && _categoryOptions.contains(initialCategory))
-                ? initialCategory
-                : _categoryOptions.first;
-        return StatefulBuilder(
-          builder: (ctx, setDialogState) {
-            final nameEmpty = nameController.text.trim().isEmpty;
-            return AlertDialog(
-              title: const Text('Generate Website'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: nameController,
-                      maxLength: 60,
-                      decoration: const InputDecoration(
-                        labelText: 'Website Name',
-                        hintText: 'e.g. "My Portfolio"',
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (_) => setDialogState(() {}),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: selectedCategory,
-                      decoration: const InputDecoration(
-                        labelText: 'Category',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: _categoryOptions
-                          .map((c) =>
-                              DropdownMenuItem(value: c, child: Text(c)))
-                          .toList(),
-                      onChanged: (v) {
-                        if (v != null) {
-                          setDialogState(() => selectedCategory = v);
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: promptController,
-                      maxLines: 4,
-                      maxLength: 9000,
-                      decoration: const InputDecoration(
-                        labelText: 'Your creative direction',
-                        hintText:
-                            'e.g. "A photography portfolio with dark theme and grid layout"',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
-                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: nameEmpty
-                      ? null
-                      : () => Navigator.of(ctx).pop((
-                            websiteName: nameController.text.trim(),
-                            category: selectedCategory,
-                            prompt: promptController.text.trim(),
-                          )),
-                  child: const Text('Publish'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+  }) {
+    return Navigator.of(context).push<GenerateWebsitePromptResult>(
+      MaterialPageRoute(
+        builder: (_) => GenerateWebsiteScreen(
+          defaultName: defaultName,
+          initialName: initialName,
+          initialCategory: initialCategory,
+          initialStyles: initialStyles,
+          initialPrompt: initialPrompt,
+        ),
+      ),
     );
   }
 
@@ -577,11 +510,12 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     final displayName =
         (currentTag?.name ?? 'website').replaceFirst('websites-', '');
 
-    final result = await _showPromptDialog(
+    final result = await _openGenerateScreen(
       context,
       displayName,
       initialName: parsed.websiteName,
       initialCategory: parsed.category,
+      initialStyles: parsed.styles,
       initialPrompt: seededPrompt,
     );
     if (result == null || !mounted) return;
@@ -589,12 +523,16 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     final files = await ref.read(taggedFilesProvider(widget.tagId).future);
     if (!mounted) return;
 
-    final enrichedPrompt =
-        'Website Name: ${result.websiteName}\nCategory: ${result.category}\n\n${result.prompt}';
+    final enrichedPrompt = _composeEnrichedPrompt(
+      websiteName: result.websiteName,
+      category: result.category,
+      styles: result.styles,
+      body: result.prompt,
+    );
     await ref.read(websiteProvider.notifier).startGeneration(
           tagId: widget.tagId,
           tagName: displayName,
-          prompt: enrichedPrompt.trim(),
+          prompt: enrichedPrompt,
           files: files,
         );
 

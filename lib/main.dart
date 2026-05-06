@@ -9,6 +9,7 @@ import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:fula_files/app/app.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/background_sync_service.dart';
@@ -142,6 +143,14 @@ Future<ProviderContainer> _initializeApp() async {
     await SecureStorageService.instance.init().timeout(const Duration(seconds: 3));
   } catch (e) {
     debugPrint('SecureStorageService initialization failed: $e');
+  }
+
+  // Migrate the legacy ipfs.cloud.fx.land gateway default to dweb.link and
+  // populate the sync cache that model getters/widgets read.
+  try {
+    await IpfsGatewayHelper.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('IpfsGatewayHelper initialization failed: $e');
   }
 
   try {

@@ -17,6 +17,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -69,7 +70,6 @@ class NftService {
   static const String _assetBucket = 'nft-assets';
 
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
-  static const String _defaultIpfsGateway = 'https://ipfs.cloud.fx.land/gateway/';
 
   // Cloud sync state
   static const String _nftMetadataBucket = 'nft-metadata';
@@ -327,9 +327,8 @@ class NftService {
   Future<String> _buildGatewayUrl(String cid) async {
     final gateway = await SecureStorageService.instance
             .read(SecureStorageKeys.ipfsGatewayUrl) ??
-        _defaultIpfsGateway;
-    final base = gateway.endsWith('/') ? gateway : '$gateway/';
-    return '$base$cid';
+        IpfsGatewayHelper.defaultTemplate;
+    return IpfsGatewayHelper.buildUrl(gateway, cid);
   }
 
   /// Upload an ERC1155-compliant metadata JSON to S3, returns the metadata CID.
