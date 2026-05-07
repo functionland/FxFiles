@@ -176,7 +176,6 @@ const List<String> _categoryOptions = [
   'Other',
 ];
 
-const int _maxStyles = 3;
 
 /// Full-screen replacement for the previous "Generate website" dialog.
 ///
@@ -209,7 +208,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late final TextEditingController _promptController;
   late String _category;
   late String _palette;
-  late final Set<String> _selectedStyles;
+  late String _selectedStyle;
 
   @override
   void initState() {
@@ -229,11 +228,15 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
             knownPaletteLabels.contains(widget.initialPalette))
         ? widget.initialPalette!
         : _paletteOptions.first.label;
+    // Single-select style: take the first valid label from any pre-existing
+    // styles list (older multi-select records may carry several), else fall
+    // back to the first option as the default.
     final knownLabels = _styleOptions.map((s) => s.label).toSet();
-    _selectedStyles = {
-      if (widget.initialStyles != null)
-        ...widget.initialStyles!.where(knownLabels.contains),
-    };
+    final firstValid = widget.initialStyles
+        ?.firstWhere(knownLabels.contains, orElse: () => '');
+    _selectedStyle = (firstValid != null && firstValid.isNotEmpty)
+        ? firstValid
+        : _styleOptions.first.label;
   }
 
   @override
@@ -243,26 +246,13 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     super.dispose();
   }
 
-  void _toggleStyle(String label) {
-    setState(() {
-      if (_selectedStyles.contains(label)) {
-        _selectedStyles.remove(label);
-      } else if (_selectedStyles.length < _maxStyles) {
-        _selectedStyles.add(label);
-      }
-    });
-  }
-
   void _submit() {
     final name = _nameController.text.trim();
     if (name.isEmpty) return;
     final result = (
       websiteName: name,
       category: _category,
-      styles: _styleOptions
-          .map((s) => s.label)
-          .where(_selectedStyles.contains)
-          .toList(),
+      styles: <String>[_selectedStyle],
       palette: _palette,
       prompt: _promptController.text.trim(),
     );
@@ -273,10 +263,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     final fullPrompt = WebsiteService.instance.buildPreviewPrompt(
       websiteName: _nameController.text.trim(),
       category: _category,
-      styles: _styleOptions
-          .map((s) => s.label)
-          .where(_selectedStyles.contains)
-          .toList(),
+      styles: <String>[_selectedStyle],
       palette: _palette,
       body: _promptController.text.trim(),
     );
@@ -338,7 +325,6 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final nameEmpty = _nameController.text.trim().isEmpty;
-    final atMax = _selectedStyles.length >= _maxStyles;
 
     return Scaffold(
       appBar: AppBar(
@@ -384,11 +370,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 const SizedBox(height: 24),
                 _buildStyleHeader(theme),
                 const SizedBox(height: 10),
-                _buildStyleCardsRow(atMax: atMax),
-                if (_selectedStyles.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _buildSelectedChipsRow(theme),
-                ],
+                _buildStyleCardsRow(),
                 const SizedBox(height: 24),
                 _buildPaletteHeader(theme),
                 const SizedBox(height: 10),
@@ -455,22 +437,14 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
           style: theme.textTheme.labelMedium?.copyWith(color: secondary),
         ),
         Text(
-          '· pick up to $_maxStyles',
+          '· pick one',
           style: theme.textTheme.labelMedium?.copyWith(color: tertiary),
-        ),
-        const Spacer(),
-        Text(
-          '${_selectedStyles.length}/$_maxStyles',
-          style: theme.textTheme.labelMedium?.copyWith(
-            color: AppColors.primary,
-            fontWeight: FontWeight.w600,
-          ),
         ),
       ],
     );
   }
 
-  Widget _buildStyleCardsRow({required bool atMax}) {
+  Widget _buildStyleCardsRow() {
     return SizedBox(
       height: 156,
       child: ListView.separated(
@@ -480,13 +454,11 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         separatorBuilder: (_, __) => const SizedBox(width: 10),
         itemBuilder: (context, i) {
           final option = _styleOptions[i];
-          final selected = _selectedStyles.contains(option.label);
-          final dimmed = atMax && !selected;
+          final selected = _selectedStyle == option.label;
           return _StyleCard(
             option: option,
             selected: selected,
-            dimmed: dimmed,
-            onTap: dimmed ? null : () => _toggleStyle(option.label),
+            onTap: () => setState(() => _selectedStyle = option.label),
           );
         },
       ),
@@ -533,42 +505,6 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     );
   }
 
-  Widget _buildSelectedChipsRow(ThemeData theme) {
-    final secondary = theme.colorScheme.onSurface.withValues(alpha: 0.7);
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(right: 4),
-          child: Text(
-            'Selected:',
-            style: theme.textTheme.labelMedium?.copyWith(color: secondary),
-          ),
-        ),
-        ..._styleOptions
-            .where((s) => _selectedStyles.contains(s.label))
-            .map(
-              (s) => InputChip(
-                label: Text(s.label),
-                onDeleted: () => _toggleStyle(s.label),
-                deleteIconColor: AppColors.primary,
-                backgroundColor: AppColors.primary.withValues(alpha: 0.12),
-                side: BorderSide(
-                  color: AppColors.primary.withValues(alpha: 0.45),
-                ),
-                labelStyle: const TextStyle(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w600,
-                ),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ),
-      ],
-    );
-  }
-
   Widget _buildFooter({required bool nameEmpty}) {
     final theme = Theme.of(context);
     return DecoratedBox(
@@ -607,13 +543,11 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
 class _StyleCard extends StatelessWidget {
   final _StyleOption option;
   final bool selected;
-  final bool dimmed;
-  final VoidCallback? onTap;
+  final VoidCallback onTap;
 
   const _StyleCard({
     required this.option,
     required this.selected,
-    required this.dimmed,
     required this.onTap,
   });
 
@@ -630,7 +564,7 @@ class _StyleCard extends StatelessWidget {
         ? AppColors.primary
         : theme.colorScheme.onSurface;
 
-    final card = Material(
+    return Material(
       color: fillColor,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
@@ -696,8 +630,6 @@ class _StyleCard extends StatelessWidget {
         ),
       ),
     );
-
-    return Opacity(opacity: dimmed ? 0.4 : 1, child: card);
   }
 }
 
