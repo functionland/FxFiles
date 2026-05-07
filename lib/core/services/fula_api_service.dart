@@ -252,18 +252,43 @@ class FulaApiService {
     }
   }
 
-  /// Ensure the forest (encrypted file index) is loaded for a bucket
+  /// Ensure the forest (encrypted file index) is loaded for a bucket.
+  ///
+  /// After the fula-client fix at `encryption.rs:2569` (Phase 2.4
+  /// offline-propagation regression — narrowed `Err(_)` to
+  /// `Err(e) if e.is_not_found()`), the catch branch fires only for
+  /// real errors:
+  ///
+  ///   - **Master unreachable / cold-start failed / 5xx / network** —
+  ///     offline or transient outage. Don't mark as loaded; rethrow so
+  ///     the caller surfaces "offline; try later" instead of an empty
+  ///     list (the prior `_loadedForests.add` on every catch silently
+  ///     painted offline outages as empty buckets — exactly the bug
+  ///     this pairs with).
+  ///   - **Auth / decrypt / sequence-regression** — real errors that
+  ///     also rethrow.
+  ///
+  /// Genuine new-bucket cases (404 / NoSuchKey from master) NEVER
+  /// throw on the Dart side: the SDK creates an empty v7 forest and
+  /// returns the `"forest is sharded"` marker, which the fula-flutter
+  /// binding (`crates/fula-flutter/src/api/forest.rs:30-34`) maps to
+  /// `Ok(())` before Dart sees anything. So new-bucket flow takes the
+  /// success branch above, not the catch.
   Future<void> _ensureForestLoaded(String bucket) async {
-    if (!_loadedForests.contains(bucket)) {
-      try {
-        await fula.loadForest(client: _client!, bucket: bucket);
-        _loadedForests.add(bucket);
-        debugPrint('Forest loaded for bucket: $bucket');
-      } catch (e) {
-        // Forest may not exist yet for new buckets - that's OK
-        debugPrint('Forest load for $bucket: $e (may be new bucket)');
-        _loadedForests.add(bucket); // Mark as "loaded" to avoid repeated attempts
-      }
+    if (_loadedForests.contains(bucket)) return;
+    try {
+      await fula.loadForest(client: _client!, bucket: bucket);
+      _loadedForests.add(bucket);
+      debugPrint('Forest loaded for bucket: $bucket');
+    } catch (e) {
+      // Don't mark `_loadedForests.add(bucket)` here — the next call
+      // should re-attempt the fetch (this is what the fula-client fix
+      // achieves: cache stays empty so a transient outage recovers
+      // automatically when master comes back). Rethrow so callers
+      // (listObjects, downloadObject, etc.) can surface the actual
+      // condition instead of returning an empty list.
+      debugPrint('Forest load for $bucket failed: $e');
+      rethrow;
     }
   }
 
