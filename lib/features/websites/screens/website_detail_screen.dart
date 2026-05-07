@@ -420,6 +420,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       websiteName: result.websiteName,
       category: result.category,
       styles: result.styles,
+      palette: result.palette,
       body: result.prompt,
     );
     await ref.read(websiteProvider.notifier).startGeneration(
@@ -437,13 +438,15 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
   }
 
   /// Compose the prompt that gets stored on the generation record.
-  /// Header lines (Website Name, Category, optional Styles) are followed by a
-  /// blank line and the user's body. Hidden category/style instructions are
-  /// added later by [WebsiteService] when calling the AI endpoint.
+  /// Header lines (Website Name, Category, optional Styles, Palette) are
+  /// followed by a blank line and the user's body. Hidden category/style/
+  /// palette instructions are added later by [WebsiteService] when calling
+  /// the AI endpoint.
   String _composeEnrichedPrompt({
     required String websiteName,
     required String category,
     required List<String> styles,
+    required String palette,
     required String body,
   }) {
     final buffer = StringBuffer()
@@ -451,6 +454,9 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       ..writeln('Category: $category');
     if (styles.isNotEmpty) {
       buffer.writeln('Styles: ${styles.join(', ')}');
+    }
+    if (palette.isNotEmpty) {
+      buffer.writeln('Palette: $palette');
     }
     buffer
       ..writeln()
@@ -464,6 +470,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     String? initialName,
     String? initialCategory,
     List<String>? initialStyles,
+    String? initialPalette,
     String? initialPrompt,
   }) {
     return Navigator.of(context).push<GenerateWebsitePromptResult>(
@@ -473,6 +480,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           initialName: initialName,
           initialCategory: initialCategory,
           initialStyles: initialStyles,
+          initialPalette: initialPalette,
           initialPrompt: initialPrompt,
         ),
       ),
@@ -516,6 +524,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       initialName: parsed.websiteName,
       initialCategory: parsed.category,
       initialStyles: parsed.styles,
+      initialPalette: parsed.palette,
       initialPrompt: seededPrompt,
     );
     if (result == null || !mounted) return;
@@ -527,6 +536,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       websiteName: result.websiteName,
       category: result.category,
       styles: result.styles,
+      palette: result.palette,
       body: result.prompt,
     );
     await ref.read(websiteProvider.notifier).startGeneration(

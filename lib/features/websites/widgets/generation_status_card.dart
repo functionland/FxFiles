@@ -326,18 +326,21 @@ String extractUserPrompt(String stored) {
 }
 
 /// Parse a stored prompt back into its components. Tolerates older records
-/// that lack the enriched prefix by returning empty name/category/styles and
-/// the original string as the user body. The `Styles:` line is optional and
-/// returns an empty list when absent.
+/// that lack the enriched prefix by returning empty name/category/styles/
+/// palette and the original string as the user body. The `Styles:` and
+/// `Palette:` lines are optional — `styles` returns an empty list and
+/// `palette` returns an empty string when absent.
 ({
   String websiteName,
   String category,
   List<String> styles,
+  String palette,
   String userBody,
 }) parseStoredPrompt(String stored) {
   final namePattern = RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
   final categoryPattern = RegExp(r'^Category:\s*(.*)$', multiLine: true);
   final stylesPattern = RegExp(r'^Styles:\s*(.*)$', multiLine: true);
+  final palettePattern = RegExp(r'^Palette:\s*(.*)$', multiLine: true);
 
   final nameMatch = namePattern.firstMatch(stored);
   final categoryMatch = categoryPattern.firstMatch(stored);
@@ -347,6 +350,7 @@ String extractUserPrompt(String stored) {
       websiteName: '',
       category: '',
       styles: const <String>[],
+      palette: '',
       userBody: stored.trim(),
     );
   }
@@ -362,6 +366,9 @@ String extractUserPrompt(String stored) {
     }
   }
 
+  final paletteMatch = palettePattern.firstMatch(stored);
+  final palette = paletteMatch?.group(1)?.trim() ?? '';
+
   // User body is everything after the first blank line.
   final blankLineIdx = stored.indexOf('\n\n');
   final body = blankLineIdx >= 0
@@ -372,6 +379,7 @@ String extractUserPrompt(String stored) {
     websiteName: nameMatch.group(1)?.trim() ?? '',
     category: categoryMatch.group(1)?.trim() ?? '',
     styles: styles,
+    palette: palette,
     userBody: body,
   );
 }

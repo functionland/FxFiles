@@ -40,8 +40,46 @@ class WebsiteService {
   static const _uuid = Uuid();
   static const String _assetBucket = 'website-assets';
   static const String _websiteMetadataBucket = 'website-metadata';
-  static const int _maxFileSizeBytes = 50 * 1024 * 1024; // 50MB per file
   static const int _maxParsedContentBytes = 100000; // 100KB backend limit
+
+  // Per-type per-file size caps. Limits aligned with what Anthropic's
+  // Messages API accepts (5MB images, 32MB PDFs); the rest sit below the
+  // request-size budget. See `_maxFileSizeBytesForExt` for the lookup.
+  static const int _maxImageBytes = 5 * 1024 * 1024;        //  5MB
+  static const int _maxBinaryDocBytes = 32 * 1024 * 1024;   // 32MB (pdf/docx/xlsx/pptx)
+  static const int _maxTextBytes = 10 * 1024 * 1024;        // 10MB (txt/md/csv/json/html/xml)
+
+  // Per-job aggregate caps. Backend mirrors these as defence in depth.
+  static const int _maxFilesPerJob = 10;
+  static const int _maxTotalUploadBytes = 50 * 1024 * 1024; // 50MB total
+
+  /// Return the per-file size cap for [ext]. Returns 0 for extensions we
+  /// can't usefully forward to Claude — caller skips those files.
+  static int _maxFileSizeBytesForExt(String ext) {
+    switch (ext.toLowerCase()) {
+      case '.png':
+      case '.jpg':
+      case '.jpeg':
+      case '.gif':
+      case '.webp':
+        return _maxImageBytes;
+      case '.pdf':
+      case '.docx':
+      case '.xlsx':
+      case '.pptx':
+        return _maxBinaryDocBytes;
+      case '.txt':
+      case '.md':
+      case '.csv':
+      case '.json':
+      case '.html':
+      case '.htm':
+      case '.xml':
+        return _maxTextBytes;
+      default:
+        return 0;
+    }
+  }
 
   // Cloud sync state
   bool _metaBucketChecked = false;
@@ -139,10 +177,27 @@ Design:
         'Add light/dark theme switch support at the top in a nice way.',
   };
 
+  /// Hidden palette-specific instructions, injected when the stored prompt
+  /// contains a `Palette:` line matching one of these keys. Not shown to the
+  /// user — drives generator behaviour at backend send time. Keys must match
+  /// the labels in `paletteOptions` in generate_website_screen.dart.
+  static const Map<String, String> _paletteInstructions = {
+    'Auto from attachments':
+        'Derive the entire color palette directly from the attached images and assets — sample dominant tones, accents, and background colors from photos, logos, or graphics provided, and apply them consistently across backgrounds, text, accents, and UI elements so the site feels like a unified extension of the supplied imagery. If no usable images are attached, fall back to a tasteful palette appropriate to the chosen category.',
+    'Warm':
+        'Use a warm color palette grounded in reds, oranges, terracotta, golds, ambers, and creamy off-whites. Pair warm accents with deep brown or charcoal text for contrast. Do not use cool blues, greens, or purples as primary or secondary colors — limit any cool tones, if present at all, to small functional accents.',
+    'Cold':
+        'Use a cool/cold color palette grounded in blues, teals, slate greys, deep purples, and crisp whites. Pair cool accents with near-black or deep navy text for contrast. Do not use warm reds, oranges, or yellows as primary or secondary colors — limit any warm tones, if present at all, to small functional accents.',
+    'Grey tone':
+        'Use a strictly monochromatic grey palette across the entire site: a single neutral hue family ranging from near-black through mid-greys to near-white. Establish hierarchy through tonal contrast and typography rather than through color. A single subtle, desaturated accent may be used very sparingly for primary actions; otherwise keep every surface, text run, border, and graphic in grayscale.',
+  };
+
   static final RegExp _categoryLinePattern =
       RegExp(r'^Category:\s*(.*)$', multiLine: true);
   static final RegExp _stylesLinePattern =
       RegExp(r'^Styles:\s*(.*)$', multiLine: true);
+  static final RegExp _paletteLinePattern =
+      RegExp(r'^Palette:\s*(.*)$', multiLine: true);
 
   /// Build the prompt sent to the AI: system constraints, optional hidden
   /// category/style blocks, then `User request:` and the stored prompt.
@@ -183,11 +238,49 @@ Design:
       }
     }
 
+    final paletteMatch = _paletteLinePattern.firstMatch(storedPrompt);
+    final palette = paletteMatch?.group(1)?.trim() ?? '';
+    final paletteHidden = _paletteInstructions[palette];
+    if (paletteHidden != null && paletteHidden.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln('=== PALETTE PREFERENCE (auto-added) ===')
+        ..writeln(paletteHidden)
+        ..writeln('=== END PALETTE PREFERENCE ===');
+    }
+
     buffer
       ..writeln()
       ..writeln('User request:')
       ..write(storedPrompt);
     return buffer.toString();
+  }
+
+  /// Build the exact prompt that will be sent to the AI backend, given the
+  /// generator screen's selections. Mirrors the enriched-prompt header format
+  /// produced by the screen's caller (`Website Name:` / `Category:` / optional
+  /// `Styles:` / `Palette:`) before passing through [_buildAiPrompt]. Used by
+  /// the screen's "preview full prompt" eye icon.
+  String buildPreviewPrompt({
+    required String websiteName,
+    required String category,
+    required List<String> styles,
+    required String palette,
+    required String body,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln('Website Name: $websiteName')
+      ..writeln('Category: $category');
+    if (styles.isNotEmpty) {
+      buffer.writeln('Styles: ${styles.join(', ')}');
+    }
+    if (palette.isNotEmpty) {
+      buffer.writeln('Palette: $palette');
+    }
+    buffer
+      ..writeln()
+      ..write(body);
+    return _buildAiPrompt(buffer.toString().trim());
   }
 
   /// Initialize Hive box and register adapters
@@ -322,23 +415,63 @@ Design:
     await _ensureBucket();
 
     int failedCount = 0;
+    int uploadedCount = 0;
+    int totalUploadedBytes = 0;
+    final skipReasons = <String>[];
 
     for (var i = 0; i < generation.assets.length; i++) {
       final asset = generation.assets[i];
+      final ext = p.extension(asset.fileName).toLowerCase();
+      final perTypeCap = _maxFileSizeBytesForExt(ext);
 
-      // M5: Check file size before reading into memory
+      // Defensive: extensions we can't forward to Claude (no native block,
+      // no text-extraction path). Skip with a clear reason.
+      if (perTypeCap == 0) {
+        debugPrint('Asset ${asset.fileName} unsupported type ($ext), skipping');
+        asset.uploaded = false;
+        failedCount++;
+        skipReasons.add('${asset.fileName}: unsupported type');
+        continue;
+      }
+
+      // 10-file cap per job — once we've uploaded the cap, skip the rest.
+      if (uploadedCount >= _maxFilesPerJob) {
+        debugPrint('Asset ${asset.fileName} skipped (10-file cap reached)');
+        asset.uploaded = false;
+        failedCount++;
+        skipReasons.add('${asset.fileName}: 10-file cap reached');
+        continue;
+      }
+
+      // Read file size, apply per-type and total caps before upload.
+      final int fileSize;
       try {
-        final fileSize = File(asset.localPath).lengthSync();
-        if (fileSize > _maxFileSizeBytes) {
-          debugPrint('Asset ${asset.fileName} too large (${fileSize ~/ (1024 * 1024)}MB), skipping');
-          asset.uploaded = false;
-          failedCount++;
-          continue;
-        }
+        fileSize = File(asset.localPath).lengthSync();
       } catch (e) {
         debugPrint('Cannot stat asset ${asset.fileName}: $e');
         asset.uploaded = false;
         failedCount++;
+        skipReasons.add('${asset.fileName}: cannot read');
+        continue;
+      }
+
+      if (fileSize > perTypeCap) {
+        final mb = (fileSize / (1024 * 1024)).toStringAsFixed(1);
+        final capMb = (perTypeCap / (1024 * 1024)).toStringAsFixed(0);
+        debugPrint('Asset ${asset.fileName} too large (${mb}MB > ${capMb}MB cap), skipping');
+        asset.uploaded = false;
+        failedCount++;
+        skipReasons.add('${asset.fileName}: ${mb}MB exceeds ${capMb}MB cap for $ext');
+        continue;
+      }
+
+      if (totalUploadedBytes + fileSize > _maxTotalUploadBytes) {
+        final mb = (fileSize / (1024 * 1024)).toStringAsFixed(1);
+        final usedMb = (totalUploadedBytes / (1024 * 1024)).toStringAsFixed(1);
+        debugPrint('Asset ${asset.fileName} skipped (would exceed 50MB total: ${usedMb}MB used, ${mb}MB more)');
+        asset.uploaded = false;
+        failedCount++;
+        skipReasons.add('${asset.fileName}: 50MB total cap reached');
         continue;
       }
 
@@ -356,20 +489,26 @@ Design:
         asset.cid = cid;
         asset.gatewayUrl = await _buildGatewayUrl(cid);
         asset.uploaded = true;
-        generation.uploadedAssets = i + 1;
+        uploadedCount++;
+        totalUploadedBytes += fileSize;
+        generation.uploadedAssets = uploadedCount;
         await _generationsBox.put(generation.id, generation);
         _statusController.add(generation);
       } catch (e) {
         debugPrint('Failed to upload asset ${asset.fileName}: $e');
         asset.uploaded = false;
         failedCount++;
+        skipReasons.add('${asset.fileName}: upload failed');
       }
     }
 
-    // M2: Inform user about failed uploads
+    // M2: Inform user about failed/skipped assets
     if (failedCount > 0) {
+      final summary = skipReasons.length <= 3
+          ? skipReasons.join('; ')
+          : '${skipReasons.take(3).join('; ')} (+${skipReasons.length - 3} more)';
       generation.statusMessage =
-          '$failedCount of ${generation.totalAssets} assets failed to upload';
+          '$failedCount of ${generation.totalAssets} assets skipped — $summary';
       generation.updatedAt = DateTime.now();
       await _generationsBox.put(generation.id, generation);
       _statusController.add(generation);

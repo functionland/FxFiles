@@ -1,14 +1,80 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
+import 'package:fula_files/core/services/website_service.dart';
 
 /// Result returned by [GenerateWebsiteScreen] when the user taps Publish.
 typedef GenerateWebsitePromptResult = ({
   String websiteName,
   String category,
   List<String> styles,
+  String palette,
   String prompt,
 });
+
+/// Palette options shown in the generator. Labels are stored verbatim in the
+/// generation prompt; the corresponding hidden instruction lives in
+/// `WebsiteService._paletteInstructions`. The first entry is the default
+/// selection — it tells the AI to derive colors from the user's attached
+/// files. Order/labels must stay stable so older "Recreate" flows still
+/// resolve correctly.
+class _PaletteOption {
+  final String label;
+  final String description;
+  final List<Color> colors; // 4 colors painted as vertical bands in the swatch
+
+  const _PaletteOption({
+    required this.label,
+    required this.description,
+    required this.colors,
+  });
+}
+
+const List<_PaletteOption> _paletteOptions = [
+  // First entry is the default. Swatch uses four unrelated hues to read as
+  // "could be anything — I'll match your photos".
+  _PaletteOption(
+    label: 'Auto from attachments',
+    description: 'Sampled from your files',
+    colors: [
+      Color(0xFFEF4444),
+      Color(0xFFF59E0B),
+      Color(0xFF14B8A6),
+      Color(0xFF6366F1),
+    ],
+  ),
+  _PaletteOption(
+    label: 'Warm',
+    description: 'Reds, oranges, golds',
+    colors: [
+      Color(0xFFC73838),
+      Color(0xFFF59E0B),
+      Color(0xFFEAB308),
+      Color(0xFFFEDFB1),
+    ],
+  ),
+  _PaletteOption(
+    label: 'Cold',
+    description: 'Blues, teals, slate',
+    colors: [
+      Color(0xFF1E40AF),
+      Color(0xFF0EA5E9),
+      Color(0xFF14B8A6),
+      Color(0xFF475569),
+    ],
+  ),
+  _PaletteOption(
+    label: 'Grey tone',
+    description: 'Strictly monochrome',
+    colors: [
+      Color(0xFF111827),
+      Color(0xFF6B7280),
+      Color(0xFFD1D5DB),
+      Color(0xFFF9FAFB),
+    ],
+  ),
+];
 
 /// Style options shown in the generator. Labels are stored verbatim in the
 /// generation prompt; corresponding hidden instructions live in
@@ -121,6 +187,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
   final String? initialName;
   final String? initialCategory;
   final List<String>? initialStyles;
+  final String? initialPalette;
   final String? initialPrompt;
 
   const GenerateWebsiteScreen({
@@ -129,6 +196,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
     this.initialName,
     this.initialCategory,
     this.initialStyles,
+    this.initialPalette,
     this.initialPrompt,
   });
 
@@ -140,6 +208,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late final TextEditingController _nameController;
   late final TextEditingController _promptController;
   late String _category;
+  late String _palette;
   late final Set<String> _selectedStyles;
 
   @override
@@ -155,6 +224,11 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
             _categoryOptions.contains(widget.initialCategory))
         ? widget.initialCategory!
         : _categoryOptions.first;
+    final knownPaletteLabels = _paletteOptions.map((p) => p.label).toSet();
+    _palette = (widget.initialPalette != null &&
+            knownPaletteLabels.contains(widget.initialPalette))
+        ? widget.initialPalette!
+        : _paletteOptions.first.label;
     final knownLabels = _styleOptions.map((s) => s.label).toSet();
     _selectedStyles = {
       if (widget.initialStyles != null)
@@ -189,9 +263,75 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
           .map((s) => s.label)
           .where(_selectedStyles.contains)
           .toList(),
+      palette: _palette,
       prompt: _promptController.text.trim(),
     );
     Navigator.of(context).pop<GenerateWebsitePromptResult>(result);
+  }
+
+  void _showPromptPreview() {
+    final fullPrompt = WebsiteService.instance.buildPreviewPrompt(
+      websiteName: _nameController.text.trim(),
+      category: _category,
+      styles: _styleOptions
+          .map((s) => s.label)
+          .where(_selectedStyles.contains)
+          .toList(),
+      palette: _palette,
+      body: _promptController.text.trim(),
+    );
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return AlertDialog(
+          title: const Text('Full prompt preview'),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.6,
+              maxWidth: 600,
+            ),
+            child: Scrollbar(
+              child: SingleChildScrollView(
+                primary: false,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SelectableText(
+                    fullPrompt,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: fullPrompt));
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('Prompt copied')),
+                );
+              },
+              icon: const Icon(LucideIcons.copy, size: 16),
+              label: const Text('Copy'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -250,6 +390,10 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                   _buildSelectedChipsRow(theme),
                 ],
                 const SizedBox(height: 24),
+                _buildPaletteHeader(theme),
+                const SizedBox(height: 10),
+                _buildPaletteCardsRow(),
+                const SizedBox(height: 24),
                 TextField(
                   controller: _promptController,
                   maxLines: 6,
@@ -264,12 +408,31 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  'Category- and style-specific instructions plus technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                    height: 1.5,
-                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Category- and style-specific instructions plus technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color:
+                              theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: _showPromptPreview,
+                      icon: const Icon(LucideIcons.eye, size: 18),
+                      tooltip: 'Preview full prompt',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 32, minHeight: 32),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -324,6 +487,46 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
             selected: selected,
             dimmed: dimmed,
             onTap: dimmed ? null : () => _toggleStyle(option.label),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPaletteHeader(ThemeData theme) {
+    final secondary = theme.colorScheme.onSurface.withValues(alpha: 0.7);
+    final tertiary = theme.colorScheme.onSurface.withValues(alpha: 0.5);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
+      children: [
+        Text(
+          'Color palette ',
+          style: theme.textTheme.labelMedium?.copyWith(color: secondary),
+        ),
+        Text(
+          '· pick one',
+          style: theme.textTheme.labelMedium?.copyWith(color: tertiary),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPaletteCardsRow() {
+    return SizedBox(
+      height: 156,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        itemCount: _paletteOptions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final option = _paletteOptions[i];
+          final selected = _palette == option.label;
+          return _PaletteCard(
+            option: option,
+            selected: selected,
+            onTap: () => setState(() => _palette = option.label),
           );
         },
       ),
@@ -589,6 +792,115 @@ class _SelectedBadge extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: const Icon(LucideIcons.check, size: 14, color: Colors.white),
+    );
+  }
+}
+
+/// Single-select card mirroring [_StyleCard] but showing the palette's colors
+/// as four equal vertical bands instead of a mock layout swatch.
+class _PaletteCard extends StatelessWidget {
+  final _PaletteOption option;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _PaletteCard({
+    required this.option,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final borderColor = selected
+        ? AppColors.primary
+        : theme.colorScheme.outlineVariant;
+    final fillColor = selected
+        ? AppColors.primary.withValues(alpha: 0.12)
+        : theme.colorScheme.surfaceContainerHighest;
+    final labelColor =
+        selected ? AppColors.primary : theme.colorScheme.onSurface;
+
+    return Material(
+      color: fillColor,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: 140,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: borderColor, width: selected ? 1.5 : 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(9),
+                ),
+                child: SizedBox(
+                  height: 78,
+                  child: Stack(
+                    children: [
+                      _PaletteSwatch(colors: option.colors),
+                      if (selected)
+                        const Positioned(
+                          top: 6,
+                          right: 6,
+                          child: _SelectedBadge(),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      option.label,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      option.description,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 11,
+                        height: 1.3,
+                        color: theme.colorScheme.onSurface
+                            .withValues(alpha: 0.6),
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PaletteSwatch extends StatelessWidget {
+  final List<Color> colors;
+  const _PaletteSwatch({required this.colors});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (final c in colors)
+          Expanded(child: ColoredBox(color: c, child: const SizedBox.expand())),
+      ],
     );
   }
 }
