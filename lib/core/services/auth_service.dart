@@ -598,6 +598,15 @@ class AuthService {
         final usersIndexIpns = await SecureStorageService.instance.read(
           SecureStorageKeys.usersIndexIpnsName,
         );
+        final usersIndexIpnsGatewayRaw = await SecureStorageService.instance
+            .read(SecureStorageKeys.usersIndexIpnsGatewayUrls);
+        final usersIndexIpnsGateways = usersIndexIpnsGatewayRaw == null
+            ? null
+            : usersIndexIpnsGatewayRaw
+                .split(RegExp(r'[\n,]'))
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList(growable: false);
 
         await FulaApiService.instance.initialize(
           endpoint: endpoint,
@@ -607,6 +616,7 @@ class AuthService {
           chainRpcUrl: baseRpcUrl,
           usersIndexAnchorAddress: usersIndexAnchor,
           usersIndexIpnsName: usersIndexIpns,
+          usersIndexIpnsGatewayUrls: usersIndexIpnsGateways,
         );
         debugPrint('FulaApiService initialized successfully');
         debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');

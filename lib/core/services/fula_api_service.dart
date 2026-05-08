@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
@@ -41,6 +42,14 @@ const String kUsersIndexAnchorAddress =
     '0x00fB6AD1B42Fb37a0Ac7C2977fC1fa4462C36Af9';
 const String kUsersIndexIpnsName =
     'k51qzi5uqu5dkkd6tv8slgoouzzs505qdcr4cb5egc9rlx7qwq0e794yxj9cg4'; // TODO: paste k51qzi5... from setup-users-index-publisher.sh
+// Default IPNS gateway template used to resolve the per-user anchor during
+// cold-start. `{cid}` is replaced with the IPNS name. Filebase is used by
+// default; advanced users can override or extend this list in
+// Settings > Fula API Configuration. Pass an empty list to fall back to the
+// SDK's curated IPNS-aware gateway subset.
+const List<String> kUsersIndexIpnsGatewayUrls = <String>[
+  'https://ipfs.filebase.io/ipns/{cid}/',
+];
 // 128 MiB cap — half the SDK default. Mobile devices have tighter storage
 // budgets; the cache is content-addressed so fills mostly stop on its own
 // once the working set is covered.
@@ -100,15 +109,40 @@ class FulaApiService {
     String? chainRpcUrl,
     String? usersIndexAnchorAddress,
     String? usersIndexIpnsName,
+    List<String>? usersIndexIpnsGatewayUrls,
   }) async {
     try {
-      // Derive the per-user cold-start key from the pinned email. Wrap in
-      // try/catch — a derivation failure must NOT prevent client init; we
-      // simply fall back to warm-cache-only by passing an empty userKey
-      // (any one of the four usersIndex* fields being empty cleanly
-      // disables cold-start in the SDK).
+      // Derive the per-user cold-start key. Try the JWT-sub-based
+      // derivation FIRST — it matches master's `state.rs::hash_user_id`
+      // byte-for-byte and works correctly for BOTH pre-migration-011
+      // users (whose JWT sub is plaintext email) and modern users
+      // (whose JWT sub is `sha256(email).hex()`). The legacy
+      // `deriveUserKeyFromEmail` always pre-hashes with sha256, which
+      // matches master only for modern users — for pre-migration users
+      // it produces the wrong userKey and cold-start lookup misses
+      // ("user has not written yet" error even when they have).
+      //
+      // Wrap in try/catch — a derivation failure must NOT prevent
+      // client init; fall back to warm-cache-only by passing an empty
+      // userKey (any one of the four usersIndex* fields being empty
+      // cleanly disables cold-start in the SDK).
       String usersIndexUserKey = '';
-      if (userEmail != null && userEmail.isNotEmpty) {
+      final jwtSub = _extractJwtSub(accessToken);
+      if (jwtSub != null && jwtSub.isNotEmpty) {
+        try {
+          usersIndexUserKey =
+              await fula.deriveUserKeyFromJwtSub(jwtSub: jwtSub);
+        } catch (e) {
+          debugPrint(
+              'FulaApiService: deriveUserKeyFromJwtSub failed: $e; '
+              'falling back to email-based derivation');
+        }
+      }
+      if (usersIndexUserKey.isEmpty &&
+          userEmail != null &&
+          userEmail.isNotEmpty) {
+        // Fallback: legacy email-based derivation. Only correct for
+        // post-migration-011 users; documented as such in the SDK.
         try {
           usersIndexUserKey =
               await fula.deriveUserKeyFromEmail(email: userEmail);
@@ -135,6 +169,12 @@ class FulaApiService {
           (usersIndexIpnsName == null || usersIndexIpnsName.isEmpty)
               ? kUsersIndexIpnsName
               : usersIndexIpnsName;
+      // null  -> setting never touched, use built-in default (Filebase).
+      // empty -> user explicitly cleared the setting, delegate to the SDK's
+      //          curated IPNS-aware gateway subset.
+      // other -> use the caller-supplied list verbatim (already trimmed).
+      final List<String> resolvedIpnsGatewayUrls = usersIndexIpnsGatewayUrls ??
+          kUsersIndexIpnsGatewayUrls;
 
       final config = fula.FulaConfig(
         endpoint: endpoint,
@@ -163,7 +203,7 @@ class FulaApiService {
         usersIndexAnchorAddress: resolvedAnchor,
         usersIndexIpnsName: resolvedIpnsName,
         usersIndexUserKey: usersIndexUserKey,
-        usersIndexIpnsGatewayUrls: const [], // empty -> SDK IPNS-aware subset
+        usersIndexIpnsGatewayUrls: resolvedIpnsGatewayUrls,
         usersIndexIpfsGatewayUrls: const [], // empty -> SDK 6-gateway list
       );
 
@@ -948,6 +988,38 @@ class FulaApiService {
     _cloudAccessToken = null;
     _isLocalEndpoint = false;
     disposeLocalClient();
+  }
+
+  /// Decode the `sub` claim from a JWT WITHOUT verifying the signature.
+  ///
+  /// Used at SDK init to compute the cold-start userKey directly from
+  /// the JWT sub (matches master's hashing exactly). Signature
+  /// verification is master's job — this client-side decode is purely
+  /// to read the sub value the master ALREADY validated when issuing
+  /// the token. Returns null on any malformed input; the caller falls
+  /// back to email-based derivation.
+  ///
+  /// JWT format: `header.payload.signature` where each part is
+  /// base64url-encoded. Payload is JSON. We extract the `sub` field.
+  static String? _extractJwtSub(String? jwt) {
+    if (jwt == null || jwt.isEmpty) return null;
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return null;
+      var payload = parts[1];
+      // base64url decode requires `=` padding to a multiple of 4.
+      // Add as many `=` as needed.
+      final pad = (4 - payload.length % 4) % 4;
+      payload = payload + ('=' * pad);
+      final decoded = utf8.decode(base64Url.decode(payload));
+      final json = jsonDecode(decoded);
+      if (json is! Map) return null;
+      final sub = json['sub'];
+      if (sub is! String) return null;
+      return sub.isEmpty ? null : sub;
+    } catch (_) {
+      return null;
+    }
   }
 }
 

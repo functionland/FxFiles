@@ -42,6 +42,7 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
   final _baseRpcController = TextEditingController();
   final _usersIndexAnchorController = TextEditingController();
   final _usersIndexIpnsController = TextEditingController();
+  final _usersIndexIpnsGatewaysController = TextEditingController();
   final _jwtTokenController = TextEditingController();
 
   bool _isEditing = false;
@@ -52,6 +53,8 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
   static const String _defaultBaseRpc = kUsersIndexChainRpcUrl;
   static const String _defaultUsersIndexAnchor = kUsersIndexAnchorAddress;
   static const String _defaultUsersIndexIpns = kUsersIndexIpnsName;
+  static final String _defaultUsersIndexIpnsGateways =
+      kUsersIndexIpnsGatewayUrls.join('\n');
 
   @override
   void initState() {
@@ -79,6 +82,7 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
     _baseRpcController.dispose();
     _usersIndexAnchorController.dispose();
     _usersIndexIpnsController.dispose();
+    _usersIndexIpnsGatewaysController.dispose();
     _jwtTokenController.dispose();
     super.dispose();
   }
@@ -102,6 +106,8 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
         .read(SecureStorageKeys.usersIndexAnchorAddress);
     final usersIndexIpns = await SecureStorageService.instance
         .read(SecureStorageKeys.usersIndexIpnsName);
+    final usersIndexIpnsGateways = await SecureStorageService.instance
+        .read(SecureStorageKeys.usersIndexIpnsGatewayUrls);
     final jwtToken =
         await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
 
@@ -118,6 +124,8 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
           usersIndexAnchor ?? _defaultUsersIndexAnchor;
       _usersIndexIpnsController.text =
           usersIndexIpns ?? _defaultUsersIndexIpns;
+      _usersIndexIpnsGatewaysController.text =
+          usersIndexIpnsGateways ?? _defaultUsersIndexIpnsGateways;
       _jwtTokenController.text = jwtToken ?? '';
     });
   }
@@ -236,6 +244,10 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
         _usersIndexIpnsController.text.trim(),
       );
       await SecureStorageService.instance.write(
+        SecureStorageKeys.usersIndexIpnsGatewayUrls,
+        _usersIndexIpnsGatewaysController.text.trim(),
+      );
+      await SecureStorageService.instance.write(
         SecureStorageKeys.jwtToken,
         _jwtTokenController.text,
       );
@@ -337,6 +349,12 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
         title: 'Users-Index IPNS Name',
         value: _usersIndexIpnsController.text,
         emptyLabel: 'Not configured (cold-start disabled)',
+      ),
+      _readTile(
+        icon: LucideIcons.globe2,
+        title: 'Users-Index IPNS Gateways',
+        value: _usersIndexIpnsGatewaysController.text,
+        emptyLabel: 'Empty (using fula_client defaults)',
       ),
       _readTile(
         icon: LucideIcons.key,
@@ -473,6 +491,23 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
                     'cold-start cleanly.',
                 helperMaxLines: 4,
                 prefixIcon: Icon(LucideIcons.cloudOff),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _usersIndexIpnsGatewaysController,
+              maxLines: 3,
+              minLines: 1,
+              decoration: const InputDecoration(
+                labelText: 'Users-Index IPNS Gateways',
+                hintText: 'https://ipfs.filebase.io/ipns/{cid}/',
+                helperText:
+                    'IPNS gateways the cold-start resolver hits to fetch '
+                    'the per-user anchor. One URL per line; use {cid} as '
+                    'the IPNS-name placeholder. Leave empty to use the '
+                    'fula_client built-in gateway list.',
+                helperMaxLines: 4,
+                prefixIcon: Icon(LucideIcons.globe2),
               ),
             ),
             const SizedBox(height: 12),

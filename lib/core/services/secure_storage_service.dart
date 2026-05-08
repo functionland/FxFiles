@@ -103,6 +103,11 @@ class SecureStorageKeys {
   // the master. Same value for every user; bake the deploy default into the
   // app and let advanced users override here.
   static const String usersIndexIpnsName = 'users_index_ipns_name';
+  // Newline-separated list of IPNS gateway URL templates the cold-start
+  // resolver uses to fetch the per-user anchor. `{cid}` is replaced with
+  // the IPNS name. Empty -> SDK's curated IPNS-aware subset.
+  static const String usersIndexIpnsGatewayUrls =
+      'users_index_ipns_gateway_urls';
 
   // NFT wallet keys
   static const String nftWalletPrivateKey = 'nft_wallet_private_key';
