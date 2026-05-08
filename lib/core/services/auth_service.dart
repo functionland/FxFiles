@@ -751,6 +751,34 @@ class AuthService {
     return base64Encode(key);
   }
 
+  /// Returns the exact three inputs `_deriveEncryptionKey` feeds into
+  /// the Argon2id derivation (`provider`, `userId`, `email`). The email
+  /// returned is the **pinned** derivation email read from
+  /// `SecureStorageKeys.derivationEmail` (set on first sign-in to defend
+  /// against Apple-relay drift), falling back to `_currentUser!.email`
+  /// when no pin has been written yet.
+  ///
+  /// Surfaced in Settings → Security so an operator can reproduce the
+  /// derivation outside the app for diagnostics (e.g. confirm a
+  /// `bucket_lookup_h` mismatch is or isn't due to formula drift). Does
+  /// not return any secret material — `userId` is the OAuth provider's
+  /// public subject identifier, not a token.
+  Future<({String provider, String userId, String email})?>
+      getDerivationInputs() async {
+    if (_currentUser == null) return null;
+    final stored = await SecureStorageService.instance.read(
+      SecureStorageKeys.derivationEmail,
+    );
+    final email = (stored != null && stored.isNotEmpty)
+        ? stored
+        : _currentUser!.email;
+    return (
+      provider: _currentUser!.provider.name,
+      userId: _currentUser!.id,
+      email: email,
+    );
+  }
+
   String? _cachedShareId;
 
   Future<String?> getShareId() async {

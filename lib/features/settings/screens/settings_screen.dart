@@ -37,6 +37,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _showPrivateKey = false;
+  bool _showDerivationInputs = false;
 
   Future<void> _openProfileForDeletion() async {
     // Prefer the user's customised billing server (from secure storage) and
@@ -908,7 +909,141 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               ),
+            _buildDerivationInputsCard(),
           ],
+        );
+      },
+    );
+  }
+
+  /// Diagnostic card showing the three inputs (`provider`, `userId`,
+  /// `email`) that `_deriveEncryptionKey` actually feeds into Argon2id.
+  /// Surfaced so an operator can reproduce the key derivation outside
+  /// the app — e.g. when a `bucket_lookup_h` value on master doesn't
+  /// match what a fresh re-derivation produces, this card tells you
+  /// whether the OAuth `userId` or the pinned `derivationEmail` drifted.
+  /// None of these values are secret: `userId` is the OAuth provider's
+  /// public subject identifier, `email` is the user's address, provider
+  /// is `"google"` / `"apple"`.
+  Widget _buildDerivationInputsCard() {
+    return FutureBuilder<({String provider, String userId, String email})?>(
+      future: AuthService.instance.getDerivationInputs(),
+      builder: (context, snapshot) {
+        final inputs = snapshot.data;
+        if (inputs == null) return const SizedBox.shrink();
+
+        final psBlock =
+            '\$env:FULA_DERIVE_PROVIDER = "${inputs.provider}"\n'
+            '\$env:FULA_DERIVE_USER_ID  = "${inputs.userId}"\n'
+            '\$env:FULA_DERIVE_EMAIL    = "${inputs.email}"';
+
+        final mask = '•' * 20;
+
+        Widget row(String label, String value) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    label,
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    _showDerivationInputs ? value : mask,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
+                    maxLines: _showDerivationInputs ? null : 1,
+                    overflow: _showDerivationInputs ? null : TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(LucideIcons.copy, size: 18),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: value));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('$label copied'),
+                        duration: const Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                  tooltip: 'Copy $label',
+                ),
+              ],
+            ),
+          );
+        }
+
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.blueGrey.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: Colors.blueGrey.withValues(alpha: 0.3),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(LucideIcons.bug, color: Colors.blueGrey, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Key derivation inputs (debug)',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      _showDerivationInputs ? LucideIcons.eyeOff : LucideIcons.eye,
+                      size: 20,
+                    ),
+                    onPressed: () => setState(
+                      () => _showDerivationInputs = !_showDerivationInputs,
+                    ),
+                    tooltip: _showDerivationInputs ? 'Hide' : 'Reveal',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Inputs to Argon2id used to derive your encryption key. '
+                'Only needed for debugging master-side bucket_lookup_h mismatches.',
+                style: TextStyle(fontSize: 11, color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              row('Provider', inputs.provider),
+              row('User ID', inputs.userId),
+              row('Email', inputs.email),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(LucideIcons.terminal, size: 16),
+                  label: const Text('Copy as PowerShell env block'),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: psBlock));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('PowerShell env block copied'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
