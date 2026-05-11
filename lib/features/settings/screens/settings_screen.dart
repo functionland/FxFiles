@@ -926,16 +926,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   /// public subject identifier, `email` is the user's address, provider
   /// is `"google"` / `"apple"`.
   Widget _buildDerivationInputsCard() {
-    return FutureBuilder<({String provider, String userId, String email})?>(
+    return FutureBuilder<({
+      String provider,
+      String userId,
+      String email,
+      String? usersIndexUserKey,
+    })?>(
       future: AuthService.instance.getDerivationInputs(),
       builder: (context, snapshot) {
         final inputs = snapshot.data;
         if (inputs == null) return const SizedBox.shrink();
 
+        // Env-var names match the fula-api e2e test
+        // (`crates/fula-client/tests/offline_e2e.rs`
+        // → `fxfiles_walkable_v8_fresh_bucket_upload` and
+        // `fxfiles_walkable_v8_fresh_bucket_walk`) so the operator can
+        // paste this block straight into PowerShell before running
+        // `scripts/walkable-v8-fresh-bucket-upload.ps1` (with
+        // `FULA_VERIFY_IMAGES_BUCKET=1`) and the `-Mode cold` walk
+        // script. Keep these identifiers in sync if either side
+        // renames. `FULA_USERS_INDEX_USER_KEY` is the public
+        // cold-start lookup key (NOT the encryption secret) — it's
+        // safe to surface on-screen.
+        final userKeyLine = inputs.usersIndexUserKey != null
+            ? '\$env:FULA_USERS_INDEX_USER_KEY = "${inputs.usersIndexUserKey}"\n'
+            : '';
         final psBlock =
-            '\$env:FULA_DERIVE_PROVIDER = "${inputs.provider}"\n'
-            '\$env:FULA_DERIVE_USER_ID  = "${inputs.userId}"\n'
-            '\$env:FULA_DERIVE_EMAIL    = "${inputs.email}"';
+            '\$env:FULA_TEST_PROVIDER       = "${inputs.provider}"\n'
+            '\$env:FULA_TEST_OAUTH_SUB      = "${inputs.userId}"\n'
+            '\$env:FULA_TEST_EMAIL          = "${inputs.email}"\n'
+            '$userKeyLine';
 
         final mask = '•' * 20;
 
@@ -1023,8 +1043,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const SizedBox(height: 12),
               row('Provider', inputs.provider),
-              row('User ID', inputs.userId),
+              // The "User ID" returned by getDerivationInputs() is the
+              // raw OAuth `sub` from Google/Apple
+              // (`auth_service.dart:777` returns `_currentUser!.id`,
+              // documented at line 764-765 as "the OAuth provider's
+              // public subject identifier"). Surfacing it under a
+              // clearer label so operators copying it for the fula-api
+              // e2e test know what they're getting.
+              row('OAuth sub', inputs.userId),
               row('Email', inputs.email),
+              // Public cold-start lookup key — same value FxFiles
+              // passes as `usersIndexUserKey` in `FulaConfig`. NOT a
+              // secret; published on-chain by the master's users-index
+              // publisher. Surfaced so operators can paste it into
+              // FULA_USERS_INDEX_USER_KEY for the fula-api cold-walk
+              // test without having to compute the BLAKE3 themselves.
+              row(
+                'User key',
+                inputs.usersIndexUserKey ?? '(derivation failed)',
+              ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,

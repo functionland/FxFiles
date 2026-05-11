@@ -6,6 +6,8 @@ import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
 import 'package:fula_files/core/services/bucket_cache_service.dart';
+import 'package:fula_files/core/services/fula_api.dart';
+import 'package:fula_files/core/services/fula_api_types.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
@@ -15,6 +17,9 @@ export 'package:fula_client/fula_client.dart' show
     DirectoryListing,
     DirectoryEntry,
     FileMetadata;
+// Re-export the shared types from fula_api_types so existing callers
+// that imported `fula_api_service.dart` still get them.
+export 'package:fula_files/core/services/fula_api_types.dart';
 
 // ============================================================================
 // Server-down read config (fula-client v0.4 "offline-download" feature).
@@ -43,19 +48,27 @@ const String kUsersIndexAnchorAddress =
 const String kUsersIndexIpnsName =
     'k51qzi5uqu5dkkd6tv8slgoouzzs505qdcr4cb5egc9rlx7qwq0e794yxj9cg4'; // TODO: paste k51qzi5... from setup-users-index-publisher.sh
 // Default IPNS gateway template used to resolve the per-user anchor during
-// cold-start. `{cid}` is replaced with the IPNS name. Filebase is used by
-// default; advanced users can override or extend this list in
-// Settings > Fula API Configuration. Pass an empty list to fall back to the
-// SDK's curated IPNS-aware gateway subset.
+// cold-start. `{name}` is the placeholder the SDK substitutes with the
+// IPNS name (matches `registry_resolver::default_ipns_gateway_urls`).
+//
+// Order matters — the resolver tries gateways in sequence and takes the
+// first content-verified body whose in-payload `sequence` is at least the
+// locally-observed high-water mark. `dget.top` (subdomain-style) leads
+// because operator measurement (2026-05-09) showed it picks up freshly-
+// published IPNS records the fastest. Filebase follows as a stable
+// path-style fallback. Pass an empty list to fall back to the SDK's
+// curated IPNS-aware gateway subset (which now also leads with dget.top
+// in fula_client 0.6.1+).
 const List<String> kUsersIndexIpnsGatewayUrls = <String>[
-  'https://ipfs.filebase.io/ipns/{cid}/',
+  'https://{name}.ipns.dget.top/',
+  'https://ipfs.filebase.io/ipns/{name}/',
 ];
 // 128 MiB cap — half the SDK default. Mobile devices have tighter storage
 // budgets; the cache is content-addressed so fills mostly stop on its own
 // once the working set is covered.
 const int kBlockCacheMaxBytes = 128 * 1024 * 1024;
 
-class FulaApiService {
+class FulaApiService implements FulaApi {
   static final FulaApiService instance = FulaApiService._();
   FulaApiService._();
 
@@ -205,6 +218,16 @@ class FulaApiService {
         usersIndexUserKey: usersIndexUserKey,
         usersIndexIpnsGatewayUrls: resolvedIpnsGatewayUrls,
         usersIndexIpfsGatewayUrls: const [], // empty -> SDK 6-gateway list
+        // Walkable-v8 default-on globally (2026-05-09). Every Phase 2
+        // root commit stamps a content-addressed CID alongside the
+        // existing storage_key in PointerWire::LinkV2, so cold-cache
+        // offline reads can walk the encrypted forest via the gateway
+        // race instead of the (master-S3-only) storage_key path. The
+        // SDK requires this field explicitly because flipping it to
+        // false would silently downgrade newly-written buckets to
+        // legacy v7 pointers — making them offline-unreachable on
+        // fresh devices. Cloud client = always on.
+        walkableV8WriterEnabled: true,
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -247,6 +270,41 @@ class FulaApiService {
       defaultBucket: _defaultBucket,
     );
     debugPrint('Switched to local S3 gateway: $localUrl');
+  }
+
+  /// Re-initialize the cloud client with [newEndpoint], preserving
+  /// the currently-configured secret key + access token. **Used only
+  /// by integration tests** to simulate online ↔ offline transitions
+  /// (e.g. swap to `https://s33.cloud.fx.land` to make the master
+  /// DNS-fail without going through the OAuth flow).
+  ///
+  /// The original cloud endpoint is stashed in [_cloudEndpoint] (the
+  /// existing field used by `switchToCloudGateway` for symmetry) so
+  /// the test can restore by calling this again with the saved value.
+  ///
+  /// `@visibleForTesting` flags the analyzer to warn if production
+  /// code paths reach this. Failing closed when not initialized so
+  /// a misuse is loud, not silent.
+  @visibleForTesting
+  Future<void> testOnlyReinitializeWithEndpoint(String newEndpoint) async {
+    final secret = _currentSecretKey;
+    if (secret == null) {
+      throw FulaApiException(
+        'testOnlyReinitializeWithEndpoint: FulaApiService is not '
+        'initialized — sign in on the device before running '
+        'integration tests',
+      );
+    }
+    // Track the new endpoint so the harness can read it back and
+    // confirm the mutation took.
+    _cloudEndpoint = newEndpoint;
+    _loadedForests.clear();
+    await initialize(
+      endpoint: newEndpoint,
+      secretKey: secret,
+      accessToken: _cloudAccessToken,
+      defaultBucket: _defaultBucket,
+    );
   }
 
   /// Switch back to cloud gateway
@@ -586,6 +644,11 @@ class FulaApiService {
         usersIndexUserKey: '',
         usersIndexIpnsGatewayUrls: const [],
         usersIndexIpfsGatewayUrls: const [],
+        // Walkable-v8 default-on (see cloud-client comment). Same flag
+        // value here so LAN-uploaded manifests are byte-compatible
+        // with cloud-uploaded ones — a single content-addressed
+        // forest works regardless of which client wrote it.
+        walkableV8WriterEnabled: true,
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -1027,53 +1090,8 @@ class FulaApiService {
 // HELPER CLASSES
 // ============================================================================
 
-class UploadResult {
-  final String etag;
-  final String? contentCid;
-
-  UploadResult({required this.etag, this.contentCid});
-}
-
-class UploadProgress {
-  final int bytesUploaded;
-  final int totalBytes;
-
-  UploadProgress({
-    required this.bytesUploaded,
-    required this.totalBytes,
-  });
-
-  double get percentage => totalBytes > 0 ? (bytesUploaded / totalBytes) * 100 : 0;
-}
-
-class BatchUploadItem {
-  final String path;
-  final Uint8List data;
-  final String? contentType;
-
-  BatchUploadItem({
-    required this.path,
-    required this.data,
-    this.contentType,
-  });
-}
-
-class IncompleteUploadInfo {
-  final String? key;
-  final String? uploadId;
-  final DateTime? initiated;
-
-  IncompleteUploadInfo({
-    this.key,
-    this.uploadId,
-    this.initiated,
-  });
-}
-
-class FulaApiException implements Exception {
-  final String message;
-  FulaApiException(this.message);
-
-  @override
-  String toString() => 'FulaApiException: $message';
-}
+// Helper classes (UploadResult, UploadProgress, BatchUploadItem,
+// IncompleteUploadInfo, FulaApiException) moved to fula_api_types.dart
+// so the abstract FulaApi surface and concrete FulaApiService can share
+// them without a cycle. The `export` declaration at the top of this
+// file keeps backward-compat with callers that import them from here.

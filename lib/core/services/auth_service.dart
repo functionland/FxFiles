@@ -752,19 +752,35 @@ class AuthService {
   }
 
   /// Returns the exact three inputs `_deriveEncryptionKey` feeds into
-  /// the Argon2id derivation (`provider`, `userId`, `email`). The email
-  /// returned is the **pinned** derivation email read from
-  /// `SecureStorageKeys.derivationEmail` (set on first sign-in to defend
-  /// against Apple-relay drift), falling back to `_currentUser!.email`
-  /// when no pin has been written yet.
+  /// the Argon2id derivation (`provider`, `userId`, `email`) PLUS the
+  /// public cold-start `usersIndexUserKey` (32 hex chars) that the
+  /// resolver uses to locate this user's bucket-set in the on-chain
+  /// users-index CBOR. The email returned is the **pinned** derivation
+  /// email read from `SecureStorageKeys.derivationEmail` (set on first
+  /// sign-in to defend against Apple-relay drift), falling back to
+  /// `_currentUser!.email` when no pin has been written yet.
+  ///
+  /// `usersIndexUserKey` is `BLAKE3("fula:user_id:" || sha256(lower(email)))[..16]`
+  /// hex-encoded — the SAME value [`FulaApiService.initialize`] passes
+  /// as `usersIndexUserKey` in `FulaConfig`. Computed via the
+  /// fula-flutter binding (`derive_user_key_from_jwt_sub` preferred
+  /// because it matches what master stores; `derive_user_key_from_email`
+  /// is a post-migration-011 fallback). Returns `null` for the userKey
+  /// only if BOTH derivations fail.
   ///
   /// Surfaced in Settings → Security so an operator can reproduce the
   /// derivation outside the app for diagnostics (e.g. confirm a
-  /// `bucket_lookup_h` mismatch is or isn't due to formula drift). Does
-  /// not return any secret material — `userId` is the OAuth provider's
-  /// public subject identifier, not a token.
-  Future<({String provider, String userId, String email})?>
-      getDerivationInputs() async {
+  /// `bucket_lookup_h` mismatch is or isn't due to formula drift, OR
+  /// run the fula-api e2e cold-walk test which needs the userKey).
+  /// Does not return any secret material — `userId` is the OAuth
+  /// provider's public subject identifier, `usersIndexUserKey` is the
+  /// public on-chain identifier; both are non-confidential by design.
+  Future<({
+    String provider,
+    String userId,
+    String email,
+    String? usersIndexUserKey,
+  })?> getDerivationInputs() async {
     if (_currentUser == null) return null;
     final stored = await SecureStorageService.instance.read(
       SecureStorageKeys.derivationEmail,
@@ -772,11 +788,60 @@ class AuthService {
     final email = (stored != null && stored.isNotEmpty)
         ? stored
         : _currentUser!.email;
+
+    // Compute the on-chain users-index userKey. Prefer the JWT-sub
+    // derivation (matches master) and fall back to email-based
+    // derivation only when the JWT can't be read.
+    String? usersIndexUserKey;
+    try {
+      final jwt = await SecureStorageService.instance.read(
+        SecureStorageKeys.jwtToken,
+      );
+      final jwtSub = _extractJwtSubLocal(jwt);
+      if (jwtSub != null && jwtSub.isNotEmpty) {
+        usersIndexUserKey =
+            await fula.deriveUserKeyFromJwtSub(jwtSub: jwtSub);
+      }
+    } catch (e) {
+      debugPrint('AuthService.getDerivationInputs: JWT-sub deriveUserKey failed: $e');
+    }
+    if (usersIndexUserKey == null || usersIndexUserKey.isEmpty) {
+      try {
+        usersIndexUserKey = await fula.deriveUserKeyFromEmail(email: email);
+      } catch (e) {
+        debugPrint('AuthService.getDerivationInputs: email deriveUserKey failed: $e');
+        usersIndexUserKey = null;
+      }
+    }
+
     return (
       provider: _currentUser!.provider.name,
       userId: _currentUser!.id,
       email: email,
+      usersIndexUserKey: usersIndexUserKey,
     );
+  }
+
+  /// Local copy of the JWT-payload `sub` extractor (mirror of
+  /// `FulaApiService._extractJwtSub`). Kept private here to avoid a
+  /// dependency loop between `AuthService` and `FulaApiService`.
+  static String? _extractJwtSubLocal(String? jwt) {
+    if (jwt == null || jwt.isEmpty) return null;
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return null;
+      var payload = parts[1];
+      final pad = (4 - payload.length % 4) % 4;
+      payload = payload + ('=' * pad);
+      final decoded = utf8.decode(base64Url.decode(payload));
+      final json = jsonDecode(decoded);
+      if (json is! Map) return null;
+      final sub = json['sub'];
+      if (sub is! String) return null;
+      return sub.isEmpty ? null : sub;
+    } catch (_) {
+      return null;
+    }
   }
 
   String? _cachedShareId;

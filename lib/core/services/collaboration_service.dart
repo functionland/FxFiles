@@ -456,6 +456,12 @@ class CollaborationService {
           usersIndexUserKey: '',
           usersIndexIpnsGatewayUrls: const [],
           usersIndexIpfsGatewayUrls: const [],
+          // Share-fetch reads existing data through the proxy; it never
+          // writes a forest manifest. The walkable-v8 writer flag has
+          // no observable effect on this code path — set to true to
+          // match the cloud client and avoid wire-format drift if a
+          // future share-side write ever lands.
+          walkableV8WriterEnabled: true,
         );
         final encConfig = fula.EncryptionConfig(
           secretKey: linkSecretKey,

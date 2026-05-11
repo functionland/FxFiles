@@ -18,7 +18,7 @@ dependencies:
   go_router: ^17.0.1
   
   # Storage & Files (with Encryption)
-  fula_client: ^0.4.9
+  fula_client: ^0.5.2
   path_provider: ^2.1.5
   file_picker: ^10.3.7
   open_filex: ^4.6.0
@@ -116,6 +116,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
+  mocktail: ^1.0.4
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
   flutter_native_splash: ^2.4.4
