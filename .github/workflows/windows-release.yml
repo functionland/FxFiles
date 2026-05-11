@@ -10,9 +10,21 @@ env:
 
 jobs:
   build-windows-msix:
-    runs-on: windows-latest
+    # Pinned to windows-2022 instead of windows-latest so the toolchain
+    # doesn't shift when GitHub flips the alias to windows-2025. The
+    # windows-2019 image was retired earlier in 2025, so VS 2019 is no
+    # longer on these runners — only VS 2022.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+
+      # Register the VS 2022 MSBuild + dev tools so Flutter's vswhere probe
+      # returns VS 17 and CMake gets `-G "Visual Studio 17 2022"`. Without
+      # this, Flutter has been requesting `Visual Studio 16 2019` on the
+      # 2022 image and the CMake configure step fails with
+      # "could not find any instance of Visual Studio".
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
