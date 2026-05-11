@@ -476,7 +476,11 @@ class CollaborationService {
           client: shareClient,
           bucket: file.bucket,
           storageKey: file.storageKey,
-          originalKey: file.pathScope ?? file.fileName,
+          // fula-flutter's create_share_token_with_mode sets the token's
+          // path_scope to storage_key (the CID), so the prefix check in
+          // get_object_with_share only passes when originalKey == storageKey.
+          // The web portal does the same: pinning-webui Collab.tsx:174.
+          originalKey: file.storageKey,
           tokenJson: file.shareTokenJson!,
         );
       } else {

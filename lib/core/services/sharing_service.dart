@@ -811,7 +811,10 @@ class SharingService {
     return await fula_service.FulaApiService.instance.downloadSharedFile(
       share.bucket,
       storageKey,
-      share.pathScope,
+      // fula-flutter's create_share_token_with_mode sets the token's
+      // path_scope to storage_key, so the prefix check in
+      // get_object_with_share only passes when originalKey == storageKey.
+      storageKey,
       handle,
     );
   }

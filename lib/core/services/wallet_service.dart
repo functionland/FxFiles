@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -257,13 +258,19 @@ class WalletService {
   /// Generate message for wallet linking
   String generateLinkMessage(String address) {
     final email = AuthService.instance.currentUser?.email ?? 'unknown';
+    // Backend stores only the SHA-256 hash of the lowercased email (no plaintext PII);
+    // it verifies the signed message contains that hash. Matches server/utils/hash.ts
+    // emailToUserId: sha256(email.toLowerCase()).digest('hex').
+    final userId = sha256.convert(utf8.encode(email.toLowerCase())).toString();
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final message = '''Link wallet to Fula Pinning Service
 User: $email
+UserId: $userId
 Wallet: $address
 Timestamp: $timestamp''';
     debugPrint('WalletService: Generated link message:');
     debugPrint('WalletService: Email: $email');
+    debugPrint('WalletService: UserId: $userId');
     debugPrint('WalletService: Address: $address');
     debugPrint('WalletService: Message: $message');
     return message;
