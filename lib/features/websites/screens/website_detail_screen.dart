@@ -14,6 +14,7 @@ import 'package:fula_files/features/websites/providers/website_provider.dart';
 import 'package:fula_files/features/websites/screens/generate_website_screen.dart';
 import 'package:fula_files/features/websites/widgets/generation_status_card.dart';
 import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart';
+import 'package:fula_files/features/websites/widgets/tag_asset_picker_dialog.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
@@ -296,11 +297,58 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
                 _pickFiles(FileType.audio);
               },
             ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(LucideIcons.tag),
+              title: const Text('Import from tag'),
+              subtitle: const Text(
+                'Pick a tag, then choose which of its files to include',
+                style: TextStyle(fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _importFromTag();
+              },
+            ),
             const SizedBox(height: 8),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _importFromTag() async {
+    final selected = await showTagAssetPicker(
+      context: context,
+      excludeTagId: widget.tagId,
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+
+    // Tag each selected file with this website's tag, preserving whichever
+    // identifiers (localPath / remoteKey / iosAssetId) the source TaggedFile
+    // already carried. The existing taggedFilesProvider invalidation refreshes
+    // the asset list, and the upload pipeline then picks them up the same way
+    // it picks up freshly-imported files.
+    int added = 0;
+    for (final tf in selected) {
+      try {
+        await ref.tagFile(
+          tagId: widget.tagId,
+          localPath: tf.localPath,
+          remoteKey: tf.remoteKey,
+          iosAssetId: tf.iosAssetId,
+          fileName: tf.fileName,
+        );
+        added++;
+      } catch (e) {
+        debugPrint('WebsiteDetail: failed to tag ${tf.fileName} into website: $e');
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added $added file${added == 1 ? '' : 's'} from tag')),
+      );
+    }
   }
 
   Future<void> _pickFiles(FileType type) async {
