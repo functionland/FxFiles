@@ -160,6 +160,65 @@ class SharesNotifier extends Notifier<SharesState> {
     }
   }
 
+  /// Create a public link for a tag (latest mode).
+  Future<GeneratedShareLink?> createTagPublicLink({
+    required String tagId,
+    required int expiryDays,
+    String? label,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final result = await _sharingService.createTagPublicLink(
+        tagId: tagId,
+        expiryDays: expiryDays,
+        label: label,
+      );
+
+      await _syncToCloud();
+      await loadShares();
+      return result;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forShare(e),
+      );
+      return null;
+    }
+  }
+
+  /// Share a tag with a specific recipient (latest mode).
+  Future<ShareToken?> shareTagWithUser({
+    required String tagId,
+    required String recipientPublicKeyBase64,
+    required String recipientName,
+    int? expiryDays,
+    String? label,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final recipientPublicKey = AuthService.instance.parsePublicKey(recipientPublicKeyBase64);
+      final outgoingShare = await _sharingService.shareTagWithUser(
+        tagId: tagId,
+        recipientPublicKey: recipientPublicKey,
+        recipientName: recipientName,
+        expiryDays: expiryDays,
+        label: label,
+      );
+
+      await _syncToCloud();
+      await loadShares();
+      return outgoingShare.token;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forShare(e),
+      );
+      return null;
+    }
+  }
+
   /// Create a public link that anyone with the link can access
   Future<GeneratedShareLink?> createPublicLink({
     required String pathScope,

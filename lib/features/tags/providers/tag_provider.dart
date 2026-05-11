@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
+import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 
 /// State for tag management
@@ -104,9 +106,23 @@ class TagNotifier extends Notifier<TagState> {
     }
   }
 
-  /// Delete a tag
+  /// Delete a tag. Any active shares targeting this tag are revoked first so
+  /// recipients get a clean 403 instead of a stale-empty manifest.
   Future<void> deleteTag(String tagId) async {
     try {
+      // Revoke before deleting — revokeShare needs the share record but does
+      // not depend on the tag still existing.
+      try {
+        final shares = await SharingService.instance.getOutgoingShares();
+        for (final s in shares) {
+          if (s.tagId == tagId && !s.isRevoked) {
+            await SharingService.instance.revokeShare(s.token.id);
+          }
+        }
+      } catch (e) {
+        // Non-fatal: tag deletion proceeds even if share revocation fails.
+        debugPrint('TagNotifier.deleteTag: revokeShare cleanup failed: $e');
+      }
       await TagStorageService.instance.deleteTag(tagId);
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -193,6 +209,8 @@ extension TaggingExtension on WidgetRef {
       iosAssetId: iosAssetId,
     )));
     invalidate(taggedFilesProvider(tagId));
+    // Refresh any active share for this tag (latest mode).
+    SyncService.instance.checkTagShareUpdate(tagId);
   }
 
   /// Remove a tag from a file
@@ -215,6 +233,9 @@ extension TaggingExtension on WidgetRef {
       iosAssetId: iosAssetId,
     )));
     invalidate(taggedFilesProvider(tagId));
+    // Refresh any active share for this tag so the file disappears from the
+    // recipient view.
+    SyncService.instance.checkTagShareUpdate(tagId);
   }
 
   /// Remove all tags from a file
@@ -223,6 +244,13 @@ extension TaggingExtension on WidgetRef {
     String? remoteKey,
     String? iosAssetId,
   }) async {
+    // Capture the affected tag ids BEFORE removal so we can refresh their
+    // shares afterwards.
+    final affected = await TagStorageService.instance.getTagsForFile(
+      localPath: localPath,
+      remoteKey: remoteKey,
+      iosAssetId: iosAssetId,
+    );
     await TagStorageService.instance.removeAllTagsFromFile(
       localPath: localPath,
       remoteKey: remoteKey,
@@ -234,5 +262,8 @@ extension TaggingExtension on WidgetRef {
       remoteKey: remoteKey,
       iosAssetId: iosAssetId,
     )));
+    for (final t in affected) {
+      SyncService.instance.checkTagShareUpdate(t.id);
+    }
   }
 }

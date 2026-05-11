@@ -523,6 +523,13 @@ class OutgoingShare {
   /// Stored so we can regenerate links without looking up from forest
   final String? storageKey;
 
+  /// Tag ID when this share's scope is a tag rather than a file/folder.
+  /// Set on shares created via createTagPublicLink / shareTagWithUser.
+  /// Discriminates tag shares from file/folder shares; the outer token's
+  /// pathScope is empty for tag shares so legacy `endsWith('/')` checks
+  /// don't misclassify them as folders.
+  final String? tagId;
+
   OutgoingShare({
     required this.token,
     required this.recipientName,
@@ -531,6 +538,7 @@ class OutgoingShare {
     this.passwordSalt,
     this.encryptedFragment,
     this.storageKey,
+    this.tagId,
   }) : sharedAt = sharedAt ?? DateTime.now();
 
   /// Share ID
@@ -572,6 +580,7 @@ class OutgoingShare {
     if (passwordSalt != null) 'passwordSalt': base64Encode(passwordSalt!),
     if (encryptedFragment != null) 'encryptedFragment': encryptedFragment,
     if (storageKey != null) 'storageKey': storageKey,
+    if (tagId != null) 'tagId': tagId,
   };
 
   /// Create from JSON
@@ -587,6 +596,7 @@ class OutgoingShare {
         : null,
     encryptedFragment: json['encryptedFragment'] as String?,
     storageKey: json['storageKey'] as String?,
+    tagId: json['tagId'] as String?,
   );
 }
 

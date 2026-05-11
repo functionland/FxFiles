@@ -96,6 +96,24 @@ class CloudSyncMappingService {
     return _mappings.any((m) => m.remoteKey == remoteKey && m.bucket == bucket);
   }
 
+  /// Look up a mapping by local file path. Used by tag-share to resolve which
+  /// cloud bucket/key a locally-tagged file ended up in after upload.
+  SyncMapping? findByLocalPath(String localPath) {
+    for (final m in _mappings) {
+      if (m.localPath == localPath) return m;
+    }
+    return null;
+  }
+
+  /// Look up a mapping by iOS PhotoKit asset id. Same use-case as
+  /// [findByLocalPath] for iOS-only tagged items.
+  SyncMapping? findByIosAssetId(String iosAssetId) {
+    for (final m in _mappings) {
+      if (m.iosAssetId == iosAssetId) return m;
+    }
+    return null;
+  }
+
   /// Get all remote keys that have mappings for a given bucket
   /// Used for efficient cloud-only detection
   Set<String> getMappedRemoteKeys(String bucket) {

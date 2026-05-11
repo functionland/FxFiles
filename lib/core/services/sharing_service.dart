@@ -1,18 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
+import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/cloud_share_storage_service.dart';
+import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 
 /// Gateway base URL for public share links
 const String kShareGatewayBaseUrl = 'https://cloud.fx.land';
@@ -242,6 +250,401 @@ class SharingService {
     return outgoingShare;
   }
 
+  // ============================================================================
+  // TAG SHARES
+  // ============================================================================
+
+  /// Create a public link for a tag.
+  ///
+  /// The recipient sees the current set of cloud files matching the tag.
+  /// As files get tagged/untagged or pending uploads complete, the manifest is
+  /// re-published (latest mode — see [updateTagShareManifest]).
+  ///
+  /// Local-only / iOS-only tagged items are auto-queued for upload. Files that
+  /// land in a bucket different from the share's primary bucket are skipped
+  /// for v1 (the manifest schema carries a single outer bucket).
+  Future<GeneratedShareLink> createTagPublicLink({
+    required String tagId,
+    required int expiryDays,
+    String? label,
+    String? gatewayBaseUrl,
+  }) async {
+    final ownerPublicKey = await AuthService.instance.getPublicKey();
+    if (ownerPublicKey == null) {
+      throw SharingException('Owner public key not available. Please sign in first.');
+    }
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured. Please connect to cloud storage first.');
+    }
+
+    final resolution = await _resolveTagShareScope(tagId);
+    if (resolution.items.isEmpty) {
+      if (resolution.pendingCount > 0) {
+        throw SharingException(
+          'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
+        );
+      }
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+    }
+
+    final bucket = resolution.primaryBucket!;
+    final firstStorageKey = resolution.items.first.storageKey;
+
+    final now = DateTime.now();
+    final expiresAt = now.add(Duration(days: expiryDays));
+    final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
+
+    // Generate disposable keypair for the link
+    final privateKeyBytes = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      privateKeyBytes[i] = _random.nextInt(256);
+    }
+    final publicKeyBytes = Uint8List.fromList(
+      await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
+    );
+
+    // Outer fula token. Tag shares have no single file scope, so we anchor the
+    // outer token to the first cloud file. The recipient uses per-file tokens
+    // from the manifest to actually fetch files; the outer token exists to
+    // satisfy the v2 share payload schema.
+    final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+      bucket, firstStorageKey, publicKeyBytes, ShareMode.temporal, expiresAtUnix,
+    );
+
+    final tokenId = _uuid.v4();
+    final token = ShareToken(
+      id: tokenId,
+      fulaShareToken: fulaToken,
+      ownerPublicKey: ownerPublicKey,
+      recipientPublicKey: publicKeyBytes,
+      // pathScope intentionally empty so existing endsWith('/') checks don't
+      // misclassify a tag share as a folder share.
+      pathScope: '',
+      bucket: bucket,
+      permissions: SharePermissions.readOnly,
+      createdAt: now,
+      expiresAt: expiresAt,
+      label: label ?? resolution.tag.name,
+      shareType: ShareType.publicLink,
+      shareMode: ShareMode.temporal,
+    );
+
+    final folderFiles = await _buildManifestEntries(
+      bucket: bucket,
+      publicKeyBytes: publicKeyBytes,
+      shareMode: ShareMode.temporal,
+      expiresAtUnix: expiresAtUnix,
+      items: resolution.items,
+    );
+
+    final payloadMap = {
+      'v': 2,
+      't': fulaToken,
+      'b': bucket,
+      'k': '',
+      'sk': base64Encode(privateKeyBytes),
+      if (label != null) 'l': label,
+      'scope': 'tag',
+      'tagName': resolution.tag.name,
+      // Hint to the portal that the manifest is stored server-side, same as
+      // folder shares — the portal already handles `folder: true` this way.
+      'folder': true,
+    };
+    final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
+
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+    final url = '$baseUrl/view/$tokenId#$fragment';
+
+    _postManifest(
+      baseUrl: baseUrl,
+      shareId: tokenId,
+      bucket: bucket,
+      pathScope: '',
+      fulaToken: fulaToken,
+      folderFiles: folderFiles,
+      shareMode: ShareMode.temporal,
+      expiresAt: expiresAt,
+      linkSecretKey: privateKeyBytes,
+    );
+
+    final outgoingShare = OutgoingShare(
+      token: token,
+      recipientName: 'Anyone with link',
+      linkSecretKey: privateKeyBytes,
+      tagId: tagId,
+    );
+    await _saveOutgoingShare(outgoingShare);
+
+    debugPrint('SharingService.createTagPublicLink: tag "${resolution.tag.name}" '
+        '— ${resolution.items.length} cloud, ${resolution.pendingCount} pending, '
+        '${resolution.skippedOtherBucket} skipped (other bucket)');
+
+    return GeneratedShareLink(
+      url: url,
+      token: token,
+      outgoingShare: outgoingShare,
+    );
+  }
+
+  /// Share a tag with a specific recipient (read-only).
+  /// Same dynamic-manifest behavior as [createTagPublicLink], but the per-file
+  /// share tokens are issued to [recipientPublicKey] so only that recipient
+  /// can decrypt the files.
+  Future<OutgoingShare> shareTagWithUser({
+    required String tagId,
+    required Uint8List recipientPublicKey,
+    required String recipientName,
+    int? expiryDays,
+    String? label,
+  }) async {
+    final ownerPublicKey = await AuthService.instance.getPublicKey();
+    if (ownerPublicKey == null) {
+      throw SharingException('Owner public key not available. Please sign in first.');
+    }
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException('Fula API not configured. Please connect to cloud storage first.');
+    }
+
+    final resolution = await _resolveTagShareScope(tagId);
+    if (resolution.items.isEmpty) {
+      if (resolution.pendingCount > 0) {
+        throw SharingException(
+          'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
+        );
+      }
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+    }
+
+    final bucket = resolution.primaryBucket!;
+    final firstStorageKey = resolution.items.first.storageKey;
+
+    final now = DateTime.now();
+    final expiresAt = expiryDays != null ? now.add(Duration(days: expiryDays)) : null;
+    final expiresAtUnix = expiresAt?.millisecondsSinceEpoch != null
+        ? expiresAt!.millisecondsSinceEpoch ~/ 1000
+        : null;
+
+    // Outer fula token issued to recipient's actual public key.
+    final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+      bucket, firstStorageKey, recipientPublicKey, ShareMode.temporal, expiresAtUnix,
+    );
+
+    final tokenId = _uuid.v4();
+    final token = ShareToken(
+      id: tokenId,
+      fulaShareToken: fulaToken,
+      ownerPublicKey: ownerPublicKey,
+      recipientPublicKey: recipientPublicKey,
+      pathScope: '',
+      bucket: bucket,
+      permissions: SharePermissions.readOnly,
+      createdAt: now,
+      expiresAt: expiresAt,
+      label: label ?? resolution.tag.name,
+      shareType: ShareType.recipient,
+      shareMode: ShareMode.temporal,
+    );
+
+    final folderFiles = await _buildManifestEntries(
+      bucket: bucket,
+      publicKeyBytes: recipientPublicKey,
+      shareMode: ShareMode.temporal,
+      expiresAtUnix: expiresAtUnix,
+      items: resolution.items,
+    );
+
+    // Recipient shares post a plaintext manifest (no disposable link key to
+    // encrypt with). The per-file fula tokens themselves are recipient-scoped,
+    // so anyone fetching them must own the recipient private key.
+    _postManifest(
+      baseUrl: kShareGatewayBaseUrl,
+      shareId: tokenId,
+      bucket: bucket,
+      pathScope: '',
+      fulaToken: fulaToken,
+      folderFiles: folderFiles,
+      shareMode: ShareMode.temporal,
+      expiresAt: expiresAt,
+      linkSecretKey: null,
+    );
+
+    final outgoingShare = OutgoingShare(
+      token: token,
+      recipientName: recipientName,
+      tagId: tagId,
+    );
+    await _saveOutgoingShare(outgoingShare);
+
+    debugPrint('SharingService.shareTagWithUser: tag "${resolution.tag.name}" '
+        'recipient=$recipientName — ${resolution.items.length} cloud, '
+        '${resolution.pendingCount} pending, ${resolution.skippedOtherBucket} skipped');
+
+    return outgoingShare;
+  }
+
+  /// Resolve a tag's files into manifest items, decide a primary bucket, and
+  /// kick off auto-uploads for any local-only files. The primary bucket is the
+  /// one containing the most cloud-synced files in the tag; cloud files in
+  /// other buckets are reported as skipped (the folder/tag manifest schema
+  /// carries a single outer bucket).
+  Future<_TagShareResolution> _resolveTagShareScope(String tagId) async {
+    final tag = await TagStorageService.instance.getTag(tagId);
+    if (tag == null) {
+      throw SharingException('Tag not found: $tagId');
+    }
+
+    final taggedFiles = await TagStorageService.instance.getFilesWithTag(tagId);
+    await CloudSyncMappingService.instance.ensureLoaded();
+
+    // Each tagged file becomes either a cloud candidate (with a known bucket)
+    // or a pending-upload entry.
+    final cloudCandidates = <_TagCloudCandidate>[];
+    final pending = <TaggedFile>[];
+    for (final tf in taggedFiles) {
+      // Try to resolve via existing sync mapping first — it's authoritative
+      // about which bucket the file ended up in. Falls back to fileName-based
+      // category guess only if no mapping exists.
+      SyncMapping? mapping;
+      if (tf.localPath != null) {
+        mapping = CloudSyncMappingService.instance.findByLocalPath(tf.localPath!);
+      }
+      if (mapping == null && tf.iosAssetId != null) {
+        mapping = CloudSyncMappingService.instance.findByIosAssetId(tf.iosAssetId!);
+      }
+
+      if (mapping != null) {
+        cloudCandidates.add(_TagCloudCandidate(
+          remoteKey: mapping.remoteKey,
+          bucket: mapping.bucket,
+          fileName: tf.fileName,
+        ));
+      } else if (tf.remoteKey != null) {
+        // Tagged directly with a remoteKey but no mapping (e.g., tagged a
+        // file that was uploaded outside this device). Guess bucket from
+        // filename extension.
+        cloudCandidates.add(_TagCloudCandidate(
+          remoteKey: tf.remoteKey!,
+          bucket: FileCategory.fromPath(tf.fileName).bucketName,
+          fileName: tf.fileName,
+        ));
+      } else if (tf.localPath != null || tf.iosAssetId != null) {
+        pending.add(tf);
+      }
+    }
+
+    // Determine the primary bucket — the bucket with the most cloud files.
+    String? primaryBucket;
+    if (cloudCandidates.isNotEmpty) {
+      final counts = <String, int>{};
+      for (final c in cloudCandidates) {
+        counts[c.bucket] = (counts[c.bucket] ?? 0) + 1;
+      }
+      primaryBucket = counts.entries
+          .reduce((a, b) => a.value >= b.value ? a : b)
+          .key;
+    }
+
+    final inBucket = primaryBucket == null
+        ? const <_TagCloudCandidate>[]
+        : cloudCandidates.where((c) => c.bucket == primaryBucket).toList();
+    final skippedOtherBucket = cloudCandidates.length - inBucket.length;
+
+    // Resolve the actual S3 storage_key (obfuscated CID in FlatNamespace mode)
+    // for each cloud candidate. The tagged-file record stores the filename
+    // (remoteKey) but fula's createShareToken does head_object on the actual
+    // storage_key, so passing the filename would fail with "not found".
+    // We do a single listObjects pass on the chosen bucket.
+    final keyToObject = <String, FulaObject>{};
+    if (primaryBucket != null) {
+      try {
+        final objects = await fula_service.FulaApiService.instance.listObjects(primaryBucket);
+        for (final o in objects) {
+          keyToObject[o.key] = o;
+        }
+      } catch (e) {
+        debugPrint('SharingService._resolveTagShareScope: listObjects failed: $e');
+      }
+    }
+
+    final items = <({String displayName, String storageKey, int size})>[];
+    for (final c in inBucket) {
+      final obj = keyToObject[c.remoteKey];
+      if (obj == null) {
+        // Tagged-but-not-in-cloud: file appears in the tag's record but
+        // isn't in the bucket right now (deleted from cloud after tagging,
+        // or never finished uploading). Skip rather than fail the share.
+        debugPrint('SharingService._resolveTagShareScope: skipping ${c.fileName} — not in bucket "${c.bucket}"');
+        continue;
+      }
+      items.add((
+        displayName: c.fileName,
+        storageKey: obj.storageKey ?? obj.key,
+        size: obj.size,
+      ));
+    }
+
+    // Kick off auto-uploads for pending items. Manifest refresh on upload
+    // completion (see SyncService) will pick them up automatically.
+    for (final tf in pending) {
+      // Fire-and-forget — the share is allowed to publish before uploads
+      // finish; updateTagShareManifest re-publishes as uploads land.
+      // ignore: discarded_futures
+      _kickOffTagAutoUpload(tf);
+    }
+
+    return _TagShareResolution(
+      tag: tag,
+      primaryBucket: primaryBucket,
+      items: items,
+      totalCount: taggedFiles.length,
+      pendingCount: pending.length,
+      skippedOtherBucket: skippedOtherBucket,
+    );
+  }
+
+  /// Queue an upload for a local-only / iOS-only tagged file so it can appear
+  /// in the tag share once the upload completes.
+  ///
+  /// Skips when the source file no longer exists on disk — this happens for
+  /// tagged-then-deleted imports (e.g. the user emptied the Imported/ folder).
+  /// Without this guard a stale tag membership would queue an upload that
+  /// fails repeatedly and eventually pauses the entire upload queue.
+  Future<void> _kickOffTagAutoUpload(TaggedFile tf) async {
+    try {
+      String? uploadPath = tf.localPath;
+      String? iosAssetId = tf.iosAssetId;
+
+      if (uploadPath == null && iosAssetId != null && Platform.isIOS) {
+        final actual = await MediaService.instance.getOriginalFile(iosAssetId);
+        if (actual == null) {
+          debugPrint('SharingService: cannot upload iOS asset $iosAssetId — not accessible');
+          return;
+        }
+        uploadPath = actual.path;
+      }
+
+      if (uploadPath == null) return;
+
+      // Defensive: skip non-existent files. iOS PhotoKit-resolved paths come
+      // from getOriginalFile which already implies existence, but a stored
+      // `tf.localPath` may point at a file that was since deleted.
+      if (!await File(uploadPath).exists()) {
+        debugPrint('SharingService: tag auto-upload skip — file no longer exists: $uploadPath');
+        return;
+      }
+
+      final category = FileCategory.fromPath(uploadPath);
+      await SyncService.instance.queueUpload(
+        localPath: uploadPath,
+        remoteBucket: category.bucketName,
+        remoteKey: tf.fileName,
+        iosAssetId: iosAssetId,
+      );
+    } catch (e) {
+      debugPrint('SharingService: tag auto-upload kickoff failed for ${tf.fileName}: $e');
+    }
+  }
+
   /// Create a public link that anyone with the link can access
   ///
   /// Uses fula_client share tokens. The token is embedded in the URL fragment
@@ -340,19 +743,19 @@ class SharingService {
     if (pathScope.endsWith('/')) {
       final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
       final fileObjects = objects.where((o) => !o.isDirectory).toList();
-      folderFiles = [];
-      for (final obj in fileObjects) {
-        final fileStorageKey = obj.storageKey ?? obj.key;
-        final fileToken = await fula_service.FulaApiService.instance.createShareToken(
-          bucket, fileStorageKey, publicKeyBytes, shareMode, expiresAtUnix,
-        );
-        folderFiles.add(<String, dynamic>{
-          'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
-          'c': fileStorageKey,
-          's': obj.size,
-          't': fileToken,
-        });
-      }
+      folderFiles = await _buildManifestEntries(
+        bucket: bucket,
+        publicKeyBytes: publicKeyBytes,
+        shareMode: shareMode,
+        expiresAtUnix: expiresAtUnix,
+        items: fileObjects.map((obj) => (
+          displayName: obj.key.length > pathScope.length
+              ? obj.key.substring(pathScope.length)
+              : obj.key,
+          storageKey: obj.storageKey ?? obj.key,
+          size: obj.size,
+        )).toList(),
+      );
       debugPrint('SharingService.createPublicLink: folder share with ${folderFiles.length} files (per-file tokens)');
     }
 
@@ -498,19 +901,19 @@ class SharingService {
     if (pathScope.endsWith('/')) {
       final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
       final fileObjects = objects.where((o) => !o.isDirectory).toList();
-      folderFiles = [];
-      for (final obj in fileObjects) {
-        final fileStorageKey = obj.storageKey ?? obj.key;
-        final fileToken = await fula_service.FulaApiService.instance.createShareToken(
-          bucket, fileStorageKey, publicKeyBytes, shareMode, expiresAtUnix,
-        );
-        folderFiles.add(<String, dynamic>{
-          'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
-          'c': fileStorageKey,
-          's': obj.size,
-          't': fileToken,
-        });
-      }
+      folderFiles = await _buildManifestEntries(
+        bucket: bucket,
+        publicKeyBytes: publicKeyBytes,
+        shareMode: shareMode,
+        expiresAtUnix: expiresAtUnix,
+        items: fileObjects.map((obj) => (
+          displayName: obj.key.length > pathScope.length
+              ? obj.key.substring(pathScope.length)
+              : obj.key,
+          storageKey: obj.storageKey ?? obj.key,
+          size: obj.size,
+        )).toList(),
+      );
     }
 
     // Build inner payload with fula token and secret key (v2 format)
@@ -1038,6 +1441,36 @@ class SharingService {
   /// Post folder manifest to server (non-blocking, fire-and-forget).
   /// Enables temporal folder shares to be updated without changing the URL.
   /// Note: secretKey is NOT sent — it stays in the URL fragment only (client-side).
+  /// Build per-file share-token entries for a manifest. Each entry has the
+  /// shape `{n, c, s, t}` shared by folder shares and tag shares (the recipient
+  /// portal renders both the same way). Continues on individual token-creation
+  /// failure so one bad file doesn't kill the whole manifest.
+  Future<List<Map<String, dynamic>>> _buildManifestEntries({
+    required String bucket,
+    required Uint8List publicKeyBytes,
+    required ShareMode shareMode,
+    required int? expiresAtUnix,
+    required List<({String displayName, String storageKey, int size})> items,
+  }) async {
+    final out = <Map<String, dynamic>>[];
+    for (final it in items) {
+      try {
+        final token = await fula_service.FulaApiService.instance.createShareToken(
+          bucket, it.storageKey, publicKeyBytes, shareMode, expiresAtUnix,
+        );
+        out.add({
+          'n': it.displayName,
+          'c': it.storageKey,
+          's': it.size,
+          't': token,
+        });
+      } catch (e) {
+        debugPrint('SharingService._buildManifestEntries: token failed for ${it.displayName}: $e');
+      }
+    }
+    return out;
+  }
+
   void _postManifest({
     required String baseUrl,
     required String shareId,
@@ -1146,26 +1579,19 @@ class SharingService {
           ? folderShare.token.expiresAt!.millisecondsSinceEpoch ~/ 1000
           : 0;
 
-      // Create per-file tokens — continue on individual failure so one bad file
-      // doesn't kill the entire manifest update
-      final folderFiles = <Map<String, dynamic>>[];
-      for (final obj in fileObjects) {
-        final fileStorageKey = obj.storageKey ?? obj.key;
-        debugPrint('[ManifestUpdate] Creating token for ${obj.key} (storageKey=$fileStorageKey)...');
-        try {
-          final fileToken = await fula_service.FulaApiService.instance.createShareToken(
-            bucket, fileStorageKey, publicKeyBytes, ShareMode.temporal, expiresAtUnix,
-          );
-          folderFiles.add({
-            'n': obj.key.length > pathScope.length ? obj.key.substring(pathScope.length) : obj.key,
-            'c': fileStorageKey,
-            's': obj.size,
-            't': fileToken,
-          });
-        } catch (e) {
-          debugPrint('[ManifestUpdate] FAILED to create token for ${obj.key}: $e');
-        }
-      }
+      final folderFiles = await _buildManifestEntries(
+        bucket: bucket,
+        publicKeyBytes: publicKeyBytes,
+        shareMode: ShareMode.temporal,
+        expiresAtUnix: expiresAtUnix,
+        items: fileObjects.map((obj) => (
+          displayName: obj.key.length > pathScope.length
+              ? obj.key.substring(pathScope.length)
+              : obj.key,
+          storageKey: obj.storageKey ?? obj.key,
+          size: obj.size,
+        )).toList(),
+      );
 
       if (folderFiles.isEmpty) {
         debugPrint('[ManifestUpdate] ABORT: no files with valid tokens');
@@ -1212,6 +1638,156 @@ class SharingService {
       debugPrint('[ManifestUpdate] EXCEPTION: $e');
       debugPrint('[ManifestUpdate] Stack: $stack');
     }
+  }
+
+  /// Re-publish the server manifest for every active temporal share targeting
+  /// the given [tagId]. Called (debounced) from SyncService when a file is
+  /// tagged/untagged with this tag, when a queued upload completes, and from
+  /// the periodic / app-start sweep ([refreshAllTagShares]).
+  ///
+  /// If the tag has no shareable cloud files (every member untagged, or all
+  /// pending upload), an empty manifest is still pushed so the recipient
+  /// stops seeing the previous file set. Otherwise an untag would leave the
+  /// recipient looking at stale data — a real privacy regression because the
+  /// user's visible action ("remove this tag") wouldn't change access.
+  Future<void> updateTagShareManifest(String tagId) async {
+    debugPrint('[TagManifestUpdate] START tagId=$tagId');
+    try {
+      final shares = await getActiveOutgoingShares();
+      final matching = shares.where(
+        (s) => s.tagId == tagId && s.token.shareMode == ShareMode.temporal,
+      ).toList();
+      if (matching.isEmpty) {
+        debugPrint('[TagManifestUpdate] no active tag shares for $tagId');
+        return;
+      }
+
+      // Resolve the tag once — all shares of the same tag share scope.
+      final resolution = await _resolveTagShareScope(tagId);
+
+      for (final share in matching) {
+        final fulaToken = share.token.fulaShareToken;
+        if (fulaToken == null) {
+          debugPrint('[TagManifestUpdate] ABORT share ${share.token.id}: no fula token');
+          continue;
+        }
+
+        // For public-link tag shares the linkSecretKey is required to
+        // re-derive the disposable public key (per-file tokens must keep
+        // accepting the same recipient identity across refreshes).
+        // For recipient shares we reuse the recipient's public key directly.
+        Uint8List publicKeyBytes;
+        if (share.token.shareType == ShareType.publicLink) {
+          final privateKeyBytes = share.linkSecretKey;
+          if (privateKeyBytes == null) {
+            debugPrint('[TagManifestUpdate] ABORT share ${share.token.id}: no link secret key');
+            continue;
+          }
+          publicKeyBytes = Uint8List.fromList(
+            await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
+          );
+        } else {
+          publicKeyBytes = share.token.recipientPublicKey;
+        }
+
+        final expiresAtUnix = share.token.expiresAt != null
+            ? share.token.expiresAt!.millisecondsSinceEpoch ~/ 1000
+            : 0;
+
+        // Keep the original share's bucket label when the tag has no current
+        // cloud files — the manifest goes out empty but with a consistent
+        // bucket field so the wire format stays valid.
+        final bucket = resolution.primaryBucket ?? share.bucket;
+        final folderFiles = resolution.items.isEmpty
+            ? const <Map<String, dynamic>>[]
+            : await _buildManifestEntries(
+                bucket: bucket,
+                publicKeyBytes: publicKeyBytes,
+                shareMode: ShareMode.temporal,
+                expiresAtUnix: expiresAtUnix,
+                items: resolution.items,
+              );
+
+        _postManifest(
+          baseUrl: kShareGatewayBaseUrl,
+          shareId: share.token.id,
+          bucket: bucket,
+          pathScope: '',
+          fulaToken: fulaToken,
+          folderFiles: folderFiles,
+          shareMode: ShareMode.temporal,
+          expiresAt: share.token.expiresAt,
+          linkSecretKey: share.linkSecretKey,
+        );
+
+        debugPrint('[TagManifestUpdate] re-published share ${share.token.id} '
+            'with ${folderFiles.length} files');
+      }
+    } catch (e, stack) {
+      debugPrint('[TagManifestUpdate] EXCEPTION: $e');
+      debugPrint('[TagManifestUpdate] Stack: $stack');
+    }
+  }
+
+  /// Re-publish manifests for every active temporal tag share. Invoked once
+  /// on app start and periodically thereafter to catch tag-membership changes
+  /// that originated outside this device (e.g., another device or webui).
+  Future<void> refreshAllTagShares() async {
+    try {
+      final shares = await getActiveOutgoingShares();
+      final tagIds = shares
+          .where((s) => s.tagId != null && s.token.shareMode == ShareMode.temporal)
+          .map((s) => s.tagId!)
+          .toSet();
+      if (tagIds.isEmpty) return;
+
+      debugPrint('SharingService.refreshAllTagShares: sweeping ${tagIds.length} tag(s)');
+      for (final tagId in tagIds) {
+        await updateTagShareManifest(tagId);
+      }
+    } catch (e) {
+      debugPrint('SharingService.refreshAllTagShares: $e');
+    }
+  }
+
+  /// Whether [remoteKey] is included in any active tag share. Cheap lookup
+  /// used by SyncService after a successful upload to know which tag shares
+  /// need a manifest refresh.
+  Future<Set<String>> activeTagSharesContaining({
+    required String bucket,
+    required String remoteKey,
+  }) async {
+    final shares = await getActiveOutgoingShares();
+    final tagShares = shares.where(
+      (s) => s.tagId != null && s.token.shareMode == ShareMode.temporal,
+    ).toList();
+    if (tagShares.isEmpty) return const {};
+
+    final tagIds = tagShares.map((s) => s.tagId!).toSet();
+    final hit = <String>{};
+    await CloudSyncMappingService.instance.ensureLoaded();
+    for (final tagId in tagIds) {
+      final taggedFiles = await TagStorageService.instance.getFilesWithTag(tagId);
+      for (final tf in taggedFiles) {
+        // Match by direct remoteKey or by mapping resolution.
+        if (tf.remoteKey == remoteKey) {
+          hit.add(tagId);
+          break;
+        }
+        SyncMapping? mapping;
+        if (tf.localPath != null) {
+          mapping = CloudSyncMappingService.instance.findByLocalPath(tf.localPath!);
+        }
+        if (mapping == null && tf.iosAssetId != null) {
+          mapping = CloudSyncMappingService.instance.findByIosAssetId(tf.iosAssetId!);
+        }
+        if (mapping != null && mapping.remoteKey == remoteKey && mapping.bucket == bucket) {
+          hit.add(tagId);
+          break;
+        }
+      }
+    }
+    return hit;
   }
 
   Future<void> _saveAcceptedShare(AcceptedShare share) async {
@@ -1304,4 +1880,37 @@ class SharingException implements Exception {
 
   @override
   String toString() => 'SharingException: $message';
+}
+
+/// Internal: one cloud-resolved candidate file in a tag share.
+class _TagCloudCandidate {
+  final String remoteKey;
+  final String bucket;
+  final String fileName;
+
+  _TagCloudCandidate({
+    required this.remoteKey,
+    required this.bucket,
+    required this.fileName,
+  });
+}
+
+/// Internal: the result of resolving a tag into shareable items.
+/// Used by tag share creation and manifest refresh paths.
+class _TagShareResolution {
+  final FileTag tag;
+  final String? primaryBucket;
+  final List<({String displayName, String storageKey, int size})> items;
+  final int totalCount;
+  final int pendingCount;
+  final int skippedOtherBucket;
+
+  _TagShareResolution({
+    required this.tag,
+    required this.primaryBucket,
+    required this.items,
+    required this.totalCount,
+    required this.pendingCount,
+    required this.skippedOtherBucket,
+  });
 }

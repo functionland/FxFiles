@@ -7,6 +7,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
+import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 import 'package:open_filex/open_filex.dart';
@@ -48,6 +49,14 @@ class TaggedFilesScreen extends ConsumerWidget {
             Text(currentTag?.name ?? 'Tagged Files'),
           ],
         ),
+        actions: [
+          if (currentTag != null)
+            IconButton(
+              icon: const Icon(LucideIcons.share2),
+              tooltip: 'Share this tag',
+              onPressed: () => _shareTag(context, currentTag),
+            ),
+        ],
       ),
       body: taggedFilesAsync.when(
         data: (taggedFiles) {
@@ -231,6 +240,16 @@ class TaggedFilesScreen extends ConsumerWidget {
         );
       }
     }
+  }
+
+  Future<void> _shareTag(BuildContext context, FileTag tag) async {
+    final result = await showCreateTagShareDialog(
+      context: context,
+      tagId: tag.id,
+      tagName: tag.name,
+    );
+    if (!context.mounted || result == null) return;
+    await showShareCreatedDialog(context: context, result: result);
   }
 }
 

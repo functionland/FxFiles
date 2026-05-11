@@ -62,6 +62,10 @@ class SyncService {
   // Debounced folder share manifest update (supports multiple folders)
   Timer? _folderShareUpdateTimer;
   final Map<String, String> _pendingFolderShareUpdates = {}; // prefix → bucket
+
+  // Debounced tag share manifest update (one entry per tagId)
+  Timer? _tagShareUpdateTimer;
+  final Set<String> _pendingTagShareUpdates = {};
   DateTime? _pausedUntil;
 
   // Public getters for UI to show sync status
@@ -221,6 +225,42 @@ class SyncService {
         });
       }
     });
+  }
+
+  /// Debounced check: schedule a manifest refresh for any active tag share
+  /// that includes [tagId]. Called from [TaggingExtension] on tagFile/untagFile
+  /// and from the upload-completion path when an upload's remoteKey turns up
+  /// in a tag's file list (see [_checkUploadAgainstTagShares]).
+  void checkTagShareUpdate(String tagId) {
+    _pendingTagShareUpdates.add(tagId);
+    _tagShareUpdateTimer?.cancel();
+    _tagShareUpdateTimer = Timer(const Duration(seconds: 5), () {
+      final ids = Set<String>.from(_pendingTagShareUpdates);
+      _pendingTagShareUpdates.clear();
+      for (final id in ids) {
+        debugPrint('[SyncService] Timer fired: updating tag share manifest for $id');
+        SharingService.instance.updateTagShareManifest(id).catchError((e, stack) {
+          debugPrint('[SyncService] Tag share manifest update failed for $id: $e\n$stack');
+        });
+      }
+    });
+  }
+
+  /// Called after a successful upload — checks whether the uploaded file
+  /// belongs to any tag with an active temporal share, and schedules a
+  /// manifest refresh for each such tag.
+  Future<void> _checkUploadAgainstTagShares(String bucket, String remoteKey) async {
+    try {
+      final tagIds = await SharingService.instance.activeTagSharesContaining(
+        bucket: bucket,
+        remoteKey: remoteKey,
+      );
+      for (final id in tagIds) {
+        checkTagShareUpdate(id);
+      }
+    } catch (e) {
+      debugPrint('[SyncService] tag share check after upload failed: $e');
+    }
   }
 
   void _processUploadQueueAsync() {
@@ -685,6 +725,12 @@ class SyncService {
       // Check if this file is under an active temporal folder share
       // (outside state block — always fires after successful upload)
       _checkFolderShareUpdate(task.remoteBucket, task.remoteKey);
+
+      // Also check tag shares: the file may have been queued by tag-share
+      // auto-upload, or it may have been independently tagged with a tag
+      // that's currently shared.
+      // ignore: discarded_futures
+      _checkUploadAgainstTagShares(task.remoteBucket, task.remoteKey);
 
       // Remove completed task from persistent queue
       final taskId = _taskIdMap.remove(task.localPath);

@@ -12,6 +12,7 @@ import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
@@ -43,6 +44,11 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   StreamSubscription<String>? _shellCollabSubscription;
   StreamSubscription<String>? _shellAcceptCollabSubscription;
   StreamSubscription<void>? _apiKeyReplaceSubscription;
+
+  // Periodic re-evaluation of active tag shares. Catches tag-membership
+  // changes that originated outside this device (other device, future webui).
+  Timer? _tagShareSweepTimer;
+  static const Duration _tagShareSweepInterval = Duration(minutes: 30);
 
   @override
   void initState() {
@@ -91,6 +97,18 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       // On cold start, walletNavigatorKey.currentContext may still be null
       // after the first frame, so retry until it's available.
       _processShellPendingCommands();
+
+      // First-pass refresh of active tag shares so cross-device tag-membership
+      // changes are reflected on the recipient side without waiting for the
+      // owner to tag/untag a file. refreshAllTagShares is a no-op when there
+      // are no active tag shares and tolerates FulaApi-not-configured.
+      // ignore: discarded_futures
+      SharingService.instance.refreshAllTagShares();
+    });
+
+    // Periodic re-sweep. Idempotent and cheap when no tag shares are active.
+    _tagShareSweepTimer = Timer.periodic(_tagShareSweepInterval, (_) {
+      SharingService.instance.refreshAllTagShares();
     });
   }
 
@@ -103,6 +121,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _shellCollabSubscription?.cancel();
     _shellAcceptCollabSubscription?.cancel();
     _apiKeyReplaceSubscription?.cancel();
+    _tagShareSweepTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

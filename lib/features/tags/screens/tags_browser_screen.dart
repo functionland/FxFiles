@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/create_tag_dialog.dart';
 import 'package:fula_files/features/tags/widgets/edit_tag_dialog.dart';
@@ -164,6 +165,7 @@ class _TagsBrowserScreenState extends ConsumerState<TagsBrowserScreen> {
                             context.push('/tags/${tag.id}', extra: tag),
                         onEdit: () => _editTag(context, tag),
                         onDelete: () => _deleteTag(context, ref, tag),
+                        onShare: () => _shareTag(context, tag),
                       );
                     },
                   ),
@@ -215,6 +217,16 @@ class _TagsBrowserScreenState extends ConsumerState<TagsBrowserScreen> {
       }
     }
   }
+
+  Future<void> _shareTag(BuildContext context, FileTag tag) async {
+    final result = await showCreateTagShareDialog(
+      context: context,
+      tagId: tag.id,
+      tagName: tag.name,
+    );
+    if (!context.mounted || result == null) return;
+    await showShareCreatedDialog(context: context, result: result);
+  }
 }
 
 class _TagListTile extends StatelessWidget {
@@ -222,12 +234,14 @@ class _TagListTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onShare;
 
   const _TagListTile({
     required this.tag,
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    required this.onShare,
   });
 
   @override
@@ -261,6 +275,9 @@ class _TagListTile extends StatelessWidget {
       trailing: PopupMenuButton<String>(
         onSelected: (value) {
           switch (value) {
+            case 'share':
+              onShare();
+              break;
             case 'edit':
               onEdit();
               break;
@@ -270,6 +287,16 @@ class _TagListTile extends StatelessWidget {
           }
         },
         itemBuilder: (context) => [
+          const PopupMenuItem(
+            value: 'share',
+            child: Row(
+              children: [
+                Icon(LucideIcons.share2, size: 18),
+                SizedBox(width: 8),
+                Text('Share'),
+              ],
+            ),
+          ),
           const PopupMenuItem(
             value: 'edit',
             child: Row(

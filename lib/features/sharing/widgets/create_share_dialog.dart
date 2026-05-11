@@ -9,6 +9,7 @@ import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
 
@@ -33,6 +34,12 @@ class ShareCreateResult {
 /// sheet dispatches to the matching backend. When `lockedChoice` is set
 /// the choice cards are visible but cannot be switched — used by the
 /// legacy wrapper entry points.
+///
+/// When [tagId] is provided the dialog operates in tag-share mode:
+///   - pathScope/bucket are unused (tag scope is dynamic)
+///   - share mode is forced to temporal (latest) — snapshot is meaningless
+///   - password share is hidden (not supported for tag shares in v1)
+///   - the header chip shows the tag name
 class CreateShareDialog extends ConsumerStatefulWidget {
   final String pathScope;
   final String bucket;
@@ -41,6 +48,10 @@ class CreateShareDialog extends ConsumerStatefulWidget {
   final String? contentType;
   final String? localPath;
   final ShareChoice? lockedChoice;
+
+  /// When set, this dialog creates a tag share instead of a file/folder share.
+  final String? tagId;
+  final String? tagName;
 
   const CreateShareDialog({
     super.key,
@@ -51,6 +62,8 @@ class CreateShareDialog extends ConsumerStatefulWidget {
     this.contentType,
     this.localPath,
     this.lockedChoice,
+    this.tagId,
+    this.tagName,
   });
 
   @override
@@ -71,13 +84,23 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
   bool _isLoading = false;
   String? _error;
 
+  bool get _isTagShare => widget.tagId != null;
+
   @override
   void initState() {
     super.initState();
     _choice = widget.lockedChoice ?? ShareChoice.recipient;
-    // Default label = file/folder name
-    final name = widget.fileName ?? widget.pathScope.split('/').last;
-    _labelController.text = name;
+    if (_isTagShare) {
+      // Tag shares are always latest mode (snapshot doesn't apply to a tag).
+      _shareMode = ShareMode.temporal;
+      // Hide password choice; fall back to recipient if it was the default.
+      if (_choice == ShareChoice.password) _choice = ShareChoice.recipient;
+      _labelController.text = widget.tagName ?? 'Tag share';
+    } else {
+      // Default label = file/folder name
+      final name = widget.fileName ?? widget.pathScope.split('/').last;
+      _labelController.text = name;
+    }
   }
 
   @override
@@ -158,18 +181,20 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                     icon: LucideIcons.userCheck,
                   ),
                   if (_choice == ShareChoice.recipient) _recipientInputs(),
-                  const SizedBox(height: 8),
-                  _ShareChoiceCard(
-                    kind: ShareChoice.password,
-                    title: 'Protected link',
-                    subtitle: 'Protect the link with a password.',
-                    selected: _choice == ShareChoice.password,
-                    disabled: _choiceLocked &&
-                        widget.lockedChoice != ShareChoice.password,
-                    onTap: () => setState(() => _choice = ShareChoice.password),
-                    icon: LucideIcons.lock,
-                  ),
-                  if (_choice == ShareChoice.password) _passwordInput(),
+                  if (!_isTagShare) ...[
+                    const SizedBox(height: 8),
+                    _ShareChoiceCard(
+                      kind: ShareChoice.password,
+                      title: 'Protected link',
+                      subtitle: 'Protect the link with a password.',
+                      selected: _choice == ShareChoice.password,
+                      disabled: _choiceLocked &&
+                          widget.lockedChoice != ShareChoice.password,
+                      onTap: () => setState(() => _choice = ShareChoice.password),
+                      icon: LucideIcons.lock,
+                    ),
+                    if (_choice == ShareChoice.password) _passwordInput(),
+                  ],
                   const SizedBox(height: 8),
                   _ShareChoiceCard(
                     kind: ShareChoice.public,
@@ -183,8 +208,12 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
                     onTap: () => setState(() => _choice = ShareChoice.public),
                     icon: LucideIcons.link,
                   ),
-                  const SizedBox(height: 16),
-                  _whatTheySeeSelector(context),
+                  // For tag shares the mode is always "latest" — skip the
+                  // segmented selector entirely.
+                  if (!_isTagShare) ...[
+                    const SizedBox(height: 16),
+                    _whatTheySeeSelector(context),
+                  ],
                   const SizedBox(height: 12),
                   _expirySelector(context),
                   if (_error != null) ...[
@@ -203,6 +232,9 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
 
   Widget _header(BuildContext context) {
     final theme = Theme.of(context);
+    final isTag = _isTagShare;
+    final chipLabel = isTag ? (widget.tagName ?? 'Tag') : widget.pathScope;
+    final chipIcon = isTag ? LucideIcons.tag : LucideIcons.folder;
     return Row(
       children: [
         Expanded(
@@ -216,12 +248,11 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(LucideIcons.folder,
-                    size: 14, color: AppColors.primary),
+                Icon(chipIcon, size: 14, color: AppColors.primary),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
-                    widget.pathScope,
+                    chipLabel,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 12,
@@ -530,6 +561,58 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
 
     try {
       final notifier = ref.read(sharesProvider.notifier);
+
+      // Tag share path — dispatches to the tag-specific service methods.
+      if (_isTagShare) {
+        final tagId = widget.tagId!;
+        if (_choice == ShareChoice.recipient) {
+          final token = await notifier.shareTagWithUser(
+            tagId: tagId,
+            recipientPublicKeyBase64: _recipientKeyController.text.trim(),
+            recipientName: _recipientNameController.text.trim(),
+            expiryDays: _expiryDays,
+            label: label,
+          );
+          if (!mounted) return;
+          if (token == null) {
+            final err = ref.read(sharesProvider).error;
+            setState(() {
+              _isLoading = false;
+              _error = err ?? 'Failed to create share';
+            });
+            return;
+          }
+          Navigator.pop(
+            context,
+            ShareCreateResult._(
+                recipientToken: token, choice: ShareChoice.recipient),
+          );
+          return;
+        }
+
+        // Public tag link.
+        final link = await notifier.createTagPublicLink(
+          tagId: tagId,
+          expiryDays: _expiryDays ?? 7,
+          label: label,
+        );
+        if (!mounted) return;
+        if (link == null) {
+          final err = ref.read(sharesProvider).error;
+          setState(() {
+            _isLoading = false;
+            _error = err ?? 'Failed to create link';
+          });
+          return;
+        }
+        Navigator.pop(
+          context,
+          ShareCreateResult._(link: link, choice: ShareChoice.public),
+        );
+        return;
+      }
+
+      // Standard file/folder share path.
       final binding = await _resolveSnapshotBinding();
 
       if (_choice == ShareChoice.recipient) {
@@ -964,4 +1047,234 @@ Future<ShareToken?> showCreateShareDialog({
     pathScope: pathScope,
     bucket: bucket,
   );
+}
+
+// ============================================================================
+// Tag share entry points
+// ============================================================================
+
+/// Open the share sheet for a tag, locked to public-link.
+Future<GeneratedShareLink?> showCreateTagPublicLinkDialog({
+  required BuildContext context,
+  required String tagId,
+  required String tagName,
+}) async {
+  final result = await showModalBottomSheet<ShareCreateResult>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => CreateShareDialog(
+      pathScope: '',
+      bucket: '',
+      tagId: tagId,
+      tagName: tagName,
+      lockedChoice: ShareChoice.public,
+    ),
+  );
+  return result?.link;
+}
+
+/// Open the share sheet for a tag, locked to recipient.
+Future<ShareToken?> showCreateTagShareForRecipientDialog({
+  required BuildContext context,
+  required String tagId,
+  required String tagName,
+}) async {
+  final result = await showModalBottomSheet<ShareCreateResult>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => CreateShareDialog(
+      pathScope: '',
+      bucket: '',
+      tagId: tagId,
+      tagName: tagName,
+      lockedChoice: ShareChoice.recipient,
+    ),
+  );
+  return result?.recipientToken;
+}
+
+/// Open the share sheet for a tag with no locked choice — user picks
+/// public vs recipient. (Password is hidden inside the dialog for tag shares.)
+Future<ShareCreateResult?> showCreateTagShareDialog({
+  required BuildContext context,
+  required String tagId,
+  required String tagName,
+}) {
+  return showModalBottomSheet<ShareCreateResult>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => CreateShareDialog(
+      pathScope: '',
+      bucket: '',
+      tagId: tagId,
+      tagName: tagName,
+    ),
+  );
+}
+
+// ============================================================================
+// Post-share confirmation dialog
+// ============================================================================
+
+/// Confirmation dialog shown after a share/link has been created. Matches the
+/// UX used by the file/folder share flow in
+/// `lib/features/browser/screens/file_browser_screen.dart`
+/// (`_showGeneratedShareLinkDialog` and `_showShareLinkDialog`) — the user
+/// sees the URL, expiry, and an explicit Copy Link button instead of having
+/// the link auto-copied behind their back.
+///
+/// [result] supplies whether this is a public/password/recipient share, plus
+/// either the link object or the recipient token. For recipient shares the
+/// URL is reconstructed via `SharingService.generateShareLink`.
+Future<void> showShareCreatedDialog({
+  required BuildContext context,
+  required ShareCreateResult result,
+}) async {
+  // Resolve the URL and the underlying token depending on the share type.
+  String? url;
+  ShareToken? token;
+  if (result.link != null) {
+    url = result.link!.url;
+    token = result.link!.token;
+  } else if (result.recipientToken != null) {
+    token = result.recipientToken;
+    url = SharingService.instance.generateShareLink(result.recipientToken!);
+  }
+  if (url == null) return;
+
+  String title;
+  String description;
+  IconData infoIcon;
+  Color infoColor;
+  String infoText;
+
+  switch (result.choice) {
+    case ShareChoice.public:
+      title = 'Link Created!';
+      description = 'Anyone with this link can view the shared content.';
+      infoIcon = LucideIcons.link;
+      infoColor = Colors.blue;
+      infoText = 'Public link';
+      break;
+    case ShareChoice.password:
+      title = 'Password Link Created!';
+      description =
+          'Share this link. Recipients will need the password you set to access.';
+      infoIcon = LucideIcons.lock;
+      infoColor = Colors.orange;
+      infoText = 'Password protected';
+      break;
+    case ShareChoice.recipient:
+      title = 'Share Created!';
+      description =
+          'Share link created successfully. Send this link to the recipient:';
+      infoIcon = LucideIcons.shield;
+      infoColor = Theme.of(context).colorScheme.primary;
+      infoText = token != null
+          ? 'Permission: ${token.permissions.displayName}'
+          : 'Recipient share';
+      break;
+  }
+
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      scrollable: true,
+      title: Row(
+        children: [
+          const Icon(LucideIcons.checkCircle, color: Colors.green),
+          const SizedBox(width: 8),
+          Expanded(child: Text(title)),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(description),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SelectableText(
+              url!,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: Theme.of(ctx).colorScheme.onSurface,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(infoIcon, size: 16, color: infoColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  infoText,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (token?.expiresAt != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(LucideIcons.clock, size: 16, color: Colors.orange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Expires: ${_formatRelativeExpiry(token!.expiresAt!)}',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: url!));
+            ScaffoldMessenger.of(ctx).showSnackBar(
+              const SnackBar(content: Text('Link copied to clipboard')),
+            );
+            Navigator.pop(ctx);
+          },
+          icon: const Icon(LucideIcons.copy),
+          label: const Text('Copy Link'),
+        ),
+      ],
+    ),
+  );
+}
+
+String _formatRelativeExpiry(DateTime dt) {
+  final now = DateTime.now();
+  final diff = dt.difference(now);
+  if (diff.isNegative) return 'expired';
+  if (diff.inMinutes < 1) return 'in <1m';
+  if (diff.inHours < 1) return 'in ${diff.inMinutes}m';
+  if (diff.inDays < 1) return 'in ${diff.inHours}h';
+  return 'in ${diff.inDays}d';
 }
