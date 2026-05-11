@@ -47,22 +47,32 @@ const String kUsersIndexAnchorAddress =
     '0x00fB6AD1B42Fb37a0Ac7C2977fC1fa4462C36Af9';
 const String kUsersIndexIpnsName =
     'k51qzi5uqu5dkkd6tv8slgoouzzs505qdcr4cb5egc9rlx7qwq0e794yxj9cg4'; // TODO: paste k51qzi5... from setup-users-index-publisher.sh
-// Default IPNS gateway template used to resolve the per-user anchor during
-// cold-start. `{name}` is the placeholder the SDK substitutes with the
-// IPNS name (matches `registry_resolver::default_ipns_gateway_urls`).
+// IPNS gateway list passed to the SDK at cold-start.
 //
-// Order matters — the resolver tries gateways in sequence and takes the
-// first content-verified body whose in-payload `sequence` is at least the
-// locally-observed high-water mark. `dget.top` (subdomain-style) leads
-// because operator measurement (2026-05-09) showed it picks up freshly-
-// published IPNS records the fastest. Filebase follows as a stable
-// path-style fallback. Pass an empty list to fall back to the SDK's
-// curated IPNS-aware gateway subset (which now also leads with dget.top
-// in fula_client 0.6.1+).
-const List<String> kUsersIndexIpnsGatewayUrls = <String>[
-  'https://{name}.ipns.dget.top/',
-  'https://ipfs.filebase.io/ipns/{name}/',
-];
+// **Empty by design (2026-05-11).** Empirical staleness audit against the
+// real master that day showed Cloudflare-edge-cached gateways
+// (`{name}.ipns.dweb.link`, `dweb.link/ipns/{name}`) returning records up
+// to 70 minutes old (`Age: 4180`, `cf-cache-status: HIT`) while
+// `ipfs.io/ipns/{name}` consistently returned the freshest record. The
+// SDK's `registry_resolver::default_ipns_gateway_urls` was updated the
+// same day to (a) lead with `ipfs.io`, (b) race every gateway in
+// parallel, and (c) keep collecting responses for 10 s after the first
+// to pick the highest-`sequence` record. That curated multi-gateway list
+// is the canonical source of truth; FxFiles passes empty so the SDK
+// owns the selection. Users who genuinely need a custom gateway list
+// can still set one via Settings → Fula API Config; the Settings screen
+// keeps that override path.
+//
+// Prior contents (kept commented for archaeology):
+//   'https://{name}.ipns.dget.top/'      — small fleet, less reliable
+//                                          uptime than the Protocol Labs
+//                                          / Filebase tier.
+//   'https://ipfs.filebase.io/ipns/{name}/' — path-style; same staleness
+//                                          class as dweb.link path-style
+//                                          when behind Cloudflare.
+//
+// Neither of those was `ipfs.io` — the gateway that survived the audit.
+const List<String> kUsersIndexIpnsGatewayUrls = <String>[];
 // 128 MiB cap — half the SDK default. Mobile devices have tighter storage
 // budgets; the cache is content-addressed so fills mostly stop on its own
 // once the working set is covered.
@@ -182,10 +192,15 @@ class FulaApiService implements FulaApi {
           (usersIndexIpnsName == null || usersIndexIpnsName.isEmpty)
               ? kUsersIndexIpnsName
               : usersIndexIpnsName;
-      // null  -> setting never touched, use built-in default (Filebase).
-      // empty -> user explicitly cleared the setting, delegate to the SDK's
-      //          curated IPNS-aware gateway subset.
+      // null  -> setting never touched. Fall through to `kUsersIndexIpnsGatewayUrls`
+      //          which is intentionally empty since 2026-05-11 (see its
+      //          docstring), so the SDK's curated list (ipfs.io first +
+      //          parallel race + 10s grace) is what gets used.
+      // empty -> user explicitly cleared the setting; also delegates to the
+      //          SDK's curated subset. Functionally equivalent to null now.
       // other -> use the caller-supplied list verbatim (already trimmed).
+      //          Setting this overrides the SDK's freshness-aware ordering,
+      //          so prefer null/empty unless you have a specific reason.
       final List<String> resolvedIpnsGatewayUrls = usersIndexIpnsGatewayUrls ??
           kUsersIndexIpnsGatewayUrls;
 
