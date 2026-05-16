@@ -219,11 +219,18 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late String _palette;
   late String _selectedStyle;
   late bool _enableTracking;
+  // Current pricing snapshot. Seeded synchronously from the service's
+  // in-memory cache (or the hardcoded fallback) so the cost line always
+  // renders on first frame; refreshed asynchronously from the server's
+  // /api/v1/pricing endpoint so a price change on the AI service shows
+  // up without an app update.
+  WebsitePricing _pricing = WebsiteService.instance.cachedPricing;
 
   @override
   void initState() {
     super.initState();
     _enableTracking = widget.initialEnableTracking;
+    _loadPricing();
     _nameController = TextEditingController(
       text: (widget.initialName != null && widget.initialName!.isNotEmpty)
           ? widget.initialName!
@@ -255,6 +262,17 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     _nameController.dispose();
     _promptController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPricing() async {
+    // Force refresh so an admin price change on the AI service shows up
+    // the next time the user opens the generate screen, without needing
+    // an app restart. The session cache exists only so the synchronous
+    // first-frame render has a value to display before this completes.
+    final pricing =
+        await WebsiteService.instance.fetchPricing(forceRefresh: true);
+    if (!mounted) return;
+    setState(() => _pricing = pricing);
   }
 
   void _submit() {
@@ -441,6 +459,11 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   }
 
   Widget _buildTrackingToggle(ThemeData theme) {
+    final surcharge = _pricing.costFulaWithTracking - _pricing.costFula;
+    final effectiveCost =
+        _enableTracking ? _pricing.costFulaWithTracking : _pricing.costFula;
+    final surchargeLabel = surcharge > 0 ? ' (+$surcharge FULA)' : '';
+
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
@@ -448,46 +471,73 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         border: Border.all(color: theme.dividerColor.withValues(alpha: 0.4)),
       ),
       padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            LucideIcons.barChart3,
-            size: 18,
-            color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.only(top: 10),
-                  child: Text(
-                    'Enable click tracking',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 2, bottom: 10),
-                  child: Text(
-                    'Adds a privacy-friendly script (no cookies, no PII) so '
-                    'you can see view and visitor counts next to this '
-                    'generation. Off by default.',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                      height: 1.35,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(
+                LucideIcons.barChart3,
+                size: 18,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text(
+                        'Enable click tracking$surchargeLabel',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14),
+                      ),
                     ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, bottom: 10),
+                      child: Text(
+                        'Adds a privacy-friendly script (no cookies, no PII) so '
+                        'you can see view and visitor counts next to this '
+                        'generation. Off by default.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.6),
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: _enableTracking,
+                onChanged: (v) => setState(() => _enableTracking = v),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 0, 8, 10),
+            child: Row(
+              children: [
+                Icon(
+                  LucideIcons.coins,
+                  size: 14,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Cost: $effectiveCost FULA',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
             ),
-          ),
-          Switch(
-            value: _enableTracking,
-            onChanged: (v) => setState(() => _enableTracking = v),
           ),
         ],
       ),

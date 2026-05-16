@@ -30,6 +30,13 @@ import 'package:fula_files/core/utils/platform_capabilities.dart';
 /// its filename and (after upload) its IPFS CID.
 typedef AssetNote = ({String fileName, String? cid, String comment});
 
+/// Live pricing for a website generation. The two values come from the AI
+/// service's `/api/v1/pricing` endpoint and are configured server-side via
+/// the `GENERATION_COST_FULA` / `GENERATION_COST_FULA_WITH_TRACKING` env vars.
+/// Used by the UI to show the user what a generation will cost before they
+/// publish, and to react when the click-tracking toggle flips.
+typedef WebsitePricing = ({int costFula, int costFulaWithTracking});
+
 /// Service that orchestrates the website generation pipeline:
 /// upload assets (unencrypted) → parse content (ML Kit) → call AI → store result
 class WebsiteService {
@@ -104,7 +111,7 @@ class WebsiteService {
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
   static const String _defaultAnalyticsEndpoint =
-      'https://analytics.cloud.fx.land';
+      'https://analytics.fx.land';
 
   /// System instructions auto-prepended to every user prompt.
   /// These ensure the backend produces compact, valid output.
@@ -499,6 +506,65 @@ Design:
       await _assetCommentsBox.delete(key);
     }
   }
+
+  // ============================================================================
+  // PRICING
+  // ============================================================================
+
+  /// Fallback pricing used when the server is unreachable or returns junk.
+  /// Kept in sync with `pinning-service/ai`'s defaults
+  /// (`GENERATION_COST_FULA=1000`, `GENERATION_COST_FULA_WITH_TRACKING=1500`)
+  /// so the UI shows a plausible number rather than an empty/zero state.
+  static const WebsitePricing _fallbackPricing =
+      (costFula: 1000, costFulaWithTracking: 1500);
+
+  WebsitePricing? _cachedPricing;
+
+  /// Fetch the current FULA cost for a website generation from the AI
+  /// service. The result is cached in-memory for the session so the
+  /// `generate_website_screen` can read it synchronously after the first
+  /// load, and so flipping the tracking toggle doesn't trigger a new HTTP
+  /// call (both values arrive in one response).
+  ///
+  /// Never throws. If the endpoint is missing (older server) or unreachable,
+  /// returns [_fallbackPricing]. The endpoint itself is no-auth so this
+  /// works before the user has logged in.
+  ///
+  /// [forceRefresh] bypasses the in-memory cache.
+  Future<WebsitePricing> fetchPricing({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedPricing != null) return _cachedPricing!;
+
+    final aiEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.aiEndpointUrl) ??
+        _defaultAiEndpoint;
+
+    try {
+      final response = await http
+          .get(Uri.parse('$aiEndpoint/api/v1/pricing'))
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final base = body['generationCostFula'];
+        final tracked = body['generationCostFulaWithTracking'];
+        if (base is num && tracked is num && base >= 0 && tracked >= 0) {
+          _cachedPricing = (
+            costFula: base.toInt(),
+            costFulaWithTracking: tracked.toInt(),
+          );
+          return _cachedPricing!;
+        }
+      }
+    } catch (_) {
+      // Swallow — pricing display is best-effort. Falling back to defaults
+      // is preferable to blocking the publish flow on a network glitch.
+    }
+    _cachedPricing = _fallbackPricing;
+    return _cachedPricing!;
+  }
+
+  /// Synchronous read of the last-fetched pricing. Returns the fallback if
+  /// [fetchPricing] has not been called yet.
+  WebsitePricing get cachedPricing => _cachedPricing ?? _fallbackPricing;
 
   // ============================================================================
   // GENERATION PIPELINE
