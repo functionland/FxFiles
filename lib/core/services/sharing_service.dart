@@ -386,6 +386,164 @@ class SharingService {
     );
   }
 
+  /// Password-protected variant of [createTagPublicLink]. Same dynamic
+  /// manifest behaviour (recipient pulls the manifest from the server, which
+  /// re-publishes when files are tagged/untagged), but the inner payload is
+  /// encrypted with a password-derived key so anyone who intercepts the URL
+  /// still needs the password to decrypt the fula token.
+  Future<GeneratedShareLink> createTagPasswordProtectedLink({
+    required String tagId,
+    required int expiryDays,
+    required String password,
+    String? label,
+    String? gatewayBaseUrl,
+  }) async {
+    if (password.isEmpty) {
+      throw SharingException('Password cannot be empty');
+    }
+
+    final ownerPublicKey = await AuthService.instance.getPublicKey();
+    if (ownerPublicKey == null) {
+      throw SharingException(
+          'Owner public key not available. Please sign in first.');
+    }
+    if (!fula_service.FulaApiService.instance.isConfigured) {
+      throw SharingException(
+          'Fula API not configured. Please connect to cloud storage first.');
+    }
+
+    final resolution = await _resolveTagShareScope(tagId);
+    if (resolution.items.isEmpty) {
+      if (resolution.pendingCount > 0) {
+        throw SharingException(
+          'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
+        );
+      }
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+    }
+
+    final bucket = resolution.primaryBucket!;
+    final firstStorageKey = resolution.items.first.storageKey;
+
+    final now = DateTime.now();
+    final expiresAt = now.add(Duration(days: expiryDays));
+    final expiresAtUnix = expiresAt.millisecondsSinceEpoch ~/ 1000;
+
+    // Disposable keypair for the link — same as the public-link variant.
+    final privateKeyBytes = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      privateKeyBytes[i] = _random.nextInt(256);
+    }
+    final publicKeyBytes = Uint8List.fromList(
+      await fula.derivePublicKeyFromSecret(secretKeyBytes: privateKeyBytes.toList()),
+    );
+
+    // Outer fula token anchored to the first cloud file (same rationale as
+    // createTagPublicLink — the manifest carries per-file tokens).
+    final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
+      bucket,
+      firstStorageKey,
+      publicKeyBytes,
+      ShareMode.temporal,
+      expiresAtUnix,
+    );
+
+    final tokenId = _uuid.v4();
+    final token = ShareToken(
+      id: tokenId,
+      fulaShareToken: fulaToken,
+      ownerPublicKey: ownerPublicKey,
+      recipientPublicKey: publicKeyBytes,
+      pathScope: '',
+      bucket: bucket,
+      permissions: SharePermissions.readOnly,
+      createdAt: now,
+      expiresAt: expiresAt,
+      label: label ?? resolution.tag.name,
+      shareType: ShareType.passwordProtected,
+      shareMode: ShareMode.temporal,
+    );
+
+    final folderFiles = await _buildManifestEntries(
+      bucket: bucket,
+      publicKeyBytes: publicKeyBytes,
+      shareMode: ShareMode.temporal,
+      expiresAtUnix: expiresAtUnix,
+      items: resolution.items,
+    );
+
+    // Inner payload mirrors the public-tag-link payload but is encrypted
+    // below with a password-derived key. Marker `scope: 'tag'` so the portal
+    // knows to dispatch to the tag flow after the user supplies the
+    // password.
+    final innerPayloadMap = {
+      'v': 2,
+      't': fulaToken,
+      'b': bucket,
+      'k': '',
+      'sk': base64Encode(privateKeyBytes),
+      if (label != null) 'l': label,
+      'scope': 'tag',
+      'tagName': resolution.tag.name,
+      'folder': true,
+    };
+
+    // Encrypt inner payload using a password-derived key (same approach as
+    // createPasswordProtectedLink).
+    final salt = _generateSalt(16);
+    final passwordKey = await _deriveKeyFromPassword(password, salt);
+    final encryptedPayload = await _encrypt(
+      Uint8List.fromList(utf8.encode(jsonEncode(innerPayloadMap))),
+      passwordKey,
+    );
+
+    final outerPayload = {
+      'v': 2,
+      'p': true, // password-protected flag — the portal prompts before decrypt
+      's': base64Encode(salt),
+      'e': base64Encode(encryptedPayload),
+      'b': bucket,
+      'k': '',
+    };
+    final fragment = base64UrlEncode(utf8.encode(jsonEncode(outerPayload)));
+
+    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
+    final url = '$baseUrl/view/$tokenId#$fragment';
+
+    _postManifest(
+      baseUrl: baseUrl,
+      shareId: tokenId,
+      bucket: bucket,
+      pathScope: '',
+      fulaToken: fulaToken,
+      folderFiles: folderFiles,
+      shareMode: ShareMode.temporal,
+      expiresAt: expiresAt,
+      linkSecretKey: privateKeyBytes,
+    );
+
+    final outgoingShare = OutgoingShare(
+      token: token,
+      recipientName: 'Password Protected',
+      linkSecretKey: privateKeyBytes,
+      passwordSalt: salt,
+      encryptedFragment: fragment,
+      tagId: tagId,
+    );
+    await _saveOutgoingShare(outgoingShare);
+
+    debugPrint(
+        'SharingService.createTagPasswordProtectedLink: tag "${resolution.tag.name}" '
+        '— ${resolution.items.length} cloud, ${resolution.pendingCount} pending');
+
+    return GeneratedShareLink(
+      url: url,
+      token: token,
+      outgoingShare: outgoingShare,
+      password: password,
+    );
+  }
+
   /// Share a tag with a specific recipient (read-only).
   /// Same dynamic-manifest behavior as [createTagPublicLink], but the per-file
   /// share tokens are issued to [recipientPublicKey] so only that recipient
@@ -1274,6 +1432,42 @@ class SharingService {
   Future<void> removeAcceptedShare(String shareId) async {
     final shares = await getAcceptedShares();
     shares.removeWhere((s) => s.token.id == shareId);
+    await _saveAcceptedShares(shares);
+  }
+
+  /// Find a single accepted share by id, or null if not found.
+  Future<AcceptedShare?> findAcceptedShare(String shareId) async {
+    final shares = await getAcceptedShares();
+    for (final s in shares) {
+      if (s.token.id == shareId) return s;
+    }
+    return null;
+  }
+
+  /// Assign or update a local sync folder for an accepted share. Mirrors
+  /// CollaborationService.updateFolderAssignment so the ShareFolderSyncService
+  /// has the same persistence shape to work against. Either or both of
+  /// [folderPath] and [syncEnabled] may be supplied. Passing
+  /// `folderPath: ''` (empty string) clears the assignment.
+  Future<void> updateAcceptedShareFolderAssignment(
+    String shareId, {
+    String? folderPath,
+    bool? syncEnabled,
+  }) async {
+    final shares = await getAcceptedShares();
+    var found = false;
+    for (var i = 0; i < shares.length; i++) {
+      if (shares[i].token.id != shareId) continue;
+      found = true;
+      final cleared = folderPath != null && folderPath.isEmpty;
+      shares[i] = shares[i].copyWith(
+        localFolderPath: cleared ? null : (folderPath ?? shares[i].localFolderPath),
+        syncEnabled: syncEnabled ?? shares[i].syncEnabled,
+      );
+    }
+    if (!found) {
+      throw SharingException('Accepted share not found: $shareId');
+    }
     await _saveAcceptedShares(shares);
   }
 

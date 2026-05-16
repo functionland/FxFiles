@@ -10,6 +10,18 @@
 -keepnames class com.ryanheise.audioservice.AudioService
 -keepnames class com.ryanheise.audioservice.MediaButtonReceiver
 
+# Keep MediaSessionCompat / MediaBrowserCompat — audio_service builds
+# notifications via RemoteViews referencing these, and older Android (API 28)
+# is stricter about resolving symbols at notification-inflate time. R8 has
+# stripped these in some reports causing audio_service to crash on first
+# notification post.
+-keep class android.support.v4.media.** { *; }
+-keep interface android.support.v4.media.** { *; }
+-keep class androidx.media.** { *; }
+-keep interface androidx.media.** { *; }
+-dontwarn android.support.v4.media.**
+-dontwarn androidx.media.**
+
 # ============================================
 # Reown AppKit / WalletConnect SDK
 # Required for wallet signature requests in release builds

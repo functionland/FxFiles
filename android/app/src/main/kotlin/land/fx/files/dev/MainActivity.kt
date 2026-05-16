@@ -53,17 +53,21 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun setupEdgeToEdge() {
-        // Let the app draw behind system bars
+        // Edge-to-edge is intended for Android 10+ (API 29 / Q) and is
+        // required only by Android 15+ targeting. On API 28 (Android 9),
+        // calling setDecorFitsSystemWindows(false) plus transparent system
+        // bars has been linked to ViewRootImpl insets/layout crashes that
+        // tear down the activity shortly after the first frame — letting
+        // the system service (e.g. AudioService) keep running for a bit
+        // afterwards. Leave the OS defaults on API < 29.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return
+        }
+
         WindowCompat.setDecorFitsSystemWindows(window, false)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            window.statusBarColor = Color.TRANSPARENT
-            window.navigationBarColor = Color.TRANSPARENT
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            window.isNavigationBarContrastEnforced = false
-        }
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        window.isNavigationBarContrastEnforced = false
     }
     private val STORAGE_CHANNEL = "land.fx.files/storage"
     private val PIP_CHANNEL = "land.fx.files/pip"

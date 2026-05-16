@@ -88,6 +88,7 @@ class SecureStorageKeys {
   // Website builder keys
   static const String aiEndpointUrl = 'ai_endpoint_url';
   static const String ipfsGatewayUrl = 'ipfs_gateway_url';
+  static const String analyticsEndpointUrl = 'analytics_endpoint_url';
 
   // IPFS upload endpoint (ipfs-server with /upload and /gateway)
   static const String ipfsEndpointUrl = 'ipfs_endpoint_url';

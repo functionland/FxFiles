@@ -25,6 +25,11 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
+/// One user-supplied note attached to a website asset. Threaded through the
+/// preview and generation flows so the AI prompt can reference the file by
+/// its filename and (after upload) its IPFS CID.
+typedef AssetNote = ({String fileName, String? cid, String comment});
+
 /// Service that orchestrates the website generation pipeline:
 /// upload assets (unencrypted) → parse content (ML Kit) → call AI → store result
 class WebsiteService {
@@ -32,7 +37,14 @@ class WebsiteService {
   static final WebsiteService instance = WebsiteService._();
 
   late Box<WebsiteGeneration> _generationsBox;
+  late Box<String> _assetCommentsBox;
   bool _isInitialized = false;
+
+  /// True once the Hive boxes are open. Callers that synchronously read from
+  /// the service (e.g. UI build methods reading asset comments) MUST check
+  /// this and await [init] first — otherwise a silent empty read followed by
+  /// a write can overwrite previously-persisted data.
+  bool get isInitialized => _isInitialized;
 
   final _statusController = StreamController<WebsiteGeneration>.broadcast();
   Stream<WebsiteGeneration> get statusStream => _statusController.stream;
@@ -91,6 +103,8 @@ class WebsiteService {
   // Default endpoints (used when nothing is configured in SecureStorage)
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
   static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
+  static const String _defaultAnalyticsEndpoint =
+      'https://analytics.cloud.fx.land';
 
   /// System instructions auto-prepended to every user prompt.
   /// These ensure the backend produces compact, valid output.
@@ -199,9 +213,70 @@ Design:
   static final RegExp _paletteLinePattern =
       RegExp(r'^Palette:\s*(.*)$', multiLine: true);
 
+  /// A single user-supplied note about one attached asset. [cid] is null
+  /// when the preview is rendered before upload — the section then explains
+  /// that the live prompt will key by CID instead of just filename.
+  static String _formatAssetNote({
+    required String fileName,
+    required String? cid,
+    required String comment,
+  }) {
+    final lines = StringBuffer('- file: $fileName');
+    if (cid != null && cid.isNotEmpty) {
+      lines.write(' (CID: $cid)');
+    }
+    lines
+      ..writeln()
+      ..write('  note: ${comment.trim()}');
+    return lines.toString();
+  }
+
+  /// Render the "asset notes" section that's appended to the AI prompt.
+  /// Returns an empty string if there are no notes.
+  static String _buildAssetNotesSection({
+    required List<AssetNote> notes,
+    required bool cidsAvailable,
+  }) {
+    final populated = notes
+        .where((n) => n.comment.trim().isNotEmpty)
+        .toList(growable: false);
+    if (populated.isEmpty) return '';
+
+    final buffer = StringBuffer()
+      ..writeln('=== ATTACHED ASSET NOTES (auto-added) ===')
+      ..writeln(
+          'The user attached per-asset notes describing intent or emphasis '
+          'for specific files. Each note identifies the asset by file name'
+          '${cidsAvailable ? ' and IPFS CID' : ''}; the matching file is also '
+          'in the attached `assets` list with the same identifier. Use these '
+          'notes to inform layout, emphasis, copy tone, and section choices '
+          'when designing the website. If a note conflicts with other '
+          'instructions, prefer the note since it reflects the user\'s '
+          'specific intent for that file.');
+    if (!cidsAvailable) {
+      buffer.writeln(
+          '(Preview note: the production prompt sent at generation time '
+          'also includes the CID for each entry below.)');
+    }
+    for (final note in populated) {
+      buffer.writeln(_formatAssetNote(
+        fileName: note.fileName,
+        cid: note.cid,
+        comment: note.comment,
+      ));
+    }
+    buffer.write('=== END ATTACHED ASSET NOTES ===');
+    return buffer.toString();
+  }
+
   /// Build the prompt sent to the AI: system constraints, optional hidden
-  /// category/style blocks, then `User request:` and the stored prompt.
-  String _buildAiPrompt(String storedPrompt) {
+  /// category/style/palette blocks, optional per-asset user notes, then
+  /// `User request:` and the stored prompt.
+  String _buildAiPrompt(
+    String storedPrompt, {
+    List<AssetNote> assetNotes = const [],
+    bool cidsAvailable = true,
+  }) {
     final buffer = StringBuffer(_systemInstructions);
 
     final categoryMatch = _categoryLinePattern.firstMatch(storedPrompt);
@@ -249,6 +324,16 @@ Design:
         ..writeln('=== END PALETTE PREFERENCE ===');
     }
 
+    final notesSection = _buildAssetNotesSection(
+      notes: assetNotes,
+      cidsAvailable: cidsAvailable,
+    );
+    if (notesSection.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln(notesSection);
+    }
+
     buffer
       ..writeln()
       ..writeln('User request:')
@@ -260,13 +345,16 @@ Design:
   /// generator screen's selections. Mirrors the enriched-prompt header format
   /// produced by the screen's caller (`Website Name:` / `Category:` / optional
   /// `Styles:` / `Palette:`) before passing through [_buildAiPrompt]. Used by
-  /// the screen's "preview full prompt" eye icon.
+  /// the screen's "preview full prompt" eye icon. [assetNotes] is rendered
+  /// inside the prompt only when present; CIDs are not yet known at preview
+  /// time so the section explicitly says so.
   String buildPreviewPrompt({
     required String websiteName,
     required String category,
     required List<String> styles,
     required String palette,
     required String body,
+    List<AssetNote> assetNotes = const [],
   }) {
     final buffer = StringBuffer()
       ..writeln('Website Name: $websiteName')
@@ -280,7 +368,11 @@ Design:
     buffer
       ..writeln()
       ..write(body);
-    return _buildAiPrompt(buffer.toString().trim());
+    return _buildAiPrompt(
+      buffer.toString().trim(),
+      assetNotes: assetNotes,
+      cidsAvailable: false,
+    );
   }
 
   /// Initialize Hive box and register adapters
@@ -299,8 +391,11 @@ Design:
       }
 
       _generationsBox = await Hive.openBox<WebsiteGeneration>('website_generations');
+      _assetCommentsBox = await Hive.openBox<String>('website_asset_comments');
       _isInitialized = true;
-      debugPrint('WebsiteService initialized with ${_generationsBox.length} generations');
+      debugPrint(
+          'WebsiteService initialized with ${_generationsBox.length} generations, '
+          '${_assetCommentsBox.length} asset comments');
     } catch (e) {
       debugPrint('Failed to initialize WebsiteService: $e');
     }
@@ -336,23 +431,99 @@ Design:
     for (final id in toRemove) {
       await _generationsBox.delete(id);
     }
+    // Also clear any per-asset comments for this website.
+    await deleteAssetCommentsForTag(tagId);
+  }
+
+  // ============================================================================
+  // ASSET COMMENTS (per-website-asset user notes)
+  // ============================================================================
+
+  /// Composite key for the comments box.
+  String _assetCommentKey(String tagId, String taggedFileId) =>
+      '$tagId|$taggedFileId';
+
+  /// Returns the stored comment for a website asset, or null if none.
+  String? getAssetComment(String tagId, String taggedFileId) {
+    if (!_isInitialized) return null;
+    final value = _assetCommentsBox.get(_assetCommentKey(tagId, taggedFileId));
+    if (value == null || value.isEmpty) return null;
+    return value;
+  }
+
+  /// Persist (or clear, when empty) a comment for a website asset.
+  Future<void> setAssetComment(
+      String tagId, String taggedFileId, String comment) async {
+    if (!_isInitialized) await init();
+    final key = _assetCommentKey(tagId, taggedFileId);
+    final trimmed = comment.trim();
+    if (trimmed.isEmpty) {
+      await _assetCommentsBox.delete(key);
+    } else {
+      await _assetCommentsBox.put(key, trimmed);
+    }
+  }
+
+  /// Delete one asset's comment (called when the asset is removed from a
+  /// website).
+  Future<void> deleteAssetComment(String tagId, String taggedFileId) async {
+    if (!_isInitialized) return;
+    await _assetCommentsBox.delete(_assetCommentKey(tagId, taggedFileId));
+  }
+
+  /// All comments for a tag, returned as `taggedFileId → comment`.
+  Map<String, String> getAssetCommentsForTag(String tagId) {
+    if (!_isInitialized) return const {};
+    final prefix = '$tagId|';
+    final result = <String, String>{};
+    for (final key in _assetCommentsBox.keys) {
+      if (key is String && key.startsWith(prefix)) {
+        final value = _assetCommentsBox.get(key);
+        if (value != null && value.isNotEmpty) {
+          result[key.substring(prefix.length)] = value;
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Delete every comment for a website (called when the website is deleted).
+  Future<void> deleteAssetCommentsForTag(String tagId) async {
+    if (!_isInitialized) return;
+    final prefix = '$tagId|';
+    final toRemove = <String>[
+      for (final key in _assetCommentsBox.keys)
+        if (key is String && key.startsWith(prefix)) key,
+    ];
+    for (final key in toRemove) {
+      await _assetCommentsBox.delete(key);
+    }
   }
 
   // ============================================================================
   // GENERATION PIPELINE
   // ============================================================================
 
-  /// Start the full website generation pipeline
+  /// Start the full website generation pipeline. [enableTracking] is the
+  /// user's per-generation opt-in for click analytics: the AI backend honours
+  /// it by injecting the analytics-ping `<script>` into the generated HTML
+  /// before pinning to IPFS, and the in-app UI shows view/visitor counts only
+  /// for generations where it was true.
   Future<WebsiteGeneration> startGeneration({
     required String tagId,
     required String tagName,
     required String prompt,
     required List<TaggedFile> files,
+    bool enableTracking = false,
   }) async {
     if (!_isInitialized) await init();
 
     // Sanitize tagName for use as S3 key prefix
     final websiteName = tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+
+    // Snapshot per-asset user comments at generation start so subsequent
+    // edits don't retroactively change in-flight prompts.
+    final commentsByTaggedFileId = getAssetCommentsForTag(tagId);
 
     // Build asset list
     final assets = files
@@ -361,6 +532,7 @@ Design:
               localPath: f.localPath!,
               fileName: f.fileName,
               type: file_utils.classifyFileType(f.fileName),
+              comment: commentsByTaggedFileId[f.id],
             ))
         .toList();
 
@@ -377,6 +549,7 @@ Design:
       totalAssets: assets.length,
       uploadedAssets: 0,
       assets: assets,
+      trackingEnabled: enableTracking,
     );
 
     await _generationsBox.put(generation.id, generation);
@@ -561,8 +734,21 @@ Design:
 
     final assetPayloads = validAssets.map((a) => a.toAiPayload()).toList();
 
+    // Build the user-note table now that CIDs are known. Only assets with a
+    // non-empty comment contribute a row.
+    final assetNotes = <AssetNote>[
+      for (final a in validAssets)
+        if (a.comment != null && a.comment!.trim().isNotEmpty)
+          (fileName: a.fileName, cid: a.cid, comment: a.comment!),
+    ];
+
     // M3: _callAiEndpoint sets resultCid and resultGatewayUrl on generation
-    await _callAiEndpoint(generation.prompt, assetPayloads, generation);
+    await _callAiEndpoint(
+      generation.prompt,
+      assetPayloads,
+      generation,
+      assetNotes: assetNotes,
+    );
 
     generation.status = WebsiteGenStatus.completed;
     generation.statusMessage = 'Website generated successfully';
@@ -808,6 +994,81 @@ Design:
   }
 
   // ============================================================================
+  // ANALYTICS (opt-in click tracking on generated sites)
+  // ============================================================================
+  //
+  // Backend contract (implement at the URL configured under
+  // [SecureStorageKeys.analyticsEndpointUrl], default
+  // `https://analytics.cloud.fx.land`). The design is **stateless and
+  // CID-keyed**: when the user opts in, the AI generation backend appends
+  // a fixed inline `<script>` to the produced HTML before pinning to IPFS.
+  // The script self-discovers the IPFS CID from `window.location` (works
+  // for subdomain-style `{cid}.ipfs.<gateway>` and path-style
+  // `<gateway>/ipfs/{cid}/`) and POSTs that CID to /track. No tokens, no
+  // registration, no auth headers anywhere — anyone with the CID can
+  // submit pings or read counts, which is fine because the URL IS the CID.
+  //
+  //   POST /api/v1/track
+  //     Body   : {"cid": "<bafy...|Qm...>", "event": "pageview",
+  //               "ref": "<document.referrer || ''>"}
+  //     Headers: Origin / Referer SHOULD end with `.ipfs.dweb.link` (or
+  //              another allow-listed gateway).
+  //     Behaviour:
+  //       - Reject if `cid` doesn't match a basic CID shape.
+  //       - Lazily create a record for `cid` on first sight; increment
+  //         pageview count.
+  //       - Compute a daily-rotating-salt hash of (IP || UA) and add it to
+  //         the per-day unique-visitor set so repeat visits inside a day
+  //         collapse to one.
+  //       - Never persist raw IP, full UA, or cookies/localStorage.
+  //     Abuse  : per-CID-per-IP rate limit, known-bot UA filter, cap on
+  //              total distinct CIDs to bound storage.
+  //
+  //   GET /api/v1/stats/{cid}
+  //     No auth header.
+  //     Response: {"pageviews": <int>, "uniqueVisitors": <int>}
+  //     Returns 404 (or empty counts) for CIDs no `/track` ping has hit yet.
+  //
+  // Spoofing posture: the CID is public (it's the URL). Anyone can submit
+  // arbitrary pings or read counts. Treat counts as approximate.
+
+  /// Aggregate analytics for a generated website, keyed by its IPFS CID.
+  /// [pageviews] is a total count; [uniqueVisitors] is approximated via a
+  /// daily-rotating salt hash of (IP || UA) and is therefore not exact
+  /// across days. Returns null on transport error so the UI can render an
+  /// "unavailable" state.
+  Future<({int pageviews, int uniqueVisitors})?> fetchAnalytics(
+      String cid) async {
+    if (cid.isEmpty) return null;
+    final analyticsEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.analyticsEndpointUrl) ??
+        _defaultAnalyticsEndpoint;
+
+    try {
+      final response = await http.get(
+        Uri.parse('$analyticsEndpoint/api/v1/stats/$cid'),
+      ).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 404) {
+        return (pageviews: 0, uniqueVisitors: 0);
+      }
+      if (response.statusCode != 200) {
+        debugPrint(
+            'fetchAnalytics($cid) failed: ${response.statusCode} '
+            '${response.body}');
+        return null;
+      }
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return (
+        pageviews: (body['pageviews'] as num?)?.toInt() ?? 0,
+        uniqueVisitors: (body['uniqueVisitors'] as num?)?.toInt() ?? 0,
+      );
+    } catch (e) {
+      debugPrint('fetchAnalytics($cid) error: $e');
+      return null;
+    }
+  }
+
+  // ============================================================================
   // AI ENDPOINT
   // ============================================================================
 
@@ -816,8 +1077,9 @@ Design:
   Future<void> _callAiEndpoint(
     String prompt,
     List<Map<String, dynamic>> assets,
-    WebsiteGeneration generation,
-  ) async {
+    WebsiteGeneration generation, {
+    List<AssetNote> assetNotes = const [],
+  }) async {
     final aiEndpoint = await SecureStorageService.instance
             .read(SecureStorageKeys.aiEndpointUrl) ??
         _defaultAiEndpoint;
@@ -839,8 +1101,14 @@ Design:
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
-        'prompt': _buildAiPrompt(prompt),
+        'prompt': _buildAiPrompt(prompt, assetNotes: assetNotes),
         'assets': assets,
+        // Opt-in click-tracking. Backend honours by injecting the analytics
+        // ping script into the generated HTML before pinning. The script
+        // is stateless — it self-discovers the IPFS CID from
+        // `window.location` and reports against that, so no token is
+        // exchanged here.
+        'enable_tracking': generation.trackingEnabled,
       }),
       ).timeout(const Duration(seconds: 30));
     } on TimeoutException {

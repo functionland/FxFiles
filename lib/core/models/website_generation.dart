@@ -51,6 +51,12 @@ class WebsiteAsset extends HiveObject {
   @HiveField(6)
   bool uploaded;
 
+  /// Optional user-supplied note about this asset, shown as an inline input
+  /// in the website detail screen and surfaced to the AI in the generated
+  /// prompt's "asset notes" section (keyed by CID + filename).
+  @HiveField(7)
+  String? comment;
+
   WebsiteAsset({
     required this.localPath,
     required this.fileName,
@@ -59,6 +65,7 @@ class WebsiteAsset extends HiveObject {
     this.gatewayUrl,
     this.parsedContent,
     this.uploaded = false,
+    this.comment,
   });
 
   factory WebsiteAsset.fromJson(Map<String, dynamic> json) {
@@ -70,6 +77,7 @@ class WebsiteAsset extends HiveObject {
       gatewayUrl: json['gatewayUrl'] as String?,
       parsedContent: json['parsedContent'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
+      comment: json['comment'] as String?,
     );
   }
 
@@ -82,6 +90,7 @@ class WebsiteAsset extends HiveObject {
       'gatewayUrl': gatewayUrl,
       'parsedContent': parsedContent,
       'uploaded': uploaded,
+      'comment': comment,
     };
   }
 
@@ -92,6 +101,7 @@ class WebsiteAsset extends HiveObject {
       'type': type,
       'url': gatewayUrl ?? '',
       'content': parsedContent ?? '',
+      if (comment != null && comment!.trim().isNotEmpty) 'note': comment,
     };
   }
 }
@@ -141,6 +151,15 @@ class WebsiteGeneration extends HiveObject {
   @HiveField(12)
   List<WebsiteAsset> assets;
 
+  /// Whether the generator embedded the opt-in click-tracking script. The UI
+  /// shows analytics next to the link only when this is true. Backend honours
+  /// this flag by injecting the tracking script into the generated HTML
+  /// before pinning to IPFS. The injected script self-discovers the IPFS
+  /// CID from `window.location` and keys all analytics off of it — no token
+  /// needed.
+  @HiveField(14)
+  bool trackingEnabled;
+
   WebsiteGeneration({
     required this.id,
     required this.tagId,
@@ -156,6 +175,7 @@ class WebsiteGeneration extends HiveObject {
     this.totalAssets = 0,
     this.uploadedAssets = 0,
     this.assets = const [],
+    this.trackingEnabled = false,
   });
 
   factory WebsiteGeneration.fromJson(Map<String, dynamic> json) {
@@ -177,6 +197,7 @@ class WebsiteGeneration extends HiveObject {
               ?.map((a) => WebsiteAsset.fromJson(a as Map<String, dynamic>))
               .toList() ??
           [],
+      trackingEnabled: json['trackingEnabled'] as bool? ?? false,
     );
   }
 
@@ -219,6 +240,7 @@ class WebsiteGeneration extends HiveObject {
       'totalAssets': totalAssets,
       'uploadedAssets': uploadedAssets,
       'assets': assets.map((a) => a.toJson()).toList(),
+      'trackingEnabled': trackingEnabled,
     };
   }
 

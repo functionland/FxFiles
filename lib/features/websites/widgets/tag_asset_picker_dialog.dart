@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
+import 'package:fula_files/shared/utils/tagged_file_utils.dart';
+import 'package:fula_files/shared/widgets/tagged_file_thumbnail.dart';
 
 /// Two-step picker used by the website generator's import sheet to pull in
 /// files that are already tagged with some other tag. Step 1 shows the tag
@@ -46,6 +48,15 @@ class _TagAssetPickerDialogState extends ConsumerState<_TagAssetPickerDialog> {
   // entries for `localPath == null` files stay false and the checkbox is
   // disabled.
   final Map<String, bool> _checked = {};
+
+  final _tagSearchController = TextEditingController();
+  String _tagSearchQuery = '';
+
+  @override
+  void dispose() {
+    _tagSearchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -147,49 +158,108 @@ class _TagAssetPickerDialogState extends ConsumerState<_TagAssetPickerDialog> {
   }
 
   Widget _buildTagList(BuildContext context, ScrollController scrollCtrl) {
+    final theme = Theme.of(context);
     final tagState = ref.watch(tagProvider);
-    final tags = tagState.tags.where((t) => t.id != widget.excludeTagId).toList();
+    final allTags =
+        tagState.tags.where((t) => t.id != widget.excludeTagId).toList();
 
     if (tagState.isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (tags.isEmpty) {
+    if (allTags.isEmpty) {
       return _EmptyState(
         icon: LucideIcons.tag,
         title: 'No other tags',
         subtitle: 'Tag files first, then import them from here.',
       );
     }
-    return ListView.builder(
-      controller: scrollCtrl,
-      itemCount: tags.length,
-      itemBuilder: (ctx, i) {
-        final tag = tags[i];
-        return ListTile(
-          leading: Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: Color(tag.colorValue).withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Center(
-              child: Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: Color(tag.colorValue),
-                  shape: BoxShape.circle,
-                ),
+
+    final query = _tagSearchQuery.trim().toLowerCase();
+    final filteredTags = query.isEmpty
+        ? allTags
+        : allTags
+            .where((t) => t.name.toLowerCase().contains(query))
+            .toList();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: TextField(
+            controller: _tagSearchController,
+            decoration: InputDecoration(
+              hintText: 'Search tags...',
+              prefixIcon: const Icon(LucideIcons.search, size: 20),
+              suffixIcon: _tagSearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(LucideIcons.x, size: 18),
+                      onPressed: () {
+                        _tagSearchController.clear();
+                        setState(() => _tagSearchQuery = '');
+                      },
+                    )
+                  : null,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.grey[300]!),
               ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.grey[300]!),
+              ),
+              filled: true,
+              fillColor: theme.colorScheme.surfaceContainerHighest
+                  .withValues(alpha: 0.3),
             ),
+            onChanged: (value) => setState(() => _tagSearchQuery = value),
           ),
-          title: Text(tag.name),
-          subtitle: Text('${tag.fileCount} file${tag.fileCount == 1 ? '' : 's'}'),
-          trailing: const Icon(LucideIcons.chevronRight, size: 18),
-          onTap: () => _openTag(tag),
-        );
-      },
+        ),
+        Expanded(
+          child: filteredTags.isEmpty
+              ? Center(
+                  child: Text(
+                    'No tags matching "$_tagSearchQuery"',
+                    style: TextStyle(color: Colors.grey[500]),
+                  ),
+                )
+              : ListView.builder(
+                  controller: scrollCtrl,
+                  itemCount: filteredTags.length,
+                  itemBuilder: (ctx, i) {
+                    final tag = filteredTags[i];
+                    return ListTile(
+                      leading: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color:
+                              Color(tag.colorValue).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: Color(tag.colorValue),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                      title: Text(tag.name),
+                      subtitle: Text(
+                          '${tag.fileCount} file${tag.fileCount == 1 ? '' : 's'}'),
+                      trailing:
+                          const Icon(LucideIcons.chevronRight, size: 18),
+                      onTap: () => _openTag(tag),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
@@ -271,11 +341,11 @@ class _TagAssetPickerDialogState extends ConsumerState<_TagAssetPickerDialog> {
                   final tf = files[i];
                   final available = tf.localPath != null;
                   final isChecked = _checked[tf.id] ?? false;
-                  return CheckboxListTile(
-                    value: isChecked,
-                    onChanged: available
-                        ? (v) => setState(() => _checked[tf.id] = v ?? false)
-                        : null,
+                  return ListTile(
+                    leading: Opacity(
+                      opacity: available ? 1.0 : 0.4,
+                      child: TaggedFileThumbnail(taggedFile: tf, size: 40),
+                    ),
                     title: Text(
                       tf.fileName,
                       maxLines: 1,
@@ -297,14 +367,16 @@ class _TagAssetPickerDialogState extends ConsumerState<_TagAssetPickerDialog> {
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
                           ),
-                    secondary: Icon(
-                      LucideIcons.file,
-                      size: 20,
-                      color: available
-                          ? theme.colorScheme.onSurfaceVariant
-                          : theme.disabledColor,
+                    trailing: Checkbox(
+                      value: isChecked,
+                      onChanged: available
+                          ? (v) =>
+                              setState(() => _checked[tf.id] = v ?? false)
+                          : null,
                     ),
-                    controlAffinity: ListTileControlAffinity.leading,
+                    onTap: available
+                        ? () => openTaggedFile(context, tf)
+                        : null,
                     dense: true,
                   );
                 },

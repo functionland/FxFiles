@@ -125,7 +125,7 @@ class FileThumbnail extends StatelessWidget {
     final ext = file.extension.toLowerCase();
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic'].contains(ext)) return LucideIcons.image;
     if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv'].contains(ext)) return LucideIcons.video;
-    if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'].contains(ext)) return LucideIcons.music;
+    if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'opus'].contains(ext)) return LucideIcons.music;
     if (['pdf'].contains(ext)) return LucideIcons.fileText;
     if (['doc', 'docx'].contains(ext)) return LucideIcons.fileType;
     if (['xls', 'xlsx'].contains(ext)) return LucideIcons.sheet;
@@ -142,7 +142,7 @@ class FileThumbnail extends StatelessWidget {
     final ext = file.extension.toLowerCase();
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic'].contains(ext)) return Colors.green;
     if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv'].contains(ext)) return Colors.red;
-    if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'].contains(ext)) return Colors.orange;
+    if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'opus'].contains(ext)) return Colors.orange;
     if (['pdf'].contains(ext)) return Colors.red;
     if (['doc', 'docx'].contains(ext)) return Colors.blue;
     if (['xls', 'xlsx'].contains(ext)) return Colors.green;

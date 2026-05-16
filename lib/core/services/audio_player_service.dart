@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:fula_files/core/models/playlist.dart';
+import 'package:fula_files/core/services/crash_log_service.dart';
 
 enum RepeatMode { off, one, all }
 
@@ -109,16 +110,35 @@ class AudioPlayerService {
     if (_isInitializing) return;
     _isInitializing = true;
 
+    final log = CrashLogService.instance;
+    log.recordEvent('AudioPlayerService.init: start');
+
     try {
       _player = AudioPlayer();
+      log.recordEvent('AudioPlayerService.init: AudioPlayer ctor done');
 
-      // Initialize audio session
-      final session = await AudioSession.instance;
-      await session.configure(const AudioSessionConfiguration.music());
+      // Initialize audio session — wrap defensively. On Android 9 (API 28)
+      // there have been reports of AudioFocus / AudioAttributes throwing
+      // during configure(); we'd rather degrade gracefully than crash the
+      // screen build that's about to consume the session.
+      try {
+        final session = await AudioSession.instance;
+        await session.configure(const AudioSessionConfiguration.music());
+        log.recordEvent('AudioPlayerService.init: AudioSession.configure ok');
+      } catch (e, st) {
+        log.recordError(
+          e.toString(),
+          st,
+          context: 'AudioSession.configure',
+        );
+        debugPrint('AudioSession.configure failed: $e');
+        // continue — just_audio can play without an explicit session config
+      }
 
       // Request notification permission for Android 13+ (API 33+)
       // This is required for media playback notification to appear
       await _requestNotificationPermission();
+      log.recordEvent('AudioPlayerService.init: notification permission resolved');
 
       // Initialize audio handler for background playback
       try {
@@ -131,9 +151,15 @@ class AudioPlayerService {
             androidStopForegroundOnPause: true,
           ),
         );
-      } catch (e) {
+        log.recordEvent('AudioPlayerService.init: AudioService.init ok');
+      } catch (e, st) {
         // AudioService may fail on some devices, continue without it
         debugPrint('AudioService.init failed (background playback disabled): $e');
+        log.recordError(
+          e.toString(),
+          st,
+          context: 'AudioService.init',
+        );
       }
 
       // Listen to player state changes
@@ -171,8 +197,10 @@ class AudioPlayerService {
 
       _isInitialized = true;
       debugPrint('AudioPlayerService initialized');
-    } catch (e) {
+      log.recordEvent('AudioPlayerService.init: done');
+    } catch (e, st) {
       debugPrint('AudioPlayerService.init error: $e');
+      log.recordError(e.toString(), st, context: 'AudioPlayerService.init');
     } finally {
       _isInitializing = false;
     }
@@ -343,9 +371,14 @@ class AudioPlayerService {
   Future<void> _loadAndPlayTrack(AudioTrack track) async {
     _currentTrackSubject.add(track);
 
+    final log = CrashLogService.instance;
+    log.recordEvent('_loadAndPlayTrack: ${p.basename(track.path)}');
+
     try {
       await _player.setFilePath(track.path);
+      log.recordEvent('_loadAndPlayTrack: setFilePath ok');
       await _player.play();
+      log.recordEvent('_loadAndPlayTrack: play ok');
 
       // Get the actual duration from the player
       final actualDuration = _player.duration;
@@ -360,8 +393,13 @@ class AudioPlayerService {
           duration: actualDuration ?? Duration(milliseconds: track.durationMs),
         ));
       }
-    } catch (e) {
+    } catch (e, st) {
       debugPrint('Error loading track: $e');
+      CrashLogService.instance.recordError(
+        e.toString(),
+        st,
+        context: '_loadAndPlayTrack',
+      );
     }
   }
 

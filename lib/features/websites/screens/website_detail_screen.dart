@@ -6,8 +6,8 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/websites/providers/website_provider.dart';
@@ -15,8 +15,9 @@ import 'package:fula_files/features/websites/screens/generate_website_screen.dar
 import 'package:fula_files/features/websites/widgets/generation_status_card.dart';
 import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/features/websites/widgets/tag_asset_picker_dialog.dart';
-import 'package:fula_files/shared/widgets/file_thumbnail.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:fula_files/shared/utils/tagged_file_utils.dart';
+import 'package:fula_files/shared/widgets/tagged_file_thumbnail.dart';
 
 /// Detail screen for a single website: shows assets + generation history
 class WebsiteDetailScreen extends ConsumerStatefulWidget {
@@ -35,6 +36,21 @@ class WebsiteDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // WebsiteService.init() is fired non-blocking from main.dart. On cold
+    // start with a direct route to this screen the box may not be open yet,
+    // and a silent empty read of an asset comment followed by a single
+    // keystroke would overwrite the persisted comment. Await init here and
+    // rebuild once it's ready so the comment reads are safe.
+    if (!WebsiteService.instance.isInitialized) {
+      WebsiteService.instance.init().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tagState = ref.watch(tagProvider);
@@ -163,6 +179,17 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
               );
             }
 
+            // Don't render the asset tiles (each of which reads its
+            // initialComment synchronously) until the comment-storage box
+            // is open — otherwise a silent empty read followed by a single
+            // keystroke would overwrite the user's previously-saved note.
+            if (!WebsiteService.instance.isInitialized) {
+              return const Padding(
+                padding: EdgeInsets.all(32),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+
             // Build fallback URL map from generation assets
             final generations = ref.watch(websiteGenerationsProvider(widget.tagId));
             final fallbackUrls = <String, String>{};
@@ -183,9 +210,16 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
               itemBuilder: (context, index) {
                 final file = files[index];
                 return _AssetTile(
+                  key: ValueKey('${widget.tagId}|${file.id}'),
                   taggedFile: file,
                   fallbackImageUrl: fallbackUrls[file.fileName],
+                  initialComment: WebsiteService.instance
+                          .getAssetComment(widget.tagId, file.id) ??
+                      '',
+                  onTap: () => openTaggedFile(context, file),
                   onRemove: () => _removeAsset(file),
+                  onCommentChanged: (text) => WebsiteService.instance
+                      .setAssetComment(widget.tagId, file.id, text),
                 );
               },
             );
@@ -436,12 +470,32 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
   }
 
   Future<void> _removeAsset(TaggedFile file) async {
+    await WebsiteService.instance.deleteAssetComment(widget.tagId, file.id);
     await ref.untagFile(
       tagId: widget.tagId,
       localPath: file.localPath,
       remoteKey: file.remoteKey,
       iosAssetId: file.iosAssetId,
     );
+  }
+
+  /// Snapshot the current per-asset notes for the given [files] so the
+  /// publish-flow preview reflects what the AI will see. Awaits the service
+  /// init so a cold-start user who jumps straight into the publish flow
+  /// doesn't see an empty preview when comments actually exist.
+  Future<List<AssetNote>> _currentAssetNotes(List<TaggedFile> files) async {
+    await WebsiteService.instance.init();
+    final result = <AssetNote>[];
+    for (final f in files) {
+      final comment = WebsiteService.instance.getAssetComment(
+        widget.tagId,
+        f.id,
+      );
+      if (comment != null && comment.trim().isNotEmpty) {
+        result.add((fileName: f.fileName, cid: null, comment: comment));
+      }
+    }
+    return result;
   }
 
   // ============================================================================
@@ -460,7 +514,13 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     // Step 2: Prompt input (with website name + category)
     final displayName =
         (currentTag?.name ?? 'website').replaceFirst('websites-', '');
-    final result = await _openGenerateScreen(context, displayName);
+    final assetNotes = await _currentAssetNotes(files);
+    if (!mounted) return;
+    final result = await _openGenerateScreen(
+      context,
+      displayName,
+      assetNotes: assetNotes,
+    );
     if (result == null || !mounted) return;
 
     // Step 3: Build enriched prompt and start generation
@@ -476,6 +536,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           tagName: displayName,
           prompt: enrichedPrompt,
           files: files,
+          enableTracking: result.enableTracking,
         );
 
     if (mounted) {
@@ -520,6 +581,8 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     List<String>? initialStyles,
     String? initialPalette,
     String? initialPrompt,
+    bool initialEnableTracking = false,
+    List<AssetNote> assetNotes = const [],
   }) {
     return Navigator.of(context).push<GenerateWebsitePromptResult>(
       MaterialPageRoute(
@@ -530,6 +593,8 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           initialStyles: initialStyles,
           initialPalette: initialPalette,
           initialPrompt: initialPrompt,
+          initialEnableTracking: initialEnableTracking,
+          assetNotes: assetNotes,
         ),
       ),
     );
@@ -547,6 +612,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           tagName: displayName,
           prompt: gen.prompt,
           files: files,
+          enableTracking: gen.trackingEnabled,
         );
   }
 
@@ -566,6 +632,12 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     final displayName =
         (currentTag?.name ?? 'website').replaceFirst('websites-', '');
 
+    final filesForNotes =
+        await ref.read(taggedFilesProvider(widget.tagId).future);
+    if (!mounted) return;
+    final assetNotes = await _currentAssetNotes(filesForNotes);
+    if (!mounted) return;
+
     final result = await _openGenerateScreen(
       context,
       displayName,
@@ -574,6 +646,8 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       initialStyles: parsed.styles,
       initialPalette: parsed.palette,
       initialPrompt: seededPrompt,
+      initialEnableTracking: gen.trackingEnabled,
+      assetNotes: assetNotes,
     );
     if (result == null || !mounted) return;
 
@@ -592,6 +666,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           tagName: displayName,
           prompt: enrichedPrompt,
           files: files,
+          enableTracking: result.enableTracking,
         );
 
     if (mounted) {
@@ -603,119 +678,130 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
 }
 
 // ============================================================================
-// PATH RESOLUTION
-// ============================================================================
-
-/// Resolves a stored file path to a valid absolute path.
-/// Handles relative paths (new iOS imports) and stale absolute paths
-/// (old iOS imports where the sandbox UUID has changed).
-Future<String> _resolveFilePath(String path) async {
-  if (path.startsWith('/')) {
-    if (File(path).existsSync()) return path; // absolute and valid
-    // Try to recover: extract relative portion after "Documents/"
-    final docsMarker = 'Documents/';
-    final idx = path.indexOf(docsMarker);
-    if (idx != -1) {
-      final relativePart = path.substring(idx + docsMarker.length);
-      final appDir = await getApplicationDocumentsDirectory();
-      final resolved = p.join(appDir.path, relativePart);
-      if (File(resolved).existsSync()) return resolved;
-    }
-    return path; // can't resolve, return original
-  }
-  // Relative path — resolve against documents dir
-  final appDir = await getApplicationDocumentsDirectory();
-  return p.join(appDir.path, path);
-}
-
-// ============================================================================
 // ASSET TILE WIDGET
 // ============================================================================
 
-class _AssetTile extends StatelessWidget {
+class _AssetTile extends StatefulWidget {
   final TaggedFile taggedFile;
   final String? fallbackImageUrl;
+  final String initialComment;
+  final VoidCallback onTap;
   final VoidCallback onRemove;
+  final ValueChanged<String> onCommentChanged;
 
   const _AssetTile({
+    super.key,
     required this.taggedFile,
     this.fallbackImageUrl,
+    required this.initialComment,
+    required this.onTap,
     required this.onRemove,
+    required this.onCommentChanged,
   });
 
   @override
+  State<_AssetTile> createState() => _AssetTileState();
+}
+
+class _AssetTileState extends State<_AssetTile> {
+  late final TextEditingController _commentController;
+
+  @override
+  void initState() {
+    super.initState();
+    _commentController = TextEditingController(text: widget.initialComment);
+  }
+
+  @override
+  void dispose() {
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ListTile(
-      leading: _buildThumbnail(),
-      title: Text(
-        taggedFile.fileName,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        _getTypeBadge(),
-        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-      ),
-      trailing: IconButton(
-        icon: const Icon(LucideIcons.x, size: 18),
-        tooltip: 'Remove',
-        onPressed: onRemove,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: widget.onTap,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                    child: Row(
+                      children: [
+                        TaggedFileThumbnail(
+                          taggedFile: widget.taggedFile,
+                          fallbackImageUrl: widget.fallbackImageUrl,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                widget.taggedFile.fileName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                file_utils.getFileTypeLabel(
+                                    widget.taggedFile.fileName),
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey[600]),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(LucideIcons.x, size: 18),
+                tooltip: 'Remove',
+                onPressed: widget.onRemove,
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+            child: TextField(
+              controller: _commentController,
+              onChanged: widget.onCommentChanged,
+              style: const TextStyle(fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'Add a note (optional)',
+                hintStyle:
+                    TextStyle(fontSize: 13, color: Colors.grey[500]),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: Colors.grey[300]!),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: Colors.grey[300]!),
+                ),
+              ),
+              maxLines: 2,
+              minLines: 1,
+              textInputAction: TextInputAction.done,
+            ),
+          ),
+        ],
       ),
     );
-  }
-
-  Widget _buildThumbnail() {
-    final path = taggedFile.localPath;
-    if (path == null) return _fallbackOrPlaceholder();
-
-    return FutureBuilder<String>(
-      future: _resolveFilePath(path),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return _fallbackOrPlaceholder();
-        final resolvedPath = snapshot.data!;
-        final file = File(resolvedPath);
-        if (!file.existsSync()) return _fallbackOrPlaceholder();
-        try {
-          final stat = file.statSync();
-          final localFile = LocalFile.fromFileSystemEntity(file, stat);
-          return FileThumbnail(file: localFile, size: 48);
-        } catch (_) {
-          return _fallbackOrPlaceholder();
-        }
-      },
-    );
-  }
-
-  /// Try IPFS gateway URL fallback, otherwise show generic placeholder
-  Widget _fallbackOrPlaceholder() {
-    if (fallbackImageUrl != null) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: Image.network(
-          fallbackImageUrl!,
-          width: 48,
-          height: 48,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _placeholder(),
-        ),
-      );
-    }
-    return _placeholder();
-  }
-
-  Widget _placeholder() {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: const Icon(LucideIcons.file, color: Colors.grey),
-    );
-  }
-
-  String _getTypeBadge() {
-    return file_utils.getFileTypeLabel(taggedFile.fileName);
   }
 }

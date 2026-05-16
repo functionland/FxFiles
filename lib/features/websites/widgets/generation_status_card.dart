@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/website_service.dart';
 
 /// Card showing the status of a website generation job
 class GenerationStatusCard extends StatefulWidget {
@@ -23,6 +24,47 @@ class GenerationStatusCard extends StatefulWidget {
 
 class _GenerationStatusCardState extends State<GenerationStatusCard> {
   bool _promptExpanded = false;
+  Future<({int pageviews, int uniqueVisitors})?>? _analyticsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _kickoffAnalyticsIfNeeded();
+  }
+
+  @override
+  void didUpdateWidget(GenerationStatusCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Refetch if this generation just completed, its CID arrived, or its
+    // tracking-state flipped.
+    if (oldWidget.generation.status != widget.generation.status ||
+        oldWidget.generation.resultCid != widget.generation.resultCid ||
+        oldWidget.generation.trackingEnabled !=
+            widget.generation.trackingEnabled) {
+      _kickoffAnalyticsIfNeeded();
+    }
+  }
+
+  void _kickoffAnalyticsIfNeeded() {
+    final g = widget.generation;
+    final cid = g.resultCid;
+    if (g.trackingEnabled &&
+        g.status == WebsiteGenStatus.completed &&
+        cid != null &&
+        cid.isNotEmpty) {
+      _analyticsFuture = WebsiteService.instance.fetchAnalytics(cid);
+    } else {
+      _analyticsFuture = null;
+    }
+  }
+
+  void _refreshAnalytics() {
+    final cid = widget.generation.resultCid;
+    if (cid == null || cid.isEmpty) return;
+    setState(() {
+      _analyticsFuture = WebsiteService.instance.fetchAnalytics(cid);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -228,6 +270,9 @@ class _GenerationStatusCardState extends State<GenerationStatusCard> {
               ),
             ],
           ),
+          if (widget.generation.trackingEnabled &&
+              widget.generation.resultCid != null)
+            _buildAnalyticsRow(context),
           if (widget.onRecreate != null) ...[
             const SizedBox(height: 8),
             SizedBox(
@@ -242,6 +287,77 @@ class _GenerationStatusCardState extends State<GenerationStatusCard> {
         ],
       ),
     );
+  }
+
+  Widget _buildAnalyticsRow(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: FutureBuilder<({int pageviews, int uniqueVisitors})?>(
+        future: _analyticsFuture,
+        builder: (ctx, snap) {
+          final theme = Theme.of(ctx);
+          final muted =
+              theme.colorScheme.onSurface.withValues(alpha: 0.65);
+          Widget content;
+          if (snap.connectionState != ConnectionState.done) {
+            content = Row(
+              children: [
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    valueColor: AlwaysStoppedAnimation(muted),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Loading analytics…',
+                  style: TextStyle(fontSize: 12, color: muted),
+                ),
+              ],
+            );
+          } else if (snap.data == null) {
+            content = Text(
+              'Analytics unavailable',
+              style: TextStyle(fontSize: 12, color: muted),
+            );
+          } else {
+            final stats = snap.data!;
+            content = Text(
+              '${_formatCount(stats.pageviews)} views · '
+              '${_formatCount(stats.uniqueVisitors)} visitors',
+              style: TextStyle(fontSize: 12, color: muted),
+            );
+          }
+          return Row(
+            children: [
+              Icon(LucideIcons.barChart3, size: 14, color: muted),
+              const SizedBox(width: 6),
+              Expanded(child: content),
+              IconButton(
+                tooltip: 'Refresh analytics',
+                icon: const Icon(LucideIcons.refreshCw, size: 14),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: snap.connectionState == ConnectionState.done
+                    ? _refreshAnalytics
+                    : null,
+                color: muted,
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String _formatCount(int n) {
+    if (n < 1000) return '$n';
+    if (n < 1000000) return '${(n / 1000).toStringAsFixed(n < 10000 ? 1 : 0)}k';
+    return '${(n / 1000000).toStringAsFixed(n < 10000000 ? 1 : 0)}M';
   }
 
   Widget _buildErrorSection(BuildContext context) {

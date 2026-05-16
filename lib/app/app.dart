@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/collab_folder_sync_service.dart';
+import 'package:fula_files/core/services/share_folder_sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show walletNavigatorKey;
 import 'package:fula_files/core/models/sync_state.dart';
@@ -43,6 +44,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   StreamSubscription<String>? _shellShareSubscription;
   StreamSubscription<String>? _shellCollabSubscription;
   StreamSubscription<String>? _shellAcceptCollabSubscription;
+  StreamSubscription<String>? _shellAcceptShareSubscription;
   StreamSubscription<void>? _apiKeyReplaceSubscription;
 
   // Periodic re-evaluation of active tag shares. Catches tag-membership
@@ -72,6 +74,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         DeepLinkService.instance.onShellCollab.listen(_handleShellCollab);
     _shellAcceptCollabSubscription =
         DeepLinkService.instance.onShellAcceptCollab.listen(_handleShellAcceptCollab);
+    _shellAcceptShareSubscription =
+        DeepLinkService.instance.onShellAcceptShare.listen(_handleShellAcceptShare);
 
     // Prompt the user whenever an incoming deep link proposes replacing the
     // stored API key with a different one (attacker-driven account hijack).
@@ -120,6 +124,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     _shellShareSubscription?.cancel();
     _shellCollabSubscription?.cancel();
     _shellAcceptCollabSubscription?.cancel();
+    _shellAcceptShareSubscription?.cancel();
     _apiKeyReplaceSubscription?.cancel();
     _tagShareSweepTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -160,6 +165,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       FolderWatchService.instance.onAppResumed();
       // Restart collab folder watchers (stale after sleep/wake on Windows)
       CollabFolderSyncService.instance.onAppResumed();
+      // Re-poll share folder syncs (download-only).
+      ShareFolderSyncService.instance.onAppResumed();
     }
   }
 
@@ -172,7 +179,8 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         DeepLinkService.instance.pendingShellUpload != null ||
         DeepLinkService.instance.pendingShellShare != null ||
         DeepLinkService.instance.pendingShellCollab != null ||
-        DeepLinkService.instance.pendingShellAcceptCollab != null;
+        DeepLinkService.instance.pendingShellAcceptCollab != null ||
+        DeepLinkService.instance.pendingShellAcceptShare != null;
     if (!hasAnyPending) return;
 
     // Wait for the GoRouter navigator to be mounted
@@ -194,6 +202,9 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
 
     final pendingAcceptCollab = DeepLinkService.instance.consumePendingShellAcceptCollab();
     if (pendingAcceptCollab != null) _handleShellAcceptCollab(pendingAcceptCollab);
+
+    final pendingAcceptShare = DeepLinkService.instance.consumePendingShellAcceptShare();
+    if (pendingAcceptShare != null) _handleShellAcceptShare(pendingAcceptShare);
   }
 
   /// Ask the user to confirm a shell-initiated action. Shell deep links can
@@ -561,6 +572,32 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     } catch (e) {
       debugPrint('ShellAcceptCollab: error: $e');
       _showShellSnackBar('Accept collaboration failed: $e', isError: true);
+    }
+  }
+
+  /// Handle "Accept Share" triggered from the Windows Explorer context menu
+  /// for directories. Opens the accept-share screen with the folder
+  /// pre-selected; the user then pastes the share link and confirms.
+  Future<void> _handleShellAcceptShare(String folderPath) async {
+    try {
+      final entityType = FileSystemEntity.typeSync(folderPath);
+      if (entityType != FileSystemEntityType.directory) {
+        _showShellSnackBar('Not a folder: $folderPath', isError: true);
+        return;
+      }
+
+      final confirmed = await _confirmShellAction(
+        title: 'Accept share?',
+        action:
+            'FxFiles is being asked to use this folder as the local mirror for an incoming share:',
+        filePath: folderPath,
+      );
+      if (!confirmed) return;
+
+      ref.read(routerProvider).push('/share/accept-link', extra: folderPath);
+    } catch (e) {
+      debugPrint('ShellAcceptShare: error: $e');
+      _showShellSnackBar('Accept share failed: $e', isError: true);
     }
   }
 

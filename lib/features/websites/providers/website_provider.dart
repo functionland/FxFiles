@@ -106,6 +106,7 @@ class WebsiteNotifier extends Notifier<WebsiteState> {
     required String tagName,
     required String prompt,
     required List<TaggedFile> files,
+    bool enableTracking = false,
   }) async {
     // M1: Prevent duplicate generation for the same tag
     if (_generatingTagIds.contains(tagId)) {
@@ -120,6 +121,7 @@ class WebsiteNotifier extends Notifier<WebsiteState> {
         tagName: tagName,
         prompt: prompt,
         files: files,
+        enableTracking: enableTracking,
       );
       state = state.copyWith(isGenerating: false);
       return generation;

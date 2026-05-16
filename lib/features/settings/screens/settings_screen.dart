@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/crash_log_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
@@ -183,6 +185,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          _buildDiagnosticsSection(),
           _buildSection(
             title: 'About',
             children: [
@@ -204,6 +207,78 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  /// Diagnostics: lets users on devices we can't ADB into (e.g. customer
+  /// Android 9 crash reports) share the on-device crash log.
+  Widget _buildDiagnosticsSection() {
+    return FutureBuilder<int>(
+      future: CrashLogService.instance.currentSize(),
+      builder: (context, snapshot) {
+        final size = snapshot.data ?? 0;
+        final hasLog = size > 0;
+        final sizeLabel =
+            hasLog ? _formatBytes(size) : 'No diagnostic data captured yet';
+        return _buildSection(
+          title: 'Diagnostics',
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.fileText),
+              title: const Text('Send diagnostic log'),
+              subtitle: Text(sizeLabel),
+              enabled: hasLog,
+              trailing: const Icon(LucideIcons.share2, size: 18),
+              onTap: hasLog ? _shareDiagnosticLog : null,
+            ),
+            if (hasLog)
+              ListTile(
+                leading: const Icon(LucideIcons.trash2),
+                title: const Text('Clear diagnostic log'),
+                subtitle: const Text('Delete on-device crash + breadcrumb data'),
+                onTap: _clearDiagnosticLog,
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _shareDiagnosticLog() async {
+    final path = CrashLogService.instance.logFilePath;
+    if (path == null) return;
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(path, mimeType: 'text/plain')],
+          subject: 'FxFiles diagnostic log',
+          text:
+              'Attached: FxFiles on-device crash log + breadcrumbs. '
+              'Captured up to ${DateTime.now().toIso8601String()}.',
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not share log: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearDiagnosticLog() async {
+    await CrashLogService.instance.clear();
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Diagnostic log cleared')),
+      );
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   Widget _buildSection({

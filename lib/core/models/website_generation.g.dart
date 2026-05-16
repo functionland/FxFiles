@@ -78,13 +78,14 @@ class WebsiteAssetAdapter extends TypeAdapter<WebsiteAsset> {
       gatewayUrl: fields[4] as String?,
       parsedContent: fields[5] as String?,
       uploaded: fields[6] as bool,
+      comment: fields[7] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, WebsiteAsset obj) {
     writer
-      ..writeByte(7)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.localPath)
       ..writeByte(1)
@@ -98,7 +99,9 @@ class WebsiteAssetAdapter extends TypeAdapter<WebsiteAsset> {
       ..writeByte(5)
       ..write(obj.parsedContent)
       ..writeByte(6)
-      ..write(obj.uploaded);
+      ..write(obj.uploaded)
+      ..writeByte(7)
+      ..write(obj.comment);
   }
 
   @override
@@ -137,13 +140,18 @@ class WebsiteGenerationAdapter extends TypeAdapter<WebsiteGeneration> {
       totalAssets: fields[10] as int,
       uploadedAssets: fields[11] as int,
       assets: (fields[12] as List).cast<WebsiteAsset>(),
+      trackingEnabled: fields[14] as bool? ?? false,
+      // Field 15 (legacy `trackingToken` from the short-lived token-auth
+      // design) is silently discarded here. The map-based fields dict makes
+      // it safe to read records that still carry the byte; future writes
+      // drop it.
     );
   }
 
   @override
   void write(BinaryWriter writer, WebsiteGeneration obj) {
     writer
-      ..writeByte(14)
+      ..writeByte(15)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -171,7 +179,9 @@ class WebsiteGenerationAdapter extends TypeAdapter<WebsiteGeneration> {
       ..writeByte(12)
       ..write(obj.assets)
       ..writeByte(13)
-      ..write(obj.resultGatewayUrl);
+      ..write(obj.resultGatewayUrl)
+      ..writeByte(14)
+      ..write(obj.trackingEnabled);
   }
 
   @override

@@ -49,7 +49,7 @@ class LocalFile {
 
   bool get isAudio {
     final ext = extension;
-    return ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma'].contains(ext);
+    return ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'opus'].contains(ext);
   }
 
   bool get isDocument {

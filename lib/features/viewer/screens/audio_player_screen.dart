@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:fula_files/core/services/audio_player_service.dart';
+import 'package:fula_files/core/services/crash_log_service.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/shared/widgets/audio_visualizer.dart';
@@ -39,6 +40,9 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    CrashLogService.instance.recordEvent(
+      'AudioPlayerScreen: initState ${p.basename(widget.filePath)}',
+    );
     _initPlayer();
     _setupPermissionListener();
   }
@@ -94,11 +98,14 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   }
 
   Future<void> _initPlayer() async {
+    final log = CrashLogService.instance;
+    log.recordEvent('AudioPlayerScreen._initPlayer: start');
     try {
       final service = AudioPlayerService.instance;
 
       // Initialize service (should be quick if already initialized)
       await service.init();
+      log.recordEvent('AudioPlayerScreen._initPlayer: service.init returned');
 
       // Set loading to false immediately - the player UI uses StreamBuilders
       // so it will update automatically with track info
@@ -142,7 +149,12 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         // Then scan for other audio files in background and update playlist
         _loadDirectoryPlaylist(track);
       }
-    } catch (e) {
+    } catch (e, st) {
+      CrashLogService.instance.recordError(
+        e.toString(),
+        st,
+        context: 'AudioPlayerScreen._initPlayer',
+      );
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -170,7 +182,7 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   }
 
   Future<List<String>> _getAudioFilesInDirectory(Directory dir) async {
-    final audioExtensions = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma'];
+    final audioExtensions = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'opus'];
     final files = <String>[];
 
     try {

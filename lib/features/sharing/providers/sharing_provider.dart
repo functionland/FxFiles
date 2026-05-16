@@ -187,6 +187,35 @@ class SharesNotifier extends Notifier<SharesState> {
     }
   }
 
+  /// Create a password-protected public link for a tag (latest mode).
+  Future<GeneratedShareLink?> createTagPasswordLink({
+    required String tagId,
+    required int expiryDays,
+    required String password,
+    String? label,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      final result = await _sharingService.createTagPasswordProtectedLink(
+        tagId: tagId,
+        expiryDays: expiryDays,
+        password: password,
+        label: label,
+      );
+
+      await _syncToCloud();
+      await loadShares();
+      return result;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forShare(e),
+      );
+      return null;
+    }
+  }
+
   /// Share a tag with a specific recipient (latest mode).
   Future<ShareToken?> shareTagWithUser({
     required String tagId,

@@ -192,7 +192,7 @@ class _TrashFileItem extends StatelessWidget {
     final ext = file.extension.toLowerCase();
     if (['jpg', 'jpeg', 'png', 'gif', 'webp'].contains(ext)) return LucideIcons.image;
     if (['mp4', 'mov', 'avi', 'mkv'].contains(ext)) return LucideIcons.video;
-    if (['mp3', 'wav', 'aac', 'flac'].contains(ext)) return LucideIcons.music;
+    if (['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma', 'opus'].contains(ext)) return LucideIcons.music;
     if (['pdf', 'doc', 'docx', 'txt'].contains(ext)) return LucideIcons.fileText;
     if (['zip', 'rar', '7z', 'tar'].contains(ext)) return LucideIcons.archive;
     return LucideIcons.file;

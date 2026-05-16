@@ -56,6 +56,9 @@ class DeepLinkService {
   final _shellAcceptCollabController = StreamController<String>.broadcast();
   Stream<String> get onShellAcceptCollab => _shellAcceptCollabController.stream;
 
+  final _shellAcceptShareController = StreamController<String>.broadcast();
+  Stream<String> get onShellAcceptShare => _shellAcceptShareController.stream;
+
   // Pending pairing params — survives until consumed (handles cold start where
   // no listener is attached when the deep link fires).
   Map<String, String?>? _pendingBloxPairing;
@@ -77,6 +80,9 @@ class DeepLinkService {
 
   String? _pendingShellAcceptCollab;
   String? get pendingShellAcceptCollab => _pendingShellAcceptCollab;
+
+  String? _pendingShellAcceptShare;
+  String? get pendingShellAcceptShare => _pendingShellAcceptShare;
 
   /// URI from dart_entrypoint_arguments on cold start via shell context menu.
   /// Set by main.dart before init() is called.
@@ -121,6 +127,13 @@ class DeepLinkService {
   String? consumePendingShellAcceptCollab() {
     final p = _pendingShellAcceptCollab;
     _pendingShellAcceptCollab = null;
+    return p;
+  }
+
+  /// Returns and clears any pending shell accept-share path (atomic read-and-clear).
+  String? consumePendingShellAcceptShare() {
+    final p = _pendingShellAcceptShare;
+    _pendingShellAcceptShare = null;
     return p;
   }
 
@@ -556,6 +569,10 @@ class DeepLinkService {
       debugPrint('DeepLinkService: shell accept-collab request received');
       _pendingShellAcceptCollab = path;
       _shellAcceptCollabController.add(path);
+    } else if (segments.isNotEmpty && segments.first == 'accept-share') {
+      debugPrint('DeepLinkService: shell accept-share request received');
+      _pendingShellAcceptShare = path;
+      _shellAcceptShareController.add(path);
     } else {
       debugPrint('DeepLinkService: unknown shell command: $segments');
     }
@@ -640,6 +657,12 @@ class DeepLinkService {
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab', '/ve', '/d', 'Accept collab on this folder', '/f'],
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
         ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\04AcceptCollab\command', '/ve', '/d', '"$exePath" --shell-accept-collab "%V"', '/f'],
+        // Sub-item: Accept Share (directories only) — one-way mirror of an
+        // accepted share into the chosen folder, paired with the in-app
+        // AcceptShareScreen via fxfiles://shell/accept-share.
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\05AcceptShare', '/ve', '/d', 'Accept share on this folder', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\05AcceptShare', '/v', 'Icon', '/d', '"$exePath",0', '/f'],
+        ['reg', 'add', r'HKCU\Software\Classes\Directory\shell\FxFiles\shell\05AcceptShare\command', '/ve', '/d', '"$exePath" --shell-accept-share "%V"', '/f'],
       ];
       for (final cmd in commands) {
         Process.run(cmd.first, cmd.sublist(1));
@@ -660,5 +683,6 @@ class DeepLinkService {
     _shellShareController.close();
     _shellCollabController.close();
     _shellAcceptCollabController.close();
+    _shellAcceptShareController.close();
   }
 }

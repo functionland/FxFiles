@@ -1,9 +1,12 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/core/services/share_folder_sync_service.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/sharing/widgets/collaborate_tab.dart';
@@ -563,7 +566,10 @@ class _AcceptedShareCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isExpired = share.isExpired;
-    
+    final hasFolder =
+        share.localFolderPath != null && share.localFolderPath!.isNotEmpty;
+    final desktop = PlatformCapabilities.isDesktop;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
@@ -579,6 +585,30 @@ class _AcceptedShareCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('${share.bucket}/${share.pathScope}'),
+            if (hasFolder) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(LucideIcons.folderOpen,
+                      size: 14, color: Colors.blue[600]),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      share.localFolderPath!,
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.blue[700]),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (share.syncEnabled)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: _StatusChip(label: 'Syncing', color: Colors.green),
+                    ),
+                ],
+              ),
+            ],
             const SizedBox(height: 4),
             Row(
               children: [
@@ -606,6 +636,33 @@ class _AcceptedShareCard extends ConsumerWidget {
                 contentPadding: EdgeInsets.zero,
               ),
             ),
+            if (desktop && hasFolder)
+              const PopupMenuItem(
+                value: 'sync_now',
+                child: ListTile(
+                  leading: Icon(LucideIcons.refreshCw),
+                  title: Text('Sync now'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            if (desktop && !hasFolder)
+              const PopupMenuItem(
+                value: 'assign_folder',
+                child: ListTile(
+                  leading: Icon(LucideIcons.folderPlus),
+                  title: Text('Sync to folder...'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            if (desktop && hasFolder)
+              const PopupMenuItem(
+                value: 'unassign_folder',
+                child: ListTile(
+                  leading: Icon(LucideIcons.folderX),
+                  title: Text('Stop syncing to folder'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
             const PopupMenuItem(
               value: 'remove',
               child: ListTile(
@@ -659,11 +716,93 @@ class _AcceptedShareCard extends ConsumerWidget {
         );
         
         if (confirmed == true) {
+          // Stop any active sync first so timers don't fire after removal.
+          await ShareFolderSyncService.instance.stopSync(share.token.id);
           await ref.read(sharesProvider.notifier).removeAcceptedShare(share.token.id);
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Share removed')),
             );
+          }
+        }
+        break;
+      case 'sync_now':
+        try {
+          await ShareFolderSyncService.instance.syncNow(share.token.id);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Synced')),
+            );
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Sync failed: $e')),
+            );
+          }
+        }
+        break;
+      case 'assign_folder':
+        final folder = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: 'Select folder for share sync',
+        );
+        if (folder == null) return;
+        try {
+          await ShareFolderSyncService.instance
+              .assignFolder(share.token.id, folder);
+          // Refresh the shares list so the card rebuilds with the new
+          // folder + syncing chip.
+          await ref.read(sharesProvider.notifier).loadShares();
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Syncing share into $folder')),
+            );
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Could not start sync: $e')),
+            );
+          }
+        }
+        break;
+      case 'unassign_folder':
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Stop syncing?'),
+            content: Text(
+              'Stop syncing this share into ${share.localFolderPath}? '
+              'Files already downloaded stay on disk.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Stop sync'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed == true) {
+          try {
+            await ShareFolderSyncService.instance
+                .unassignFolder(share.token.id);
+            await ref.read(sharesProvider.notifier).loadShares();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Sync stopped')),
+              );
+            }
+          } catch (e) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Could not stop sync: $e')),
+              );
+            }
           }
         }
         break;

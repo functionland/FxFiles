@@ -11,6 +11,7 @@ typedef GenerateWebsitePromptResult = ({
   List<String> styles,
   String palette,
   String prompt,
+  bool enableTracking,
 });
 
 /// Palette options shown in the generator. Labels are stored verbatim in the
@@ -188,6 +189,12 @@ class GenerateWebsiteScreen extends StatefulWidget {
   final List<String>? initialStyles;
   final String? initialPalette;
   final String? initialPrompt;
+  final bool initialEnableTracking;
+
+  /// Per-asset user notes captured in the website detail screen. Used by the
+  /// "preview full prompt" eye icon so the user can see exactly what the AI
+  /// will receive. Empty when no notes were entered.
+  final List<AssetNote> assetNotes;
 
   const GenerateWebsiteScreen({
     super.key,
@@ -197,6 +204,8 @@ class GenerateWebsiteScreen extends StatefulWidget {
     this.initialStyles,
     this.initialPalette,
     this.initialPrompt,
+    this.initialEnableTracking = false,
+    this.assetNotes = const [],
   });
 
   @override
@@ -209,10 +218,12 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late String _category;
   late String _palette;
   late String _selectedStyle;
+  late bool _enableTracking;
 
   @override
   void initState() {
     super.initState();
+    _enableTracking = widget.initialEnableTracking;
     _nameController = TextEditingController(
       text: (widget.initialName != null && widget.initialName!.isNotEmpty)
           ? widget.initialName!
@@ -255,6 +266,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
       styles: <String>[_selectedStyle],
       palette: _palette,
       prompt: _promptController.text.trim(),
+      enableTracking: _enableTracking,
     );
     Navigator.of(context).pop<GenerateWebsitePromptResult>(result);
   }
@@ -266,6 +278,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
       styles: <String>[_selectedStyle],
       palette: _palette,
       body: _promptController.text.trim(),
+      assetNotes: widget.assetNotes,
     );
 
     showDialog<void>(
@@ -416,10 +429,66 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 16),
+                _buildTrackingToggle(theme),
               ],
             ),
           ),
           _buildFooter(nameEmpty: nameEmpty),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackingToggle(ThemeData theme) {
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.4)),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(
+            LucideIcons.barChart3,
+            size: 18,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 10),
+                  child: Text(
+                    'Enable click tracking',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, bottom: 10),
+                  child: Text(
+                    'Adds a privacy-friendly script (no cookies, no PII) so '
+                    'you can see view and visitor counts next to this '
+                    'generation. Off by default.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color:
+                          theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _enableTracking,
+            onChanged: (v) => setState(() => _enableTracking = v),
+          ),
         ],
       ),
     );

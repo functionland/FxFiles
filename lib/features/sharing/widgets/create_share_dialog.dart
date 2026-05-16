@@ -38,7 +38,8 @@ class ShareCreateResult {
 /// When [tagId] is provided the dialog operates in tag-share mode:
 ///   - pathScope/bucket are unused (tag scope is dynamic)
 ///   - share mode is forced to temporal (latest) — snapshot is meaningless
-///   - password share is hidden (not supported for tag shares in v1)
+///   - all three choices (recipient / password / public) are available;
+///     each dispatches to the matching tag-specific service method
 ///   - the header chip shows the tag name
 class CreateShareDialog extends ConsumerStatefulWidget {
   final String pathScope;
@@ -93,8 +94,6 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
     if (_isTagShare) {
       // Tag shares are always latest mode (snapshot doesn't apply to a tag).
       _shareMode = ShareMode.temporal;
-      // Hide password choice; fall back to recipient if it was the default.
-      if (_choice == ShareChoice.password) _choice = ShareChoice.recipient;
       _labelController.text = widget.tagName ?? 'Tag share';
     } else {
       // Default label = file/folder name
@@ -586,6 +585,29 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
             context,
             ShareCreateResult._(
                 recipientToken: token, choice: ShareChoice.recipient),
+          );
+          return;
+        }
+
+        if (_choice == ShareChoice.password) {
+          final link = await notifier.createTagPasswordLink(
+            tagId: tagId,
+            expiryDays: _expiryDays ?? 7,
+            password: _passwordController.text,
+            label: label,
+          );
+          if (!mounted) return;
+          if (link == null) {
+            final err = ref.read(sharesProvider).error;
+            setState(() {
+              _isLoading = false;
+              _error = err ?? 'Failed to create link';
+            });
+            return;
+          }
+          Navigator.pop(
+            context,
+            ShareCreateResult._(link: link, choice: ShareChoice.password),
           );
           return;
         }

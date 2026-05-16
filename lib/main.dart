@@ -8,6 +8,7 @@ import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:fula_files/app/app.dart';
+import 'package:fula_files/core/services/crash_log_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
@@ -33,6 +34,7 @@ import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/collab_folder_sync_service.dart';
+import 'package:fula_files/core/services/share_folder_sync_service.dart';
 import 'package:fula_files/features/billing/providers/storage_provider.dart';
 
 /// Prevents GoRouter from processing deep links that DeepLinkService handles.
@@ -64,58 +66,82 @@ class _DeepLinkNavigationFilter with WidgetsBindingObserver {
 }
 
 void main(List<String> args) async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // runZonedGuarded captures async errors that escape Flutter's framework
+  // hooks. The CrashLogService also installs FlutterError.onError +
+  // PlatformDispatcher.onError inside init() so the on-device log can survive
+  // crashes on customer devices we can't ADB into (e.g. Android 9 reports).
+  await runZonedGuarded<Future<void>>(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // If launched from Windows shell context menu, main.cpp passes the
-  // constructed fxfiles:// URI via dart_entrypoint_arguments.
-  if (args.isNotEmpty && args[0].startsWith('fxfiles://')) {
-    DeepLinkService.instance.setInitialShellUri(args[0]);
-  }
+    // Install the on-device crash log first so anything below that throws
+    // ends up in `<app-docs>/crash.log`.
+    await CrashLogService.instance.init();
+    CrashLogService.instance.recordEvent('main: start');
 
-  // Register deep link filter BEFORE GoRouter's PlatformRouteInformationProvider
-  // so we intercept fxfiles:// links first (observers are checked in order).
-  WidgetsBinding.instance.addObserver(_DeepLinkNavigationFilter());
+    // If launched from Windows shell context menu, main.cpp passes the
+    // constructed fxfiles:// URI via dart_entrypoint_arguments.
+    if (args.isNotEmpty && args[0].startsWith('fxfiles://')) {
+      DeepLinkService.instance.setInitialShellUri(args[0]);
+    }
 
-  // Desktop window management
-  if (PlatformCapabilities.isDesktop) {
-    await windowManager.ensureInitialized();
-    final windowOptions = WindowOptions(
-      size: Size(1200, 800),
-      minimumSize: Size(400, 600),
-      title: 'FxFiles',
-      center: true,
+    // Register deep link filter BEFORE GoRouter's PlatformRouteInformationProvider
+    // so we intercept fxfiles:// links first (observers are checked in order).
+    WidgetsBinding.instance.addObserver(_DeepLinkNavigationFilter());
+
+    // Desktop window management
+    if (PlatformCapabilities.isDesktop) {
+      await windowManager.ensureInitialized();
+      final windowOptions = WindowOptions(
+        size: Size(1200, 800),
+        minimumSize: Size(400, 600),
+        title: 'FxFiles',
+        center: true,
+      );
+      await windowManager.waitUntilReadyToShow(windowOptions, () async {
+        await windowManager.show();
+        await windowManager.focus();
+      });
+    }
+
+    // Global startup timeout to prevent app from hanging indefinitely
+    const startupTimeout = Duration(seconds: 15);
+    ProviderContainer? container;
+
+    try {
+      container = await _initializeApp().timeout(
+        startupTimeout,
+        onTimeout: () {
+          debugPrint('App initialization timed out after ${startupTimeout.inSeconds}s');
+          throw TimeoutException('Startup timeout', startupTimeout);
+        },
+      );
+    } catch (e, st) {
+      debugPrint('Startup error: $e');
+      CrashLogService.instance.recordError(
+        e.toString(),
+        st,
+        context: 'startup',
+      );
+      // Show error recovery UI
+      runApp(StartupErrorApp(error: e.toString()));
+      return;
+    }
+
+    CrashLogService.instance.recordEvent('main: runApp');
+    runApp(
+      UncontrolledProviderScope(
+        container: container,
+        child: const FulaFilesApp(),
+      ),
     );
-    await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
-    });
-  }
-
-  // Global startup timeout to prevent app from hanging indefinitely
-  const startupTimeout = Duration(seconds: 15);
-  ProviderContainer? container;
-
-  try {
-    container = await _initializeApp().timeout(
-      startupTimeout,
-      onTimeout: () {
-        debugPrint('App initialization timed out after ${startupTimeout.inSeconds}s');
-        throw TimeoutException('Startup timeout', startupTimeout);
-      },
+  }, (error, stack) {
+    CrashLogService.instance.recordError(
+      error.toString(),
+      stack,
+      context: 'runZonedGuarded',
     );
-  } catch (e) {
-    debugPrint('Startup error: $e');
-    // Show error recovery UI
-    runApp(StartupErrorApp(error: e.toString()));
-    return;
-  }
-
-  runApp(
-    UncontrolledProviderScope(
-      container: container,
-      child: const FulaFilesApp(),
-    ),
-  );
+    debugPrint('Uncaught zone error: $error\n$stack');
+  });
 }
 
 /// Initialize all app services with proper error handling
@@ -237,6 +263,14 @@ Future<ProviderContainer> _initializeApp() async {
     await CollabFolderSyncService.instance.init().timeout(const Duration(seconds: 3));
   } catch (e) {
     debugPrint('CollabFolderSyncService initialization failed: $e');
+  }
+
+  // Initialize share folder sync service (resumes one-way download-only sync
+  // for accepted shares that have a localFolderPath + syncEnabled).
+  try {
+    await ShareFolderSyncService.instance.init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('ShareFolderSyncService initialization failed: $e');
   }
 
   // Request notification permission early for sync notifications (Android 13+)

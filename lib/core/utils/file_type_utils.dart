@@ -12,7 +12,7 @@ String classifyFileType(String fileName) {
   if (['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv'].contains(ext)) {
     return 'video';
   }
-  if (['.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.wma'].contains(ext)) {
+  if (['.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.wma', '.opus'].contains(ext)) {
     return 'audio';
   }
   return 'document';

@@ -436,12 +436,43 @@ class AcceptedShare {
   /// When this share was accepted
   final DateTime acceptedAt;
 
+  /// Optional local folder the recipient chose to sync the share into
+  /// (desktop only). One-way mirror — files in the share are downloaded
+  /// here; the recipient cannot upload back. Null when no folder is
+  /// assigned (the default Accept-Share flow).
+  final String? localFolderPath;
+
+  /// Whether the [ShareFolderSyncService] should keep polling the share for
+  /// new files and downloading them into [localFolderPath]. Defaults to
+  /// false; flipped to true when the user assigns a folder via the
+  /// AcceptShareScreen or the Windows context menu.
+  final bool syncEnabled;
+
   AcceptedShare({
     required this.token,
     this.fulaShareToken,
     this.dek,
     DateTime? acceptedAt,
+    this.localFolderPath,
+    this.syncEnabled = false,
   }) : acceptedAt = acceptedAt ?? DateTime.now();
+
+  AcceptedShare copyWith({
+    ShareToken? token,
+    String? fulaShareToken,
+    Uint8List? dek,
+    DateTime? acceptedAt,
+    String? localFolderPath,
+    bool? syncEnabled,
+  }) =>
+      AcceptedShare(
+        token: token ?? this.token,
+        fulaShareToken: fulaShareToken ?? this.fulaShareToken,
+        dek: dek ?? this.dek,
+        acceptedAt: acceptedAt ?? this.acceptedAt,
+        localFolderPath: localFolderPath ?? this.localFolderPath,
+        syncEnabled: syncEnabled ?? this.syncEnabled,
+      );
   
   /// Check if expired
   bool get isExpired => token.isExpired;
@@ -479,6 +510,8 @@ class AcceptedShare {
     if (fulaShareToken != null) 'fulaShareToken': fulaShareToken,
     if (dek != null) 'dek': base64Encode(dek!),
     'acceptedAt': acceptedAt.toIso8601String(),
+    if (localFolderPath != null) 'localFolderPath': localFolderPath,
+    if (syncEnabled) 'syncEnabled': syncEnabled,
   };
 
   /// Create from JSON
@@ -487,6 +520,8 @@ class AcceptedShare {
     fulaShareToken: json['fulaShareToken'] as String?,
     dek: json['dek'] != null ? base64Decode(json['dek'] as String) : null,
     acceptedAt: DateTime.parse(json['acceptedAt'] as String),
+    localFolderPath: json['localFolderPath'] as String?,
+    syncEnabled: json['syncEnabled'] as bool? ?? false,
   );
 
   /// Get the share ID

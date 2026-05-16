@@ -1,16 +1,11 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/core/models/local_file.dart';
-import 'package:fula_files/core/services/local_storage_service.dart';
-import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
-import 'package:fula_files/shared/widgets/file_thumbnail.dart';
-import 'package:open_filex/open_filex.dart';
+import 'package:fula_files/shared/utils/tagged_file_utils.dart';
+import 'package:fula_files/shared/widgets/tagged_file_thumbnail.dart';
 
 /// Screen for viewing all files with a specific tag
 class TaggedFilesScreen extends ConsumerWidget {
@@ -93,7 +88,7 @@ class TaggedFilesScreen extends ConsumerWidget {
               final taggedFile = taggedFiles[index];
               return _TaggedFileTile(
                 taggedFile: taggedFile,
-                onTap: () => _openFile(context, taggedFile),
+                onTap: () => openTaggedFile(context, taggedFile),
                 onRemoveTag: () => _removeTag(context, ref, taggedFile),
               );
             },
@@ -112,100 +107,6 @@ class TaggedFilesScreen extends ConsumerWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _openFile(BuildContext context, TaggedFile taggedFile) async {
-    final path = taggedFile.localPath;
-    if (path == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File location not available')),
-      );
-      return;
-    }
-
-    // Resolve actual file path — on iOS, virtual paths (e.g. "PhotoKit/...")
-    // must be resolved via the asset ID to get a real filesystem path.
-    String filePath = path;
-    final isVirtualPath = Platform.isIOS && !path.startsWith('/');
-    if (isVirtualPath) {
-      // Resolve iosAssetId: use stored value, fall back to recent files / sync states
-      final iosAssetId = taggedFile.iosAssetId
-          ?? _lookupIosAssetId(path);
-      if (iosAssetId != null) {
-        final actualFile = await MediaService.instance.getOriginalFile(iosAssetId);
-        if (actualFile != null) {
-          filePath = actualFile.path;
-        } else {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('File no longer available in Photos library')),
-            );
-          }
-          return;
-        }
-      } else {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Cannot locate file — try re-tagging it')),
-          );
-        }
-        return;
-      }
-    } else {
-      // Check if file exists on filesystem
-      if (!File(filePath).existsSync()) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('File not found')),
-          );
-        }
-        return;
-      }
-    }
-
-    if (!context.mounted) return;
-
-    // Determine file type and open appropriate viewer using LocalFile
-    // for consistent extension handling across the app.
-    final localFile = LocalFile(
-      path: filePath,
-      name: filePath.split(Platform.pathSeparator).last,
-      size: 0,
-      modifiedAt: DateTime.now(),
-      isDirectory: false,
-    );
-
-    if (localFile.isImage) {
-      context.push('/viewer/image', extra: filePath);
-    } else if (localFile.isVideo) {
-      context.push('/viewer/video', extra: filePath);
-    } else if (localFile.isAudio) {
-      context.push('/viewer/audio', extra: filePath);
-    } else if (localFile.isTextViewable) {
-      context.push('/viewer/text', extra: filePath);
-    } else {
-      // No built-in viewer — open with native app selector
-      final result = await OpenFilex.open(filePath);
-      if (result.type != ResultType.done && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open file: ${result.message}')),
-        );
-      }
-    }
-  }
-
-  /// Look up iosAssetId for an iOS virtual path from recent files or sync states.
-  static String? _lookupIosAssetId(String virtualPath) {
-    // Try recent files
-    final recentFiles = LocalStorageService.instance.getRecentFiles(limit: 1000);
-    for (final rf in recentFiles) {
-      if (rf.path == virtualPath && rf.iosAssetId != null) {
-        return rf.iosAssetId;
-      }
-    }
-    // Try sync state
-    return LocalStorageService.instance
-        .getSyncStateByDisplayPath(virtualPath)?.iosAssetId;
   }
 
   Future<void> _removeTag(BuildContext context, WidgetRef ref, TaggedFile taggedFile) async {
@@ -267,7 +168,7 @@ class _TaggedFileTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: _buildThumbnail(),
+      leading: TaggedFileThumbnail(taggedFile: taggedFile),
       title: Text(
         taggedFile.fileName,
         maxLines: 1,
@@ -283,57 +184,6 @@ class _TaggedFileTile extends StatelessWidget {
         onPressed: onRemoveTag,
       ),
       onTap: onTap,
-    );
-  }
-
-  Widget _buildThumbnail() {
-    final path = taggedFile.localPath;
-    if (path == null) {
-      return _buildPlaceholderThumbnail();
-    }
-
-    // On iOS, virtual paths (e.g. "PhotoKit/...") don't exist on the filesystem.
-    // Use iosAssetId to display the thumbnail via PhotoKit.
-    if (Platform.isIOS && !path.startsWith('/')) {
-      final iosAssetId = taggedFile.iosAssetId
-          ?? TaggedFilesScreen._lookupIosAssetId(path);
-      if (iosAssetId != null) {
-        final localFile = LocalFile(
-          path: path,
-          name: taggedFile.fileName,
-          size: 0,
-          modifiedAt: taggedFile.taggedAt,
-          isDirectory: false,
-          iosAssetId: iosAssetId,
-        );
-        return FileThumbnail(file: localFile, size: 48);
-      }
-      return _buildPlaceholderThumbnail();
-    }
-
-    final file = File(path);
-    if (!file.existsSync()) {
-      return _buildPlaceholderThumbnail();
-    }
-
-    try {
-      final stat = file.statSync();
-      final localFile = LocalFile.fromFileSystemEntity(file, stat);
-      return FileThumbnail(file: localFile, size: 48);
-    } catch (e) {
-      return _buildPlaceholderThumbnail();
-    }
-  }
-
-  Widget _buildPlaceholderThumbnail() {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: const Icon(LucideIcons.file, color: Colors.grey),
     );
   }
 
