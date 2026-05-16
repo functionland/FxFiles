@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.ActivityManager
 import androidx.core.app.NotificationCompat
 import android.content.Context
 import android.content.Intent
@@ -74,6 +75,7 @@ class MainActivity : AudioServiceActivity() {
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
     private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
     private val SYNC_NOTIFICATION_CHANNEL = "land.fx.files/sync_notification"
+    private val DEVICE_MEMORY_CHANNEL = "land.fx.files/device_memory"
     private val SYNC_NOTIFICATION_ID = 9001
     private val SYNC_CHANNEL_ID = "fxfiles_sync_channel"
     private var pipEventSink: EventChannel.EventSink? = null
@@ -294,6 +296,48 @@ class MainActivity : AudioServiceActivity() {
                 }
             }
         )
+
+        // Device memory channel — used by the AI Automation feature to
+        // decide whether to load the on-device LLM and which llama.cpp
+        // parameters to use. totalRamBytes drives a one-time classification
+        // (small/medium/large); availableMemoryBytes is queried right
+        // before each LLM context init to bail out if the OS is currently
+        // low on RAM.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_MEMORY_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "totalRamBytes" -> {
+                    try {
+                        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val memInfo = ActivityManager.MemoryInfo()
+                        activityManager.getMemoryInfo(memInfo)
+                        result.success(memInfo.totalMem)
+                    } catch (e: Exception) {
+                        result.error("MEMORY_INFO_ERROR", "Failed to read totalMem: ${e.message}", null)
+                    }
+                }
+                "availableMemoryBytes" -> {
+                    try {
+                        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val memInfo = ActivityManager.MemoryInfo()
+                        activityManager.getMemoryInfo(memInfo)
+                        result.success(memInfo.availMem)
+                    } catch (e: Exception) {
+                        result.error("MEMORY_INFO_ERROR", "Failed to read availMem: ${e.message}", null)
+                    }
+                }
+                "isLowMemory" -> {
+                    try {
+                        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val memInfo = ActivityManager.MemoryInfo()
+                        activityManager.getMemoryInfo(memInfo)
+                        result.success(memInfo.lowMemory)
+                    } catch (e: Exception) {
+                        result.error("MEMORY_INFO_ERROR", "Failed to read lowMemory: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {

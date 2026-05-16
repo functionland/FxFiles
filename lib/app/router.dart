@@ -16,6 +16,9 @@ import 'package:fula_files/features/tags/screens/tags_browser_screen.dart';
 import 'package:fula_files/features/tags/screens/tagged_files_screen.dart';
 import 'package:fula_files/features/websites/screens/websites_browser_screen.dart';
 import 'package:fula_files/features/websites/screens/website_detail_screen.dart';
+import 'package:fula_files/features/ai_tasks/screens/ai_tasks_browser_screen.dart';
+import 'package:fula_files/features/ai_tasks/screens/ai_task_detail_screen.dart';
+import 'package:fula_files/features/ai_tasks/screens/ai_task_run_screen.dart';
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
@@ -180,6 +183,25 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           final tag = state.extra as FileTag?;
           return WebsiteDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/ai-tasks',
+        builder: (context, state) => const AiTasksBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/ai-tasks/:id',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          final tag = state.extra as FileTag?;
+          return AiTaskDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/ai-tasks/:id/run',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          return AiTaskRunScreen(tagId: tagId);
         },
       ),
       GoRoute(

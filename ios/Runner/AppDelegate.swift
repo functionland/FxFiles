@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import BackgroundTasks
 import UserNotifications
+import os
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -9,6 +10,7 @@ import UserNotifications
     private static let refreshTaskIdentifier = "land.fx.files.refresh"
     private var methodChannel: FlutterMethodChannel?
     private var notificationChannel: FlutterMethodChannel?
+    private var deviceMemoryChannel: FlutterMethodChannel?
 
     override func application(
         _ application: UIApplication,
@@ -68,6 +70,37 @@ import UserNotifications
 
             // Request notification permission for sync progress
             requestNotificationPermission()
+
+            // Device memory channel — used by the AI Automation feature to
+            // gate on-device LLM loading. `totalRamBytes` is the device's
+            // physical RAM (used at startup to classify the device into a
+            // small/medium/large tier). `availableProcMemory` returns the
+            // per-process headroom before jetsam kicks in, which is what
+            // actually matters on iOS — total physical RAM is misleading
+            // because iOS imposes a per-app cap well below it.
+            deviceMemoryChannel = FlutterMethodChannel(
+                name: "land.fx.files/device_memory",
+                binaryMessenger: controller.binaryMessenger
+            )
+
+            deviceMemoryChannel?.setMethodCallHandler { call, result in
+                switch call.method {
+                case "totalRamBytes":
+                    let total = ProcessInfo.processInfo.physicalMemory
+                    result(NSNumber(value: total))
+                case "availableProcMemory":
+                    if #available(iOS 13.0, *) {
+                        let available = os_proc_available_memory()
+                        result(NSNumber(value: available))
+                    } else {
+                        // Pre-iOS-13: no honest API. Return nil so Dart
+                        // treats it as "permissive — proceed".
+                        result(nil)
+                    }
+                default:
+                    result(FlutterMethodNotImplemented)
+                }
+            }
         }
 
         // Register background tasks

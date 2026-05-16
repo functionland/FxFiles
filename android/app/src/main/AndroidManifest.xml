@@ -155,5 +155,28 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="rainbow"/>
         </intent>
+        <!-- AI Automation: messaging-app detection (canLaunchUrl) and launch
+             (Android 11+ requires <queries> entries even for canLaunch). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="whatsapp"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="tg"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="sms"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="mailto"/>
+        </intent>
+        <!-- AI Automation: open https URLs (wa.me, t.me click-to-chat). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
     </queries>
 </manifest>

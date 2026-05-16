@@ -96,6 +96,10 @@
 		<string>zerion</string>
 		<string>imtokenv2</string>
 		<string>wc</string>
+		<!-- AI Automation: canLaunchUrl probes. sms/mailto are system
+		     handled and don't need entries here. -->
+		<string>whatsapp</string>
+		<string>tg</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>

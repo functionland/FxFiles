@@ -28,6 +28,9 @@ import 'package:fula_files/core/services/tray_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/services/ai_task_service.dart';
+import 'package:fula_files/core/services/ai_model_service.dart';
+import 'package:fula_files/core/services/device_memory_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
@@ -222,6 +225,18 @@ Future<ProviderContainer> _initializeApp() async {
 
   // Initialize website service (non-blocking)
   WebsiteService.instance.init();
+
+  // Initialize AI Automation feature services (non-blocking). The LLM
+  // model itself is NOT loaded here — that happens lazily on first
+  // inference inside LocalLlmService.
+  // Probe the device's physical RAM once so the AI feature can pick the
+  // right tier of llama.cpp parameters (and skip the LLM entirely on
+  // <2 GB devices, falling back to literal templates). Non-blocking;
+  // AiModelService.init also awaits this internally so the order doesn't
+  // matter, but firing it here keeps the tier known for the home screen.
+  DeviceMemoryService.instance.init();
+  AiTaskService.instance.init();
+  AiModelService.instance.init();
 
   // Initialize NFT service and wallet (non-blocking)
   NftService.instance.init();

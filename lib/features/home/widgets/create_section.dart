@@ -8,6 +8,12 @@ class CreateSection extends StatelessWidget {
   final bool isWebsiteEnabled;
   final bool isNftEnabled;
 
+  /// AI tasks run entirely on-device; no auth or wallet needed, so this
+  /// is essentially always `true`. Left as a parameter for symmetry with
+  /// the other CREATE entries (and so a future "AI not supported on this
+  /// platform" gate can flip it off).
+  final bool isAiEnabled;
+
   /// Called when the user taps a locked tile. Home wires this to open the
   /// setup unlock sheet (§3).
   final VoidCallback? onLockedTap;
@@ -16,6 +22,7 @@ class CreateSection extends StatelessWidget {
     super.key,
     required this.isWebsiteEnabled,
     required this.isNftEnabled,
+    this.isAiEnabled = true,
     this.onLockedTap,
   });
 
@@ -70,6 +77,22 @@ class CreateSection extends StatelessWidget {
                         return;
                       }
                       context.push('/nfts');
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _CreateTile(
+                    icon: LucideIcons.sparkles,
+                    label: 'AI',
+                    badge: 'on-device',
+                    locked: !isAiEnabled,
+                    onTap: () {
+                      if (!isAiEnabled) {
+                        onLockedTap?.call();
+                        return;
+                      }
+                      context.push('/ai-tasks');
                     },
                   ),
                 ),
