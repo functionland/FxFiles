@@ -15,10 +15,17 @@ class PlaceholderChipBar extends StatefulWidget {
   final List<String> headers;
   final List<PlaceholderField> fields;
 
+  /// Extra placeholders that aren't CSV headers — e.g. `{File}` for the
+  /// IPFS-uploaded attachment. Rendered as visually-distinct chips
+  /// (different colour) so the user can tell they're not columns. Order
+  /// in the list is the display order.
+  final List<String> extraChips;
+
   const PlaceholderChipBar({
     super.key,
     required this.headers,
     required this.fields,
+    this.extraChips = const [],
   });
 
   @override
@@ -74,7 +81,7 @@ class _PlaceholderChipBarState extends State<PlaceholderChipBar> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    if (widget.headers.isEmpty) {
+    if (widget.headers.isEmpty && widget.extraChips.isEmpty) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         child: Text(
@@ -117,15 +124,31 @@ class _PlaceholderChipBarState extends State<PlaceholderChipBar> {
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 4),
-            itemCount: widget.headers.length,
+            itemCount: widget.headers.length + widget.extraChips.length,
             separatorBuilder: (_, __) => const SizedBox(width: 6),
             itemBuilder: (_, i) {
-              final header = widget.headers[i];
+              if (i < widget.headers.length) {
+                final header = widget.headers[i];
+                return ActionChip(
+                  avatar: const Icon(LucideIcons.plus, size: 14),
+                  label: Text('{$header}'),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _insertPlaceholder(header),
+                );
+              }
+              // Extra chips (e.g. `{File}` from the IPFS attachment) get
+              // a distinct visual treatment — same affordance but a
+              // colour that signals "this isn't a CSV column".
+              final extra = widget.extraChips[i - widget.headers.length];
               return ActionChip(
-                avatar: const Icon(LucideIcons.plus, size: 14),
-                label: Text('{$header}'),
+                avatar: Icon(LucideIcons.paperclip,
+                    size: 14, color: theme.colorScheme.onTertiaryContainer),
+                label: Text('{$extra}'),
                 visualDensity: VisualDensity.compact,
-                onPressed: () => _insertPlaceholder(header),
+                backgroundColor: theme.colorScheme.tertiaryContainer,
+                labelStyle: TextStyle(
+                    color: theme.colorScheme.onTertiaryContainer),
+                onPressed: () => _insertPlaceholder(extra),
               );
             },
           ),

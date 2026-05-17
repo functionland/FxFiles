@@ -30,13 +30,16 @@ class AutomateTaskAdapter extends TypeAdapter<AutomateTask> {
       createdAt: fields[7] as DateTime,
       updatedAt: fields[8] as DateTime,
       rows: (fields[9] as List?)?.cast<SendPlanRow>() ?? const <SendPlanRow>[],
+      attachmentLocalPath: fields[10] as String?,
+      attachmentFileName: fields[11] as String?,
+      attachmentCid: fields[12] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, AutomateTask obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -56,7 +59,13 @@ class AutomateTaskAdapter extends TypeAdapter<AutomateTask> {
       ..writeByte(8)
       ..write(obj.updatedAt)
       ..writeByte(9)
-      ..write(obj.rows);
+      ..write(obj.rows)
+      ..writeByte(10)
+      ..write(obj.attachmentLocalPath)
+      ..writeByte(11)
+      ..write(obj.attachmentFileName)
+      ..writeByte(12)
+      ..write(obj.attachmentCid);
   }
 
   @override

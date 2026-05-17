@@ -11,11 +11,15 @@ import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/messaging_target.dart';
 import 'package:fula_files/core/services/automate_task_service.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
+import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/core/services/tabular_parser.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
 import 'package:fula_files/features/automate/widgets/placeholder_chip_bar.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
+import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart'
+    as ipfs_warning;
 import 'package:fula_files/shared/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/target_app_picker.dart';
 
@@ -51,6 +55,18 @@ class _AutomateTaskDetailScreenState
   String? _errorMessage;
   List<String> _headers = const [];
 
+  // Attachment state. The file is picked locally now and held here +
+  // persisted on the task; it's NOT uploaded to IPFS until the user
+  // taps Run (per the design choice — keeps the IPFS warning tied to
+  // the explicit send action).
+  String? _attachmentLocalPath;
+  String? _attachmentFileName;
+  String? _attachmentCid;
+
+  /// Run-time progress string for the IPFS upload phase. null when not
+  /// uploading; otherwise something like "Uploading attachment to IPFS…".
+  String? _uploadStatus;
+
   @override
   void initState() {
     super.initState();
@@ -83,6 +99,9 @@ class _AutomateTaskDetailScreenState
       _toController.text = task.toFieldTemplate;
       _messageController.text = task.messageTemplate;
       _subjectController.text = task.subjectTemplate ?? '';
+      _attachmentLocalPath = task.attachmentLocalPath;
+      _attachmentFileName = task.attachmentFileName;
+      _attachmentCid = task.attachmentCid;
     });
     // Re-parse the attached CSV so placeholder chips populate without a
     // user action.
@@ -196,11 +215,24 @@ class _AutomateTaskDetailScreenState
               onSelected: (t) => setState(() => _targetApp = t),
             ),
           ),
+          _section(
+            context,
+            title: 'Attachment (optional)',
+            trailing: _attachmentLocalPath == null
+                ? IconButton(
+                    icon: const Icon(LucideIcons.paperclip, size: 18),
+                    tooltip: 'Attach file',
+                    onPressed: _pickAttachment,
+                  )
+                : null,
+          ),
+          _attachmentCard(),
           _section(context, title: 'Placeholders'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: PlaceholderChipBar(
               headers: _headers,
+              extraChips: _attachmentLocalPath != null ? const ['File'] : const [],
               fields: [
                 PlaceholderField(
                   focusNode: _toFocus,
@@ -306,7 +338,9 @@ class _AutomateTaskDetailScreenState
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(LucideIcons.play),
-              label: Text(_isRunning ? 'Preparing…' : 'Run task'),
+              label: Text(_isRunning
+                  ? (_uploadStatus ?? 'Preparing…')
+                  : 'Run task'),
             ),
           ),
         ],
@@ -419,6 +453,151 @@ class _AutomateTaskDetailScreenState
     await _refreshHeaders();
   }
 
+  /// Attachment file picker. Accepts ANY file type — IPFS doesn't care
+  /// about content; the recipient's link-handler does. The file is
+  /// copied into the app sandbox (same pattern as CSV import) so the
+  /// path is stable across platform sandbox migrations. NO IPFS upload
+  /// happens here — that's deferred to Run time, when the user has
+  /// committed to actually sending the message.
+  Future<void> _pickAttachment() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+        // withData=false so large files don't load fully into memory.
+      );
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.first;
+      if (picked.path == null) return;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory(p.join(appDir.path, 'AutomateAttachments'));
+      if (!await attachDir.exists()) {
+        await attachDir.create(recursive: true);
+      }
+      var destName = picked.name;
+      var destPath = p.join(attachDir.path, destName);
+      var counter = 1;
+      while (await File(destPath).exists()) {
+        final base = p.basenameWithoutExtension(picked.name);
+        final ext = p.extension(picked.name);
+        destName = '$base ($counter)$ext';
+        destPath = p.join(attachDir.path, destName);
+        counter++;
+      }
+      await File(picked.path!).copy(destPath);
+      final storedPath =
+          Platform.isIOS ? 'AutomateAttachments/$destName' : destPath;
+
+      // Persist immediately so a quick app-restart doesn't lose it.
+      final task = await AutomateTaskService.instance.getOrCreate(
+        tagId: widget.tagId,
+        tagName: widget.tag?.name ?? widget.tagId,
+      );
+      task.attachmentLocalPath = storedPath;
+      task.attachmentFileName = destName;
+      // Picking a different attachment invalidates any previous IPFS
+      // upload — the CID belongs to the old bytes.
+      task.attachmentCid = null;
+      await AutomateTaskService.instance.save(task);
+
+      if (!mounted) return;
+      setState(() {
+        _attachmentLocalPath = storedPath;
+        _attachmentFileName = destName;
+        _attachmentCid = null;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to attach file: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _removeAttachment() async {
+    final task = await AutomateTaskService.instance.getOrCreate(
+      tagId: widget.tagId,
+      tagName: widget.tag?.name ?? widget.tagId,
+    );
+    task.attachmentLocalPath = null;
+    task.attachmentFileName = null;
+    task.attachmentCid = null;
+    await AutomateTaskService.instance.save(task);
+    if (!mounted) return;
+    setState(() {
+      _attachmentLocalPath = null;
+      _attachmentFileName = null;
+      _attachmentCid = null;
+    });
+  }
+
+  Widget _attachmentCard() {
+    final theme = Theme.of(context);
+    if (_attachmentLocalPath == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: Text(
+          'Attach a file to share via IPFS. Once attached, a {File} chip '
+          'appears — drop it into your message wherever you want the link.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+      );
+    }
+    final urlPreview = _attachmentCid != null
+        ? IpfsGatewayHelper.buildUrlForCid(_attachmentCid!)
+        : 'Will upload to IPFS on Run';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: theme.dividerColor),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Icon(LucideIcons.paperclip,
+                size: 18, color: theme.colorScheme.tertiary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _attachmentFileName ?? '(file)',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    urlPreview,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(LucideIcons.x, size: 18),
+              tooltip: 'Remove attachment',
+              onPressed: _removeAttachment,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _runTask() async {
     setState(() => _errorMessage = null);
 
@@ -438,6 +617,46 @@ class _AutomateTaskDetailScreenState
 
     setState(() => _isRunning = true);
     try {
+      // ----- Attachment upload (if needed) -----
+      // The {File} placeholder resolves to the IPFS gateway URL of the
+      // uploaded attachment. Upload happens at Run (not at attach time)
+      // so the IPFS-public warning is tied to the explicit "send"
+      // action. CID is cached on the task — repeat Runs of the same
+      // file skip re-uploading.
+      String? attachmentUrl;
+      if (_attachmentLocalPath != null) {
+        if (_attachmentCid == null) {
+          // First time uploading this file. Get IPFS-public consent
+          // (the same dialog the website-generation flow shows when
+          // pinning files to IPFS) — different from the bulk-send
+          // click-to-chat disclaimer we just showed above.
+          final ipfsOk = await ipfs_warning.showLegalDisclaimerDialog(context);
+          if (ipfsOk != true) {
+            // User declined the IPFS warning — abort run; don't send
+            // ANY rows (the attachment is required for the {File}
+            // placeholder to resolve correctly).
+            return;
+          }
+          setState(() =>
+              _uploadStatus = 'Uploading attachment to IPFS…');
+          final attachAbs = await _resolveLocalPath(_attachmentLocalPath!);
+          final result = await IpfsPublicService.instance
+              .pinFile(attachAbs, _attachmentFileName ?? 'file');
+          _attachmentCid = result.cid;
+          setState(() => _uploadStatus = null);
+
+          // Persist the CID immediately so a crash here doesn't make
+          // the user re-upload on the next Run.
+          final t0 = await AutomateTaskService.instance.getOrCreate(
+            tagId: widget.tagId,
+            tagName: widget.tag?.name ?? widget.tagId,
+          );
+          t0.attachmentCid = _attachmentCid;
+          await AutomateTaskService.instance.save(t0);
+        }
+        attachmentUrl = IpfsGatewayHelper.buildUrlForCid(_attachmentCid!);
+      }
+
       // Locate the attached CSV.
       final files = await ref.read(taggedFilesProvider(widget.tagId).future);
       final csv = files.firstWhere(
@@ -463,10 +682,18 @@ class _AutomateTaskDetailScreenState
               : null;
 
       // Build the per-row send plan via deterministic substitution.
+      // When an attachment is set, we inject `{File}` (and the lowercase
+      // alias `{file}`) into the render row alongside the CSV columns —
+      // TemplateRenderer matches case-insensitively so either works in
+      // the template.
       final rows = <SendPlanRow>[];
       for (final row in tabular.rows) {
-        final renderedTo = TemplateRenderer.render(toTpl, row).trim();
-        final renderedMsg = TemplateRenderer.render(msgTpl, row);
+        final renderRow = attachmentUrl != null
+            ? {...row, 'File': attachmentUrl}
+            : row;
+        final renderedTo =
+            TemplateRenderer.render(toTpl, renderRow).trim();
+        final renderedMsg = TemplateRenderer.render(msgTpl, renderRow);
 
         // Pre-validate the recipient at substitution time. For
         // phone-based targets, normalizePhone() is the same check the
@@ -502,7 +729,11 @@ class _AutomateTaskDetailScreenState
         ));
       }
 
-      // Persist on the AutomateTask record.
+      // Persist on the AutomateTask record. attachmentLocalPath /
+      // attachmentFileName were already persisted at attach time;
+      // attachmentCid was just persisted post-upload above. We re-save
+      // them here too so a single `save()` is the source of truth for
+      // "task as of last Run".
       final task = await AutomateTaskService.instance.getOrCreate(
         tagId: widget.tagId,
         tagName: widget.tag?.name ?? widget.tagId,
@@ -512,6 +743,9 @@ class _AutomateTaskDetailScreenState
       task.messageTemplate = msgTpl;
       task.subjectTemplate = subjectTpl;
       task.rows = rows;
+      task.attachmentLocalPath = _attachmentLocalPath;
+      task.attachmentFileName = _attachmentFileName;
+      task.attachmentCid = _attachmentCid;
       await AutomateTaskService.instance.save(task);
 
       if (!mounted) return;

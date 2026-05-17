@@ -62,6 +62,30 @@ class AutomateTask extends HiveObject {
   @HiveField(9)
   List<SendPlanRow> rows;
 
+  /// Optional file attachment. The user picks a local file in the
+  /// detail screen; it's NOT uploaded until they tap Run (per design
+  /// choice — keeps the IPFS warning + network cost tied to the
+  /// explicit "send" action). After upload, [attachmentCid] is set and
+  /// the `{File}` placeholder in the message resolves to the gateway
+  /// URL via `IpfsGatewayHelper.buildUrlForCid(...)`.
+  ///
+  /// Absolute path on Android / Windows, Documents-relative on iOS
+  /// (mirrors the convention from the CSV attachment flow).
+  @HiveField(10)
+  String? attachmentLocalPath;
+
+  /// Display-only filename for the attached file. Survives the local
+  /// path being moved/renamed since IPFS upload uses the CID, not the
+  /// path, post-upload.
+  @HiveField(11)
+  String? attachmentFileName;
+
+  /// IPFS CID of the uploaded attachment. Populated after the first
+  /// successful Run that uploads the file. Cleared if the user picks a
+  /// different attachment so the next Run re-uploads.
+  @HiveField(12)
+  String? attachmentCid;
+
   AutomateTask({
     required this.id,
     required this.tagId,
@@ -73,5 +97,8 @@ class AutomateTask extends HiveObject {
     required this.createdAt,
     required this.updatedAt,
     this.rows = const [],
+    this.attachmentLocalPath,
+    this.attachmentFileName,
+    this.attachmentCid,
   });
 }
