@@ -28,6 +28,12 @@
 
     <!-- Network permissions for mDNS/NSD blox discovery -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+
+    <!-- Automate feature: optional contacts import. The user can pick
+         contacts from their phone book to use as recipients (alongside
+         CSV / VCard). Read-only — we never write to the system contact
+         store. Runtime-prompted via flutter_contacts. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
     
     <application
         android:requestLegacyExternalStorage="true"

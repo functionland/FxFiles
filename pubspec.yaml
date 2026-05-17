@@ -121,6 +121,12 @@ dependencies:
   csv: ^6.0.0
   fllama: ^0.0.1
 
+  # Automate feature — system contacts picker + VCard import. The
+  # plugin handles both reading contacts (READ_CONTACTS / iOS Contacts
+  # entitlement) AND parsing VCard text via Contact.fromVCard, so one
+  # dep covers both ingestion paths.
+  flutter_contacts: ^1.1.9+1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

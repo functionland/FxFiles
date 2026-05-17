@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -14,12 +15,15 @@ import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/core/services/tabular_parser.dart';
+import 'package:fula_files/core/utils/contacts_csv_writer.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
+import 'package:fula_files/features/automate/screens/phone_contacts_picker_screen.dart';
 import 'package:fula_files/features/automate/widgets/placeholder_chip_bar.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/websites/widgets/legal_disclaimer_dialog.dart'
     as ipfs_warning;
+import 'package:fula_files/features/websites/widgets/tag_asset_picker_dialog.dart';
 import 'package:fula_files/shared/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/target_app_picker.dart';
 
@@ -166,11 +170,11 @@ class _AutomateTaskDetailScreenState
         children: [
           _section(
             context,
-            title: 'Attached CSV',
+            title: 'Recipients (CSV)',
             trailing: IconButton(
               icon: const Icon(LucideIcons.filePlus, size: 18),
-              tooltip: 'Import CSV',
-              onPressed: _pickCsvFile,
+              tooltip: 'Import recipients',
+              onPressed: _showImportSheet,
             ),
           ),
           taggedFilesAsync.when(
@@ -375,20 +379,21 @@ class _AutomateTaskDetailScreenState
             Icon(LucideIcons.fileX, size: 36, color: Colors.grey[400]),
             const SizedBox(height: 8),
             Text(
-              'No CSV attached',
+              'No recipients yet',
               style: TextStyle(color: Colors.grey[600], fontSize: 13),
             ),
             const SizedBox(height: 4),
             Text(
-              'v1 only reads CSV — export from Excel / Numbers / Sheets first',
+              'Import from a CSV, your phone contacts, a VCard, or reuse a '
+              'previous task\'s list.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey[500], fontSize: 11),
             ),
             const SizedBox(height: 8),
             TextButton.icon(
-              onPressed: _pickCsvFile,
+              onPressed: _showImportSheet,
               icon: const Icon(LucideIcons.filePlus, size: 16),
-              label: const Text('Import CSV'),
+              label: const Text('Import recipients'),
             ),
           ],
         ),
@@ -451,6 +456,200 @@ class _AutomateTaskDetailScreenState
       iosAssetId: file.iosAssetId,
     );
     await _refreshHeaders();
+  }
+
+  /// Bottom sheet that lets the user pick HOW they want to import
+  /// recipients: a CSV they have on disk, contacts from their phone
+  /// book, a VCard file (e.g. exported from another contacts app), or
+  /// reuse the CSV/contacts list attached to a previous Automate task.
+  /// Each option ultimately ends up the same way — a CSV tagged to
+  /// this task — so the placeholder-chip + render pipeline doesn't
+  /// need to care about where the data came from.
+  Future<void> _showImportSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.fileSpreadsheet),
+              title: const Text('Import a CSV file'),
+              subtitle: const Text(
+                  'Pick a .csv from disk. First row becomes the column chips.'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickCsvFile();
+              },
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.users),
+              title: const Text('Pick from phone contacts'),
+              subtitle: const Text(
+                  'Read-only access. Generates Name/Phone/Email columns.'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _importPhoneContacts();
+              },
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.fileCheck),
+              title: const Text('Import a VCard (.vcf)'),
+              subtitle: const Text(
+                  'Useful when contacts came from someone else via "Share contact".'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _importVCard();
+              },
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.history),
+              title: const Text('Reuse from a previous task'),
+              subtitle: const Text(
+                  'Pick a CSV or contacts list you already attached to another task.'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _pickFromExistingTag();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Open the in-app contacts picker, generate a CSV from the user's
+  /// selection, tag it to the current task. See
+  /// `PhoneContactsPickerScreen` for the permission flow.
+  Future<void> _importPhoneContacts() async {
+    try {
+      final picked = await Navigator.of(context).push<List<Contact>>(
+        MaterialPageRoute(
+          builder: (_) => const PhoneContactsPickerScreen(),
+        ),
+      );
+      if (picked == null || picked.isEmpty) return;
+      final csv = ContactsCsvWriter.toCsv(picked);
+      final fileName = _contactsCsvFilename();
+      await _saveAndTagCsv(csv: csv, fileName: fileName);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to import contacts: $e')),
+        );
+      }
+    }
+  }
+
+  /// VCard import — pick a .vcf file, parse each vCard, convert to the
+  /// same Name/Phone/Email CSV shape. Multi-card .vcf files (which is
+  /// the typical "Share contact" export) are parsed one card per
+  /// `Contact`.
+  Future<void> _importVCard() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['vcf', 'vcard'],
+        allowMultiple: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.first;
+      if (picked.path == null) return;
+
+      final text = await File(picked.path!).readAsString();
+      // A .vcf file can hold multiple cards separated by BEGIN/END
+      // VCARD blocks. Split on END:VCARD as a simple, robust splitter.
+      final cards = <Contact>[];
+      final blocks = text.split(RegExp(r'END:VCARD', caseSensitive: false));
+      for (final block in blocks) {
+        final trimmed = block.trim();
+        if (trimmed.isEmpty) continue;
+        final fullCard = '$trimmed\nEND:VCARD';
+        try {
+          final c = Contact.fromVCard(fullCard);
+          cards.add(c);
+        } catch (_) {
+          // Skip malformed cards rather than fail the whole import.
+        }
+      }
+      if (cards.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No valid contacts in that .vcf file')),
+          );
+        }
+        return;
+      }
+      final csv = ContactsCsvWriter.toCsv(cards);
+      final fileName = _contactsCsvFilename(prefix: 'VCard');
+      await _saveAndTagCsv(csv: csv, fileName: fileName);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to import VCard: $e')),
+        );
+      }
+    }
+  }
+
+  /// Open the existing TagAssetPickerDialog (the same widget the
+  /// website-generation flow uses) so the user can pick a CSV/contacts
+  /// list attached to another tag in the system, and re-tag it to the
+  /// current Automate task. The file isn't copied — both tags
+  /// reference the same `localPath` (matching how reuse works for
+  /// website assets).
+  Future<void> _pickFromExistingTag() async {
+    final picked = await showTagAssetPicker(
+      context: context,
+      excludeTagId: widget.tagId,
+    );
+    if (picked == null || picked.isEmpty) return;
+    for (final tf in picked) {
+      if (tf.localPath == null) continue;
+      await ref.tagFile(
+        tagId: widget.tagId,
+        localPath: tf.localPath,
+        fileName: tf.fileName,
+      );
+    }
+    await _refreshHeaders();
+  }
+
+  /// Write the generated CSV to the AutomateAttachments sandbox folder
+  /// and tag it to the current Automate task. Reused by both the
+  /// phone-contacts and VCard import paths.
+  Future<void> _saveAndTagCsv({
+    required String csv,
+    required String fileName,
+  }) async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory(p.join(appDir.path, 'AutomateRecipients'));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    var destName = fileName;
+    var destPath = p.join(dir.path, destName);
+    var counter = 1;
+    while (await File(destPath).exists()) {
+      final base = p.basenameWithoutExtension(fileName);
+      final ext = p.extension(fileName);
+      destName = '$base ($counter)$ext';
+      destPath = p.join(dir.path, destName);
+      counter++;
+    }
+    await File(destPath).writeAsString(csv);
+    final storedPath = Platform.isIOS ? 'AutomateRecipients/$destName' : destPath;
+    await ref.tagFile(
+      tagId: widget.tagId,
+      localPath: storedPath,
+      fileName: destName,
+    );
+    await _refreshHeaders();
+  }
+
+  String _contactsCsvFilename({String prefix = 'Contacts'}) {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = '${now.year}-${two(now.month)}-${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}';
+    return '$prefix $stamp.csv';
   }
 
   /// Attachment file picker. Accepts ANY file type — IPFS doesn't care
