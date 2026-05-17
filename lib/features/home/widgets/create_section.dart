@@ -8,10 +8,14 @@ class CreateSection extends StatelessWidget {
   final bool isWebsiteEnabled;
   final bool isNftEnabled;
 
-  /// AI tasks run entirely on-device; no auth or wallet needed, so this
-  /// is essentially always `true`. Left as a parameter for symmetry with
-  /// the other CREATE entries (and so a future "AI not supported on this
-  /// platform" gate can flip it off).
+  /// ⚠️ HIDDEN — AI feature is paused. The on-device LLM (Llama 3.2 1B
+  /// Q4_K_M) works but was overkill for the CRM-bulk-send use case;
+  /// the "Automate" tile delivers the same outcome deterministically
+  /// (no model download, no fllama, no 1 GB RAM headroom requirement).
+  /// To re-enable: have `home_screen.dart` pass `isAiEnabled: true`
+  /// and verify the AI source tree (`lib/features/ai_tasks/`,
+  /// `ai_model_service.dart`, `local_llm_service.dart`, etc.) still
+  /// builds. Plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
   final bool isAiEnabled;
 
   /// Called when the user taps a locked tile. Home wires this to open the
@@ -22,7 +26,7 @@ class CreateSection extends StatelessWidget {
     super.key,
     required this.isWebsiteEnabled,
     required this.isNftEnabled,
-    this.isAiEnabled = true,
+    this.isAiEnabled = false, // HIDDEN — was true while AI feature was live.
     this.onLockedTap,
   });
 
@@ -83,19 +87,30 @@ class CreateSection extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: _CreateTile(
-                    icon: LucideIcons.sparkles,
-                    label: 'AI',
-                    badge: 'on-device',
-                    locked: !isAiEnabled,
-                    onTap: () {
-                      if (!isAiEnabled) {
-                        onLockedTap?.call();
-                        return;
-                      }
-                      context.push('/ai-tasks');
-                    },
+                    icon: LucideIcons.zap,
+                    label: 'Automate',
+                    badge: 'CSV → bulk send',
+                    locked: false,
+                    onTap: () => context.push('/automate-tasks'),
                   ),
                 ),
+                // ⚠️ HIDDEN — AI tile removed from the CREATE row. The
+                // route /ai-tasks is still registered in router.dart so
+                // stranded `ai-tasks-*` tags from earlier installs still
+                // resolve if deep-linked. See the field doc on
+                // [isAiEnabled] above for the re-enable path.
+                if (isAiEnabled) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _CreateTile(
+                      icon: LucideIcons.sparkles,
+                      label: 'AI',
+                      badge: 'on-device',
+                      locked: false,
+                      onTap: () => context.push('/ai-tasks'),
+                    ),
+                  ),
+                ],
               ],
             ),
           ],

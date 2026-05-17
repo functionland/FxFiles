@@ -123,6 +123,22 @@
             </intent-filter>
         </receiver>
 
+        <!-- DownloadManager completion receiver for the on-device LLM
+             model. MUST be a manifest (static) receiver, not registered
+             at runtime: when the user swipes the app away during a
+             770 MB download, our process dies but DownloadManager keeps
+             going. This receiver wakes the process on completion so the
+             SHA-verify + magic-byte gate (in Dart) can run. exported
+             stays false — DOWNLOAD_COMPLETE is a system broadcast
+             targeted at our package, no need to expose it. -->
+        <receiver
+            android:name=".ModelDownloadCompleteReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE"/>
+            </intent-filter>
+        </receiver>
+
         <!-- Image Cropper Activity -->
         <activity
             android:name="com.yalantis.ucrop.UCropActivity"

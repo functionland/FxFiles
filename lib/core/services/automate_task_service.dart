@@ -1,69 +1,67 @@
-// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
-// See plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
-
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 
-import 'package:fula_files/core/models/ai_task.dart';
-// Hive adapters for TargetApp / SendStatus / SendPlanRow live in
-// messaging_target.g.dart (part of messaging_target.dart) — the types
-// were moved there to be shared with the Automate feature. ai_task.dart
-// re-exports the types but Dart's `export` doesn't expose part-of
-// `.g.dart` adapter classes, so we still need this explicit import.
+import 'package:fula_files/core/models/automate_task.dart';
 import 'package:fula_files/core/models/messaging_target.dart';
 
-/// Persistence + business-logic layer for the AI Automation feature.
+/// Persistence + business-logic layer for the Automate feature.
 ///
-/// One [AiTask] per tag (the tag's name is the user-facing task name,
-/// prefixed `ai-tasks-`). The tag holds the attached CSV/asset files (via
-/// the existing TagStorageService); this service stores the task
-/// configuration (prompt, target, rendered template, per-row send plan).
+/// One [AutomateTask] per tag. The tag's name is the user-facing task
+/// name, prefixed `automate-tasks-`. The tag holds the attached CSV
+/// file(s) (via the existing TagStorageService); this service stores
+/// the task configuration (TO field template, message template, target
+/// app, per-row send plan after rendering).
 ///
-/// Parallels `WebsiteService` in shape — same lazy init, same status
-/// stream, same per-asset comment store keyed by `tagId|taggedFileId`.
-class AiTaskService {
-  AiTaskService._();
-  static final AiTaskService instance = AiTaskService._();
+/// Mirrors `AiTaskService` in shape — same per-asset comment store,
+/// same statusStream + getOrCreate pattern. The Hive adapters for the
+/// shared `TargetApp` / `SendStatus` / `SendPlanRow` types are
+/// idempotently registered here too (guarded by
+/// `Hive.isAdapterRegistered(typeId)`), so this service is safe to
+/// initialise regardless of whether AiTaskService also ran.
+class AutomateTaskService {
+  AutomateTaskService._();
+  static final AutomateTaskService instance = AutomateTaskService._();
 
   static const _uuid = Uuid();
 
-  late Box<AiTask> _tasksBox;
+  late Box<AutomateTask> _tasksBox;
   late Box<String> _commentsBox;
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
 
-  final _statusController = StreamController<AiTask>.broadcast();
-  Stream<AiTask> get statusStream => _statusController.stream;
+  final _statusController = StreamController<AutomateTask>.broadcast();
+  Stream<AutomateTask> get statusStream => _statusController.stream;
 
   Future<void> init() async {
     if (_isInitialized) return;
     try {
-      if (!Hive.isAdapterRegistered(40)) {
-        Hive.registerAdapter(AiTaskTypeAdapter());
-      }
+      // Shared adapters (also registered by AiTaskService when the AI
+      // feature is enabled). Both paths guard with isAdapterRegistered.
       if (!Hive.isAdapterRegistered(41)) {
         Hive.registerAdapter(TargetAppAdapter());
       }
       if (!Hive.isAdapterRegistered(42)) {
         Hive.registerAdapter(SendStatusAdapter());
       }
-      if (!Hive.isAdapterRegistered(43)) {
-        Hive.registerAdapter(AiTaskAdapter());
-      }
       if (!Hive.isAdapterRegistered(44)) {
         Hive.registerAdapter(SendPlanRowAdapter());
       }
-      _tasksBox = await Hive.openBox<AiTask>('ai_tasks');
-      _commentsBox = await Hive.openBox<String>('ai_task_asset_comments');
+      // Automate-specific adapter.
+      if (!Hive.isAdapterRegistered(50)) {
+        Hive.registerAdapter(AutomateTaskAdapter());
+      }
+      _tasksBox = await Hive.openBox<AutomateTask>('automate_tasks');
+      _commentsBox =
+          await Hive.openBox<String>('automate_task_asset_comments');
       _isInitialized = true;
       debugPrint(
-          'AiTaskService initialized: ${_tasksBox.length} tasks, '
+          'AutomateTaskService initialized: ${_tasksBox.length} tasks, '
           '${_commentsBox.length} comments');
     } catch (e) {
-      debugPrint('AiTaskService init failed: $e');
+      debugPrint('AutomateTaskService init failed: $e');
     }
   }
 
@@ -72,9 +70,8 @@ class AiTaskService {
   // ---------------------------------------------------------------------
 
   /// Get the (single) task for a given tagId, creating a blank one when
-  /// none exists. Single-task-per-tag matches the website pattern: the
-  /// tag IS the task; rerunning overwrites the rows on the same record.
-  Future<AiTask> getOrCreate({
+  /// none exists. Single-task-per-tag — same pattern as AiTaskService.
+  Future<AutomateTask> getOrCreate({
     required String tagId,
     required String tagName,
   }) async {
@@ -84,15 +81,13 @@ class AiTaskService {
       orElse: () => _placeholder(tagId: tagId, tagName: tagName),
     );
     if (existing.id.isEmpty) {
-      // Placeholder isn't in the box yet — persist now so subsequent
-      // mutations have a stable key.
-      final fresh = AiTask(
+      final fresh = AutomateTask(
         id: _uuid.v4(),
         tagId: tagId,
         tagName: tagName,
-        taskType: AiTaskType.crmAutomation,
         targetApp: TargetApp.whatsapp,
-        userPrompt: '',
+        toFieldTemplate: '',
+        messageTemplate: '',
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
         rows: const [],
@@ -104,9 +99,8 @@ class AiTaskService {
     return existing;
   }
 
-  /// Returns the task for [tagId] or null if none exists. Use this when
-  /// "no task yet" is a meaningful state (e.g. the browser screen list).
-  AiTask? findByTagId(String tagId) {
+  /// Returns the task for [tagId] or null if none exists.
+  AutomateTask? findByTagId(String tagId) {
     if (!_isInitialized) return null;
     for (final t in _tasksBox.values) {
       if (t.tagId == tagId) return t;
@@ -114,7 +108,7 @@ class AiTaskService {
     return null;
   }
 
-  Future<void> save(AiTask task) async {
+  Future<void> save(AutomateTask task) async {
     if (!_isInitialized) await init();
     task.updatedAt = DateTime.now();
     await _tasksBox.put(task.id, task);
@@ -133,15 +127,16 @@ class AiTaskService {
     await deleteAssetCommentsForTag(tagId);
   }
 
-  List<AiTask> getAllTasks() {
+  List<AutomateTask> getAllTasks() {
     if (!_isInitialized) return const [];
     return _tasksBox.values.toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
   // ---------------------------------------------------------------------
-  // Per-asset comments (mirrors WebsiteService — same composite-key shape
-  // so the existing TagAssetPickerDialog comment flow can be reused).
+  // Per-asset comments (composite-key shape — same as WebsiteService and
+  // AiTaskService so the existing TagAssetPickerDialog comment flow can
+  // be reused without modification).
   // ---------------------------------------------------------------------
 
   String _commentKey(String tagId, String taggedFileId) =>
@@ -172,21 +167,6 @@ class AiTaskService {
     await _commentsBox.delete(_commentKey(tagId, taggedFileId));
   }
 
-  Map<String, String> getAssetCommentsForTag(String tagId) {
-    if (!_isInitialized) return const {};
-    final prefix = '$tagId|';
-    final out = <String, String>{};
-    for (final key in _commentsBox.keys) {
-      if (key is String && key.startsWith(prefix)) {
-        final v = _commentsBox.get(key);
-        if (v != null && v.isNotEmpty) {
-          out[key.substring(prefix.length)] = v;
-        }
-      }
-    }
-    return out;
-  }
-
   Future<void> deleteAssetCommentsForTag(String tagId) async {
     if (!_isInitialized) return;
     final prefix = '$tagId|';
@@ -201,14 +181,15 @@ class AiTaskService {
 
   // ---------------------------------------------------------------------
 
-  AiTask _placeholder({required String tagId, required String tagName}) {
-    return AiTask(
+  AutomateTask _placeholder(
+      {required String tagId, required String tagName}) {
+    return AutomateTask(
       id: '', // empty id signals "not yet in box"
       tagId: tagId,
       tagName: tagName,
-      taskType: AiTaskType.crmAutomation,
       targetApp: TargetApp.whatsapp,
-      userPrompt: '',
+      toFieldTemplate: '',
+      messageTemplate: '',
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
       rows: const [],

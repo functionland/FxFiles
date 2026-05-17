@@ -1,8 +1,3 @@
-// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
-// Source intact for future re-enable. The Automate feature delivers the
-// same outcome deterministically. See plan:
-// C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
-
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -13,39 +8,48 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import 'package:fula_files/core/models/ai_task.dart';
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/core/services/ai_model_service.dart';
-import 'package:fula_files/core/services/ai_task_service.dart';
-import 'package:fula_files/core/services/device_memory_service.dart';
-import 'package:fula_files/core/services/local_llm_service.dart';
+import 'package:fula_files/core/models/messaging_target.dart';
+import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/tabular_parser.dart';
+import 'package:fula_files/core/utils/target_uri_builder.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
-import 'package:fula_files/features/ai_tasks/providers/ai_model_provider.dart';
+import 'package:fula_files/features/automate/widgets/placeholder_chip_bar.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/shared/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/target_app_picker.dart';
 
-import 'package:fula_files/features/ai_tasks/widgets/model_download_card.dart';
-
-/// Configure + run an AI task. Mirrors `WebsiteDetailScreen` for the asset
-/// import flow but with the CRM-specific task config (target app + prompt)
-/// instead of style/palette/category pickers.
-class AiTaskDetailScreen extends ConsumerStatefulWidget {
+/// Configure + run an Automate task. Deterministic bulk-send: attach a
+/// CSV, the headers become placeholder chips, the user composes a TO
+/// template + message template (+ optional subject for email) using
+/// those chips or by typing `{ColumnName}` manually.
+///
+/// No LLM — `TemplateRenderer.render` substitutes verbatim per row.
+class AutomateTaskDetailScreen extends ConsumerStatefulWidget {
   final String tagId;
   final FileTag? tag;
 
-  const AiTaskDetailScreen({super.key, required this.tagId, this.tag});
+  const AutomateTaskDetailScreen({super.key, required this.tagId, this.tag});
 
   @override
-  ConsumerState<AiTaskDetailScreen> createState() => _AiTaskDetailScreenState();
+  ConsumerState<AutomateTaskDetailScreen> createState() =>
+      _AutomateTaskDetailScreenState();
 }
 
-class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
-  final _promptController = TextEditingController();
+class _AutomateTaskDetailScreenState
+    extends ConsumerState<AutomateTaskDetailScreen> {
+  final _toController = TextEditingController();
+  final _messageController = TextEditingController();
+  final _subjectController = TextEditingController();
+
+  final _toFocus = FocusNode();
+  final _messageFocus = FocusNode();
+  final _subjectFocus = FocusNode();
+
   TargetApp _targetApp = TargetApp.whatsapp;
   bool _isRunning = false;
   String? _errorMessage;
+  List<String> _headers = const [];
 
   @override
   void initState() {
@@ -55,35 +59,74 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
 
   @override
   void dispose() {
-    _promptController.dispose();
+    _toController.dispose();
+    _messageController.dispose();
+    _subjectController.dispose();
+    _toFocus.dispose();
+    _messageFocus.dispose();
+    _subjectFocus.dispose();
     super.dispose();
   }
 
   Future<void> _loadTask() async {
     final tagState = ref.read(tagProvider);
-    final currentTag =
-        widget.tag ?? tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
+    final currentTag = widget.tag ??
+        tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
     final tagName = currentTag?.name ?? widget.tagId;
-    final task = await AiTaskService.instance.getOrCreate(
+    final task = await AutomateTaskService.instance.getOrCreate(
       tagId: widget.tagId,
       tagName: tagName,
     );
     if (!mounted) return;
     setState(() {
       _targetApp = task.targetApp;
-      _promptController.text = task.userPrompt;
+      _toController.text = task.toFieldTemplate;
+      _messageController.text = task.messageTemplate;
+      _subjectController.text = task.subjectTemplate ?? '';
     });
+    // Re-parse the attached CSV so placeholder chips populate without a
+    // user action.
+    await _refreshHeaders();
+  }
+
+  Future<void> _refreshHeaders() async {
+    try {
+      final files = await ref.read(taggedFilesProvider(widget.tagId).future);
+      final csv = files
+          .where((f) => (f.localPath ?? '').toLowerCase().endsWith('.csv'))
+          .firstOrNull;
+      if (csv == null || csv.localPath == null) {
+        if (mounted) setState(() => _headers = const []);
+        return;
+      }
+      final localPath = await _resolveLocalPath(csv.localPath!);
+      final file = File(localPath);
+      if (!await file.exists()) {
+        if (mounted) setState(() => _headers = const []);
+        return;
+      }
+      final tabular = await TabularParser.parse(file);
+      if (mounted) setState(() => _headers = tabular.headers);
+    } catch (e) {
+      // Non-fatal — leave headers empty; the chip bar shows a hint
+      // telling the user to attach a CSV.
+      debugPrint('AutomateTaskDetail: header refresh failed: $e');
+      if (mounted) setState(() => _headers = const []);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final tagState = ref.watch(tagProvider);
-    final currentTag =
-        widget.tag ?? tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
-    final displayName =
-        (currentTag?.name ?? 'AI Task').replaceFirst('ai-tasks-', '');
-    final color = currentTag != null ? Color(currentTag.colorValue) : Colors.indigo;
+    final currentTag = widget.tag ??
+        tagState.tags.where((t) => t.id == widget.tagId).firstOrNull;
+    final displayName = (currentTag?.name ?? 'Automate task')
+        .replaceFirst('automate-tasks-', '');
+    final color =
+        currentTag != null ? Color(currentTag.colorValue) : Colors.indigo;
     final taggedFilesAsync = ref.watch(taggedFilesProvider(widget.tagId));
+
+    final isEmail = _targetApp == TargetApp.email;
 
     return Scaffold(
       appBar: AppBar(
@@ -102,13 +145,12 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
       ),
       body: ListView(
         children: [
-          const ModelDownloadCard(),
           _section(
             context,
-            title: 'Attached files',
+            title: 'Attached CSV',
             trailing: IconButton(
               icon: const Icon(LucideIcons.filePlus, size: 18),
-              tooltip: 'Import file',
+              tooltip: 'Import CSV',
               onPressed: _pickCsvFile,
             ),
           ),
@@ -119,14 +161,14 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
                     children: [
                       for (final f in files)
                         ListTile(
-                          leading:
-                              const Icon(LucideIcons.fileSpreadsheet, size: 22),
+                          leading: const Icon(LucideIcons.fileSpreadsheet,
+                              size: 22),
                           title: Text(f.fileName,
                               maxLines: 1, overflow: TextOverflow.ellipsis),
                           subtitle: f.localPath == null
                               ? const Text('Not available locally',
-                                  style:
-                                      TextStyle(fontSize: 11, color: Colors.grey))
+                                  style: TextStyle(
+                                      fontSize: 11, color: Colors.grey))
                               : null,
                           trailing: IconButton(
                             icon: const Icon(LucideIcons.x, size: 18),
@@ -146,11 +188,6 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
             ),
           ),
           const Divider(),
-          _section(context, title: 'Task type'),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: _TaskTypeCard(),
-          ),
           _section(context, title: 'Send via'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -159,17 +196,72 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
               onSelected: (t) => setState(() => _targetApp = t),
             ),
           ),
-          _section(context, title: 'Prompt'),
+          _section(context, title: 'Placeholders'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: PlaceholderChipBar(
+              headers: _headers,
+              fields: [
+                PlaceholderField(
+                  focusNode: _toFocus,
+                  controller: _toController,
+                  label: 'TO',
+                ),
+                PlaceholderField(
+                  focusNode: _messageFocus,
+                  controller: _messageController,
+                  label: 'message',
+                ),
+                if (isEmail)
+                  PlaceholderField(
+                    focusNode: _subjectFocus,
+                    controller: _subjectController,
+                    label: 'subject',
+                  ),
+              ],
+            ),
+          ),
+          _section(
+            context,
+            title: isEmail ? 'TO (email address)' : 'TO',
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
-              controller: _promptController,
-              maxLines: 5,
+              controller: _toController,
+              focusNode: _toFocus,
+              decoration: InputDecoration(
+                hintText: isEmail
+                    ? '{Email}'
+                    : 'e.g. +1{Phone} — or {Phone} if your column has the country code',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ),
+          if (isEmail) ...[
+            _section(context, title: 'Subject'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _subjectController,
+                focusNode: _subjectFocus,
+                decoration: const InputDecoration(
+                  hintText: 'e.g. Hi {Name}, quick question',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+          _section(context, title: 'Message'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _messageController,
+              focusNode: _messageFocus,
+              maxLines: 6,
               minLines: 3,
               decoration: const InputDecoration(
-                hintText:
-                    'e.g. "Send Hello {Name}, hope you are well to each row." '
-                    'Use {ColumnName} placeholders matching your CSV headers.',
+                hintText: 'e.g. Hello {Name}, hope you are well!',
                 border: OutlineInputBorder(),
                 alignLabelWithHint: true,
               ),
@@ -183,7 +275,8 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
                 decoration: BoxDecoration(
                   color: Colors.red.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                  border:
+                      Border.all(color: Colors.red.withValues(alpha: 0.3)),
                 ),
                 child: Row(
                   children: [
@@ -193,8 +286,8 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
                     Expanded(
                       child: Text(
                         _errorMessage!,
-                        style:
-                            const TextStyle(color: Colors.red, fontSize: 13),
+                        style: const TextStyle(
+                            color: Colors.red, fontSize: 13),
                       ),
                     ),
                   ],
@@ -253,7 +346,7 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              'v1 only reads CSV — export from Excel/Numbers/Sheets first',
+              'v1 only reads CSV — export from Excel / Numbers / Sheets first',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey[500], fontSize: 11),
             ),
@@ -282,7 +375,7 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
 
       // Copy into the app sandbox so we have a stable path that survives
       // platform sandbox migrations. Same pattern as
-      // WebsiteDetailScreen._importPickedFiles.
+      // WebsiteDetailScreen._importPickedFiles and AI flow.
       final appDir = await getApplicationDocumentsDirectory();
       final importedDir = Directory(p.join(appDir.path, 'Imported'));
       if (!await importedDir.exists()) {
@@ -305,6 +398,8 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
         localPath: storedPath,
         fileName: destName,
       );
+      // Re-parse so chips appear without the user navigating away/back.
+      await _refreshHeaders();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -321,34 +416,29 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
       remoteKey: file.remoteKey,
       iosAssetId: file.iosAssetId,
     );
+    await _refreshHeaders();
   }
 
   Future<void> _runTask() async {
     setState(() => _errorMessage = null);
 
-    // 1. Confirm the legal disclaimer.
+    // Basic validation before opening the disclaimer — saves the user
+    // tapping through it just to see an inline error.
+    if (_toController.text.trim().isEmpty) {
+      setState(() => _errorMessage = 'TO field is empty');
+      return;
+    }
+    if (_messageController.text.trim().isEmpty) {
+      setState(() => _errorMessage = 'Message is empty');
+      return;
+    }
+
     final confirmed = await showBulkSendDisclaimer(context);
     if (!confirmed || !mounted) return;
 
     setState(() => _isRunning = true);
-    String? fallbackBanner;
     try {
-      final memSvc = DeviceMemoryService.instance;
-      final useHeuristicOnly = !memSvc.supportsOnDeviceLlm;
-
-      // 2. Ensure the model is ready (or kick off the download), but
-      // only on devices that can actually host the LLM. Insufficient
-      // devices skip straight to the heuristic-only path.
-      if (!useHeuristicOnly && !await AiModelService.instance.isReady()) {
-        await AiModelService.instance.startDownload();
-        final ev = ref.read(aiModelStatusProvider).value;
-        if (ev?.status != AiModelStatus.ready) {
-          throw Exception(
-              'Model is not ready yet. Wait for the download to finish.');
-        }
-      }
-
-      // 3. Locate the first attached CSV.
+      // Locate the attached CSV.
       final files = await ref.read(taggedFilesProvider(widget.tagId).future);
       final csv = files.firstWhere(
         (f) => (f.localPath ?? '').toLowerCase().endsWith('.csv'),
@@ -360,96 +450,72 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
         throw Exception('Attached CSV not found on disk');
       }
 
-      // 4. Parse the CSV.
       final tabular = await TabularParser.parse(file);
       if (tabular.isEmpty) {
         throw Exception('CSV has no data rows.');
       }
 
-      // 5. Build the prompt + run the LLM (or fall back to heuristics).
-      // Three failure modes that all degrade to the same heuristic path:
-      //  - Device tier too low (LowMemoryException, or pre-flagged
-      //    by useHeuristicOnly)
-      //  - LLM output unparseable (TemplateInferenceFailure)
-      // In each case we still ship a working bulk-send — the user just
-      // sees their prompt used verbatim as the template.
-      final samples = tabular.rows.take(3).toList();
-      InferredCrmTemplate template;
-      if (useHeuristicOnly) {
-        template = _heuristicFallback(tabular.headers);
-        fallbackBanner =
-            'AI parsing is disabled on this device — using your prompt as '
-            'the message template. {ColumnName} placeholders will still be '
-            'substituted per row.';
-      } else {
-        try {
-          template = await LocalLlmService.instance.inferTemplate(
-            headers: tabular.headers,
-            samples: samples,
-            prompt: _promptController.text.trim(),
-          );
-        } on LowMemoryException catch (_) {
-          template = _heuristicFallback(tabular.headers);
-          fallbackBanner =
-              'Your device is low on memory right now — AI parsing skipped, '
-              'using your prompt as the literal template.';
-        } on ModelCorruptException catch (_) {
-          template = _heuristicFallback(tabular.headers);
-          fallbackBanner =
-              'The on-device AI model file was corrupted and has been '
-              'removed. Re-download it from the AI screen to enable smart '
-              'parsing — using your prompt as the literal template for now.';
-        } on TemplateInferenceFailure catch (_) {
-          template = _heuristicFallback(tabular.headers);
-          fallbackBanner =
-              'AI parsing didn\'t return a usable result — using your '
-              'prompt as the literal template.';
-        }
-      }
+      final toTpl = _toController.text;
+      final msgTpl = _messageController.text;
+      final subjectTpl =
+          _targetApp == TargetApp.email && _subjectController.text.isNotEmpty
+              ? _subjectController.text
+              : null;
 
-      // 6. Build the SendPlanRow list — deterministic substitution.
+      // Build the per-row send plan via deterministic substitution.
       final rows = <SendPlanRow>[];
       for (final row in tabular.rows) {
-        final recipient = (row[template.recipientColumn] ?? '').trim();
-        final name = template.nameColumn != null
-            ? (row[template.nameColumn] ?? '').trim()
-            : null;
-        final message = TemplateRenderer.render(template.perRowTemplate, row);
+        final renderedTo = TemplateRenderer.render(toTpl, row).trim();
+        final renderedMsg = TemplateRenderer.render(msgTpl, row);
+
+        // Pre-validate the recipient at substitution time. For
+        // phone-based targets, normalizePhone() is the same check the
+        // URI builder will run; doing it here means the user sees the
+        // failures in the run-screen preview list before tapping Open.
+        String? failureReason;
+        if (renderedTo.isEmpty) {
+          failureReason = 'TO field rendered to empty';
+        } else if (_targetApp == TargetApp.whatsapp ||
+            _targetApp == TargetApp.sms) {
+          if (TargetUriBuilder.normalizePhone(renderedTo) == null) {
+            failureReason = 'Phone is invalid: $renderedTo';
+          }
+        } else if (_targetApp == TargetApp.telegram) {
+          if (!renderedTo.startsWith('@') &&
+              TargetUriBuilder.normalizePhone(renderedTo) == null) {
+            failureReason =
+                'Telegram needs an @handle or phone: $renderedTo';
+          }
+        }
+
         rows.add(SendPlanRow(
-          recipient: recipient,
-          displayName: name == null || name.isEmpty ? null : name,
-          message: message,
-          status: recipient.isEmpty ? SendStatus.failed : SendStatus.pending,
-          failureReason:
-              recipient.isEmpty ? 'Recipient column is empty' : null,
+          recipient: renderedTo,
+          // Message preview in the run screen uses this as the row
+          // label. Try to surface the first {name}-like column if it
+          // exists, fall back to the recipient itself.
+          displayName: _displayNameFor(row),
+          message: renderedMsg,
+          status: failureReason == null
+              ? SendStatus.pending
+              : SendStatus.failed,
+          failureReason: failureReason,
         ));
       }
 
-      // 7. Persist on the AiTask record.
-      final task = await AiTaskService.instance.getOrCreate(
+      // Persist on the AutomateTask record.
+      final task = await AutomateTaskService.instance.getOrCreate(
         tagId: widget.tagId,
-        tagName: 'ai-tasks-${_promptController.text}',
+        tagName: widget.tag?.name ?? widget.tagId,
       );
-      task.userPrompt = _promptController.text.trim();
       task.targetApp = _targetApp;
-      task.renderedTemplate = template.perRowTemplate;
-      task.recipientColumn = template.recipientColumn;
-      task.nameColumn = template.nameColumn;
+      task.toFieldTemplate = toTpl;
+      task.messageTemplate = msgTpl;
+      task.subjectTemplate = subjectTpl;
       task.rows = rows;
-      await AiTaskService.instance.save(task);
+      await AutomateTaskService.instance.save(task);
 
-      // 8. Surface the fallback banner if we ended up on the heuristic
-      // path, then hand off to the run screen.
       if (!mounted) return;
-      if (fallbackBanner != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(fallbackBanner),
-            duration: const Duration(seconds: 6),
-          ),
-        );
-      }
-      context.push('/ai-tasks/${widget.tagId}/run');
+      context.push('/automate-tasks/${widget.tagId}/run');
     } catch (e) {
       if (mounted) {
         setState(() => _errorMessage = e.toString());
@@ -459,93 +525,27 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
     }
   }
 
-  /// Mirrors WebsiteDetailScreen's path-resolution helper: turn a stored
-  /// path (which may be a Documents-relative path on iOS) into a usable
-  /// absolute path on the current sandbox.
+  /// Best-effort display-name pick — looks for a "name" header
+  /// case-insensitively. Falls back to null so the run screen shows
+  /// just the recipient.
+  String? _displayNameFor(Map<String, String> row) {
+    for (final entry in row.entries) {
+      if (entry.key.toLowerCase().contains('name') &&
+          entry.value.trim().isNotEmpty) {
+        return entry.value.trim();
+      }
+    }
+    return null;
+  }
+
+  /// Mirrors the website / AI flows' path-resolution helper: turn a
+  /// stored path (which may be a Documents-relative path on iOS) into a
+  /// usable absolute path on the current sandbox.
   Future<String> _resolveLocalPath(String path) async {
     if (path.startsWith('/') || (Platform.isWindows && path.length > 2)) {
       return path;
     }
     final appDir = await getApplicationDocumentsDirectory();
     return p.join(appDir.path, path);
-  }
-
-  /// Heuristic fallback when the LLM produces unusable output. Used in
-  /// place of the manual-editor sheet for v1.
-  InferredCrmTemplate _heuristicFallback(List<String> headers) {
-    String? recipient;
-    final phoneRe = RegExp(r'phone|mobile|cell|tel', caseSensitive: false);
-    final emailRe = RegExp('email|mail', caseSensitive: false);
-    final preferEmail = _targetApp == TargetApp.email;
-    for (final h in headers) {
-      if (preferEmail && emailRe.hasMatch(h)) {
-        recipient = h;
-        break;
-      }
-      if (!preferEmail && phoneRe.hasMatch(h)) {
-        recipient = h;
-        break;
-      }
-    }
-    recipient ??= headers.firstWhere(
-      (_) => true,
-      orElse: () => headers.first,
-    );
-    String? name;
-    final nameRe = RegExp('name', caseSensitive: false);
-    for (final h in headers) {
-      if (nameRe.hasMatch(h)) {
-        name = h;
-        break;
-      }
-    }
-    return InferredCrmTemplate(
-      perRowTemplate: _promptController.text.trim(),
-      recipientColumn: recipient,
-      nameColumn: name,
-      fromFallback: true,
-    );
-  }
-
-}
-
-class _TaskTypeCard extends StatelessWidget {
-  const _TaskTypeCard();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: theme.colorScheme.primary, width: 2),
-        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.25),
-      ),
-      child: Row(
-        children: [
-          Icon(LucideIcons.userPlus, color: theme.colorScheme.primary),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('CRM Automation',
-                    style: theme.textTheme.titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-                Text(
-                  'Attach a CSV with one recipient per row. The AI extracts a '
-                  'message template and column mapping; you approve each '
-                  'message before it sends.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

@@ -76,6 +76,7 @@ class MainActivity : AudioServiceActivity() {
     private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
     private val SYNC_NOTIFICATION_CHANNEL = "land.fx.files/sync_notification"
     private val DEVICE_MEMORY_CHANNEL = "land.fx.files/device_memory"
+    private val MODEL_DOWNLOAD_CHANNEL = "land.fx.files/model_download"
     private val SYNC_NOTIFICATION_ID = 9001
     private val SYNC_CHANNEL_ID = "fxfiles_sync_channel"
     private var pipEventSink: EventChannel.EventSink? = null
@@ -338,6 +339,14 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // Model download channel — wraps Android DownloadManager (the
+        // system service) for the on-device LLM model download. Unlike
+        // WorkManager, DownloadManager runs in the system process and
+        // survives our app being killed, which is what we need for a
+        // 770 MB transfer that may span hours of background time.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MODEL_DOWNLOAD_CHANNEL)
+            .setMethodCallHandler(ModelDownloadHandler(applicationContext))
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {

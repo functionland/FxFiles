@@ -11,6 +11,11 @@ import os
     private var methodChannel: FlutterMethodChannel?
     private var notificationChannel: FlutterMethodChannel?
     private var deviceMemoryChannel: FlutterMethodChannel?
+    private var modelDownloadChannel: FlutterMethodChannel?
+    // Retain the handler so its delegate (which holds the URLSession)
+    // outlives method-call dispatch. Otherwise iOS won't deliver the
+    // background-session events to a deallocated delegate.
+    private let modelDownloadHandler = ModelDownloadHandler()
 
     override func application(
         _ application: UIApplication,
@@ -100,6 +105,17 @@ import os
                 default:
                     result(FlutterMethodNotImplemented)
                 }
+            }
+
+            // Model download channel — wraps background URLSession for
+            // the on-device LLM model. Same method names as Android's
+            // ModelDownloadHandler so Dart shares one code path.
+            modelDownloadChannel = FlutterMethodChannel(
+                name: "land.fx.files/model_download",
+                binaryMessenger: controller.binaryMessenger
+            )
+            modelDownloadChannel?.setMethodCallHandler { [weak self] call, result in
+                self?.modelDownloadHandler.handle(call, result: result)
             }
         }
 
@@ -211,6 +227,25 @@ import os
     override func applicationDidEnterBackground(_ application: UIApplication) {
         // Schedule sync when app goes to background
         scheduleBackgroundSync()
+    }
+
+    /// iOS relaunches the app in the background when a background
+    /// URLSession completes a transfer. We stash the OS completion
+    /// handler on the ModelDownloadHandler static; the
+    /// `urlSessionDidFinishEvents` delegate callback invokes it after
+    /// dispatching all pending events. Without this, the OS won't
+    /// finalize its end of the cycle and may delay future events.
+    override func application(_ application: UIApplication,
+                              handleEventsForBackgroundURLSession identifier: String,
+                              completionHandler: @escaping () -> Void) {
+        // Only one identifier — the model-download one. If you ever add
+        // more background sessions, dispatch by identifier here.
+        // CRITICAL: touch the static session FIRST so the URLSession
+        // (and its delegate) exists before the OS starts delivering
+        // events. Then stash the completion handler. The delegate's
+        // urlSessionDidFinishEvents calls back into the static.
+        _ = ModelDownloadHandler.sharedSession
+        ModelDownloadHandler.backgroundSessionCompletionHandler = completionHandler
     }
 
     // MARK: - Notification Support

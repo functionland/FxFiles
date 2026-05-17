@@ -3,29 +3,24 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
-// See plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
-
-import 'package:fula_files/core/models/ai_task.dart';
-import 'package:fula_files/core/services/ai_task_service.dart';
+import 'package:fula_files/core/models/automate_task.dart';
+import 'package:fula_files/core/models/messaging_target.dart';
+import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
-import 'package:fula_files/features/ai_tasks/providers/ai_task_provider.dart';
+import 'package:fula_files/features/automate/providers/automate_task_provider.dart';
 
-/// Per-row send screen. Walks the user through the SendPlanRow list:
-/// they tap "Open" → app launches WhatsApp/etc. pre-filled → user taps
-/// Send inside that app → returns here and taps "Mark sent" (or "Skip").
-///
-/// Deliberate UX choice: we DON'T auto-mark as sent based on
-/// app-lifecycle resume, because the OS gives us no programmatic way to
-/// know if the user actually tapped Send vs cancelled. An explicit tap is
-/// the most honest signal.
-class AiTaskRunScreen extends ConsumerWidget {
+/// Per-row send screen — straight port of `AiTaskRunScreen` adapted to
+/// `AutomateTask` (different service / different stream). Walks the
+/// user through the SendPlanRow list: tap "Open" → app launches the
+/// target app pre-filled → tap Send inside that app → return → tap
+/// "Mark sent" (or "Skip").
+class AutomateTaskRunScreen extends ConsumerWidget {
   final String tagId;
-  const AiTaskRunScreen({super.key, required this.tagId});
+  const AutomateTaskRunScreen({super.key, required this.tagId});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final taskAsync = ref.watch(aiTaskForTagProvider(tagId));
+    final taskAsync = ref.watch(automateTaskForTagProvider(tagId));
     return Scaffold(
       appBar: AppBar(
         title: const Text('Send plan'),
@@ -61,7 +56,7 @@ class AiTaskRunScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildList(BuildContext context, WidgetRef ref, AiTask task) {
+  Widget _buildList(BuildContext context, WidgetRef ref, AutomateTask task) {
     return Column(
       children: [
         _Summary(task: task),
@@ -90,18 +85,19 @@ class AiTaskRunScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _openRow(
-      BuildContext context, WidgetRef ref, AiTask task, int index) async {
+  Future<void> _openRow(BuildContext context, WidgetRef ref,
+      AutomateTask task, int index) async {
     final row = task.rows[index];
     final result = TargetUriBuilder.build(
       target: task.targetApp,
       recipient: row.recipient,
       message: row.message,
+      subject: task.subjectTemplate, // only honored by email target
     );
     if (result.uri == null) {
       row.status = SendStatus.failed;
       row.failureReason = result.failureReason ?? 'Could not build URI';
-      await AiTaskService.instance.save(task);
+      await AutomateTaskService.instance.save(task);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(row.failureReason ?? 'Send URI invalid')),
@@ -128,18 +124,18 @@ class AiTaskRunScreen extends ConsumerWidget {
     }
     row.status = SendStatus.opened;
     row.openedAt = DateTime.now();
-    await AiTaskService.instance.save(task);
+    await AutomateTaskService.instance.save(task);
   }
 
-  Future<void> _setStatus(
-      WidgetRef ref, AiTask task, int index, SendStatus status) async {
+  Future<void> _setStatus(WidgetRef ref, AutomateTask task, int index,
+      SendStatus status) async {
     task.rows[index].status = status;
-    await AiTaskService.instance.save(task);
+    await AutomateTaskService.instance.save(task);
   }
 
   Future<void> _markAllOpenedAsSent(
       BuildContext context, WidgetRef ref) async {
-    final task = AiTaskService.instance.findByTagId(tagId);
+    final task = AutomateTaskService.instance.findByTagId(tagId);
     if (task == null) return;
     var changed = 0;
     for (final r in task.rows) {
@@ -149,7 +145,7 @@ class AiTaskRunScreen extends ConsumerWidget {
       }
     }
     if (changed > 0) {
-      await AiTaskService.instance.save(task);
+      await AutomateTaskService.instance.save(task);
     }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -158,8 +154,8 @@ class AiTaskRunScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _editMessage(
-      BuildContext context, WidgetRef ref, AiTask task, int index) async {
+  Future<void> _editMessage(BuildContext context, WidgetRef ref,
+      AutomateTask task, int index) async {
     final ctrl = TextEditingController(text: task.rows[index].message);
     final updated = await showDialog<String>(
       context: context,
@@ -186,12 +182,12 @@ class AiTaskRunScreen extends ConsumerWidget {
     );
     if (updated == null) return;
     task.rows[index].message = updated;
-    await AiTaskService.instance.save(task);
+    await AutomateTaskService.instance.save(task);
   }
 }
 
 class _Summary extends StatelessWidget {
-  final AiTask task;
+  final AutomateTask task;
   const _Summary({required this.task});
 
   @override

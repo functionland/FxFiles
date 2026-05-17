@@ -19,6 +19,9 @@ import 'package:fula_files/features/websites/screens/website_detail_screen.dart'
 import 'package:fula_files/features/ai_tasks/screens/ai_tasks_browser_screen.dart';
 import 'package:fula_files/features/ai_tasks/screens/ai_task_detail_screen.dart';
 import 'package:fula_files/features/ai_tasks/screens/ai_task_run_screen.dart';
+import 'package:fula_files/features/automate/screens/automate_tasks_browser_screen.dart';
+import 'package:fula_files/features/automate/screens/automate_task_detail_screen.dart';
+import 'package:fula_files/features/automate/screens/automate_task_run_screen.dart';
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
@@ -202,6 +205,29 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final tagId = state.pathParameters['id']!;
           return AiTaskRunScreen(tagId: tagId);
+        },
+      ),
+      // Automate feature — deterministic bulk-send (no LLM). Replaces
+      // the user-facing role the AI tile used to fill; AI routes above
+      // stay registered so stranded `ai-tasks-*` tags from earlier
+      // installs still resolve cleanly.
+      GoRoute(
+        path: '/automate-tasks',
+        builder: (context, state) => const AutomateTasksBrowserScreen(),
+      ),
+      GoRoute(
+        path: '/automate-tasks/:id',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          final tag = state.extra as FileTag?;
+          return AutomateTaskDetailScreen(tagId: tagId, tag: tag);
+        },
+      ),
+      GoRoute(
+        path: '/automate-tasks/:id/run',
+        builder: (context, state) {
+          final tagId = state.pathParameters['id']!;
+          return AutomateTaskRunScreen(tagId: tagId);
         },
       ),
       GoRoute(

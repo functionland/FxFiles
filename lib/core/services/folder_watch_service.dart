@@ -67,13 +67,15 @@ class FolderWatchService {
   Future<void> init() async {
     if (_isInitialized) return;
 
-    // Initialize workmanager for background tasks (mobile only)
-    if (PlatformCapabilities.isMobile) {
-      await Workmanager().initialize(
-        callbackDispatcher,
-      );
-    }
-    
+    // Workmanager is initialised by BackgroundSyncService — DO NOT
+    // call `Workmanager().initialize` again here. Workmanager supports
+    // only one callback dispatcher per process; a second initialize()
+    // overrode the main one and silently broke every task that wasn't
+    // a folder-sync (model download, upload, periodic sync, etc.) —
+    // they fired but ran the folder-sync code path instead of their
+    // own logic. The `folderSyncTaskName` case now lives in
+    // background_sync_service.dart's switch alongside everything else.
+
     // Start watching all enabled folder syncs
     final enabledSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
     for (final sync in enabledSyncs) {
@@ -944,26 +946,12 @@ class _FileQueueItem {
   _FileQueueItem(this.localPath, this.bucket, this.remoteKey);
 }
 
-// Workmanager callback dispatcher - must be top-level function
-@pragma('vm:entry-point')
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    debugPrint('Background task executing: $task');
-    
-    try {
-      // Initialize services needed for background sync
-      await LocalStorageService.instance.init();
-      
-      // Get all enabled folder syncs and sync them
-      final enabledSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
-      for (final sync in enabledSyncs) {
-        await FolderWatchService.instance.syncFolder(sync.path);
-      }
-      
-      return true;
-    } catch (e) {
-      debugPrint('Background task failed: $e');
-      return false;
-    }
-  });
-}
+// NOTE: this file's callbackDispatcher was removed because Workmanager
+// only supports one dispatcher per process. Having two `@pragma('vm:
+// entry-point') void callbackDispatcher()` functions in the codebase
+// meant whichever called `Workmanager().initialize` last won — and
+// every other task (model download, upload, periodic sync, app backup)
+// fired but ran THIS dispatcher's folder-sync code instead of its own
+// logic. The folder-sync task body now lives in
+// `background_sync_service.dart`'s `callbackDispatcher` switch under
+// the `folderSyncTaskName` case.

@@ -1,3 +1,6 @@
+// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
+// See plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
+
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';

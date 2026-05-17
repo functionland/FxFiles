@@ -14,6 +14,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/whatsapp_backup_service.dart';
+import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String periodicSyncTask = 'periodicSync';
@@ -69,6 +70,15 @@ void callbackDispatcher() {
           break;
         case appBackupTask:
           await _executeAppBackup(inputData);
+          break;
+        case folderSyncTaskName:
+          // Moved from folder_watch_service.dart's deleted duplicate
+          // dispatcher. See the note in that file for why.
+          final enabledSyncs =
+              LocalStorageService.instance.getEnabledFolderSyncs();
+          for (final sync in enabledSyncs) {
+            await FolderWatchService.instance.syncFolder(sync.path);
+          }
           break;
       }
 
@@ -230,7 +240,11 @@ class BackgroundSyncService {
     try {
       switch (call.method) {
         case 'onBackgroundSync':
-          // iOS triggered background sync - process queue with timeout
+          // iOS triggered background sync - process queue with timeout.
+          // NOTE: model download is NOT plumbed here — it runs on iOS
+          // via background URLSession (the system daemon nsurlsessiond),
+          // which is the right primitive for a 770 MB user-initiated
+          // download. BGProcessingTask is OS-scheduled and not suitable.
           await _initializeServicesForBackground();
           await SyncService.instance.restoreQueue();
           // iOS BGProcessingTask has longer time (up to 30 minutes)

@@ -1,3 +1,6 @@
+// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
+// See plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -59,6 +62,19 @@ class LowMemoryException implements Exception {
       'LowMemoryException: tier=$tier, headroom=$headroomBytes bytes';
 }
 
+/// Thrown when the model file on disk is missing, truncated, or has the
+/// wrong magic bytes. fllama's native loader will SIGSEGV rather than
+/// return an error on a bad GGUF header, so we MUST screen the file
+/// before handing it to `initContext`. The file is also deleted from
+/// disk when this is thrown so the user's next visit to the AI screen
+/// triggers a fresh download instead of repeating the same crash loop.
+class ModelCorruptException implements Exception {
+  final String reason;
+  ModelCorruptException(this.reason);
+  @override
+  String toString() => 'ModelCorruptException: $reason';
+}
+
 /// On-device LLM wrapper. Loads the GGUF model lazily on first inference
 /// (3-5 s on a phone, depending on RAM) and may keep the context warm
 /// between tasks on high-tier devices. The model runs **once per task**
@@ -103,6 +119,9 @@ ws          ::= [ \t\n]*
   /// [InferredCrmTemplate]. Throws:
   /// - [LowMemoryException] when the device tier blocks LLM use or
   ///   current headroom is below the per-platform safety threshold.
+  /// - [ModelCorruptException] when the on-disk model file is missing
+  ///   or has the wrong magic bytes. The file is deleted; the user's
+  ///   next visit to the AI screen will offer a re-download.
   /// - [TemplateInferenceFailure] when both the grammar-constrained
   ///   attempt AND the regex-repaired retry fail.
   ///
@@ -129,6 +148,19 @@ ws          ::= [ \t\n]*
     final headroom = await memSvc.headroomBytes();
     if (!DeviceMemoryService.isHeadroomEnoughForLlm(headroom)) {
       throw LowMemoryException(headroomBytes: headroom, tier: memSvc.tier);
+    }
+
+    // ---- Pre-flight: model file integrity ----
+    // Last line of defense before fllama. The native loader segfaults
+    // on a bad GGUF header instead of returning an error, so we MUST
+    // verify the file looks right before handing it over. Deleting the
+    // file when this fails means the next AI-screen visit shows the
+    // download UI rather than re-crashing on the same corrupt bytes.
+    if (!await AiModelService.instance.isModelFileValid()) {
+      await AiModelService.instance.deleteModel();
+      throw ModelCorruptException(
+          'Model file missing or magic bytes not GGUF — deleted, '
+          're-download required');
     }
 
     final profile = memSvc.tuningProfile ?? LlmTuningProfile.high;

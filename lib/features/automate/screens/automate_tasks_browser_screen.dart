@@ -1,40 +1,29 @@
-// ⚠️ HIDDEN — AI feature paused (see CreateSection's isAiEnabled gate).
-// See plan: C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/features/ai_tasks/providers/ai_task_provider.dart';
-import 'package:fula_files/features/ai_tasks/widgets/model_download_card.dart';
+import 'package:fula_files/features/automate/providers/automate_task_provider.dart';
 
-/// Lists all AI automation tasks — one per "ai-tasks-*" tag.
-class AiTasksBrowserScreen extends ConsumerWidget {
-  const AiTasksBrowserScreen({super.key});
+/// Lists all Automate tasks — one per "automate-tasks-*" tag.
+class AutomateTasksBrowserScreen extends ConsumerWidget {
+  const AutomateTasksBrowserScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tags = ref.watch(aiTagsProvider);
+    final tags = ref.watch(automateTagsProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AI Tasks'),
+        title: const Text('Automate'),
       ),
-      body: Column(
-        children: [
-          const ModelDownloadCard(),
-          Expanded(
-            child: tags.isEmpty
-                ? _buildEmptyState(context, ref)
-                : _buildList(context, ref, tags),
-          ),
-        ],
-      ),
+      body: tags.isEmpty
+          ? _buildEmptyState(context, ref)
+          : _buildList(context, ref, tags),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _createTask(context, ref),
-        tooltip: 'New AI task',
+        tooltip: 'New Automate task',
         child: const Icon(LucideIcons.plus),
       ),
     );
@@ -47,18 +36,19 @@ class AiTasksBrowserScreen extends ConsumerWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(LucideIcons.sparkles, size: 64, color: Colors.grey[400]),
+            Icon(LucideIcons.zap, size: 64, color: Colors.grey[400]),
             const SizedBox(height: 16),
             Text(
-              'No AI tasks yet',
+              'No Automate tasks yet',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: Colors.grey[600],
                   ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Attach a CSV and a prompt — the on-device AI will turn it '
-              'into a per-row send plan (e.g. WhatsApp messages).',
+              'Attach a CSV of contacts, build a message template with '
+              'placeholders like {Name} or {Phone}, then send each row '
+              'via WhatsApp / Telegram / SMS / Email.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.grey[500],
@@ -68,7 +58,7 @@ class AiTasksBrowserScreen extends ConsumerWidget {
             FilledButton.icon(
               onPressed: () => _createTask(context, ref),
               icon: const Icon(LucideIcons.plus),
-              label: const Text('New AI task'),
+              label: const Text('New Automate task'),
             ),
           ],
         ),
@@ -82,9 +72,10 @@ class AiTasksBrowserScreen extends ConsumerWidget {
       itemCount: tags.length,
       itemBuilder: (context, index) {
         final tag = tags[index];
-        return _AiTaskListTile(
+        return _AutomateTaskListTile(
           tag: tag,
-          onTap: () => context.push('/ai-tasks/${tag.id}', extra: tag),
+          onTap: () =>
+              context.push('/automate-tasks/${tag.id}', extra: tag),
           onDelete: () => _deleteTask(context, ref, tag),
         );
       },
@@ -96,7 +87,7 @@ class AiTasksBrowserScreen extends ConsumerWidget {
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('New AI task'),
+        title: const Text('New Automate task'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -121,22 +112,24 @@ class AiTasksBrowserScreen extends ConsumerWidget {
       ),
     );
     if (name == null || name.trim().isEmpty) return;
-    final tag = await ref.read(aiTaskProvider.notifier).createTask(name.trim());
+    final tag = await ref
+        .read(automateTaskProvider.notifier)
+        .createTask(name.trim());
     if (tag != null && context.mounted) {
-      context.push('/ai-tasks/${tag.id}', extra: tag);
+      context.push('/automate-tasks/${tag.id}', extra: tag);
     }
   }
 
   Future<void> _deleteTask(
       BuildContext context, WidgetRef ref, FileTag tag) async {
-    final displayName = tag.name.replaceFirst('ai-tasks-', '');
+    final displayName = tag.name.replaceFirst('automate-tasks-', '');
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete AI task'),
+        title: const Text('Delete Automate task'),
         content: Text(
-          'Delete "$displayName"? Attached files are untagged but stay on '
-          'disk. Send plan + LLM-generated template are removed.',
+          'Delete "$displayName"? Attached files are untagged but stay '
+          'on disk. The message template + send plan are removed.',
         ),
         actions: [
           TextButton(
@@ -152,7 +145,7 @@ class AiTasksBrowserScreen extends ConsumerWidget {
       ),
     );
     if (confirmed == true) {
-      await ref.read(aiTaskProvider.notifier).deleteTask(tag.id);
+      await ref.read(automateTaskProvider.notifier).deleteTask(tag.id);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Deleted "$displayName"')),
@@ -162,12 +155,12 @@ class AiTasksBrowserScreen extends ConsumerWidget {
   }
 }
 
-class _AiTaskListTile extends StatelessWidget {
+class _AutomateTaskListTile extends StatelessWidget {
   final FileTag tag;
   final VoidCallback onTap;
   final VoidCallback onDelete;
 
-  const _AiTaskListTile({
+  const _AutomateTaskListTile({
     required this.tag,
     required this.onTap,
     required this.onDelete,
@@ -176,7 +169,7 @@ class _AiTaskListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = Color(tag.colorValue);
-    final displayName = tag.name.replaceFirst('ai-tasks-', '');
+    final displayName = tag.name.replaceFirst('automate-tasks-', '');
 
     return ListTile(
       leading: Container(
@@ -186,7 +179,7 @@ class _AiTaskListTile extends StatelessWidget {
           color: color.withValues(alpha: 0.2),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: const Center(child: Icon(LucideIcons.sparkles, size: 20)),
+        child: const Center(child: Icon(LucideIcons.zap, size: 20)),
       ),
       title: Text(displayName),
       subtitle: Text(

@@ -30,6 +30,7 @@ import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/ai_task_service.dart';
 import 'package:fula_files/core/services/ai_model_service.dart';
+import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/device_memory_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
@@ -235,6 +236,13 @@ Future<ProviderContainer> _initializeApp() async {
   // AiModelService.init also awaits this internally so the order doesn't
   // matter, but firing it here keeps the tier known for the home screen.
   DeviceMemoryService.instance.init();
+  // Active deterministic bulk-send feature.
+  AutomateTaskService.instance.init();
+  // ⚠️ HIDDEN — AI feature paused. Services still initialise so the
+  // routes/Hive state stay coherent (`/ai-tasks` remains addressable
+  // for any stranded tags from earlier installs), but the AI tile is
+  // gated off in CreateSection. See plan:
+  // C:\Users\ehsan\.claude\plans\now-i-need-a-keen-kahan.md
   AiTaskService.instance.init();
   AiModelService.instance.init();
 
