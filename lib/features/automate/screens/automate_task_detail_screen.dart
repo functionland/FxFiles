@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -9,6 +10,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:fula_files/core/models/automate_task.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/messaging_target.dart';
 import 'package:fula_files/core/services/automate_task_service.dart';
@@ -71,14 +73,31 @@ class _AutomateTaskDetailScreenState
   /// uploading; otherwise something like "Uploading attachment to IPFS…".
   String? _uploadStatus;
 
+  /// Snapshot of the per-row send statuses from the last Run, refreshed
+  /// whenever the task changes. Used to render the "Send progress"
+  /// card so the user can return to an in-flight or completed send
+  /// without re-running the task (which would reset all statuses).
+  List<SendPlanRow> _existingRows = const [];
+
+  StreamSubscription<AutomateTask>? _taskSub;
+
   @override
   void initState() {
     super.initState();
     _loadTask();
+    // Refresh the existing-rows snapshot whenever the task is mutated
+    // anywhere (e.g. the run screen marks a row sent). Keeps the
+    // "Send progress" card in sync without polling.
+    _taskSub = AutomateTaskService.instance.statusStream.listen((t) {
+      if (t.tagId == widget.tagId && mounted) {
+        setState(() => _existingRows = List<SendPlanRow>.from(t.rows));
+      }
+    });
   }
 
   @override
   void dispose() {
+    _taskSub?.cancel();
     _toController.dispose();
     _messageController.dispose();
     _subjectController.dispose();
@@ -106,6 +125,7 @@ class _AutomateTaskDetailScreenState
       _attachmentLocalPath = task.attachmentLocalPath;
       _attachmentFileName = task.attachmentFileName;
       _attachmentCid = task.attachmentCid;
+      _existingRows = List<SendPlanRow>.from(task.rows);
     });
     // Re-parse the attached CSV so placeholder chips populate without a
     // user action.
@@ -211,6 +231,7 @@ class _AutomateTaskDetailScreenState
             ),
           ),
           const Divider(),
+          if (_existingRows.isNotEmpty) _progressCard(),
           _section(context, title: 'Send via'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -350,6 +371,102 @@ class _AutomateTaskDetailScreenState
         ],
       ),
     );
+  }
+
+  /// Resume-and-view card shown above the editable fields when a Run
+  /// already produced rows. Lets the user jump straight to the run
+  /// screen (which is otherwise only reachable from the "Run task"
+  /// button — easy to get stuck without this if the user backs out of
+  /// an in-flight send). Counts mirror what the run screen shows so
+  /// the user sees what state they're returning to.
+  Widget _progressCard() {
+    final theme = Theme.of(context);
+    final total = _existingRows.length;
+    final sent =
+        _existingRows.where((r) => r.status == SendStatus.sent).length;
+    final opened =
+        _existingRows.where((r) => r.status == SendStatus.opened).length;
+    final pending =
+        _existingRows.where((r) => r.status == SendStatus.pending).length;
+    final failed =
+        _existingRows.where((r) => r.status == SendStatus.failed).length;
+
+    final isComplete = pending == 0 && opened == 0;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.dividerColor),
+        ),
+        padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                    isComplete
+                        ? LucideIcons.checkCircle2
+                        : LucideIcons.playCircle,
+                    size: 18,
+                    color: isComplete
+                        ? Colors.green
+                        : theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  isComplete
+                      ? 'Send complete'
+                      : 'Send in progress',
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _progressLine(
+                  total: total,
+                  sent: sent,
+                  opened: opened,
+                  pending: pending,
+                  failed: failed),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonalIcon(
+                onPressed: () =>
+                    context.push('/automate-tasks/${widget.tagId}/run'),
+                icon: const Icon(LucideIcons.listChecks, size: 16),
+                label: const Text('View send progress'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _progressLine({
+    required int total,
+    required int sent,
+    required int opened,
+    required int pending,
+    required int failed,
+  }) {
+    final parts = <String>[];
+    if (sent > 0) parts.add('$sent sent');
+    if (opened > 0) parts.add('$opened opened');
+    if (pending > 0) parts.add('$pending pending');
+    if (failed > 0) parts.add('$failed failed');
+    final summary = parts.isEmpty ? '$total total' : parts.join(' · ');
+    return '$summary of $total';
   }
 
   Widget _section(BuildContext context,
@@ -644,6 +761,35 @@ class _AutomateTaskDetailScreenState
     await _refreshHeaders();
   }
 
+  Future<bool?> _confirmReRun() async {
+    final sent = _existingRows.where((r) => r.status == SendStatus.sent).length;
+    final opened =
+        _existingRows.where((r) => r.status == SendStatus.opened).length;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Replace previous send plan?'),
+        content: Text(
+          'You already have a send plan with $sent sent and $opened opened. '
+          'Running again will rebuild the plan from the current CSV + '
+          'templates and reset every row to pending. Tap View send '
+          'progress to continue the existing send instead.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Replace and re-run'),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _contactsCsvFilename({String prefix = 'Contacts'}) {
     final now = DateTime.now();
     String two(int n) => n.toString().padLeft(2, '0');
@@ -809,6 +955,17 @@ class _AutomateTaskDetailScreenState
     if (_messageController.text.trim().isEmpty) {
       setState(() => _errorMessage = 'Message is empty');
       return;
+    }
+
+    // If a previous Run already produced rows and the user has touched
+    // any of them (sent / opened / skipped / failed), confirm before
+    // wiping. Resuming a partial send is the much-more-common intent;
+    // re-Running should be deliberate.
+    final hasProgress = _existingRows.any((r) => r.status != SendStatus.pending);
+    if (hasProgress) {
+      final cont = await _confirmReRun();
+      if (cont != true) return;
+      if (!mounted) return;
     }
 
     final confirmed = await showBulkSendDisclaimer(context);

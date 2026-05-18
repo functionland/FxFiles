@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
+import 'package:fula_files/core/models/automate_task.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/models/messaging_target.dart';
+import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/features/automate/providers/automate_task_provider.dart';
 
 /// Lists all Automate tasks — one per "automate-tasks-*" tag.
@@ -155,7 +160,11 @@ class AutomateTasksBrowserScreen extends ConsumerWidget {
   }
 }
 
-class _AutomateTaskListTile extends StatelessWidget {
+/// Stateful so we can re-render the subtitle when the underlying
+/// AutomateTask's rows change (e.g. user marks rows sent in the run
+/// screen, then returns to the browser). Subscribes to
+/// `AutomateTaskService.statusStream` for live updates.
+class _AutomateTaskListTile extends StatefulWidget {
   final FileTag tag;
   final VoidCallback onTap;
   final VoidCallback onDelete;
@@ -167,9 +176,36 @@ class _AutomateTaskListTile extends StatelessWidget {
   });
 
   @override
+  State<_AutomateTaskListTile> createState() => _AutomateTaskListTileState();
+}
+
+class _AutomateTaskListTileState extends State<_AutomateTaskListTile> {
+  AutomateTask? _task;
+  StreamSubscription<AutomateTask>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _task = AutomateTaskService.instance.findByTagId(widget.tag.id);
+    _sub = AutomateTaskService.instance.statusStream.listen((t) {
+      if (t.tagId == widget.tag.id && mounted) {
+        setState(() => _task = t);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final color = Color(tag.colorValue);
-    final displayName = tag.name.replaceFirst('automate-tasks-', '');
+    final color = Color(widget.tag.colorValue);
+    final displayName =
+        widget.tag.name.replaceFirst('automate-tasks-', '');
+    final subtitle = _subtitleFor(widget.tag, _task);
 
     return ListTile(
       leading: Container(
@@ -183,12 +219,12 @@ class _AutomateTaskListTile extends StatelessWidget {
       ),
       title: Text(displayName),
       subtitle: Text(
-        '${tag.fileCount} file${tag.fileCount == 1 ? '' : 's'}',
+        subtitle,
         style: TextStyle(color: Colors.grey[600], fontSize: 12),
       ),
       trailing: PopupMenuButton<String>(
         onSelected: (v) {
-          if (v == 'delete') onDelete();
+          if (v == 'delete') widget.onDelete();
         },
         itemBuilder: (_) => const [
           PopupMenuItem(
@@ -203,7 +239,31 @@ class _AutomateTaskListTile extends StatelessWidget {
           ),
         ],
       ),
-      onTap: onTap,
+      onTap: widget.onTap,
     );
+  }
+
+  /// Build the subtitle line. When the task has a send plan (rows is
+  /// non-empty) we summarise progress — `12 sent · 5 pending of 50`.
+  /// Otherwise fall back to the original file-count subtitle.
+  String _subtitleFor(FileTag tag, AutomateTask? task) {
+    if (task == null || task.rows.isEmpty) {
+      return '${tag.fileCount} file${tag.fileCount == 1 ? '' : 's'}';
+    }
+    final total = task.rows.length;
+    final sent =
+        task.rows.where((r) => r.status == SendStatus.sent).length;
+    final opened =
+        task.rows.where((r) => r.status == SendStatus.opened).length;
+    final pending =
+        task.rows.where((r) => r.status == SendStatus.pending).length;
+    final failed =
+        task.rows.where((r) => r.status == SendStatus.failed).length;
+    final parts = <String>[];
+    if (sent > 0) parts.add('$sent sent');
+    if (opened > 0) parts.add('$opened opened');
+    if (pending > 0) parts.add('$pending pending');
+    if (failed > 0) parts.add('$failed failed');
+    return '${parts.join(' · ')} of $total';
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -7,20 +9,62 @@ import 'package:fula_files/core/models/automate_task.dart';
 import 'package:fula_files/core/models/messaging_target.dart';
 import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
-import 'package:fula_files/features/automate/providers/automate_task_provider.dart';
 
-/// Per-row send screen — straight port of `AiTaskRunScreen` adapted to
-/// `AutomateTask` (different service / different stream). Walks the
-/// user through the SendPlanRow list: tap "Open" → app launches the
-/// target app pre-filled → tap Send inside that app → return → tap
-/// "Mark sent" (or "Skip").
-class AutomateTaskRunScreen extends ConsumerWidget {
+/// Per-row send screen. Walks the user through the SendPlanRow list:
+/// tap "Open" → app launches the target app pre-filled → tap Send
+/// inside that app → return → tap "Mark sent" (or "Skip").
+///
+/// **Why a ConsumerStatefulWidget and not a plain ConsumerWidget +
+/// StreamProvider:** The natural Riverpod pattern would be to watch
+/// `automateTaskForTagProvider(tagId)` and rebuild on each emission.
+/// But our `save()` mutates the `AutomateTask` in place — the stream
+/// emits the SAME object reference each time. Riverpod's AsyncValue
+/// uses `==` to detect "did the value change?" — and for the same
+/// reference it returns true, so the rebuild is silently deduped.
+/// Result: tap "Mark sent" → save runs → status mutates → stream
+/// emits → Riverpod sees no change → UI stays on the old status.
+///
+/// We sidestep that by managing the task as local state and calling
+/// `setState({})` explicitly after every mutation. We still subscribe
+/// to `AutomateTaskService.statusStream` so changes made elsewhere
+/// (e.g. someone re-running the task from a different screen) propagate.
+class AutomateTaskRunScreen extends ConsumerStatefulWidget {
   final String tagId;
   const AutomateTaskRunScreen({super.key, required this.tagId});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final taskAsync = ref.watch(automateTaskForTagProvider(tagId));
+  ConsumerState<AutomateTaskRunScreen> createState() =>
+      _AutomateTaskRunScreenState();
+}
+
+class _AutomateTaskRunScreenState
+    extends ConsumerState<AutomateTaskRunScreen> {
+  AutomateTask? _task;
+  StreamSubscription<AutomateTask>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _task = AutomateTaskService.instance.findByTagId(widget.tagId);
+    _sub = AutomateTaskService.instance.statusStream.listen((t) {
+      if (t.tagId == widget.tagId && mounted) {
+        // Same reference or different — doesn't matter; setState always
+        // rebuilds. Captures external mutations too (e.g. another
+        // screen marking the task done).
+        setState(() => _task = t);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final task = _task;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Send plan'),
@@ -28,35 +72,29 @@ class AutomateTaskRunScreen extends ConsumerWidget {
           IconButton(
             tooltip: 'Mark all opened as sent',
             icon: const Icon(LucideIcons.checkCheck),
-            onPressed: () => _markAllOpenedAsSent(context, ref),
+            onPressed: task == null ? null : () => _markAllOpenedAsSent(task),
           ),
         ],
       ),
-      body: taskAsync.when(
-        data: (task) {
-          if (task == null) {
-            return const Center(child: Text('Task not found'));
-          }
-          if (task.rows.isEmpty) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text(
-                  'No send plan yet. Go back and tap "Run task" to generate one.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
-          }
-          return _buildList(context, ref, task);
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Error: $e')),
-      ),
+      body: _buildBody(task),
     );
   }
 
-  Widget _buildList(BuildContext context, WidgetRef ref, AutomateTask task) {
+  Widget _buildBody(AutomateTask? task) {
+    if (task == null) {
+      return const Center(child: Text('Task not found'));
+    }
+    if (task.rows.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'No send plan yet. Go back and tap "Run task" to generate one.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
     return Column(
       children: [
         _Summary(task: task),
@@ -71,12 +109,10 @@ class AutomateTaskRunScreen extends ConsumerWidget {
               return _RowTile(
                 row: row,
                 target: task.targetApp,
-                onOpen: () => _openRow(context, ref, task, i),
-                onMarkSent: () =>
-                    _setStatus(ref, task, i, SendStatus.sent),
-                onSkip: () =>
-                    _setStatus(ref, task, i, SendStatus.skipped),
-                onEdit: () => _editMessage(context, ref, task, i),
+                onOpen: () => _openRow(task, i),
+                onMarkSent: () => _setStatus(task, i, SendStatus.sent),
+                onSkip: () => _setStatus(task, i, SendStatus.skipped),
+                onEdit: () => _editMessage(task, i),
               );
             },
           ),
@@ -85,20 +121,20 @@ class AutomateTaskRunScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _openRow(BuildContext context, WidgetRef ref,
-      AutomateTask task, int index) async {
+  Future<void> _openRow(AutomateTask task, int index) async {
     final row = task.rows[index];
     final result = TargetUriBuilder.build(
       target: task.targetApp,
       recipient: row.recipient,
       message: row.message,
-      subject: task.subjectTemplate, // only honored by email target
+      subject: task.subjectTemplate, // honored only by email target
     );
     if (result.uri == null) {
       row.status = SendStatus.failed;
       row.failureReason = result.failureReason ?? 'Could not build URI';
       await AutomateTaskService.instance.save(task);
-      if (context.mounted) {
+      if (mounted) {
+        setState(() {}); // belt-and-braces — stream listener will also fire
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(row.failureReason ?? 'Send URI invalid')),
         );
@@ -113,7 +149,7 @@ class AutomateTaskRunScreen extends ConsumerWidget {
       launched = false;
     }
     if (!launched) {
-      if (context.mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Could not open the target app for this row.'),
@@ -125,18 +161,17 @@ class AutomateTaskRunScreen extends ConsumerWidget {
     row.status = SendStatus.opened;
     row.openedAt = DateTime.now();
     await AutomateTaskService.instance.save(task);
+    if (mounted) setState(() {});
   }
 
-  Future<void> _setStatus(WidgetRef ref, AutomateTask task, int index,
-      SendStatus status) async {
+  Future<void> _setStatus(
+      AutomateTask task, int index, SendStatus status) async {
     task.rows[index].status = status;
     await AutomateTaskService.instance.save(task);
+    if (mounted) setState(() {});
   }
 
-  Future<void> _markAllOpenedAsSent(
-      BuildContext context, WidgetRef ref) async {
-    final task = AutomateTaskService.instance.findByTagId(tagId);
-    if (task == null) return;
+  Future<void> _markAllOpenedAsSent(AutomateTask task) async {
     var changed = 0;
     for (final r in task.rows) {
       if (r.status == SendStatus.opened) {
@@ -146,16 +181,16 @@ class AutomateTaskRunScreen extends ConsumerWidget {
     }
     if (changed > 0) {
       await AutomateTaskService.instance.save(task);
+      if (mounted) setState(() {});
     }
-    if (context.mounted) {
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Marked $changed row(s) as sent')),
       );
     }
   }
 
-  Future<void> _editMessage(BuildContext context, WidgetRef ref,
-      AutomateTask task, int index) async {
+  Future<void> _editMessage(AutomateTask task, int index) async {
     final ctrl = TextEditingController(text: task.rows[index].message);
     final updated = await showDialog<String>(
       context: context,
@@ -183,6 +218,7 @@ class AutomateTaskRunScreen extends ConsumerWidget {
     if (updated == null) return;
     task.rows[index].message = updated;
     await AutomateTaskService.instance.save(task);
+    if (mounted) setState(() {});
   }
 }
 

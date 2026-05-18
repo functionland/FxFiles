@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:meta/meta.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/automate_task.dart';
@@ -180,6 +181,18 @@ class AutomateTaskService {
   }
 
   // ---------------------------------------------------------------------
+
+  /// Test-only: closes the open Hive boxes and clears in-memory state
+  /// so the next [init] starts fresh. Lets tests use a real Hive box
+  /// (in a per-test temp dir) without leaking state between tests.
+  @visibleForTesting
+  Future<void> resetForTesting() async {
+    if (_isInitialized) {
+      await _tasksBox.close();
+      await _commentsBox.close();
+    }
+    _isInitialized = false;
+  }
 
   AutomateTask _placeholder(
       {required String tagId, required String tagName}) {
