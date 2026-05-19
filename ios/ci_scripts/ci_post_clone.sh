@@ -11,8 +11,18 @@ echo "=== Xcode Cloud Post-Clone Script ==="
 cd "$CI_PRIMARY_REPOSITORY_PATH"
 
 echo "=== Installing Flutter ==="
-# Clone Flutter SDK
-git clone https://github.com/flutter/flutter.git --depth 1 -b stable "$HOME/flutter"
+# Clone Flutter SDK. Pin to the SAME version Android CI uses
+# (.github/workflows/android-deploy.yml -> flutter-version: '3.38.5')
+# so both platforms build against the same SDK. Tracking `stable` auto-upgrades
+# to whatever Flutter ships next, which has broken builds twice already:
+#   - 3.44.0 turned Swift Package Manager on by default (most plugins don't
+#     support it; surfaced as "Could not resolve package dependencies").
+#   - 3.44.0 also made IconData a `final class`, breaking any package that
+#     subclasses it (e.g. icon-font plugins like lucide_icons), which is the
+#     "IconData can't be extended outside of its library" error.
+# Bump this version when intentionally upgrading; keep iOS and Android aligned.
+FLUTTER_VERSION="3.38.5"
+git clone https://github.com/flutter/flutter.git --depth 1 -b "$FLUTTER_VERSION" "$HOME/flutter"
 export PATH="$PATH:$HOME/flutter/bin"
 
 echo "=== Flutter Version ==="

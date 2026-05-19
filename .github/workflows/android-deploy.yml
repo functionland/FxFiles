@@ -60,6 +60,36 @@ jobs:
     - name: Verify NDK installed
       run: ls -la "$ANDROID_HOME/ndk" || true
 
+    # fllama's android/build.gradle pins `cmake { version "3.31.0" }`, and
+    # AGP requires that exact version — it won't fall back to 3.22.1 (which
+    # is what sdkmanager would auto-install). sdkmanager doesn't have 3.31.0
+    # in its repo. Download the official Kitware binary and drop it where
+    # AGP looks for it ($ANDROID_HOME/cmake/<version>/). The upstream tarball
+    # doesn't bundle ninja but AGP needs it next to cmake, so install ninja
+    # via apt and symlink it into bin/.
+    - name: Install CMake 3.31.0 (fllama requires this exact version)
+      run: |
+        CMAKE_VERSION="3.31.0"
+        SDK_CMAKE_DIR="$ANDROID_HOME/cmake/$CMAKE_VERSION"
+        if [ -x "$SDK_CMAKE_DIR/bin/cmake" ]; then
+          echo "CMake $CMAKE_VERSION already at $SDK_CMAKE_DIR"
+        else
+          echo "Downloading CMake $CMAKE_VERSION from Kitware"
+          mkdir -p "$SDK_CMAKE_DIR"
+          curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+            | tar -xz --strip-components=1 -C "$SDK_CMAKE_DIR"
+        fi
+        if [ ! -x "$SDK_CMAKE_DIR/bin/ninja" ]; then
+          echo "Installing ninja and placing it in $SDK_CMAKE_DIR/bin/"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          cp "$(command -v ninja)" "$SDK_CMAKE_DIR/bin/ninja"
+        fi
+        "$SDK_CMAKE_DIR/bin/cmake" --version
+        "$SDK_CMAKE_DIR/bin/ninja" --version
+        echo "Available CMake versions in SDK:"
+        ls -la "$ANDROID_HOME/cmake/"
+
     - name: Flutter Doctor
       run: flutter doctor -v
 
