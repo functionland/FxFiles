@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:showcaseview/showcaseview.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
@@ -660,56 +659,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                // Sign in with Apple (iOS only)
-                if (Platform.isIOS) ...[
-                  SignInWithAppleButton(
-                    onPressed: () async {
-                      Navigator.pop(ctx);
-                      try {
-                        final user = await AuthService.instance.signInWithApple();
-                        if (user != null && mounted) {
-                          setState(() {});
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Signed in as ${user.email}')),
-                          );
-                        }
-                      } catch (e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                          );
-                        }
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                ],
+                // Sign-in entry points route through the mode chooser
+                // (/onboarding → ModeChoiceScreen) so the user picks
+                // A (OAuth) / B (OAuth+seed) / C (seed-only). Cached
+                // Mode A users never reach this branch — they have a
+                // userCredentials entry in SecureStorage and are already
+                // signed in.
                 if (!PlatformCapabilities.isDesktop) ...[
                   ListTile(
-                    leading: Image.asset(
-                      'assets/icons/google.png',
-                      width: 24,
-                      height: 24,
-                      errorBuilder: (_, __, ___) => const Icon(LucideIcons.mail),
-                    ),
-                    title: const Text('Sign in with Google'),
-                    onTap: () async {
+                    leading: const Icon(LucideIcons.logIn),
+                    title: const Text('Sign in to FxFiles'),
+                    subtitle: const Text('Choose how to secure your vault'),
+                    onTap: () {
                       Navigator.pop(ctx);
-                      try {
-                        final user = await AuthService.instance.signInWithGoogle();
-                        if (user != null && mounted) {
-                          setState(() {});
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Signed in as ${user.email}')),
-                          );
-                        }
-                      } catch (e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                          );
-                        }
-                      }
+                      // `push` (not `go`) so the system back button
+                      // returns the user to HomeScreen instead of
+                      // exiting the app.
+                      context.push('/onboarding');
                     },
                   ),
                 ],

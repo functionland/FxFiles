@@ -324,6 +324,25 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   // ============================================================================
   
   Future<void> _loadCloudData() async {
+    // Self-heal: if FulaApiService isn't configured but the user is
+    // authenticated (JWT in storage), try to reinitialize before bailing.
+    // This catches the post-sign-in race where the cloud browser opens
+    // before _initializeFulaClient finishes, and the pre-fix migration
+    // case where stored JWT had no endpoint (Settings used to trigger this
+    // implicitly — now any screen that needs cloud access recovers itself).
+    // reinitializeFulaClient is internally deduped so concurrent callers
+    // share the same in-flight Future instead of triggering N parallel
+    // FulaApiService.initialize runs (each of which clears the forest cache).
+    if (!FulaApiService.instance.isConfigured) {
+      try {
+        await AuthService.instance.reinitializeFulaClient();
+      } catch (e) {
+        debugPrint('FileBrowser: reinitializeFulaClient failed: $e');
+      }
+    }
+    // After the awaited reinit, this screen may have been popped (user
+    // navigated away). Bail before touching setState/context.
+    if (!mounted) return;
     if (!FulaApiService.instance.isConfigured) {
       setState(() {
         _isLoading = false;

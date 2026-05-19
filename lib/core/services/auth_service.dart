@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
+import 'package:http/http.dart' as http;
 import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
@@ -10,6 +11,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_client/fula_client.dart' show RustLib;
+import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/canonical_kek_input.dart';
@@ -86,6 +88,16 @@ class AuthService {
 
   AuthUser? _currentUser;
   Uint8List? _encryptionKey;
+
+  // In-flight reinit dedupe. `FulaApiService.initialize` clears the bucket
+  // forest cache and rebuilds the encrypted client; if N callers race
+  // (file_browser self-heal + home-screen ensureAuthRestored + face-metadata
+  // sync + cloud-mapping restore, all firing concurrently right after sign-in)
+  // we used to start N parallel reinits, each clearing the cache the others
+  // had just populated, so every bucket reloaded N times — pinning the UI
+  // and grinding the gateway. With this guard, the first caller does the
+  // work; everyone else awaits its Future.
+  Future<void>? _reinitializeInFlight;
 
   // Broadcast auth state changes so UI listening outside the main provider
   // tree (e.g. modal sheets) can react when sign-in or sign-out completes
@@ -195,41 +207,11 @@ class AuthService {
         return true;
       }
 
-      // Skip silent re-auth if the user explicitly signed out. Google's
-      // attemptLightweightAuthentication will happily restore the on-device
-      // account otherwise, undoing the sign-out.
-      final signedOutSentinel = await SecureStorageService.instance.read(
-        SecureStorageKeys.authSignedOut,
-      );
-      if (signedOutSentinel == 'true') {
-        debugPrint('AuthService: signed-out sentinel set, skipping lightweight auth');
-        return false;
-      }
-
-      // Google lightweight auth is not available on desktop
-      if (!PlatformCapabilities.isDesktop) {
-        await _ensureGoogleInitialized();
-        final result = _googleSignIn.attemptLightweightAuthentication();
-        if (result != null) {
-          try {
-            // Add 5-second timeout to prevent hang on Android 16 (Credential Manager issue)
-            final account = await result.timeout(
-              const Duration(seconds: 5),
-              onTimeout: () {
-                debugPrint('Google lightweight auth timed out - likely Android 16 Credential Manager issue');
-                return null;
-              },
-            );
-            if (account != null) {
-              await _handleGoogleSignIn(account);
-              return true;
-            }
-          } catch (e) {
-            debugPrint('Lightweight auth failed: $e');
-          }
-        }
-      }
-
+      // No stored session. Do NOT attempt Google's lightweight/silent auth here:
+      // google_sign_in 7.x routes that through Android Credential Manager, which
+      // pops the "Choose an account for FxFiles" picker even on first launch —
+      // before the user has accepted ToS or chosen a sign-up mode. Sign-in must
+      // be initiated explicitly from the onboarding chooser (Mode A/B/C).
       return false;
     } catch (e) {
       debugPrint('Error checking existing session: $e');
@@ -251,7 +233,16 @@ class AuthService {
       }
 
       final account = await _googleSignIn.authenticate();
-      await _handleGoogleSignIn(account);
+      // v7 of google_sign_in exposes the OIDC ID token via the
+      // synchronous `authentication` getter. We need it to exchange
+      // for a JWT from /auth/google so the user can use the cloud
+      // gateway in-app without bouncing through the browser /get-key
+      // flow. `idToken` may still be null on devices where the SDK
+      // can't reach Google's auth server; the helper tolerates that
+      // and the legacy browser fallback can kick in via the setup
+      // sheet's "Connect cloud storage" step.
+      final idToken = account.authentication.idToken;
+      await _handleGoogleSignIn(account, idToken: idToken);
       return _currentUser;
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
@@ -270,7 +261,10 @@ class AuthService {
     }
   }
 
-  Future<void> _handleGoogleSignIn(GoogleSignInAccount account) async {
+  Future<void> _handleGoogleSignIn(
+    GoogleSignInAccount account, {
+    String? idToken,
+  }) async {
     _setCurrentUser(AuthUser(
       id: account.id,
       email: account.email,
@@ -292,6 +286,27 @@ class AuthService {
     // Clear the explicit-sign-out sentinel — the user is interactively signing
     // back in, so silent re-auth on subsequent launches is desired again.
     await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
+
+    // Exchange the OIDC ID token for a JWT-bearer API key in-app. The
+    // pinning-service `/auth/google` endpoint mints a JWT via the same
+    // `generateJwtApiKey(userId, jwtSecret)` helper that `/api/keys`
+    // uses, so the result is a valid cloud-gateway credential. We
+    // persist it BEFORE `_initializeFulaClient` runs so the latter
+    // sees a configured access token on first sign-in (previously
+    // null on Mode A mobile until the browser /get-key dance ran).
+    if (idToken != null && idToken.isNotEmpty) {
+      final jwt = await _exchangeOAuthIdTokenForJwt(
+        path: '/auth/google',
+        body: {'credential': idToken},
+      );
+      if (jwt != null && jwt.isNotEmpty) {
+        await SecureStorageService.instance
+            .write(SecureStorageKeys.jwtToken, jwt);
+        // Await so the gateway/IPFS endpoint defaults are persisted BEFORE
+        // _initializeFulaClient reads them below.
+        await DeepLinkService.instance.notifyApiKeyConfigured(jwt);
+      }
+    }
 
     // Encryption key derivation and Fula client initialization depend on RustLib
     // If these fail (e.g., RustLib not initialized), sign-in still succeeds
@@ -365,6 +380,13 @@ class AuthService {
         userId: userId,
         email: email,
         displayName: displayName,
+        identityToken: credential.identityToken,
+        // Apple's `givenName`/`familyName` only populate on the user's
+        // FIRST consent screen for the app. We forward them so the
+        // server-side first-time-signup path can record the user's
+        // real name on `webui_users` instead of leaving it blank.
+        firstName: credential.givenName,
+        lastName: credential.familyName,
       );
 
       return _currentUser;
@@ -384,6 +406,9 @@ class AuthService {
     required String userId,
     required String email,
     String? displayName,
+    String? identityToken,
+    String? firstName,
+    String? lastName,
   }) async {
     _setCurrentUser(AuthUser(
       id: userId,
@@ -406,6 +431,39 @@ class AuthService {
     // Clear the explicit-sign-out sentinel — the user is interactively signing
     // back in, so silent re-auth on subsequent launches is desired again.
     await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
+
+    // Exchange the Apple identity token for a JWT in-app, mirroring
+    // the Google path. The body forwards `user.email` / `user.name`
+    // only on first sign-in (when Apple provides them); the server
+    // tolerates them being absent on subsequent calls.
+    if (identityToken != null && identityToken.isNotEmpty) {
+      final body = <String, dynamic>{'identityToken': identityToken};
+      final firstSignInUser = <String, dynamic>{};
+      if (email.isNotEmpty && !email.endsWith('@privaterelay.appleid.com')) {
+        firstSignInUser['email'] = email;
+      }
+      if ((firstName != null && firstName.isNotEmpty) ||
+          (lastName != null && lastName.isNotEmpty)) {
+        firstSignInUser['name'] = <String, dynamic>{
+          if (firstName != null && firstName.isNotEmpty) 'firstName': firstName,
+          if (lastName != null && lastName.isNotEmpty) 'lastName': lastName,
+        };
+      }
+      if (firstSignInUser.isNotEmpty) {
+        body['user'] = firstSignInUser;
+      }
+      final jwt = await _exchangeOAuthIdTokenForJwt(
+        path: '/auth/apple',
+        body: body,
+      );
+      if (jwt != null && jwt.isNotEmpty) {
+        await SecureStorageService.instance
+            .write(SecureStorageKeys.jwtToken, jwt);
+        // Await so the gateway/IPFS endpoint defaults are persisted BEFORE
+        // _initializeFulaClient reads them below.
+        await DeepLinkService.instance.notifyApiKeyConfigured(jwt);
+      }
+    }
 
     // Encryption key derivation and Fula client initialization depend on RustLib
     // If these fail (e.g., RustLib not initialized), sign-in still succeeds
@@ -571,12 +629,29 @@ class AuthService {
 
     try {
       // Get stored endpoint and token
-      final endpoint = await SecureStorageService.instance.read(
+      var endpoint = await SecureStorageService.instance.read(
         SecureStorageKeys.apiGatewayUrl,
       );
       final accessToken = await SecureStorageService.instance.read(
         SecureStorageKeys.jwtToken,
       );
+
+      // Migration for users who signed in under the pre-fix in-app flow:
+      // the JWT was persisted but the gateway/IPFS endpoint defaults
+      // were never written, so this method used to bail with
+      // "endpoint configured = false" on every cold launch even though
+      // the user was authenticated. Seed the deep-link defaults here so
+      // a single re-launch repairs the state without a sign-out.
+      if ((endpoint == null || endpoint.isEmpty) &&
+          accessToken != null &&
+          accessToken.isNotEmpty) {
+        debugPrint('AuthService: JWT present but endpoint missing — '
+            'seeding default gateway/IPFS URLs');
+        await DeepLinkService.instance.notifyApiKeyConfigured(accessToken);
+        endpoint = await SecureStorageService.instance.read(
+          SecureStorageKeys.apiGatewayUrl,
+        );
+      }
 
       debugPrint('AuthService: endpoint configured = ${endpoint != null && endpoint.isNotEmpty}');
       debugPrint('AuthService: accessToken present = ${accessToken != null && accessToken.isNotEmpty}');
@@ -651,6 +726,25 @@ class AuthService {
   /// Public method to reinitialize FulaApiService after settings change
   /// Call this after updating API gateway URL or JWT token
   Future<void> reinitializeFulaClient() async {
+    // Fast path: already configured. Nothing to do, no work to dedupe.
+    if (FulaApiService.instance.isConfigured) return;
+
+    // Dedupe concurrent callers — the work below is expensive (Argon2id
+    // derivation + full FulaApiService.initialize, which clears the bucket
+    // forest cache) and is destructive when run in parallel.
+    final inflight = _reinitializeInFlight;
+    if (inflight != null) return inflight;
+
+    final future = _doReinitializeFulaClient();
+    _reinitializeInFlight = future;
+    try {
+      await future;
+    } finally {
+      _reinitializeInFlight = null;
+    }
+  }
+
+  Future<void> _doReinitializeFulaClient() async {
     debugPrint('AuthService: reinitializeFulaClient called');
     debugPrint('AuthService: _currentUser = ${_currentUser?.email ?? "null"}');
 
@@ -941,6 +1035,48 @@ class AuthService {
     return 'https://cloud.fx.land';
   }
 
+  /// Mode A in-app JWT-bearer fetch: POST the OAuth ID token to the
+  /// pinning-service `/auth/google` or `/auth/apple` endpoint and read
+  /// the minted JWT from the response. Returns `null` on any transport
+  /// or non-2xx error — sign-in still succeeds with the local-only
+  /// encryption key, and the legacy browser /get-key fallback in the
+  /// setup sheet remains available.
+  ///
+  /// Without this helper, Mode A on mobile relied on a browser round-trip
+  /// to fetch the cloud-gateway JWT (the `/get-key` deep-link dance).
+  /// Mode B/C never needed it because their `/auth/register-mode-{b,c}`
+  /// endpoints return the JWT directly.
+  Future<String?> _exchangeOAuthIdTokenForJwt({
+    required String path,
+    required Map<String, dynamic> body,
+  }) async {
+    try {
+      final baseUrl = await _issuerBaseUrl();
+      final uri = Uri.parse('$baseUrl$path');
+      final res = await http
+          .post(
+            uri,
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final jwt = data['jwt'];
+        if (jwt is String && jwt.isNotEmpty) return jwt;
+        debugPrint(
+            'AuthService: $path returned 2xx but no jwt field — server may need updating');
+        return null;
+      }
+      debugPrint(
+          'AuthService: $path failed ${res.statusCode}: ${res.body}');
+      return null;
+    } catch (e) {
+      debugPrint('AuthService: $path exchange error: $e');
+      return null;
+    }
+  }
+
   /// Build the byte sequence the client signs with its seed-derived
   /// Ed25519 private key. MUST match exactly what the issuer
   /// reconstructs in `pinning-service/server/services/seedAuth.ts`'s
@@ -1198,6 +1334,18 @@ class AuthService {
       SecureStorageKeys.jwtToken,
       result.jwt,
     );
+    // Tell home_screen / setup_unlock_sheet that the JWT is now in
+    // place so they auto-complete the "Connect cloud storage" step
+    // instead of pushing the user through a now-redundant browser
+    // /get-key dance (which ends with a "switch account?" prompt
+    // because that JWT differs in `jti` from the one written above).
+    // Mode B/C JWTs are already valid storage-gateway API keys — the
+    // server signs both `/auth/register-mode-{b,c}` and
+    // `/api/keys/active` outputs with the same secret + sub.
+    // Await so the gateway/IPFS endpoint defaults are seeded BEFORE the
+    // subsequent _initializeFulaClient call reads them; without this, the
+    // app stays authenticated-but-offline ("endpoint configured = false").
+    await DeepLinkService.instance.notifyApiKeyConfigured(result.jwt);
     await SecureStorageService.instance.write(
       SecureStorageKeys.encryptionKey,
       base64Encode(kek),

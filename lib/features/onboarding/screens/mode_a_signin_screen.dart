@@ -151,7 +151,9 @@ class _ModeASignInScreenState extends ConsumerState<ModeASignInScreen> {
               ],
               const SizedBox(height: 24),
               TextButton(
-                onPressed: _busy ? null : () => context.go('/onboarding'),
+                // Pop the pushed mode-a route instead of replacing the
+                // stack; keeps the back history (home → chooser) intact.
+                onPressed: _busy ? null : () => context.pop(),
                 child: const Text('Back to mode selection'),
               ),
             ],

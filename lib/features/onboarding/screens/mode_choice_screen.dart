@@ -62,7 +62,9 @@ class ModeChoiceScreen extends ConsumerWidget {
                 badge: 'Recommended',
                 badgeColor: Colors.green,
                 icon: Icons.shield,
-                onTap: () => context.go('/onboarding/mode-b'),
+                // `push` (not `go`) so back from the mode screen returns to this
+// chooser rather than collapsing the stack.
+onTap: () => context.push('/onboarding/mode-b'),
               ),
               const SizedBox(height: 16),
               _ModeCard(
@@ -73,7 +75,7 @@ class ModeChoiceScreen extends ConsumerWidget {
                 badge: 'Easiest',
                 badgeColor: Colors.blueGrey,
                 icon: Icons.account_circle_outlined,
-                onTap: () => context.go('/onboarding/mode-a'),
+                onTap: () => context.push('/onboarding/mode-a'),
               ),
               const SizedBox(height: 16),
               _ModeCard(
@@ -84,7 +86,7 @@ class ModeChoiceScreen extends ConsumerWidget {
                 badge: 'Advanced',
                 badgeColor: Colors.deepPurple,
                 icon: Icons.key,
-                onTap: () => context.go('/onboarding/mode-c'),
+                onTap: () => context.push('/onboarding/mode-c'),
               ),
               const SizedBox(height: 24),
               Text(

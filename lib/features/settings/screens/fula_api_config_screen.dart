@@ -47,6 +47,10 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
 
   bool _isEditing = false;
   bool _isLoading = false;
+  // Whether to render the API Key text field with `obscureText: false`.
+  // Defaults hidden — users only flip this on briefly to verify the
+  // token (e.g. compare against what they pasted, or copy it out).
+  bool _showApiKey = false;
   StreamSubscription<String>? _apiKeySubscription;
 
   // Cold-start resolver defaults — match the constants in fula_api_service.dart.
@@ -526,6 +530,20 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
                         tooltip: 'Get token from cloud.fx.land',
                         onPressed: _openCloudFxLand,
                       ),
+                    // Show/hide toggle. Only useful once there's
+                    // something to reveal — hide the icon when the
+                    // field is empty to keep the suffix uncluttered.
+                    if (_jwtTokenController.text.isNotEmpty)
+                      IconButton(
+                        icon: Icon(
+                          _showApiKey ? LucideIcons.eyeOff : LucideIcons.eye,
+                        ),
+                        tooltip: _showApiKey
+                            ? 'Hide API Key'
+                            : 'Show API Key',
+                        onPressed: () =>
+                            setState(() => _showApiKey = !_showApiKey),
+                      ),
                     IconButton(
                       icon: const Icon(LucideIcons.clipboard),
                       tooltip: 'Paste from clipboard',
@@ -534,7 +552,7 @@ class _FulaApiConfigScreenState extends ConsumerState<FulaApiConfigScreen> {
                   ],
                 ),
               ),
-              obscureText: true,
+              obscureText: !_showApiKey,
               onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 16),

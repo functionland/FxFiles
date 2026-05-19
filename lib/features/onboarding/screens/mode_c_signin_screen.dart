@@ -130,6 +130,14 @@ class _CreateOrRestoreSelector extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 16),
+          // Without this the chooser sub-panel had no way out — the
+          // system back gesture would unwind the pushed /onboarding/mode-c
+          // route. Explicit text button matches Mode A / Mode B affordance.
+          TextButton(
+            onPressed: () => context.pop(),
+            child: const Text('Back to mode selection'),
+          ),
         ],
       ),
     );

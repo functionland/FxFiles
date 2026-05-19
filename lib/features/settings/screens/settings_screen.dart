@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -488,7 +488,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   void _showSignInDialog() {
-    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -496,47 +495,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Sign in with Apple (iOS only)
-            if (Platform.isIOS) ...[
-              SignInWithAppleButton(
-                onPressed: () async {
-                  Navigator.pop(dialogContext);
-                  try {
-                    final user = await AuthService.instance.signInWithApple();
-                    if (user != null) {
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('Signed in as ${user.email}')),
-                      );
-                    }
-                  } catch (e) {
-                    messenger.showSnackBar(
-                      SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                    );
-                  }
-                  if (mounted) setState(() {});
-                },
-              ),
-              const SizedBox(height: 12),
-            ],
+            // Route through the mode chooser (/onboarding) so users pick
+            // A (OAuth) / B (OAuth+seed) / C (seed-only) instead of being
+            // forced into Mode A here. Cached Mode A users never see this
+            // dialog — they're already signed in via SecureStorage.
             if (!PlatformCapabilities.isDesktop) ...[
               ListTile(
-                leading: const Icon(LucideIcons.chrome),
-                title: const Text('Sign in with Google'),
-                onTap: () async {
+                leading: const Icon(LucideIcons.logIn),
+                title: const Text('Sign in to FxFiles'),
+                subtitle: const Text('Choose A / B / C vault mode'),
+                onTap: () {
                   Navigator.pop(dialogContext);
-                  try {
-                    final user = await AuthService.instance.signInWithGoogle();
-                    if (user != null) {
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('Signed in as ${user.email}')),
-                      );
-                    }
-                  } catch (e) {
-                    messenger.showSnackBar(
-                      SnackBar(content: Text(ErrorMessages.forAuth(e)), backgroundColor: Colors.red),
-                    );
-                  }
-                  if (mounted) setState(() {});
+                  // `push` (not `go`) so the system back button returns
+                  // the user to SettingsScreen instead of exiting.
+                  context.push('/onboarding');
                 },
               ),
             ],

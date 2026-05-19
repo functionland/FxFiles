@@ -21,6 +21,50 @@ class DeepLinkService {
   final _apiKeyReceivedController = StreamController<String>.broadcast();
   Stream<String> get onApiKeyReceived => _apiKeyReceivedController.stream;
 
+  /// Notify subscribers that an API key has been configured by an
+  /// in-app flow (e.g. Mode B/C sign-in writes the JWT directly to
+  /// SecureStorage). Mirrors the silent first-time-write path that the
+  /// deep-link handler takes for a brand-new JWT — it does NOT go
+  /// through the replacement-proposed comparison, since the caller is
+  /// the authoritative source of the new token and there is nothing
+  /// to compare against.
+  ///
+  /// Without this hook, home_screen's `_jwtToken` and
+  /// setup_unlock_sheet's `_hasJwt` stay stale after Mode B/C sign-in:
+  /// the setup sheet would still show "Connect cloud storage" as active
+  /// and push the user through a now-redundant browser/get-key dance
+  /// that ends with a "switch account?" prompt (because the new JWT
+  /// the browser returns differs in `jti` from the in-app one).
+  Future<void> notifyApiKeyConfigured(String apiKey) async {
+    // The deep-link /get-key flow runs _performApiKeySetup which writes the
+    // JWT AND the gateway/IPFS endpoint defaults. The in-app exchange
+    // (Mode A OAuth in-app, Mode B/C seed sign-in) writes only the JWT and
+    // calls into here — so without seeding the endpoints, _initializeFulaClient
+    // bails on the next cold start with "endpoint configured = false" and
+    // FulaApiService stays unconfigured even though the user is authenticated.
+    // Mirror the deep-link defaults here so all three sign-in paths reach the
+    // same persisted state.
+    final existingGateway = await SecureStorageService.instance.read(
+      SecureStorageKeys.apiGatewayUrl,
+    );
+    if (existingGateway == null || existingGateway.isEmpty) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.apiGatewayUrl,
+        'https://s3.cloud.fx.land',
+      );
+    }
+    final existingIpfs = await SecureStorageService.instance.read(
+      SecureStorageKeys.ipfsServerUrl,
+    );
+    if (existingIpfs == null || existingIpfs.isEmpty) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.ipfsServerUrl,
+        'https://api.cloud.fx.land',
+      );
+    }
+    _apiKeyReceivedController.add(apiKey);
+  }
+
   // Fires only when an incoming deep link would REPLACE a different, already
   // stored JWT. The UI must confirm via [confirmApiKeyReplace]. First-time
   // login and idempotent re-login write silently without emitting this.
@@ -428,14 +472,31 @@ class DeepLinkService {
       }
     }
 
-    // Construct the get-key URL with redirect and platform
+    // Construct the get-key URL with redirect, platform, and mode
     final redirectUrl = Uri.encodeComponent('fxfiles://auth-callback');
 
-    // Get the auth provider to pass as platform parameter
+    // Get the auth provider to pass as platform parameter — locks the
+    // web sign-in UI to the same OAuth provider the user picked in app,
+    // so a user who chose Google in FxFiles can't accidentally tap
+    // Apple on the web (different identity → different vault).
     final authProvider = AuthService.instance.currentUser?.provider;
     final platformParam = authProvider != null ? '&platform=${authProvider.name}' : '';
 
-    final getKeyUrl = Uri.parse('$baseUrl/get-key?redirect=$redirectUrl$platformParam');
+    // Same defence-in-depth for the vault mode (A/B/C). Without this,
+    // a user who set up Mode B (OAuth+seed) on the app could land on
+    // /login on the web and accidentally click the Mode A card,
+    // creating a separate Mode A vault under the same OAuth identity.
+    // Encoded in SecureStorage as keyDerivationVersion =
+    //   '2_mode_B' → Mode B
+    //   '2_mode_C' → Mode C
+    //   anything else / null → Mode A (legacy / first-time)
+    final kdv = await SecureStorageService.instance
+        .read(SecureStorageKeys.keyDerivationVersion);
+    final modeTag = _modeTagForKeyDerivationVersion(kdv);
+    final modeParam = '&mode=$modeTag';
+
+    final getKeyUrl = Uri.parse(
+        '$baseUrl/get-key?redirect=$redirectUrl$platformParam$modeParam');
 
     debugPrint('DeepLinkService: Opening get-key URL: $getKeyUrl');
 
@@ -449,6 +510,17 @@ class DeepLinkService {
       debugPrint('DeepLinkService: Error opening get-key URL: $e');
       return false;
     }
+  }
+
+  /// Map the SecureStorage `keyDerivationVersion` value to the
+  /// 1-char mode tag the pinning-webui expects on its `?mode=` URL
+  /// parameter. See SecureStorageKeys.keyDerivationVersion for the
+  /// authoritative list of stored values.
+  static String _modeTagForKeyDerivationVersion(String? kdv) {
+    if (kdv == '2_mode_B') return 'b';
+    if (kdv == '2_mode_C') return 'c';
+    // Legacy users (kdv null / 'v1') and explicit Mode A both land here.
+    return 'a';
   }
 
   /// Fetch organization name from userinfo API and store it

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
@@ -34,6 +35,19 @@ class _FulaBrowserScreenState extends State<FulaBrowserScreen> {
   }
 
   Future<void> _loadData() async {
+    // Self-heal: try to reinitialize before bailing. Catches the
+    // post-sign-in race and pre-fix sessions where the JWT was stored
+    // but the gateway endpoint default never was. Mirrors the pattern
+    // used in SyncService. reinitializeFulaClient dedupes concurrent
+    // callers so we don't trigger a forest-cache reload storm.
+    if (!FulaApiService.instance.isConfigured) {
+      try {
+        await AuthService.instance.reinitializeFulaClient();
+      } catch (e) {
+        debugPrint('FulaBrowser: reinitializeFulaClient failed: $e');
+      }
+    }
+    if (!mounted) return;
     if (!FulaApiService.instance.isConfigured) {
       setState(() {
         _isLoading = false;

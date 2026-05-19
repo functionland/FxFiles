@@ -217,7 +217,8 @@ class _ModeBSignInScreenState extends ConsumerState<ModeBSignInScreen> {
               ],
               const SizedBox(height: 24),
               TextButton(
-                onPressed: _busy ? null : () => context.go('/onboarding'),
+                // Pop the pushed mode-b route; preserves history.
+                onPressed: _busy ? null : () => context.pop(),
                 child: const Text('Back to mode selection'),
               ),
             ],
