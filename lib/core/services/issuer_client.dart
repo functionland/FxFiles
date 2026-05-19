@@ -152,16 +152,30 @@ class IssuerClient {
 
   /// Request a fresh single-use challenge nonce. The returned bytes
   /// MUST be signed by the seed-derived Ed25519 private key (with the
-  /// `sign-in` purpose tag) and posted to `/auth/sign-in` within 60
-  /// seconds.
+  /// `purpose` tag in the signed transcript) and submitted to the
+  /// matching endpoint within 60 seconds.
   ///
-  /// Returns the raw 32 bytes (server returns base64; this method
-  /// decodes for the caller). Throws `IssuerException` with code
-  /// `USER_NOT_FOUND` (HTTP 404) if the issuer has no record of this
-  /// `effective_user_id`.
-  Future<Uint8List> challenge(String effectiveUserIdHex) async {
+  /// Audit finding #1 fix: the challenge is now required for
+  /// **registration** too, not just sign-in — without server-issued
+  /// single-use challenges, a captured registration body could be
+  /// replayed to mint perpetually-valid JWTs.
+  ///
+  /// `purpose` is one of:
+  /// - `'sign-in'` — default; the issuer requires the user to exist.
+  /// - `'register-mode-b'` — pre-registration nonce for Mode B.
+  /// - `'register-mode-c'` — pre-registration nonce for Mode C.
+  ///
+  /// Throws `IssuerException` with code `USER_NOT_FOUND` (HTTP 404) if
+  /// `purpose == 'sign-in'` and the issuer has no record of this
+  /// `effective_user_id`. For register purposes the user need not
+  /// exist (we're creating them).
+  Future<Uint8List> challenge(
+    String effectiveUserIdHex, {
+    String purpose = 'sign-in',
+  }) async {
     final res = await _post('/auth/challenge', {
       'effective_user_id_hex': effectiveUserIdHex,
+      'purpose': purpose,
     });
     final b64 = res['challenge_b64'] as String;
     return Uint8List.fromList(base64Decode(b64));

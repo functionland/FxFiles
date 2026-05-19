@@ -44,17 +44,24 @@ class _ModeBSignInScreenState extends ConsumerState<ModeBSignInScreen> {
       _error = null;
     });
     try {
-      AuthUser? user;
+      ({AuthUser user, bool hasModeA})? result;
       if (provider == 'google') {
-        user = await AuthService.instance.signInGoogleModeB(password: password);
+        result = await AuthService.instance.signInGoogleModeB(password: password);
       } else {
-        user = await AuthService.instance.signInAppleModeB(password: password);
+        result = await AuthService.instance.signInAppleModeB(password: password);
       }
       if (!mounted) return;
-      if (user == null) {
+      if (result == null) {
         // User cancelled the OAuth flow.
         setState(() => _busy = false);
         return;
+      }
+      // Audit fix #4: warn before navigating away if the same OAuth
+      // identity already has a Mode A vault — the new Mode B vault is
+      // SEPARATE and the user's existing files won't appear here.
+      if (result.hasModeA) {
+        await _showModeAExistsDialog();
+        if (!mounted) return;
       }
       context.go('/');
     } on IssuerException catch (e) {
@@ -70,6 +77,31 @@ class _ModeBSignInScreenState extends ConsumerState<ModeBSignInScreen> {
         _error = 'Sign-in failed: $e';
       });
     }
+  }
+
+  Future<void> _showModeAExistsDialog() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.info_outline, size: 36, color: Colors.orange),
+        title: const Text('Existing vault detected'),
+        content: const Text(
+          'You already have a Standard-security (Mode A) vault on this '
+          'Google/Apple account. The Maximum-security vault you just '
+          'created is SEPARATE — your existing files are NOT in this '
+          'vault.\n\n'
+          'To access your old files, sign out and sign in with Standard '
+          'security (no password). To keep using the new vault, continue.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('I understand'),
+          ),
+        ],
+      ),
+    );
   }
 
   String _humanizeIssuerError(IssuerException e) {

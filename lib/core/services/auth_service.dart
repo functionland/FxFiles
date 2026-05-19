@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
@@ -13,6 +12,8 @@ import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_client/fula_client.dart' show RustLib;
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/utils/canonical_kek_input.dart';
+import 'package:fula_files/core/utils/seed_signing_input.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
@@ -940,39 +941,6 @@ class AuthService {
     return 'https://cloud.fx.land';
   }
 
-  /// Length-prefixed canonical encoding for Mode B master-KEK derivation.
-  /// MUST be stable across devices (otherwise a returning user can't
-  /// decrypt their own data). Mirrors the shape of the effective_user_id
-  /// derivation in `fula_crypto::effective_user_id` but uses a Mode B
-  /// context tag for the Argon2id domain.
-  Uint8List _canonicalKekInputModeB(String provider, String oauthSub, String seed) {
-    final providerBytes = utf8.encode(provider);
-    final subBytes = utf8.encode(oauthSub);
-    final seedBytes = utf8.encode(seed);
-    final out = BytesBuilder();
-    out.add(_u32le(providerBytes.length));
-    out.add(providerBytes);
-    out.add(_u32le(subBytes.length));
-    out.add(subBytes);
-    out.add(_u32le(seedBytes.length));
-    out.add(seedBytes);
-    return out.toBytes();
-  }
-
-  Uint8List _canonicalKekInputModeC(String seed) {
-    final seedBytes = utf8.encode(seed);
-    final out = BytesBuilder();
-    out.add(_u32le(seedBytes.length));
-    out.add(seedBytes);
-    return out.toBytes();
-  }
-
-  Uint8List _u32le(int v) {
-    final b = ByteData(4);
-    b.setUint32(0, v, Endian.little);
-    return b.buffer.asUint8List();
-  }
-
   /// Build the byte sequence the client signs with its seed-derived
   /// Ed25519 private key. MUST match exactly what the issuer
   /// reconstructs in `pinning-service/server/services/seedAuth.ts`'s
@@ -1048,7 +1016,7 @@ class AuthService {
   ///
   /// Throws `IssuerException` (with `code` = `PUBLIC_KEY_MISMATCH`,
   /// `SIGNATURE_INVALID`, etc.) on failure.
-  Future<AuthUser> signInModeB({
+  Future<({AuthUser user, bool hasModeA})> signInModeB({
     required String provider, // 'google' or 'apple'
     required String oauthToken,
     required String oauthSub,
@@ -1067,12 +1035,27 @@ class AuthService {
       oauthSub: oauthSub,
       seed: password,
     );
-    final keyPair = await _deriveSigningKeypair(password);
+    // Audit fix #3 (2026-05-18): bind the Mode B signing key to the full
+    // (provider, oauth_sub, password) tuple, not just the password.
+    // Without this, two Mode B users with the same password under
+    // different OAuth identities would share an Ed25519 keypair —
+    // either could sign in to the other's vault by reading the
+    // effective_user_id from the public users-index CBOR.
+    final keyPair = await _deriveSigningKeypair(
+      modeBSigningInput(provider, oauthSub, password),
+    );
     final pubKey = await keyPair.extractPublicKey();
 
-    // 2. Generate the client-side challenge and sign the
-    //    register-mode-b transcript.
-    final challenge = _randomBytes(32);
+    // 2. Fetch a server-issued single-use challenge for register-mode-b.
+    //    Audit finding #1 (2026-05-18): the server requires a fresh
+    //    server-issued nonce to defeat capture-and-replay of registration
+    //    bodies. JWTs we mint have no `exp` (DT-1) so a replay would
+    //    otherwise produce a perpetually-valid token.
+    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final challenge =
+        await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-b');
+
+    // 3. Sign the register-mode-b transcript over the server's challenge.
     final transcript = _buildSignedTranscript(
       'register-mode-b',
       effectiveUserIdHex,
@@ -1080,8 +1063,9 @@ class AuthService {
     );
     final signature = await Ed25519().sign(transcript, keyPair: keyPair);
 
-    // 3. Talk to the issuer.
-    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    // 4. POST register-mode-b. The server re-consumes the same nonce
+    //    from its store and verifies the signature; replay returns 401
+    //    CHALLENGE_INVALID.
     final result = await issuer.registerModeB(
       provider: provider,
       oauthToken: oauthToken,
@@ -1092,7 +1076,7 @@ class AuthService {
     );
 
     // 4. Derive the master encryption key (Argon2id, Mode B context).
-    final kekInput = _canonicalKekInputModeB(provider, oauthSub, password);
+    final kekInput = canonicalKekInputModeB(provider, oauthSub, password);
     final kekBytes = await fula.deriveKey(
       context: 'fula-files-v2-mode-b',
       input: kekInput,
@@ -1109,7 +1093,13 @@ class AuthService {
       photoUrl: photoUrl,
     );
 
-    return _currentUser!;
+    // Audit fix #4: surface `has_mode_a` so the UI can warn the user
+    // that their new Mode B vault is separate from any existing Mode A
+    // account on the same Google/Apple identity. `false` is the safe
+    // default when the issuer can't determine it (e.g., Apple's
+    // private-relay flow that doesn't return email after first
+    // sign-in).
+    return (user: _currentUser!, hasModeA: result.hasModeA ?? false);
   }
 
   /// Mode C sign-in / sign-up (idempotent at the issuer). No OAuth.
@@ -1128,7 +1118,12 @@ class AuthService {
     final keyPair = await _deriveSigningKeypair(seed);
     final pubKey = await keyPair.extractPublicKey();
 
-    final challenge = _randomBytes(32);
+    // Audit finding #1 fix — server-issued single-use challenge before
+    // registration. See the matching block in `signInModeB` for rationale.
+    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final challenge =
+        await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-c');
+
     final transcript = _buildSignedTranscript(
       'register-mode-c',
       effectiveUserIdHex,
@@ -1136,7 +1131,6 @@ class AuthService {
     );
     final signature = await Ed25519().sign(transcript, keyPair: keyPair);
 
-    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
     final result = await issuer.registerModeC(
       effectiveUserIdHex: effectiveUserIdHex,
       publicKey: Uint8List.fromList(pubKey.bytes),
@@ -1145,7 +1139,7 @@ class AuthService {
     );
 
     // Master KEK from the seed. Mode C context.
-    final kekInput = _canonicalKekInputModeC(seed);
+    final kekInput = canonicalKekInputModeC(seed);
     final kekBytes = await fula.deriveKey(
       context: 'fula-files-v2-mode-c',
       input: kekInput,
@@ -1163,17 +1157,6 @@ class AuthService {
     );
 
     return _currentUser!;
-  }
-
-  /// Cryptographically secure random bytes (used as a client-issued
-  /// challenge in register-mode-*). Falls back to Dart's `Random.secure()`.
-  Uint8List _randomBytes(int n) {
-    final rng = Random.secure();
-    final out = Uint8List(n);
-    for (var i = 0; i < n; i++) {
-      out[i] = rng.nextInt(256);
-    }
-    return out;
   }
 
   /// Persist the seed-auth session state. Sets `_currentUser`, caches
@@ -1277,12 +1260,14 @@ class AuthService {
   }
 
   /// Mode B convenience: run Google OAuth, capture the ID token, then
-  /// call `signInModeB`. Returns the new AuthUser. The seed/password
-  /// is NEVER persisted to disk — it's used once for KDF + signing,
-  /// then dropped.
+  /// call `signInModeB`. Returns `(user: AuthUser, hasModeA: bool)`.
+  /// `hasModeA` is true when the same Google identity already has an
+  /// existing Mode A vault — surfaces so the UI can warn that the new
+  /// vault is independent (audit fix #4). The seed/password is NEVER
+  /// persisted to disk — it's used once for KDF + signing, then dropped.
   ///
   /// On `GoogleSignInExceptionCode.canceled`, returns `null`.
-  Future<AuthUser?> signInGoogleModeB({required String password}) async {
+  Future<({AuthUser user, bool hasModeA})?> signInGoogleModeB({required String password}) async {
     if (PlatformCapabilities.isDesktop) {
       throw Exception(
         'Google Sign-In is not available on desktop. '
@@ -1318,8 +1303,9 @@ class AuthService {
     }
   }
 
-  /// Mode B convenience for Apple Sign-In. Returns `null` on user cancel.
-  Future<AuthUser?> signInAppleModeB({required String password}) async {
+  /// Mode B convenience for Apple Sign-In. Returns
+  /// `(user: AuthUser, hasModeA: bool)` on success, `null` on user cancel.
+  Future<({AuthUser user, bool hasModeA})?> signInAppleModeB({required String password}) async {
     try {
       final credential = await SignInWithApple.getAppleIDCredential(
         scopes: const [

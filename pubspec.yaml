@@ -39,6 +39,14 @@ dependencies:
   # pure-Dart BIP39 helper that depends only on `cryptography`.
   cryptography: ^2.7.0
 
+  # Unicode NFC normalization for seed-based KEK derivation
+  # (audit fix #2). Pure-Dart, no native deps. Required so the
+  # Mode B/C master KEK matches across devices when the user types
+  # a non-ASCII password via different IMEs (precomposed vs
+  # decomposed). The Rust FFI side normalizes via `unicode-normalization`
+  # — this is the matching Dart side.
+  unorm_dart: ^0.3.0
+
   # Authentication
   google_sign_in: ^7.2.0
   sign_in_with_apple: ^6.1.4
