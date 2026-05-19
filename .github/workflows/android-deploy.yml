@@ -48,13 +48,17 @@ jobs:
     # exact build, and the license for it isn't pre-accepted, which causes
     # `flutter build appbundle` to fail at the Gradle configure step:
     #   "License for package NDK (Side by side) 28.0.12433566 not accepted"
-    # Accept all SDK licenses and install the specific NDK before the build.
-    - name: Accept Android SDK licenses & install required NDK
-      run: |
-        yes | sdkmanager --licenses > /dev/null || true
-        sdkmanager --install "ndk;28.0.12433566"
-        echo "Installed NDKs:"
-        ls -la "$ANDROID_HOME/ndk" || true
+    # android-actions/setup-android puts sdkmanager on PATH, accepts licenses,
+    # and installs the listed packages. Using it is more robust than calling
+    # sdkmanager directly — the runner's PATH varies across image revisions.
+    - name: Install Android NDK 28.0.12433566 (accept licenses)
+      uses: android-actions/setup-android@v3
+      with:
+        packages: 'ndk;28.0.12433566'
+        accept-android-sdk-licenses: true
+
+    - name: Verify NDK installed
+      run: ls -la "$ANDROID_HOME/ndk" || true
 
     - name: Flutter Doctor
       run: flutter doctor -v
