@@ -35,6 +35,10 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
+import 'package:fula_files/features/onboarding/screens/mode_a_signin_screen.dart';
+import 'package:fula_files/features/onboarding/screens/mode_b_signin_screen.dart';
+import 'package:fula_files/features/onboarding/screens/mode_c_signin_screen.dart';
+import 'package:fula_files/features/onboarding/screens/mode_choice_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -69,6 +73,25 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings',
         builder: (context, state) => const SettingsScreen(),
+      ),
+      // Audit F-A1 / F-A3 redesign — seed-as-identity onboarding.
+      // Existing Mode A users never see these routes; they're
+      // entered only from new-user / new-device sign-in entry points.
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const ModeChoiceScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding/mode-a',
+        builder: (context, state) => const ModeASignInScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding/mode-b',
+        builder: (context, state) => const ModeBSignInScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding/mode-c',
+        builder: (context, state) => const ModeCSignInScreen(),
       ),
       GoRoute(
         path: '/sync-queue',

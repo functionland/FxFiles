@@ -147,4 +147,28 @@ class SecureStorageKeys {
   // Google account stays alive even after `disconnect()`).
   // Cleared on a successful interactive sign-in.
   static const String authSignedOut = 'auth_signed_out';
+
+  // Audit F-A1 / F-A3 redesign (2026-05-18) — seed-as-identity model.
+  //
+  // Which key-derivation mode the user picked at first sign-in:
+  //   '1_mode_A' — OAuth-only (legacy, unchanged for existing users)
+  //   '2_mode_B' — OAuth + password (seed mixed into KDF + JWT sub)
+  //   '2_mode_C' — Passphrase only, no OAuth
+  // Absent → user has not yet picked. Show mode-chooser screen.
+  static const String keyDerivationVersion = 'key_derivation_version';
+
+  // For Mode B users: the 32-hex effective_user_id that the issuer's
+  // JWT `sub` carries. Cached so we don't recompute on every launch.
+  // For Mode A users this is absent (their JWT carries SHA-256(email)).
+  static const String effectiveUserIdHex = 'effective_user_id_hex';
+
+  // OAuth provider tag used when computing a Mode B effective_user_id.
+  // Either 'google' or 'apple'. Absent for Mode A and Mode C.
+  static const String modeOauthProvider = 'mode_oauth_provider';
+
+  // OAuth `sub` claim captured at Mode B sign-up. Pinned so subsequent
+  // sign-ins on the same device can re-derive the effective_user_id
+  // without re-running OAuth (offline launch with cached JWT). Absent
+  // for Mode A and Mode C.
+  static const String modeOauthSub = 'mode_oauth_sub';
 }

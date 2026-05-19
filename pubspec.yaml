@@ -18,7 +18,7 @@ dependencies:
   go_router: ^17.0.1
   
   # Storage & Files (with Encryption)
-  fula_client: ^0.5.3
+  fula_client: ^0.5.5
   path_provider: ^2.1.5
   file_picker: ^10.3.7
   open_filex: ^4.6.0
@@ -31,7 +31,12 @@ dependencies:
   flutter_secure_storage: ^10.0.0
   hive_flutter: ^1.1.0
 
-  # Key Derivation (PBKDF2 for deterministic user keys)
+  # Key Derivation (PBKDF2 for deterministic user keys).
+  # Also used for SHA-256 inside our local BIP39 implementation
+  # (see lib/core/utils/bip39_local.dart). The upstream `bip39`
+  # package pins pointycastle ^3.0.0 which conflicts with
+  # web3dart ^3.0.2's pointycastle ^4.0.0 — so we ship a small
+  # pure-Dart BIP39 helper that depends only on `cryptography`.
   cryptography: ^2.7.0
 
   # Authentication

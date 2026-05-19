@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
+import 'package:cryptography/cryptography.dart';
+import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_client/fula_client.dart' show RustLib;
+import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -890,6 +894,471 @@ class AuthService {
     return key != null ? base64Encode(key) : null;
   }
 
+  // ==========================================================================
+  // Mode B / Mode C — seed-as-identity sign-in (audit F-A1 / F-A3 redesign).
+  //
+  // The seed never leaves the device. We derive locally:
+  //  - `effective_user_id` (16 bytes, becomes the JWT `sub`) via Rust FFI.
+  //  - An Ed25519 signing keypair via Rust FFI seed + the `cryptography`
+  //    package's Ed25519 implementation.
+  //  - The master encryption key via the existing Argon2id FFI with a
+  //    Mode-tagged context.
+  //
+  // The signing keypair authenticates against the issuer (pinning-service)
+  // via proof-of-seed-knowledge — see server endpoints
+  // `/auth/register-mode-{b,c}` and `/auth/sign-in`.
+  //
+  // **Mode A (legacy) is unchanged.** `signInWithGoogle` / `signInWithApple`
+  // and their `_handleGoogle/AppleSignIn` callbacks continue to call
+  // `_deriveEncryptionKey()` with the v1 KDF. Existing users keep working.
+  // ==========================================================================
+
+  /// Generate a fresh 24-word BIP39 recovery mnemonic (256-bit entropy).
+  /// Used at Mode C sign-up so the user has a recoverable backup.
+  /// The returned string is the canonical space-separated word list.
+  /// Byte-compatible with any BIP39 wallet — the mnemonic can be
+  /// imported into other BIP39-aware tools and vice versa.
+  Future<String> generateRecoveryMnemonic() {
+    return generateBip39Mnemonic(strength: 256);
+  }
+
+  /// True iff `mnemonic` is a valid BIP39 phrase (correct word count,
+  /// dictionary words, checksum). Used on the recovery / sign-in path
+  /// to give the user immediate feedback before we hit the issuer.
+  Future<bool> isValidMnemonic(String mnemonic) {
+    return validateBip39Mnemonic(mnemonic.trim());
+  }
+
+  /// Resolve the issuer base URL (the pinning-service that mints JWTs).
+  /// Pulled from SecureStorage if the user customized it; otherwise the
+  /// default `https://cloud.fx.land`.
+  Future<String> _issuerBaseUrl() async {
+    final stored = await SecureStorageService.instance.read(
+      SecureStorageKeys.billingServerUrl,
+    );
+    if (stored != null && stored.isNotEmpty) return stored;
+    return 'https://cloud.fx.land';
+  }
+
+  /// Length-prefixed canonical encoding for Mode B master-KEK derivation.
+  /// MUST be stable across devices (otherwise a returning user can't
+  /// decrypt their own data). Mirrors the shape of the effective_user_id
+  /// derivation in `fula_crypto::effective_user_id` but uses a Mode B
+  /// context tag for the Argon2id domain.
+  Uint8List _canonicalKekInputModeB(String provider, String oauthSub, String seed) {
+    final providerBytes = utf8.encode(provider);
+    final subBytes = utf8.encode(oauthSub);
+    final seedBytes = utf8.encode(seed);
+    final out = BytesBuilder();
+    out.add(_u32le(providerBytes.length));
+    out.add(providerBytes);
+    out.add(_u32le(subBytes.length));
+    out.add(subBytes);
+    out.add(_u32le(seedBytes.length));
+    out.add(seedBytes);
+    return out.toBytes();
+  }
+
+  Uint8List _canonicalKekInputModeC(String seed) {
+    final seedBytes = utf8.encode(seed);
+    final out = BytesBuilder();
+    out.add(_u32le(seedBytes.length));
+    out.add(seedBytes);
+    return out.toBytes();
+  }
+
+  Uint8List _u32le(int v) {
+    final b = ByteData(4);
+    b.setUint32(0, v, Endian.little);
+    return b.buffer.asUint8List();
+  }
+
+  /// Build the byte sequence the client signs with its seed-derived
+  /// Ed25519 private key. MUST match exactly what the issuer
+  /// reconstructs in `pinning-service/server/services/seedAuth.ts`'s
+  /// `buildSignedTranscript`.
+  ///
+  /// Layout:
+  ///   "fula.seed-auth.v1\0" || purpose || 0x00 ||
+  ///   effective_user_id_hex_ascii || 0x00 || challenge
+  Uint8List _buildSignedTranscript(
+    String purpose,
+    String effectiveUserIdHex,
+    Uint8List challenge,
+  ) {
+    final out = BytesBuilder();
+    out.add(utf8.encode('fula.seed-auth.v1 '));
+    out.add(utf8.encode(purpose));
+    out.add([0]);
+    out.add(ascii.encode(effectiveUserIdHex));
+    out.add([0]);
+    out.add(challenge);
+    return out.toBytes();
+  }
+
+  /// Derive the Ed25519 signing keypair from the user's seed.
+  /// Pure deterministic: same seed → same keypair on any device.
+  Future<SimpleKeyPair> _deriveSigningKeypair(String seed) async {
+    await ensureRustLibInitialized();
+    // The FFI handles NFKC + domain-separation; we just consume the
+    // 32-byte signing seed it returns.
+    final signingSeed = await fula.deriveSigningSeed(seed: seed);
+    final algorithm = Ed25519();
+    return algorithm.newKeyPairFromSeed(signingSeed);
+  }
+
+  /// 16-byte effective_user_id (hex) for Mode B users.
+  Future<String> _computeEffectiveUserIdModeB({
+    required String provider,
+    required String oauthSub,
+    required String seed,
+  }) async {
+    await ensureRustLibInitialized();
+    final bytes = await fula.computeEffectiveUserIdModeB(
+      provider: provider,
+      oauthSub: oauthSub,
+      seed: seed,
+    );
+    return _toHex(bytes);
+  }
+
+  /// 16-byte effective_user_id (hex) for Mode C users.
+  Future<String> _computeEffectiveUserIdModeC(String seed) async {
+    await ensureRustLibInitialized();
+    final bytes = await fula.computeEffectiveUserIdModeC(seed: seed);
+    return _toHex(bytes);
+  }
+
+  String _toHex(List<int> bytes) {
+    final sb = StringBuffer();
+    for (final b in bytes) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
+
+  /// Mode B sign-in / sign-up (idempotent at the issuer): user supplies
+  /// `(provider, oauthToken, sub, email, password)`. The seed is the
+  /// password; never persisted to disk.
+  ///
+  /// On success: persists `keyDerivationVersion=2_mode_B`,
+  /// `effectiveUserIdHex`, `modeOauthProvider`, `modeOauthSub`,
+  /// `jwtToken`, `encryptionKey` and sets `_currentUser`. Mode A users
+  /// are unaffected (this is an additive code path).
+  ///
+  /// Throws `IssuerException` (with `code` = `PUBLIC_KEY_MISMATCH`,
+  /// `SIGNATURE_INVALID`, etc.) on failure.
+  Future<AuthUser> signInModeB({
+    required String provider, // 'google' or 'apple'
+    required String oauthToken,
+    required String oauthSub,
+    required String email,
+    required String displayName,
+    String? photoUrl,
+    required String password,
+  }) async {
+    if (password.isEmpty) {
+      throw ArgumentError('Mode B password must not be empty');
+    }
+
+    // 1. Derive identity locally.
+    final effectiveUserIdHex = await _computeEffectiveUserIdModeB(
+      provider: provider,
+      oauthSub: oauthSub,
+      seed: password,
+    );
+    final keyPair = await _deriveSigningKeypair(password);
+    final pubKey = await keyPair.extractPublicKey();
+
+    // 2. Generate the client-side challenge and sign the
+    //    register-mode-b transcript.
+    final challenge = _randomBytes(32);
+    final transcript = _buildSignedTranscript(
+      'register-mode-b',
+      effectiveUserIdHex,
+      challenge,
+    );
+    final signature = await Ed25519().sign(transcript, keyPair: keyPair);
+
+    // 3. Talk to the issuer.
+    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final result = await issuer.registerModeB(
+      provider: provider,
+      oauthToken: oauthToken,
+      effectiveUserIdHex: effectiveUserIdHex,
+      publicKey: Uint8List.fromList(pubKey.bytes),
+      challenge: challenge,
+      signature: Uint8List.fromList(signature.bytes),
+    );
+
+    // 4. Derive the master encryption key (Argon2id, Mode B context).
+    final kekInput = _canonicalKekInputModeB(provider, oauthSub, password);
+    final kekBytes = await fula.deriveKey(
+      context: 'fula-files-v2-mode-b',
+      input: kekInput,
+    );
+
+    // 5. Persist the new session.
+    await _persistSeedAuthSession(
+      result: result,
+      kek: kekBytes,
+      provider: provider,
+      oauthSub: oauthSub,
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
+    );
+
+    return _currentUser!;
+  }
+
+  /// Mode C sign-in / sign-up (idempotent at the issuer). No OAuth.
+  /// The user supplies the seed (typically a 24-word BIP39 mnemonic).
+  /// Two callers with the same seed reach the same vault — that is
+  /// the "seed IS the user" design.
+  Future<AuthUser> signInModeC({
+    required String seed,
+    String? displayName,
+  }) async {
+    if (seed.trim().isEmpty) {
+      throw ArgumentError('Mode C seed must not be empty');
+    }
+
+    final effectiveUserIdHex = await _computeEffectiveUserIdModeC(seed);
+    final keyPair = await _deriveSigningKeypair(seed);
+    final pubKey = await keyPair.extractPublicKey();
+
+    final challenge = _randomBytes(32);
+    final transcript = _buildSignedTranscript(
+      'register-mode-c',
+      effectiveUserIdHex,
+      challenge,
+    );
+    final signature = await Ed25519().sign(transcript, keyPair: keyPair);
+
+    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final result = await issuer.registerModeC(
+      effectiveUserIdHex: effectiveUserIdHex,
+      publicKey: Uint8List.fromList(pubKey.bytes),
+      challenge: challenge,
+      signature: Uint8List.fromList(signature.bytes),
+    );
+
+    // Master KEK from the seed. Mode C context.
+    final kekInput = _canonicalKekInputModeC(seed);
+    final kekBytes = await fula.deriveKey(
+      context: 'fula-files-v2-mode-c',
+      input: kekInput,
+    );
+
+    // Mode C has no OAuth identity; persist with synthetic fields.
+    await _persistSeedAuthSession(
+      result: result,
+      kek: kekBytes,
+      provider: null,
+      oauthSub: null,
+      email: '$effectiveUserIdHex@seed.fxfiles.local',
+      displayName: displayName ?? 'Passphrase Vault',
+      photoUrl: null,
+    );
+
+    return _currentUser!;
+  }
+
+  /// Cryptographically secure random bytes (used as a client-issued
+  /// challenge in register-mode-*). Falls back to Dart's `Random.secure()`.
+  Uint8List _randomBytes(int n) {
+    final rng = Random.secure();
+    final out = Uint8List(n);
+    for (var i = 0; i < n; i++) {
+      out[i] = rng.nextInt(256);
+    }
+    return out;
+  }
+
+  /// Persist the seed-auth session state. Sets `_currentUser`, caches
+  /// the master KEK in SecureStorage, stores the JWT, persists the
+  /// mode flag.
+  Future<void> _persistSeedAuthSession({
+    required SeedAuthResult result,
+    required List<int> kek,
+    required String? provider,
+    required String? oauthSub,
+    required String email,
+    required String displayName,
+    String? photoUrl,
+  }) async {
+    final modeTag = result.mode == SeedAuthMode.b ? '2_mode_B' : '2_mode_C';
+
+    // SecureStorage writes.
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.keyDerivationVersion,
+      modeTag,
+    );
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.effectiveUserIdHex,
+      result.effectiveUserIdHex,
+    );
+    if (provider != null) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.modeOauthProvider,
+        provider,
+      );
+    }
+    if (oauthSub != null) {
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.modeOauthSub,
+        oauthSub,
+      );
+    }
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.jwtToken,
+      result.jwt,
+    );
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.encryptionKey,
+      base64Encode(kek),
+    );
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.derivationEmail,
+      email,
+    );
+
+    // Update in-memory user.
+    _setCurrentUser(AuthUser(
+      // The `id` field is the JWT sub for routing the gateway's
+      // namespace lookups; matches what fula-cli sees as `claims.sub`.
+      id: result.effectiveUserIdHex,
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
+      // The `provider` enum still distinguishes Google vs Apple for
+      // Mode B users; Mode C clients are reported as Google for
+      // backward compat with existing AuthUser consumers (they never
+      // see an OAuth identity anyway). Refine later if the UI needs
+      // to distinguish vault types.
+      provider: provider == 'apple' ? AuthProvider.apple : AuthProvider.google,
+    ));
+    await SecureStorageService.instance.writeJson(
+      SecureStorageKeys.userCredentials,
+      _currentUser!.toJson(),
+    );
+
+    // Cache the master encryption key in memory so the rest of the
+    // app can use it without re-deriving.
+    _encryptionKey = Uint8List.fromList(kek);
+
+    // Clear the sign-out sentinel.
+    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
+
+    debugPrint(
+      'AuthService: persisted Mode ${result.mode.name.toUpperCase()} session '
+      '(effective_user_id=${result.effectiveUserIdHex.substring(0, 8)}…, '
+      'created=${result.created})',
+    );
+  }
+
+  /// True if the currently-stored session is Mode B or Mode C.
+  /// UI flows check this before showing the mode-chooser screen.
+  Future<bool> hasSeedAuthSession() async {
+    final v = await SecureStorageService.instance.read(
+      SecureStorageKeys.keyDerivationVersion,
+    );
+    return v == '2_mode_B' || v == '2_mode_C';
+  }
+
+  /// The persisted mode tag (`'1_mode_A'`, `'2_mode_B'`, `'2_mode_C'`,
+  /// or `null` if none yet). Used to decide which sign-in flow to
+  /// present on a returning device.
+  Future<String?> readKeyDerivationVersion() async {
+    return SecureStorageService.instance.read(
+      SecureStorageKeys.keyDerivationVersion,
+    );
+  }
+
+  /// Mode B convenience: run Google OAuth, capture the ID token, then
+  /// call `signInModeB`. Returns the new AuthUser. The seed/password
+  /// is NEVER persisted to disk — it's used once for KDF + signing,
+  /// then dropped.
+  ///
+  /// On `GoogleSignInExceptionCode.canceled`, returns `null`.
+  Future<AuthUser?> signInGoogleModeB({required String password}) async {
+    if (PlatformCapabilities.isDesktop) {
+      throw Exception(
+        'Google Sign-In is not available on desktop. '
+        'Use "Get API Key" or pick "Passphrase only (Mode C)".',
+      );
+    }
+    await _ensureGoogleInitialized();
+    if (!_googleSignIn.supportsAuthenticate()) {
+      throw Exception('Google Sign-In not supported on this device');
+    }
+    try {
+      final account = await _googleSignIn.authenticate();
+      final auth = account.authentication;
+      final idToken = auth.idToken;
+      if (idToken == null || idToken.isEmpty) {
+        throw Exception(
+          'Google did not return an ID token. Ensure serverClientId is '
+          'configured in google-services.json / GoogleService-Info.plist.',
+        );
+      }
+      return await signInModeB(
+        provider: 'google',
+        oauthToken: idToken,
+        oauthSub: account.id,
+        email: account.email,
+        displayName: account.displayName ?? '',
+        photoUrl: account.photoUrl,
+        password: password,
+      );
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) return null;
+      rethrow;
+    }
+  }
+
+  /// Mode B convenience for Apple Sign-In. Returns `null` on user cancel.
+  Future<AuthUser?> signInAppleModeB({required String password}) async {
+    try {
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: const [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+      final identityToken = credential.identityToken;
+      if (identityToken == null || identityToken.isEmpty) {
+        throw Exception('Apple did not return an identity token');
+      }
+      final sub = credential.userIdentifier;
+      if (sub == null) {
+        throw Exception('Apple Sign-In failed: no user identifier');
+      }
+      // Apple only sends email on first sign-in.
+      String? email = credential.email;
+      String displayName = '';
+      if (credential.givenName != null || credential.familyName != null) {
+        displayName = [credential.givenName, credential.familyName]
+            .where((n) => n != null && n.isNotEmpty)
+            .join(' ');
+      }
+      email ??= '$sub@privaterelay.appleid.com';
+      return await signInModeB(
+        provider: 'apple',
+        oauthToken: identityToken,
+        oauthSub: sub,
+        email: email,
+        displayName: displayName,
+        photoUrl: null,
+        password: password,
+      );
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) return null;
+      rethrow;
+    }
+  }
+
   Future<void> signOut() async {
     try {
       final provider = await SecureStorageService.instance.read(
@@ -931,6 +1400,14 @@ class AuthService {
       // Clear API key and tokens (tied to user account)
       await SecureStorageService.instance.delete(SecureStorageKeys.jwtToken);
       await SecureStorageService.instance.delete(SecureStorageKeys.refreshToken);
+
+      // Clear Mode B / Mode C session state (audit F-A1 / F-A3 redesign).
+      // Safe to delete even for Mode A users — the keys are absent in their
+      // SecureStorage and `delete` is idempotent.
+      await SecureStorageService.instance.delete(SecureStorageKeys.keyDerivationVersion);
+      await SecureStorageService.instance.delete(SecureStorageKeys.effectiveUserIdHex);
+      await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthProvider);
+      await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthSub);
 
       // Clear sync queues and cached data for the old user
       await SyncService.instance.clearAll();
