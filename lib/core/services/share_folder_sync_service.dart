@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
-import 'package:fula_files/core/models/fula_object.dart';
+import 'package:http/http.dart' as http;
 import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/utils/safe_path.dart';
@@ -220,39 +223,105 @@ class ShareFolderSyncService {
       bool hasChanges = false;
 
       final share = info.share;
-      final handle = await _ensureShareHandle(share);
-      if (handle == null) {
+
+      // ─── Fetch + parse the share manifest from pinning-webui's
+      //    share-aware endpoint (cross-account safe).
+      //
+      //    Why this replaces the prior `listObjects(share.bucket, ...)`:
+      //    `listObjects` hits master with the recipient's JWT and is
+      //    user-scoped — it returns the recipient's namespace, not the
+      //    owner's. For ANY cross-account share, that returns either
+      //    empty or NoSuchBucket. The manifest at
+      //    `/api/share/v2/manifest/{shareId}` is uploaded by the owner
+      //    at share-creation time (see
+      //    `sharing_service.dart::_postManifest`) and validated by
+      //    share-id/expiry, not by JWT — so the recipient can fetch
+      //    it cross-account.
+      final manifest = await _fetchAndParseManifest(share);
+      if (manifest == null) {
         debugPrint(
-            '[ShareFolderSync] Cannot acquire share handle for $shareId — skipping poll');
+            '[ShareFolderSync] Manifest unavailable for $shareId — skipping poll');
         return;
       }
 
-      // List every object inside the share's pathScope. fula_client honours
-      // the recipient's accepted-share handle internally, so this returns
-      // exactly the files the recipient is entitled to.
-      final List<FulaObject> objects;
-      try {
-        objects = await FulaApiService.instance.listObjects(
-          share.bucket,
-          prefix: share.pathScope,
-        );
-      } catch (e) {
-        debugPrint('[ShareFolderSync] listObjects failed ($shareId): $e');
-        return;
+      final bucket = (manifest['bucket'] as String?) ?? share.bucket;
+      final pathScope =
+          (manifest['pathScope'] as String?) ?? share.pathScope;
+      final files = (manifest['files'] as List?) ?? const [];
+
+      // Determine which secret unwraps each per-file share token:
+      //   * Type 1/2 (public link / password): URL-embedded
+      //     `linkSecretKey` (`AcceptedShare.linkSecretKey`). Each
+      //     per-file token in the manifest was wrapped to the link's
+      //     ephemeral pubkey at owner-side creation time, so the
+      //     matching ephemeral private key is what unwraps.
+      //   * Type 3 (specific recipient): the recipient's signed-in
+      //     master KEK. Per-file tokens were wrapped to recipient's
+      //     pubkey, which derives from master KEK.
+      //
+      // Both paths target the same SDK call (`fula.getWithToken`); the
+      // only difference is which secret seeds the ephemeral
+      // fula_client. The proxy at `/api/share/v2/fetch` doesn't
+      // user-scope, so both cases work cross-account.
+      final Uint8List secretKey;
+      if (share.linkSecretKey != null) {
+        secretKey = share.linkSecretKey!;
+      } else {
+        final k = await AuthService.instance.getEncryptionKey();
+        if (k == null) {
+          debugPrint(
+              '[ShareFolderSync] No encryption key for Type 3 share $shareId — '
+              'skipping poll (user must be signed in)');
+          return;
+        }
+        secretKey = k;
       }
-      final fileObjects = objects.where((o) => !o.isDirectory).toList();
 
-      for (final obj in fileObjects) {
-        // Key against the object's path; same key in syncMeta = already
-        // downloaded. v1 doesn't detect content-only updates (no etag check)
-        // — that's a future enhancement.
-        final entry = syncMeta[obj.key];
-        if (entry != null && entry.direction == 'download') continue;
+      // Build ONE ephemeral fula_client pointed at the share proxy and
+      // reuse it for every file in this poll. The proxy is share-token
+      // aware (validates by token, not JWT), so cross-account works.
+      final shareClient = await _buildShareClient(secretKey);
 
-        final localPath = _resolveLocalPath(folderPath, share.pathScope, obj.key);
+      for (final entry in files) {
+        if (entry is! Map) continue;
+        // Manifest entry shape (see
+        // `sharing_service.dart::_buildManifestEntries`): keys are
+        // intentionally single-letter to keep the encrypted blob small.
+        final displayName = entry['n'] as String?;
+        final storageKey = entry['c'] as String?;
+        final tokenJson = entry['t'] as String?;
+        if (displayName == null ||
+            storageKey == null ||
+            tokenJson == null) {
+          continue;
+        }
+
+        // Skip files already downloaded in a prior poll. Keyed by
+        // displayName because that's stable across polls (storageKey
+        // depends on the per-file DEK and HMAC).
+        final entryRecord = syncMeta[displayName];
+        if (entryRecord != null && entryRecord.direction == 'download') {
+          continue;
+        }
+
+        // Reconstruct the full key path for _resolveLocalPath (it
+        // strips pathScope off the front to produce the local relative
+        // path). The manifest's displayName is ALREADY pathScope-
+        // stripped, so we re-prepend pathScope before passing through.
+        final String reconstructedKey;
+        if (pathScope.isEmpty || displayName.startsWith(pathScope)) {
+          reconstructedKey = displayName;
+        } else if (pathScope.endsWith('/')) {
+          reconstructedKey = '$pathScope$displayName';
+        } else {
+          reconstructedKey = '$pathScope/$displayName';
+        }
+
+        final localPath =
+            _resolveLocalPath(folderPath, pathScope, reconstructedKey);
         if (localPath == null) {
-          syncMeta[obj.key] = _SyncedFileEntry(
-            fileName: obj.name,
+          syncMeta[displayName] = _SyncedFileEntry(
+            fileName: displayName,
             direction: 'download_failed',
             syncedAt: DateTime.now(),
           );
@@ -262,11 +331,11 @@ class ShareFolderSyncService {
         // Refuse to overwrite a file the recipient placed in the folder
         // themselves. Skip + log, leaving the user's copy intact.
         final localFile = File(localPath);
-        if (localFile.existsSync() && entry == null) {
+        if (localFile.existsSync() && entryRecord == null) {
           debugPrint(
-              '[ShareFolderSync] Skip (local file already exists, not from share): ${obj.key}');
-          syncMeta[obj.key] = _SyncedFileEntry(
-            fileName: obj.name,
+              '[ShareFolderSync] Skip (local file already exists, not from share): $displayName');
+          syncMeta[displayName] = _SyncedFileEntry(
+            fileName: displayName,
             direction: 'skipped_collision',
             syncedAt: DateTime.now(),
           );
@@ -274,29 +343,40 @@ class ShareFolderSyncService {
         }
 
         try {
-          final data = await FulaApiService.instance.downloadSharedFile(
-            share.bucket,
-            obj.storageKey ?? obj.key,
-            obj.key,
-            handle,
+          // Per-file share token is wrapped to the recipient's pubkey
+          // (Type 3) or to the link-ephemeral pubkey (Type 1/2). The
+          // ephemeral fula_client we built above has the matching
+          // secret, so `getWithToken` accepts internally and decrypts.
+          //
+          // `storageKey` doubles as both the path and the originalKey:
+          // the FFI's `create_share_token_with_mode` sets the token's
+          // `path_scope = storage_key`, so `is_path_allowed(originalKey)`
+          // only passes when both args are equal. Mirrors the
+          // collab + plain-share fix in `sharing_service.dart`.
+          final data = await fula.getWithToken(
+            client: shareClient,
+            bucket: bucket,
+            storageKey: storageKey,
+            originalKey: storageKey,
+            tokenJson: tokenJson,
           );
           await localFile.parent.create(recursive: true);
-          await localFile.writeAsBytes(data);
-          syncMeta[obj.key] = _SyncedFileEntry(
-            fileName: obj.name,
+          await localFile.writeAsBytes(Uint8List.fromList(data));
+          syncMeta[displayName] = _SyncedFileEntry(
+            fileName: displayName,
             direction: 'download',
             syncedAt: DateTime.now(),
           );
           hasChanges = true;
-          debugPrint('[ShareFolderSync] Downloaded: ${obj.key}');
+          debugPrint('[ShareFolderSync] Downloaded: $displayName');
         } catch (e) {
-          debugPrint('[ShareFolderSync] Download failed (${obj.key}): $e');
+          debugPrint('[ShareFolderSync] Download failed ($displayName): $e');
           // Only persist a failure marker for non-transient errors so a flaky
           // network doesn't permanently lock the file out.
           final errStr = e.toString();
           if (errStr.contains('404') || errStr.contains('410')) {
-            syncMeta[obj.key] = _SyncedFileEntry(
-              fileName: obj.name,
+            syncMeta[displayName] = _SyncedFileEntry(
+              fileName: displayName,
               direction: 'download_failed',
               syncedAt: DateTime.now(),
             );
@@ -332,6 +412,125 @@ class ShareFolderSyncService {
   // HELPERS
   // ============================================================================
 
+  /// Fetch the share manifest from pinning-webui's
+  /// `/api/share/v2/manifest/{shareId}` endpoint and decrypt if needed.
+  ///
+  /// The owner uploads the manifest at share-creation time (see
+  /// `sharing_service.dart::_postManifest`). For Type 1/2 (public link
+  /// / password) the manifest body has the shape:
+  ///   ```
+  ///   { encryptedManifest: "ENC1:<base64>", expiresAt: "..." }
+  ///   ```
+  /// and the recipient decrypts it with their linkSecretKey (which
+  /// came from the URL fragment). For Type 3 (recipient-specific) the
+  /// manifest is plaintext:
+  ///   ```
+  ///   { bucket, pathScope, tokenJson, files: [...], shareMode, expiresAt }
+  ///   ```
+  /// because the per-file share tokens inside `files` already encrypt
+  /// the DEK to the recipient's pubkey, so the file LIST being public
+  /// is acceptable. Defence-in-depth (file CONTENTS still require
+  /// recipient secret to decrypt via the share-token unwrap).
+  ///
+  /// Returns the manifest map (with `files: List`) on success, or null
+  /// on any failure. Caller logs + skips.
+  Future<Map<String, dynamic>?> _fetchAndParseManifest(
+      AcceptedShare share) async {
+    try {
+      final url =
+          '$kShareGatewayBaseUrl/api/share/v2/manifest/${share.token.id}';
+      final response =
+          await http.get(Uri.parse(url)).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) {
+        debugPrint(
+            '[ShareFolderSync] Manifest fetch status=${response.statusCode} for ${share.token.id}');
+        return null;
+      }
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      // Encrypted shape (Type 1/2). Manifest is AEAD-wrapped under
+      // `HKDF(linkSecretKey, shareId)`; we need the URL-embedded
+      // ephemeral private key from `AcceptedShare.linkSecretKey`
+      // (persisted at acceptance time by
+      // `SharingService.acceptShare(token, linkSecretKey: ...)`).
+      final enc = body['encryptedManifest'];
+      if (enc is String) {
+        if (share.linkSecretKey == null) {
+          debugPrint(
+              '[ShareFolderSync] Manifest is encrypted (Type 1/2) but share '
+              '${share.token.id} has no linkSecretKey. The share was either '
+              'accepted before the Type 1/2 plumbing landed (re-accept the '
+              'link) or it is password-protected (password flow not yet wired).');
+          return null;
+        }
+        return await CollaborationService.instance.decryptManifestPayload(
+          enc,
+          share.linkSecretKey!,
+          share.token.id,
+        );
+      }
+
+      // Plaintext shape (Type 3)
+      if (body['files'] is List) {
+        return body;
+      }
+
+      debugPrint(
+          '[ShareFolderSync] Unexpected manifest shape for ${share.token.id}: '
+          'missing both encryptedManifest and files');
+      return null;
+    } catch (e) {
+      debugPrint(
+          '[ShareFolderSync] Manifest fetch error (${share.token.id}): $e');
+      return null;
+    }
+  }
+
+  /// Build an ephemeral fula_client pointed at the share-fetch proxy.
+  /// Mirrors `sharing_service.dart::downloadSharedFile` and
+  /// `collaboration_service.dart::downloadFile`. The `secretKey`
+  /// passed here is what unwraps the per-file share token DEKs:
+  /// today that's the signed-in user's master KEK (Type 3 only). See
+  /// the comment in `_pollForNewFiles` for Type 1/2 follow-up scope.
+  Future<fula.EncryptedClientHandle> _buildShareClient(
+      Uint8List secretKey) async {
+    final config = fula.FulaConfig(
+      endpoint: '$kShareGatewayBaseUrl/api/share/v2/fetch',
+      timeoutSeconds: BigInt.from(120),
+      maxRetries: 3,
+      perChunkDownloadTimeoutSeconds: BigInt.from(300),
+      bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+      healthGateEnabled: true,
+      healthGateTtlSeconds: BigInt.from(30),
+      // Cache off: share fetches don't fit the user-scoped offline path.
+      blockCacheEnabled: false,
+      blockCachePath: '',
+      blockCacheMaxBytes: BigInt.from(256 * 1024 * 1024),
+      // Gateway fallback off: share tokens validated by the proxy.
+      gatewayFallbackEnabled: false,
+      gatewayFallbackUrls: const [],
+      gatewayRaceConcurrency: 3,
+      // Cold-start doesn't apply to ephemeral share-fetch client.
+      usersIndexChainRpcUrl: '',
+      usersIndexAnchorAddress: '',
+      usersIndexIpnsName: '',
+      usersIndexUserKey: '',
+      usersIndexIpnsGatewayUrls: const [],
+      usersIndexIpfsGatewayUrls: const [],
+      walkableV8WriterEnabled: true,
+    );
+    final encConfig = fula.EncryptionConfig(
+      secretKey: secretKey,
+      enableMetadataPrivacy: true,
+      obfuscationMode: fula.ObfuscationMode.flatNamespace,
+    );
+    return await fula.createEncryptedClient(
+      config: config,
+      encryption: encConfig,
+    );
+  }
+
   /// Returns the local target path for a remote object, or null when the
   /// supplied key would escape [folderPath] (defence-in-depth against
   /// hostile manifest entries even though fula_client should already scope
@@ -358,6 +557,14 @@ class ShareFolderSyncService {
     }
   }
 
+  /// Folder-level share-token acceptance is unused by the manifest-
+  /// driven download path: each FILE in the manifest carries its own
+  /// per-file share token, which the ephemeral fula_client built in
+  /// `_buildShareClient` accepts inline via `fula.getWithToken`. The
+  /// helper + `_handles` cache are kept here for backward-reference
+  /// only; remove when the Type 1/2 desktop folder-sync follow-up
+  /// settles on whether per-share handles are needed at all.
+  // ignore: unused_element
   Future<fula.AcceptedShareHandle?> _ensureShareHandle(AcceptedShare share) async {
     final cached = _handles[share.token.id];
     if (cached != null) return cached;

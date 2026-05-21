@@ -1305,7 +1305,16 @@ class SharingService {
   /// 2. Verify recipient matches (for non-public shares)
   /// 3. Validate with fula_client
   /// 4. Store accepted share for future use
-  Future<AcceptedShare> acceptShare(ShareToken token) async {
+  ///
+  /// [linkSecretKey] — for Type 1/2 shares (public link / password
+  /// link), pass the ephemeral private key extracted from the URL
+  /// fragment's `sk` field. Persisted on the resulting [AcceptedShare]
+  /// so the desktop folder-sync service can decrypt the share manifest
+  /// + unwrap per-file tokens cross-account. Null for Type 3.
+  Future<AcceptedShare> acceptShare(
+    ShareToken token, {
+    Uint8List? linkSecretKey,
+  }) async {
     // Check if share is valid
     if (token.isExpired) {
       throw SharingException('Share has expired');
@@ -1343,6 +1352,7 @@ class SharingService {
     final acceptedShare = AcceptedShare(
       token: token,
       fulaShareToken: fulaToken,
+      linkSecretKey: linkSecretKey,
     );
 
     // Save accepted share
@@ -1351,32 +1361,136 @@ class SharingService {
     return acceptedShare;
   }
 
-  /// Download a file using an accepted share
+  /// Download a file using an accepted share.
   ///
-  /// This is the new method for downloading shared files with fula_client
+  /// ## Why this routes through the share-gateway proxy
+  ///
+  /// Fixed 2026-05-21 after the cross-mode E2E sweep root-caused the
+  /// "cross-account share download fails with NoSuchBucket" bug. The
+  /// prior implementation used `FulaApiService.instance` (the main
+  /// signed-in client, pointed at `s3.cloud.fx.land`). Master's S3 GET
+  /// handler scopes every request by `session.hashed_user_id` from the
+  /// JWT (see `fula-cli/src/handlers/object.rs::get_object` —
+  /// `state.bucket_manager.open_bucket_for_user(&session.hashed_user_id, ...)`).
+  /// When the recipient is a different account from the owner, the
+  /// owner's bucket isn't in the recipient's namespace, so master
+  /// returns 404 NoSuchBucket. Cross-account plain shares were
+  /// architecturally broken; only within-account "share to my other
+  /// device" worked.
+  ///
+  /// Collab already solved this correctly at
+  /// `collaboration_service.dart::downloadFile` (lines 425-485) by
+  /// building an ephemeral fula_client pointed at
+  /// `$kShareGatewayBaseUrl/api/share/v2/fetch` — the pinning-webui
+  /// share-aware proxy that validates by share token (not JWT) and
+  /// CAN serve cross-namespace fetches. This method now mirrors that
+  /// pattern.
+  ///
+  /// ## What changed vs the old implementation
+  ///
+  /// 1. **No more `_getStorageKeyForPath` call.** That helper called
+  ///    `listObjects(share.bucket, prefix: share.pathScope)` against
+  ///    master, which is user-scoped and fails cross-account. The
+  ///    `share.pathScope` field IS the storage_key directly — the FFI
+  ///    `create_share_token_with_mode` sets `path_scope = storage_key`
+  ///    at share-creation time. Skip the lookup, use it directly.
+  ///
+  /// 2. **Ephemeral client per download.** Built with the recipient's
+  ///    encryption key so its KeyManager can unwrap the share token's
+  ///    wrapped DEK, then aimed at the share proxy for the actual byte
+  ///    fetch. Disposed implicitly when the function returns.
+  ///
+  /// 3. **`fula.getWithToken` instead of `acceptShareToken` +
+  ///    `downloadSharedFile`**. Same SDK call collab uses; accepts the
+  ///    token + fetches in one shot.
+  ///
+  /// ## Scope of this fix
+  ///
+  /// Validated end-to-end for Type 3 (specific-person) shares across
+  /// every (owner_mode, recipient_mode) combination via the production
+  /// E2E test `sharing_e2e::share_round_trip_e2e` plus crypto-layer
+  /// tests in `cross_mode_sharing_e2e.rs`. Type 1/2 (public link /
+  /// password-link) shares wrap to an ephemeral pubkey (not the
+  /// recipient's master KEK), so the ephemeral client's `secretKey`
+  /// must be the URL-embedded ephemeral private key, not the
+  /// signed-in user's encryption key. That flow lives in
+  /// `acceptShareFromString` and feeds a different code path; this
+  /// method specifically handles the AcceptedShare-from-signed-in-user
+  /// case.
   Future<Uint8List> downloadSharedFile(AcceptedShare share) async {
     final fulaToken = share.fulaShareToken ?? share.token.fulaShareToken;
     if (fulaToken == null) {
       throw SharingException('Invalid share - no fula token available');
     }
 
-    if (!fula_service.FulaApiService.instance.isConfigured) {
-      throw SharingException('Fula API not configured');
+    // For path_scope == storage_key (the FFI's convention) skip the
+    // broken listObjects lookup.
+    final storageKey = share.pathScope;
+
+    // Recipient's master KEK is what the share was wrapped to (Type 3
+    // recipient-specific). Required to unwrap the DEK inside the
+    // ephemeral client via accept_share.
+    final encryptionKey = await AuthService.instance.getEncryptionKey();
+    if (encryptionKey == null) {
+      throw SharingException(
+        'Cannot download shared file: signed-in user has no encryption '
+        'key. Please sign in.',
+      );
     }
 
-    // Get storage key for the path
-    final storageKey = await _getStorageKeyForPath(share.bucket, share.pathScope);
+    final proxyEndpoint = '$kShareGatewayBaseUrl/api/share/v2/fetch';
+    final config = fula.FulaConfig(
+      endpoint: proxyEndpoint,
+      timeoutSeconds: BigInt.from(120),
+      maxRetries: 3,
+      perChunkDownloadTimeoutSeconds: BigInt.from(300),
+      bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+      // Health gate on so a proxy outage surfaces fast.
+      healthGateEnabled: true,
+      healthGateTtlSeconds: BigInt.from(30),
+      // Cache off: share fetches are per-download against a different
+      // bucket + per-share secret, doesn't fit the user-scoped offline
+      // path.
+      blockCacheEnabled: false,
+      blockCachePath: '',
+      blockCacheMaxBytes: BigInt.from(256 * 1024 * 1024),
+      // Gateway fallback off: share tokens are validated by the proxy,
+      // raw IPFS gateways can't decrypt them.
+      gatewayFallbackEnabled: false,
+      gatewayFallbackUrls: const [],
+      gatewayRaceConcurrency: 3,
+      // Cold-start doesn't apply to ephemeral share-fetch client.
+      usersIndexChainRpcUrl: '',
+      usersIndexAnchorAddress: '',
+      usersIndexIpnsName: '',
+      usersIndexUserKey: '',
+      usersIndexIpnsGatewayUrls: const [],
+      usersIndexIpfsGatewayUrls: const [],
+      // Match the cloud client to avoid wire-format drift if a future
+      // share-side write ever lands.
+      walkableV8WriterEnabled: true,
+    );
+    final encConfig = fula.EncryptionConfig(
+      secretKey: encryptionKey,
+      enableMetadataPrivacy: true,
+      obfuscationMode: fula.ObfuscationMode.flatNamespace,
+    );
+    final shareClient = await fula.createEncryptedClient(
+      config: config,
+      encryption: encConfig,
+    );
 
-    // Accept and download via fula_client
-    final handle = await fula_service.FulaApiService.instance.acceptShareToken(fulaToken);
-    return await fula_service.FulaApiService.instance.downloadSharedFile(
-      share.bucket,
-      storageKey,
-      // fula-flutter's create_share_token_with_mode sets the token's
-      // path_scope to storage_key, so the prefix check in
-      // get_object_with_share only passes when originalKey == storageKey.
-      storageKey,
-      handle,
+    return await fula.getWithToken(
+      client: shareClient,
+      bucket: share.bucket,
+      storageKey: storageKey,
+      // The FFI's `create_share_token_with_mode` sets the token's
+      // `path_scope = storage_key`, so the SDK's prefix check in
+      // `get_object_with_token::is_path_allowed` only passes when
+      // `originalKey == storageKey`. The web portal does the same:
+      // `pinning-webui Collab.tsx:174`.
+      originalKey: storageKey,
+      tokenJson: fulaToken,
     );
   }
 

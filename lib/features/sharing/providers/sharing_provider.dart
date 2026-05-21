@@ -430,20 +430,47 @@ class SharesNotifier extends Notifier<SharesState> {
   }
 
   /// Accept a share from URL
+  ///
+  /// For Type 1/2 (public/password link) URLs of the form
+  /// `https://cloud.fx.land/view/{id}#{fragment}`, we extract the
+  /// full [PublicLinkPayload] (which carries the URL's ephemeral
+  /// private key in `sk`) and thread `linkSecretKey` through to
+  /// [SharingService.acceptShare]. That way the desktop folder-sync
+  /// service can later use the linkSecretKey to decrypt the share
+  /// manifest + unwrap per-file tokens cross-account.
+  ///
+  /// For Type 3 (recipient-specific) `fxblox://share/...` deep links,
+  /// the legacy path applies: `parseShareLink` returns the token, no
+  /// linkSecretKey to thread.
   Future<AcceptedShare?> acceptShareFromUrl(String url) async {
     state = state.copyWith(isLoading: true, error: null);
-    
+
     try {
+      // Try the public-link payload form first (Type 1/2). It returns
+      // null for fxblox:// deep links and password-protected links
+      // (those need separate handling).
+      final publicPayload = _sharingService.parsePublicLink(url);
+      if (publicPayload != null && !publicPayload.isPasswordProtected) {
+        final accepted = await _sharingService.acceptShare(
+          publicPayload.token,
+          linkSecretKey: publicPayload.linkSecretKey,
+        );
+        await _syncToCloud();
+        await loadShares();
+        return accepted;
+      }
+
+      // Fallback to the Type 3 (recipient-specific) path.
       final token = _sharingService.parseShareLink(url);
       if (token == null) {
         throw SharingException('Invalid share link');
       }
-      
+
       final accepted = await _sharingService.acceptShare(token);
 
       await _syncToCloud();
       await loadShares();
-      
+
       return accepted;
     } catch (e) {
       state = state.copyWith(

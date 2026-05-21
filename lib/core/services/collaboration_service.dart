@@ -113,6 +113,29 @@ class CollaborationService {
     return 'ENC1:${base64Encode(encrypted)}';
   }
 
+  /// Reverse of [encryptManifestPayload]: decrypt an "ENC1:{base64}"
+  /// blob back to its JSON map. Returns the original manifest map.
+  ///
+  /// Used by recipient-side flows that fetch the manifest from
+  /// `/api/share/v2/manifest/{shareId}` and need to enumerate files in
+  /// the share. Mirrors the parsing logic already in
+  /// `_parseManifestData` / `_fetchManifestFromServer`, exposed as a
+  /// public API so [ShareFolderSyncService] doesn't need to copy it.
+  Future<Map<String, dynamic>> decryptManifestPayload(
+    String enc1Blob,
+    Uint8List linkSecret,
+    String scopeId,
+  ) async {
+    if (!enc1Blob.startsWith('ENC1:')) {
+      throw ArgumentError('Expected "ENC1:" prefix, got: ${enc1Blob.length > 16 ? "${enc1Blob.substring(0, 16)}..." : enc1Blob}');
+    }
+    final encoded = enc1Blob.substring(5);
+    final encrypted = base64Decode(encoded);
+    final key = await _deriveManifestKey(linkSecret, scopeId);
+    final decrypted = await decryptCollabFile(Uint8List.fromList(encrypted), key);
+    return jsonDecode(utf8.decode(decrypted)) as Map<String, dynamic>;
+  }
+
   // ============================================================================
   // GROUP CREATION & MANAGEMENT
   // ============================================================================

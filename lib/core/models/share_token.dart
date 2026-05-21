@@ -448,6 +448,22 @@ class AcceptedShare {
   /// AcceptShareScreen or the Windows context menu.
   final bool syncEnabled;
 
+  /// Ephemeral private key for Type 1/2 shares (public link / password
+  /// link). Extracted from the URL fragment's `sk` field when the
+  /// recipient accepts a public-link URL inside FxFiles. Null for
+  /// Type 3 (recipient-specific) shares where the recipient's master
+  /// KEK is what unwraps each per-file share token.
+  ///
+  /// Required by [ShareFolderSyncService] so the desktop folder-sync
+  /// flow can:
+  ///   * decrypt the share manifest at
+  ///     `/api/share/v2/manifest/{shareId}` (which is AEAD-wrapped
+  ///     under `HKDF(linkSecretKey, shareId)` for Type 1/2);
+  ///   * build the per-poll ephemeral fula_client with the right
+  ///     secret so per-file share tokens (wrapped to the link's
+  ///     ephemeral pubkey at creation time) unwrap correctly.
+  final Uint8List? linkSecretKey;
+
   AcceptedShare({
     required this.token,
     this.fulaShareToken,
@@ -455,6 +471,7 @@ class AcceptedShare {
     DateTime? acceptedAt,
     this.localFolderPath,
     this.syncEnabled = false,
+    this.linkSecretKey,
   }) : acceptedAt = acceptedAt ?? DateTime.now();
 
   AcceptedShare copyWith({
@@ -464,6 +481,7 @@ class AcceptedShare {
     DateTime? acceptedAt,
     String? localFolderPath,
     bool? syncEnabled,
+    Uint8List? linkSecretKey,
   }) =>
       AcceptedShare(
         token: token ?? this.token,
@@ -472,6 +490,7 @@ class AcceptedShare {
         acceptedAt: acceptedAt ?? this.acceptedAt,
         localFolderPath: localFolderPath ?? this.localFolderPath,
         syncEnabled: syncEnabled ?? this.syncEnabled,
+        linkSecretKey: linkSecretKey ?? this.linkSecretKey,
       );
   
   /// Check if expired
@@ -512,6 +531,7 @@ class AcceptedShare {
     'acceptedAt': acceptedAt.toIso8601String(),
     if (localFolderPath != null) 'localFolderPath': localFolderPath,
     if (syncEnabled) 'syncEnabled': syncEnabled,
+    if (linkSecretKey != null) 'linkSecretKey': base64Encode(linkSecretKey!),
   };
 
   /// Create from JSON
@@ -522,6 +542,9 @@ class AcceptedShare {
     acceptedAt: DateTime.parse(json['acceptedAt'] as String),
     localFolderPath: json['localFolderPath'] as String?,
     syncEnabled: json['syncEnabled'] as bool? ?? false,
+    linkSecretKey: json['linkSecretKey'] != null
+        ? base64Decode(json['linkSecretKey'] as String)
+        : null,
   );
 
   /// Get the share ID
