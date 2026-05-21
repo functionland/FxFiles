@@ -646,10 +646,10 @@ packages:
     dependency: "direct main"
     description:
       name: fula_client
-      sha256: e1118ccbfcbc189828bdda60109f0d3950334712d5c01108a38d2dfc3fa0879b
+      sha256: a35e60231cf5fca2a14962a2f80bf55f5f556607dfc5fc154087a305a348927f
       url: "https://pub.dev"
     source: hosted
-    version: "0.5.7"
+    version: "0.6.0"
   get_it:
     dependency: transitive
     description:

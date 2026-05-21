@@ -7,6 +7,7 @@ import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/models/sync_task.dart';
+import 'package:fula_files/core/services/dump_storage_service.dart';
 
 class LocalStorageService {
   LocalStorageService._();
@@ -75,6 +76,16 @@ class LocalStorageService {
       _syncQueueBox = await Hive.openBox<SyncTask>('sync_queue').timeout(boxTimeout);
     } catch (e) {
       debugPrint('Failed to open sync_queue box: $e');
+    }
+
+    // Dump feature: register adapters 60-63 and open the `dump_items`
+    // box. DumpStorageService.init() is idempotent so the WorkManager
+    // background isolate can call it independently (revision R1 in
+    // the Dump plan).
+    try {
+      await DumpStorageService.instance.init();
+    } catch (e) {
+      debugPrint('Failed to init DumpStorageService: $e');
     }
 
     _isInitialized = true;

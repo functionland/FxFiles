@@ -1469,6 +1469,13 @@ class SharingService {
       // Match the cloud client to avoid wire-format drift if a future
       // share-side write ever lands.
       walkableV8WriterEnabled: true,
+      // fula_client 0.6.0 E2E plan Phase 5 — empty `Uint8List` is the
+      // SDK's "None" sentinel and keeps the legacy plaintext path
+      // active (Mode A). This client is an ephemeral share-fetch
+      // client (no user-bucket index writes, no signed-entry writes),
+      // so leaving both inert is the semantically correct default.
+      encryptedUserBucketsIndexKey: Uint8List(0),
+      userEntrySigningSeed: Uint8List(0),
     );
     final encConfig = fula.EncryptionConfig(
       secretKey: encryptionKey,

@@ -22,6 +22,7 @@ import 'package:fula_files/features/ai_tasks/screens/ai_task_run_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_tasks_browser_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_task_detail_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_task_run_screen.dart';
+import 'package:fula_files/features/dump/screens/dump_screen.dart';
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
@@ -252,6 +253,12 @@ final routerProvider = Provider<GoRouter>((ref) {
           final tagId = state.pathParameters['id']!;
           return AutomateTaskRunScreen(tagId: tagId);
         },
+      ),
+      // Dump feature — system share target + manual add flows. The
+      // /dump/:id and /dump/doodle routes land in Session 3 / 3b.
+      GoRoute(
+        path: '/dump',
+        builder: (context, state) => const DumpScreen(),
       ),
       GoRoute(
         path: '/nfts',

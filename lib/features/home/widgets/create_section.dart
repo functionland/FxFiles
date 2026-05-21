@@ -51,6 +51,9 @@ class CreateSection extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
+            // 2x2 grid: Website + NFT (top), Automate + Dump (bottom).
+            // The Dump tile was added in the Dump feature (see plan at
+            // C:\Users\ehsan\.claude\plans\i-want-to-add-buzzing-anchor.md).
             Row(
               children: [
                 Expanded(
@@ -84,7 +87,11 @@ class CreateSection extends StatelessWidget {
                     },
                   ),
                 ),
-                const SizedBox(width: 8),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
                 Expanded(
                   child: _CreateTile(
                     icon: LucideIcons.zap,
@@ -94,11 +101,23 @@ class CreateSection extends StatelessWidget {
                     onTap: () => context.push('/automate-tasks'),
                   ),
                 ),
-                // ⚠️ HIDDEN — AI tile removed from the CREATE row. The
-                // route /ai-tasks is still registered in router.dart so
-                // stranded `ai-tasks-*` tags from earlier installs still
-                // resolve if deep-linked. See the field doc on
-                // [isAiEnabled] above for the re-enable path.
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _CreateTile(
+                    icon: LucideIcons.inbox,
+                    label: 'Dump',
+                    badge: 'share to FxFiles',
+                    locked: false,
+                    onTap: () => context.push('/dump'),
+                  ),
+                ),
+                // ⚠️ HIDDEN — AI tile is dormant. It was a 5th tile in the
+                // earlier single-row layout; the 2x2 grid above has no
+                // free slot. To re-enable: pick a layout (3x2, or replace
+                // one of the existing tiles) and unhide via
+                // `isAiEnabled: true` from `home_screen.dart`. The
+                // /ai-tasks route in router.dart still resolves for any
+                // stranded `ai-tasks-*` tags from earlier installs.
                 if (isAiEnabled) ...[
                   const SizedBox(width: 8),
                   Expanded(
