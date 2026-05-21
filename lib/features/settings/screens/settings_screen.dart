@@ -963,20 +963,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  /// Diagnostic card showing the three inputs (`provider`, `userId`,
-  /// `email`) that `_deriveEncryptionKey` actually feeds into Argon2id.
-  /// Surfaced so an operator can reproduce the key derivation outside
-  /// the app — e.g. when a `bucket_lookup_h` value on master doesn't
-  /// match what a fresh re-derivation produces, this card tells you
-  /// whether the OAuth `userId` or the pinned `derivationEmail` drifted.
-  /// None of these values are secret: `userId` is the OAuth provider's
-  /// public subject identifier, `email` is the user's address, provider
-  /// is `"google"` / `"apple"`.
+  /// Diagnostic card showing the non-secret inputs that produced the
+  /// current session's master key. Mode-aware:
+  /// - Mode A: provider + OAuth sub + email (all three fed to Argon2id).
+  /// - Mode B: provider + OAuth sub (from SecureStorage, not
+  ///   _currentUser.id which holds the derived effective_user_id) +
+  ///   effective user ID + email (info-only). Seed is the secret
+  ///   input; never persisted; shown as redacted.
+  /// - Mode C: effective user ID only. Seed is the sole secret input;
+  ///   never persisted; shown as redacted.
+  /// User key (public cold-start lookup) is shown for all modes.
+  /// Surfaced so an operator can reproduce the derivation outside the
+  /// app for debugging master-side `bucket_lookup_h` mismatches.
   Widget _buildDerivationInputsCard() {
     return FutureBuilder<({
-      String provider,
-      String userId,
-      String email,
+      String mode,
+      String? provider,
+      String? oauthSub,
+      String? effectiveUserId,
+      String? email,
       String? usersIndexUserKey,
     })?>(
       future: AuthService.instance.getDerivationInputs(),
@@ -987,22 +992,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         // Env-var names match the fula-api e2e test
         // (`crates/fula-client/tests/offline_e2e.rs`
         // → `fxfiles_walkable_v8_fresh_bucket_upload` and
-        // `fxfiles_walkable_v8_fresh_bucket_walk`) so the operator can
-        // paste this block straight into PowerShell before running
-        // `scripts/walkable-v8-fresh-bucket-upload.ps1` (with
-        // `FULA_VERIFY_IMAGES_BUCKET=1`) and the `-Mode cold` walk
-        // script. Keep these identifiers in sync if either side
-        // renames. `FULA_USERS_INDEX_USER_KEY` is the public
-        // cold-start lookup key (NOT the encryption secret) — it's
-        // safe to surface on-screen.
-        final userKeyLine = inputs.usersIndexUserKey != null
-            ? '\$env:FULA_USERS_INDEX_USER_KEY = "${inputs.usersIndexUserKey}"\n'
-            : '';
-        final psBlock =
-            '\$env:FULA_TEST_PROVIDER       = "${inputs.provider}"\n'
-            '\$env:FULA_TEST_OAUTH_SUB      = "${inputs.userId}"\n'
-            '\$env:FULA_TEST_EMAIL          = "${inputs.email}"\n'
-            '$userKeyLine';
+        // `fxfiles_walkable_v8_fresh_bucket_walk`). Per-mode emission:
+        // only the variables that actually drive the derivation for the
+        // current mode are included — pasting a Mode B block into a
+        // Mode A test script will produce a deliberately incomplete env
+        // rather than misleading values. `FULA_USERS_INDEX_USER_KEY` is
+        // public (NOT the encryption secret) — safe to surface.
+        final buf = StringBuffer();
+        buf.writeln('\$env:FULA_TEST_MODE           = "${inputs.mode}"');
+        if (inputs.provider != null) {
+          buf.writeln('\$env:FULA_TEST_PROVIDER       = "${inputs.provider}"');
+        }
+        if (inputs.oauthSub != null) {
+          buf.writeln('\$env:FULA_TEST_OAUTH_SUB      = "${inputs.oauthSub}"');
+        }
+        if (inputs.effectiveUserId != null) {
+          buf.writeln('\$env:FULA_TEST_EFFECTIVE_USER_ID = "${inputs.effectiveUserId}"');
+        }
+        if (inputs.email != null) {
+          buf.writeln('\$env:FULA_TEST_EMAIL          = "${inputs.email}"');
+        }
+        if (inputs.usersIndexUserKey != null) {
+          buf.writeln('\$env:FULA_USERS_INDEX_USER_KEY = "${inputs.usersIndexUserKey}"');
+        }
+        final psBlock = buf.toString();
 
         final mask = '•' * 20;
 
@@ -1083,22 +1096,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ],
               ),
               const SizedBox(height: 4),
-              const Text(
-                'Inputs to Argon2id used to derive your encryption key. '
-                'Only needed for debugging master-side bucket_lookup_h mismatches.',
-                style: TextStyle(fontSize: 11, color: Colors.black54),
+              Text(
+                // The description is mode-specific because the
+                // derivation function differs: Mode A feeds three
+                // public inputs to Argon2id; Mode B/C mix the user's
+                // seed into the KDF (the seed is never persisted, so
+                // it can't be displayed here).
+                inputs.mode == 'A'
+                    ? 'Inputs to Argon2id used to derive your encryption key. '
+                        'Only needed for debugging master-side bucket_lookup_h mismatches.'
+                    : inputs.mode == 'B'
+                        ? 'Mode B derives your key from (provider, OAuth sub, seed). '
+                            'The seed is the secret input and is never persisted on '
+                            'this device — the fields below show the non-secret '
+                            'identifiers. Email is informational only (not in the KDF).'
+                        : 'Mode C derives your key from your passphrase (seed) alone. '
+                            'The seed is the secret input and is never persisted on '
+                            'this device — only the resulting public identifiers are '
+                            'shown.',
+                style: const TextStyle(fontSize: 11, color: Colors.black54),
               ),
               const SizedBox(height: 12),
-              row('Provider', inputs.provider),
-              // The "User ID" returned by getDerivationInputs() is the
-              // raw OAuth `sub` from Google/Apple
-              // (`auth_service.dart:777` returns `_currentUser!.id`,
-              // documented at line 764-765 as "the OAuth provider's
-              // public subject identifier"). Surfacing it under a
-              // clearer label so operators copying it for the fula-api
-              // e2e test know what they're getting.
-              row('OAuth sub', inputs.userId),
-              row('Email', inputs.email),
+              row('Mode', inputs.mode),
+              if (inputs.provider != null) row('Provider', inputs.provider!),
+              if (inputs.oauthSub != null) row('OAuth sub', inputs.oauthSub!),
+              // Effective user ID: the seed-derived 32-hex value that
+              // becomes the JWT `sub` for Mode B/C. Matches what
+              // `fula-cli` sees in `claims.sub` and what the global
+              // users-index keys on (before BLAKE3-hashing).
+              if (inputs.effectiveUserId != null)
+                row('Effective user ID', inputs.effectiveUserId!),
+              if (inputs.email != null) row('Email', inputs.email!),
+              // For Mode B/C, the seed is the load-bearing input but is
+              // intentionally never persisted — shown as a redacted
+              // placeholder so the user understands it IS part of the
+              // derivation (just not displayable).
+              if (inputs.mode != 'A')
+                row('Seed', '(redacted — never persisted)'),
               // Public cold-start lookup key — same value FxFiles
               // passes as `usersIndexUserKey` in `FulaConfig`. NOT a
               // secret; published on-chain by the master's users-index

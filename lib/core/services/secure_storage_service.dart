@@ -171,4 +171,19 @@ class SecureStorageKeys {
   // without re-running OAuth (offline launch with cached JWT). Absent
   // for Mode A and Mode C.
   static const String modeOauthSub = 'mode_oauth_sub';
+
+  // E2E plan Phase 5 — 32-byte AEAD key for encrypting the per-user
+  // bucketsIndex envelope (`K_index` in the plan). BLAKE3-derived from
+  // the existing `encryptionKey` (the master KEK) with context
+  // `"fula:user-buckets-index:v1"`. Only populated for Mode B/C users;
+  // Mode A keeps this absent and the SDK falls back to today's
+  // plaintext path. Stored base64-encoded.
+  static const String bucketsIndexKey = 'buckets_index_key_v1';
+
+  // E2E plan Phase 5 — 32-byte Ed25519 seed for signing the
+  // per-user entry the master publishes in the global CBOR
+  // (`K_entry_seed` in the plan). BLAKE3-derived from `encryptionKey`
+  // with context `"fula:user-entry-signing:v1"`. Only populated for
+  // Mode B/C users; Mode A keeps this absent. Stored base64-encoded.
+  static const String userEntrySigningSeed = 'user_entry_signing_seed_v1';
 }

@@ -133,6 +133,14 @@ class FulaApiService implements FulaApi {
     String? usersIndexAnchorAddress,
     String? usersIndexIpnsName,
     List<String>? usersIndexIpnsGatewayUrls,
+    /// E2E plan Phase 5 — 32-byte AEAD key for encrypting the
+    /// per-user bucketsIndex envelope (`K_index`). Pass `null` (or
+    /// an empty list) for Mode A users; the SDK keeps using today's
+    /// plaintext path.
+    Uint8List? bucketsIndexKey,
+    /// E2E plan Phase 5 — 32-byte Ed25519 seed for signing the
+    /// per-user entry (`K_entry_seed`). Pass `null` for Mode A users.
+    Uint8List? userEntrySigningSeed,
   }) async {
     try {
       // Derive the per-user cold-start key. Try the JWT-sub-based
@@ -243,6 +251,12 @@ class FulaApiService implements FulaApi {
         // legacy v7 pointers — making them offline-unreachable on
         // fresh devices. Cloud client = always on.
         walkableV8WriterEnabled: true,
+        // E2E plan Phase 5 — per-user encrypted bucketsIndex keys.
+        // Empty list signals "Mode A behavior preserved"; the SDK
+        // falls back to today's plaintext `users[]` path. Non-empty
+        // (32 bytes) enables the new encrypted + signed-entry path.
+        encryptedUserBucketsIndexKey: bucketsIndexKey ?? Uint8List(0),
+        userEntrySigningSeed: userEntrySigningSeed ?? Uint8List(0),
       );
 
       final encConfig = fula.EncryptionConfig(
@@ -664,6 +678,11 @@ class FulaApiService implements FulaApi {
         // with cloud-uploaded ones — a single content-addressed
         // forest works regardless of which client wrote it.
         walkableV8WriterEnabled: true,
+        // E2E plan Phase 5 — encrypted bucketsIndex keys are scoped
+        // to the cloud client (master is the entries-store host).
+        // LAN/blox client does not run the signed-entry writer.
+        encryptedUserBucketsIndexKey: Uint8List(0),
+        userEntrySigningSeed: Uint8List(0),
       );
 
       final encConfig = fula.EncryptionConfig(

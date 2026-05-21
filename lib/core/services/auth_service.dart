@@ -688,6 +688,53 @@ class AuthService {
                 .where((s) => s.isNotEmpty)
                 .toList(growable: false);
 
+        // E2E plan Phase 5 — derive K_index + K_entry_seed for Mode
+        // B/C users so the fula-client SDK can encrypt + sign the
+        // per-user bucketsIndex envelope. Mode A users skip this:
+        // their KEK is derivable from public OAuth attributes so
+        // encrypting under it would not be privacy-preserving — the
+        // SDK falls back to today's legacy `users[]` plaintext path
+        // when these keys are absent.
+        Uint8List? bucketsIndexKey;
+        Uint8List? userEntrySigningSeed;
+        final modeVersion = await SecureStorageService.instance.read(
+          SecureStorageKeys.keyDerivationVersion,
+        );
+        final isModeBC = modeVersion != null &&
+            (modeVersion.contains('mode_B') || modeVersion.contains('mode_C'));
+        if (isModeBC) {
+          try {
+            bucketsIndexKey = Uint8List.fromList(
+              await fula.blake3DeriveKey(
+                context: 'fula:user-buckets-index:v1',
+                input: _encryptionKey!,
+              ),
+            );
+            userEntrySigningSeed = Uint8List.fromList(
+              await fula.blake3DeriveKey(
+                context: 'fula:user-entry-signing:v1',
+                input: _encryptionKey!,
+              ),
+            );
+            // Persist for fast re-load on next cold start. Same pattern
+            // as encryptionKey above.
+            await SecureStorageService.instance.write(
+              SecureStorageKeys.bucketsIndexKey,
+              base64Encode(bucketsIndexKey),
+            );
+            await SecureStorageService.instance.write(
+              SecureStorageKeys.userEntrySigningSeed,
+              base64Encode(userEntrySigningSeed),
+            );
+            debugPrint('AuthService: derived K_index + K_entry_seed for Mode B/C user');
+          } catch (e) {
+            debugPrint('AuthService: blake3DeriveKey failed: $e; '
+                'falling back to legacy users[] path');
+            bucketsIndexKey = null;
+            userEntrySigningSeed = null;
+          }
+        }
+
         await FulaApiService.instance.initialize(
           endpoint: endpoint,
           secretKey: _encryptionKey!,
@@ -697,6 +744,8 @@ class AuthService {
           usersIndexAnchorAddress: usersIndexAnchor,
           usersIndexIpnsName: usersIndexIpns,
           usersIndexIpnsGatewayUrls: usersIndexIpnsGateways,
+          bucketsIndexKey: bucketsIndexKey,
+          userEntrySigningSeed: userEntrySigningSeed,
         );
         debugPrint('FulaApiService initialized successfully');
         debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
@@ -850,47 +899,63 @@ class AuthService {
     return base64Encode(key);
   }
 
-  /// Returns the exact three inputs `_deriveEncryptionKey` feeds into
-  /// the Argon2id derivation (`provider`, `userId`, `email`) PLUS the
-  /// public cold-start `usersIndexUserKey` (32 hex chars) that the
-  /// resolver uses to locate this user's bucket-set in the on-chain
-  /// users-index CBOR. The email returned is the **pinned** derivation
-  /// email read from `SecureStorageKeys.derivationEmail` (set on first
-  /// sign-in to defend against Apple-relay drift), falling back to
-  /// `_currentUser!.email` when no pin has been written yet.
+  /// Mode-aware view of the inputs that produced the current session's
+  /// master key, PLUS the public cold-start `usersIndexUserKey` (32 hex
+  /// chars) the resolver uses to locate this user's bucket-set in the
+  /// on-chain users-index CBOR.
   ///
-  /// `usersIndexUserKey` is `BLAKE3("fula:user_id:" || sha256(lower(email)))[..16]`
-  /// hex-encoded — the SAME value [`FulaApiService.initialize`] passes
-  /// as `usersIndexUserKey` in `FulaConfig`. Computed via the
-  /// fula-flutter binding (`derive_user_key_from_jwt_sub` preferred
-  /// because it matches what master stores; `derive_user_key_from_email`
-  /// is a post-migration-011 fallback). Returns `null` for the userKey
-  /// only if BOTH derivations fail.
+  /// Per-mode shape:
+  /// - Mode A (legacy OAuth): `provider`, `oauthSub`, `email` are the
+  ///   three Argon2id inputs to `_deriveEncryptionKey`; `effectiveUserId`
+  ///   is null.
+  /// - Mode B (OAuth + seed): the actual derivation input is
+  ///   `(provider, oauth_sub, NFKC(seed))`. `_currentUser.id` is the
+  ///   seed-derived `effectiveUserIdHex`, NOT the OAuth sub — so read
+  ///   the real OAuth sub from `SecureStorageKeys.modeOauthSub` (and
+  ///   provider from `modeOauthProvider`) where the sign-in flow
+  ///   persisted them. `email` is returned for diagnostic context but
+  ///   is not part of the derivation. The seed itself is never
+  ///   persisted; the UI marks it redacted.
+  /// - Mode C (seed only): the derivation input is `NFKC(seed)`. No
+  ///   provider, no oauth_sub. Email on `_currentUser` is a synthetic
+  ///   `<effectiveUserIdHex>@seed.fxfiles.local` placeholder and is
+  ///   not returned (would mislead).
+  ///
+  /// `usersIndexUserKey` is `BLAKE3("fula:user_id:" || jwt_sub)[..16]`
+  /// hex-encoded. Because the JWT `sub` is mode-aware (Mode A:
+  /// oauth_sub; Mode B/C: hex(effective_user_id)), this single
+  /// derivation works across all three modes without per-mode
+  /// branching. It is the SAME value [`FulaApiService.initialize`]
+  /// passes as `usersIndexUserKey` in `FulaConfig`. Falls back to the
+  /// email-keyed derivation (Mode A only — Mode B/C synthesise emails
+  /// so the fallback wouldn't match master) when the JWT can't be read.
   ///
   /// Surfaced in Settings → Security so an operator can reproduce the
-  /// derivation outside the app for diagnostics (e.g. confirm a
-  /// `bucket_lookup_h` mismatch is or isn't due to formula drift, OR
-  /// run the fula-api e2e cold-walk test which needs the userKey).
-  /// Does not return any secret material — `userId` is the OAuth
-  /// provider's public subject identifier, `usersIndexUserKey` is the
-  /// public on-chain identifier; both are non-confidential by design.
+  /// derivation outside the app for diagnostics. Returns no secret
+  /// material — Mode A `oauthSub`, Mode B `oauthSub` (read from
+  /// SecureStorage), `effectiveUserId`, and `usersIndexUserKey` are
+  /// all non-confidential.
   Future<({
-    String provider,
-    String userId,
-    String email,
+    String mode,
+    String? provider,
+    String? oauthSub,
+    String? effectiveUserId,
+    String? email,
     String? usersIndexUserKey,
   })?> getDerivationInputs() async {
     if (_currentUser == null) return null;
-    final stored = await SecureStorageService.instance.read(
-      SecureStorageKeys.derivationEmail,
-    );
-    final email = (stored != null && stored.isNotEmpty)
-        ? stored
-        : _currentUser!.email;
 
-    // Compute the on-chain users-index userKey. Prefer the JWT-sub
-    // derivation (matches master) and fall back to email-based
-    // derivation only when the JWT can't be read.
+    final modeVersion = await SecureStorageService.instance.read(
+      SecureStorageKeys.keyDerivationVersion,
+    );
+    // Legacy users (signed in before the F-A1 redesign) have no stored
+    // version → treat as Mode A.
+    final mode = (modeVersion != null && modeVersion.contains('mode_B'))
+        ? 'B'
+        : (modeVersion != null && modeVersion.contains('mode_C'))
+            ? 'C'
+            : 'A';
+
     String? usersIndexUserKey;
     try {
       final jwt = await SecureStorageService.instance.read(
@@ -904,19 +969,69 @@ class AuthService {
     } catch (e) {
       debugPrint('AuthService.getDerivationInputs: JWT-sub deriveUserKey failed: $e');
     }
-    if (usersIndexUserKey == null || usersIndexUserKey.isEmpty) {
-      try {
-        usersIndexUserKey = await fula.deriveUserKeyFromEmail(email: email);
-      } catch (e) {
-        debugPrint('AuthService.getDerivationInputs: email deriveUserKey failed: $e');
-        usersIndexUserKey = null;
+
+    if (mode == 'A') {
+      final pinned = await SecureStorageService.instance.read(
+        SecureStorageKeys.derivationEmail,
+      );
+      final email = (pinned != null && pinned.isNotEmpty)
+          ? pinned
+          : _currentUser!.email;
+
+      // Email-keyed fallback only makes sense for Mode A: master keys
+      // Mode A users by email-hash. Mode B/C key by the seed-derived
+      // sub, so an email lookup would never match.
+      if (usersIndexUserKey == null || usersIndexUserKey.isEmpty) {
+        try {
+          usersIndexUserKey = await fula.deriveUserKeyFromEmail(email: email);
+        } catch (e) {
+          debugPrint('AuthService.getDerivationInputs: email deriveUserKey failed: $e');
+          usersIndexUserKey = null;
+        }
       }
+
+      return (
+        mode: 'A',
+        provider: _currentUser!.provider.name,
+        oauthSub: _currentUser!.id,
+        effectiveUserId: null,
+        email: email,
+        usersIndexUserKey: usersIndexUserKey,
+      );
+    }
+
+    if (mode == 'B') {
+      // The OAuth identity used at Mode B sign-up — persisted by
+      // `_persistSeedAuthSession` so subsequent sign-ins on the same
+      // device can re-derive the effective_user_id without re-running
+      // OAuth.
+      final provider = await SecureStorageService.instance.read(
+        SecureStorageKeys.modeOauthProvider,
+      );
+      final oauthSub = await SecureStorageService.instance.read(
+        SecureStorageKeys.modeOauthSub,
+      );
+      final pinned = await SecureStorageService.instance.read(
+        SecureStorageKeys.derivationEmail,
+      );
+      return (
+        mode: 'B',
+        provider: provider ?? _currentUser!.provider.name,
+        oauthSub: oauthSub,
+        effectiveUserId: _currentUser!.id,
+        email: (pinned != null && pinned.isNotEmpty)
+            ? pinned
+            : _currentUser!.email,
+        usersIndexUserKey: usersIndexUserKey,
+      );
     }
 
     return (
-      provider: _currentUser!.provider.name,
-      userId: _currentUser!.id,
-      email: email,
+      mode: 'C',
+      provider: null,
+      oauthSub: null,
+      effectiveUserId: _currentUser!.id,
+      email: null,
       usersIndexUserKey: usersIndexUserKey,
     );
   }
