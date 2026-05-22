@@ -77,6 +77,23 @@ abstract class FulaApi {
     bool recursive = false,
   });
 
+  /// Timeout-bounded, cache-backed variant of [listObjects].
+  ///
+  /// Used by browser screens so an in-flight upload that holds the
+  /// SDK's outer write lock (and any IPNS chain-RPC outage along the
+  /// forest-load path) cannot pin the UI in "loading" indefinitely.
+  /// `stale=true` ⇔ result came from the on-disk cache, not from a
+  /// live master call this session.
+  ///
+  /// Throws only when both the live attempt (retried once) and the
+  /// cache lookup fail.
+  Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
+      listObjectsCached(
+    String bucket, {
+    String prefix = '',
+    Duration timeout = const Duration(seconds: 10),
+  });
+
   /// Download an object's bytes.
   ///
   /// When [contentCid] is supplied, the SDK can short-circuit via

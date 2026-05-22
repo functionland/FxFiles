@@ -1,7 +1,7 @@
 name: fula_files
 description: FxFiles - A minimalistic file manager with Fula decentralized storage backup support.
 publish_to: 'none'
-version: 1.10.0+535
+version: 1.11.0+536
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -183,7 +183,7 @@ msix_config:
   publisher_display_name: Functionland
   publisher: CN=E9FEC2DC-DBBE-45BA-A112-26EFEA253DB5
   identity_name: Functionland.FxFiles
-  msix_version: 1.10.0.0
+  msix_version: 1.11.0.0
   logo_path: assets/icons/icon.png
   capabilities: internetClient, internetClientServer, unvirtualizedResources
   protocol_activation: fxfiles

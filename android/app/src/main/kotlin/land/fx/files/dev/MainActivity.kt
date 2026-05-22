@@ -148,6 +148,39 @@ class MainActivity : AudioServiceActivity() {
                         result.error("ERROR", "Failed to show notification: ${e.message}", null)
                     }
                 }
+                "startUploadService" -> {
+                    // Called from Dart (SyncService) when the app is moving
+                    // to the background and there are pending uploads. Starts
+                    // SyncForegroundService which owns the notification and
+                    // hosts its own FlutterEngine so the upload survives
+                    // MainActivity destruction.
+                    try {
+                        val intent = SyncForegroundService.startIntent(applicationContext)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            applicationContext.startForegroundService(intent)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            applicationContext.startService(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Failed to start sync service: ${e.message}", null)
+                    }
+                }
+                "stopUploadService" -> {
+                    // Called from Dart (SyncService) on resume — the main
+                    // isolate takes over the queue, so the service should
+                    // tear down. The service's Dart isolate detects the
+                    // released file lock and bails out cleanly.
+                    try {
+                        applicationContext.startService(
+                            SyncForegroundService.stopIntent(applicationContext)
+                        )
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("ERROR", "Failed to stop sync service: ${e.message}", null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

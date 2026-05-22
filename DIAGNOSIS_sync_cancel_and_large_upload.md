@@ -122,17 +122,37 @@ A3. **Android Foreground Service.** New `SyncForegroundService.kt` calling `star
 
 A4. **Don't reset the progress bar on retry.** Track per-task starting offset in `UploadProgressManager.startBatch` so the time-based ETA continues rather than zeroing.
 
-### Phase B — fula-api SDK changes (gated on safety verification)
+### Phase B — fula-api SDK changes (REVISED 2026-05-22 after test evidence)
 
-B1. **(Pre-work)** Verify whether FxFiles' production buckets are v7. If yes → B2 path is safe. If any are v1 → do B3 first.
+**Critical finding from the lost-update repro test** (`fula-api/tests/v1_concurrent_put_race_tests.rs`, run 2026-05-22):
 
-B2. **Bridge lock-scope** (only safe if B1 confirms v7-only or B3 lands first). Change `fula-flutter/src/api/forest.rs:81,102,167,201` from `write()` to `read()`. Add a Rust integration test reproducing the lost-update race on v1 to gate this.
+1. **The v1 monolithic path is dead in production.** Calling `seed_v1_forest(...)` then `list_directory(...)` ends with `is_forest_sharded_hamt(bucket) == true` — confirming user's "lazy migration on first read" claim. Codex's v1 concern is moot for any bucket that's been touched on a recent SDK.
 
-B3. **(If needed)** Add per-bucket internal mutation lock inside `EncryptedClient::put_object_flat_deferred` for the v1 monolithic path — covers the lost-update race independent of the outer bridge lock.
+2. **The v7 sharded-HAMT path ALSO has a lost-update race**, contrary to Gemini and Cursor's "v7 is safe" claim. With the outer bridge `write().await` removed (direct `EncryptedClient::put_object_flat` calls from `tokio::spawn`-ed tasks), only **1 of 10 concurrent puts** survives the persisted forest. The race is deterministic (3/3 runs returned `count=2` of expected `11`). All 10 calls return `Ok(_)` from the API — they're silent lost writes.
 
-B4. **Bridge `resume_upload` and `put_object_encrypted_resumable`** through `fula-flutter`. New Dart functions `startResumableUpload` (returns manifest path) and `resumeUpload(manifestPath, filePath)`. Tests: (a) BAO rejects modified bytes, (b) successful resume picks up where it left off, (c) clean completion deletes manifest.
+This invalidates the original B1 plan. **The bridge `write().await` is load-bearing for correctness**, not just convenience. Changing it to `read().await` would expose this v7 race in production and corrupt user forests.
 
-B5. **Cancellation token** for in-flight encrypted uploads. Add an opaque cancel-handle arg to `put_flat_from_path` / new resumable variants, checked between chunk PUTs in `put_object_chunked_internal`. Use `tokio_util::sync::CancellationToken` internally; expose as an opaque FRB handle.
+What this means for the original goal of "fix UI hang during upload (Issue 2b)":
+- A2's `listObjectsCached` + stale-cache fallback (already shipped this session) is **the only practical mitigation** at the app level — UI never hangs because cached content renders immediately and refreshes when the SDK lock frees.
+- Fixing the v7 race in the SDK is a separate, deeper investigation. It's almost certainly in `flush_forest`'s interaction with concurrent in-memory upserts — most likely a flush serialization issue where the in-memory state at the time of the *first* flush wins on the server.
+
+### Phase B revised plan
+
+B1. ~~**Lock-scope refactor**~~ **CANCELLED.** Test evidence proves the bridge lock cannot safely be loosened until the v7 lost-update race is fixed in `EncryptedClient::flush_forest` (or wherever the actual race lives).
+
+B1'. **(Optional follow-up SDK investigation)** Diagnose the v7 lost-update from `fula-api/tests/v1_concurrent_put_race_tests.rs`. Codex-advisor's refined hypothesis (validated against the code): inside `save_sharded_hamt_forest`, the SDK snapshots the v7 forest, releases the per-forest write lock during conditional page/dir/root PUTs, then reacquires the lock and calls `reconcile_flush(...)` against the **old snapshot** — overwriting any in-memory upserts that landed during the network round-trip. Likely fix: either (a) hold the forest lock across the entire flush sequence (serializes uploads but eliminates the race), or (b) make `reconcile_flush` merge with intervening live mutations instead of overwriting them. Either is non-trivial. **Don't pursue without explicit user direction** — the bridge lock workaround is correct, just blocking on UI.
+
+B2. **Bridge `resume_upload` and `put_object_encrypted_resumable`** through `fula-flutter`. Still valuable: addresses the actual user pain (Issue 2a "restart from 0%"). Independent of the lock-scope question. New Dart functions `startResumableUpload` + `resumeUpload(manifestPath, filePath)`. Rust tests: BAO rejects modified bytes; successful resume picks up; clean completion deletes manifest.
+
+B3. **Cancellation token** for in-flight encrypted uploads. Add opaque cancel-handle arg, checked between chunk PUTs in `put_object_chunked_internal`. `tokio_util::sync::CancellationToken` internally; opaque FRB handle. Independent of B1' and B2.
+
+### Phase C — wire SDK changes into the app (depends on B2 + B3)
+
+C1. Switch `SyncService._executeUpload` from `uploadLargeFileFromPath` to the resumable variant. Persist `manifest_path` per `SyncTask`.
+
+C2. Wire B3's cancel handle into `SyncService.cancelTask` for true in-flight abort.
+
+C3. Remove the now-redundant "time-based ETA reset" hack from A4 — real per-chunk progress can flow through.
 
 ### Phase C — wire SDK changes into the app
 

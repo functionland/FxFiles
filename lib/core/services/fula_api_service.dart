@@ -6,6 +6,7 @@ import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
 import 'package:fula_files/core/services/bucket_cache_service.dart';
+import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
 
@@ -530,6 +531,69 @@ class FulaApiService implements FulaApi {
   /// doc). Do **not** swap this for `fula.listDecrypted` — that is a
   /// raw S3 LIST that returns internal `__fula_forest_v7_nodes/...`
   /// entries alongside user files and is not offline-capable.
+  /// Cached, timeout-bounded variant of [listObjects].
+  ///
+  /// Used by the file browser screens to keep the UI responsive when the
+  /// underlying `fula.listFromForest` call is slow or blocked. Failure
+  /// modes that surface a stale snapshot:
+  ///
+  ///   * The encrypted client's outer write lock is held by an in-flight
+  ///     upload (fix in Phase B1 of the sync-cancel/large-upload work).
+  ///   * IPNS chain RPC backing the forest's users-index resolution is
+  ///     unreachable (see `mainnet.base.org` errors in the field reports).
+  ///   * Any transient master-gateway 5xx.
+  ///
+  /// Behaviour:
+  ///   1. Try the live call with a [timeout] (default 10 s). On success,
+  ///      persist into [ObjectCacheService] and return `stale=false`.
+  ///   2. If that times out or throws, retry once after a 500 ms pause.
+  ///      Same caching on success.
+  ///   3. On the second failure, return whatever the cache has with
+  ///      `stale=true`. If the cache has nothing, rethrow the first
+  ///      error so the UI can surface it.
+  ///
+  /// Mirrors [listBucketsCached] (`fula_api_service.dart:467`) so the
+  /// cloud-files screens have a uniform contract for stale fallbacks.
+  Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
+      listObjectsCached(
+    String bucket, {
+    String prefix = '',
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    Future<List<FulaObject>> tryLive() =>
+        listObjects(bucket, prefix: prefix).timeout(timeout);
+
+    try {
+      final fresh = await tryLive();
+      // Persist the slice we actually fetched; the cache key includes
+      // the prefix so different views don't clobber each other.
+      await ObjectCacheService.persist(bucket, prefix, fresh);
+      return (objects: fresh, stale: false, fetchedAt: DateTime.now());
+    } catch (firstErr) {
+      try {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        final fresh = await tryLive();
+        await ObjectCacheService.persist(bucket, prefix, fresh);
+        return (objects: fresh, stale: false, fetchedAt: DateTime.now());
+      } catch (retryErr) {
+        debugPrint(
+          'listObjectsCached($bucket, "$prefix"): live failed twice, '
+          'falling back to cache: $retryErr',
+        );
+        final cached = await ObjectCacheService.readCache(bucket, prefix);
+        if (cached != null) {
+          return (
+            objects: cached.objects,
+            stale: true,
+            fetchedAt: cached.fetchedAt,
+          );
+        }
+        // No cache to serve — surface the original error.
+        throw firstErr;
+      }
+    }
+  }
+
   Future<List<FulaObject>> listObjects(
     String bucket, {
     String prefix = '',

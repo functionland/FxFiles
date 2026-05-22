@@ -140,6 +140,21 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- App-owned foreground service that keeps user-initiated uploads
+             running across MainActivity destruction (e.g. user swipes the
+             app away mid-upload). Hosts its own FlutterEngine via the
+             FlutterEngineCache so the Dart-driven SyncService keeps
+             processing the queue. See SyncForegroundService.kt for the
+             cross-isolate lock and notification handoff design.
+             stopWithTask=false: surviving task removal is the whole
+             point — the system shouldn't tear us down with the
+             activity. -->
+        <service
+            android:name=".SyncForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            android:stopWithTask="false" />
+
         <!-- Media button receiver for headset/bluetooth controls -->
         <receiver
             android:name="com.ryanheise.audioservice.MediaButtonReceiver"

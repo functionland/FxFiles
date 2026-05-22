@@ -135,6 +135,26 @@ class FakeFulaApi implements FulaApi {
     return all.where((f) => f.key.startsWith(prefix)).toList();
   }
 
+  /// Optional override for the entire [listObjectsCached] result, keyed
+  /// by bucket. Bypasses the default "wrap listObjects in a stale-aware
+  /// record" behaviour. Use to simulate "live failed, stale served".
+  Map<String, ({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
+      objectsCachedResponseFor =
+      <String, ({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>{};
+
+  @override
+  Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
+      listObjectsCached(
+    String bucket, {
+    String prefix = '',
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final override = objectsCachedResponseFor[bucket];
+    if (override != null) return override;
+    final objects = await listObjects(bucket, prefix: prefix);
+    return (objects: objects, stale: false, fetchedAt: DateTime.now());
+  }
+
   @override
   Future<Uint8List> downloadObject(
     String bucket,

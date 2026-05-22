@@ -107,6 +107,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   List<String> _buckets = [];
   bool _bucketsAreStale = false;
   DateTime? _bucketsFetchedAt;
+  bool _objectsAreStale = false;
+  DateTime? _objectsFetchedAt;
   List<FulaObject> _cloudObjects = [];
   
   // Pagination & sorting state
@@ -376,11 +378,17 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         _bucketsFetchedAt = result.fetchedAt;
         setState(() => _isLoading = false);
       } else {
-        // Load objects in current bucket/prefix
-        _cloudObjects = await FulaApiService.instance.listObjects(
+        // Load objects in current bucket/prefix. Use the cached/timeout
+        // variant so an in-flight upload (which holds the SDK's outer
+        // write lock — see DIAGNOSIS_sync_cancel_and_large_upload.md)
+        // doesn't pin this screen in "loading" indefinitely.
+        final objectsResult = await FulaApiService.instance.listObjectsCached(
           _currentBucket!,
           prefix: _currentPrefix,
         );
+        _cloudObjects = objectsResult.objects;
+        _objectsAreStale = objectsResult.stale;
+        _objectsFetchedAt = objectsResult.fetchedAt;
 
         // Build combined list with local file info where available
         await _buildCloudCombinedList();
@@ -646,8 +654,18 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       if (FulaApiService.instance.isConfigured && AuthService.instance.isAuthenticated) {
         try {
           final bucketName = category.bucketName;
-          final cloudFiles = await FulaApiService.instance.listObjects(bucketName);
-          debugPrint('Cloud files in $bucketName: ${cloudFiles.length}');
+          // Cached/timeout-bounded so a large upload holding the encrypted
+          // client's outer write lock can't freeze the bucket-list view.
+          // Stale results are still shown to the user; a fresh fetch will
+          // run the next time _loadCategoryFiles fires.
+          final cloudResult = await FulaApiService.instance.listObjectsCached(
+            bucketName,
+          );
+          final cloudFiles = cloudResult.objects;
+          debugPrint(
+            'Cloud files in $bucketName: ${cloudFiles.length}'
+            '${cloudResult.stale ? " (stale, fetched ${cloudResult.fetchedAt})" : ""}',
+          );
           
           // Create a map of cloud file names for quick lookup
           final cloudFileMap = {for (var cf in cloudFiles) cf.key: cf};

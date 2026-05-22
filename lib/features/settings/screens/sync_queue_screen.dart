@@ -47,15 +47,24 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final hasFailed = _tasks.any((t) => t.isFailed);
+    final hasActive = _tasks.any((t) => t.isPending || t.isInProgress);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sync Queue'),
         actions: [
-          if (_tasks.any((t) => t.isFailed))
+          if (hasFailed)
             IconButton(
               icon: const Icon(LucideIcons.refreshCw),
               tooltip: 'Retry all failed',
               onPressed: _retryAllFailed,
+            ),
+          if (hasActive)
+            IconButton(
+              icon: const Icon(LucideIcons.xCircle),
+              tooltip: 'Cancel all uploads',
+              onPressed: _confirmCancelAll,
             ),
         ],
       ),
@@ -219,11 +228,30 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
               tooltip: 'Retry',
               onPressed: () => _retryTask(task),
             )
-          : task.isPending
-              ? IconButton(
-                  icon: const Icon(LucideIcons.arrowUpToLine, size: 18),
-                  tooltip: 'Upload next',
-                  onPressed: () => _moveToFront(task),
+          : (task.isPending || task.isInProgress)
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (task.isPending)
+                      IconButton(
+                        icon: const Icon(LucideIcons.arrowUpToLine, size: 18),
+                        tooltip: 'Upload next',
+                        onPressed: () => _moveToFront(task),
+                      ),
+                    IconButton(
+                      icon: const Icon(LucideIcons.x, size: 18),
+                      tooltip: task.isInProgress
+                          // The in-flight upload can't be aborted today
+                          // (the encrypted SDK has no cancel hook on the
+                          // Flutter side — see Phase B3). Surface that
+                          // honestly: queued retries are stopped, but
+                          // bytes already in flight will finish in
+                          // background and just be discarded.
+                          ? 'Cancel queued retries (in-flight bytes will finish quietly)'
+                          : 'Remove from queue',
+                      onPressed: () => _cancelTask(task),
+                    ),
+                  ],
                 )
               : null,
     );
@@ -278,6 +306,60 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Re-queued for upload')),
+      );
+    }
+  }
+
+  Future<void> _cancelTask(SyncTask task) async {
+    await SyncService.instance.cancelTask(task.localPath);
+    _loadTasks();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(task.isInProgress
+              // Be honest about today's behavior: queued retries stop, but
+              // the current SDK call has no cancel hook so any bytes
+              // already in flight finish in the background and get
+              // dropped (no synced state, no error). Phase B3 will deliver
+              // true mid-chunk abort.
+              ? 'Cancelled — in-flight upload will finish in background and be discarded'
+              : 'Removed from queue'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmCancelAll() async {
+    final active = _tasks.where((t) => t.isPending || t.isInProgress).length;
+    if (active == 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel all uploads?'),
+        content: Text(
+          'This will cancel $active queued or in-progress upload${active == 1 ? '' : 's'}. '
+          'Files already uploaded stay in the cloud; you can re-queue cancelled files later.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep uploading'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Cancel all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await SyncService.instance.cancelAllUploads();
+    _loadTasks();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Cancelled $active upload${active == 1 ? '' : 's'}')),
       );
     }
   }

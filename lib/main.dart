@@ -25,6 +25,12 @@ import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/storage_refresh_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
+// Pulled in so the Dart entrypoint for the Android SyncForegroundService
+// is reachable from `main` and survives AOT tree-shaking. The function
+// is invoked from Kotlin via DartExecutor.executeDartEntrypoint, not
+// called here. See `lib/sync_background_entrypoint.dart`.
+// ignore: unused_import
+import 'package:fula_files/sync_background_entrypoint.dart';
 import 'package:fula_files/core/services/tray_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';

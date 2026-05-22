@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/sync_task.dart' as persistent;
@@ -14,7 +15,14 @@ import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/upload_queue_lock.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+// Method channel shared with MainActivity; routes startUploadService /
+// stopUploadService through to SyncForegroundService. See
+// android/.../SyncForegroundService.kt for the Android side.
+const MethodChannel _syncForegroundChannel =
+    MethodChannel('land.fx.files/sync_notification');
 
 enum SyncDirection { upload, download, bidirectional }
 
@@ -34,6 +42,28 @@ class SyncService {
 
   // Track cancelled buckets to prevent retry callbacks from re-queuing
   final Set<String> _cancelledBuckets = {};
+
+  // Track cancelled localPaths so:
+  //   (1) the retry callback in _executeUpload's catch block won't re-queue,
+  //   (2) an in-flight upload that completes successfully after cancel won't
+  //       flip SyncState to synced.
+  // Cleared when a path is genuinely re-queued (e.g. retryFailed, queueUpload).
+  // For true mid-chunk abort we need an SDK CancellationToken (Phase B3).
+  final Set<String> _cancelledLocalPaths = {};
+
+  // Cross-isolate lock against the SyncForegroundService isolate. Held
+  // while this isolate's processUploadQueue is actually draining. The
+  // service isolate waits on this lock before taking over, so we never
+  // get two `EncryptedClient`s uploading the same SyncTask in parallel
+  // (which would generate two distinct DEKs and orphan one of the two
+  // ciphertext copies on the storage backend).
+  final UploadQueueLock _queueLock = UploadQueueLock();
+
+  // True once we've told MainActivity to bring up the foreground
+  // service for the current upload batch. Mirrors the lifecycle of the
+  // Android service so we don't double-start. Reset when the service
+  // tells us it stopped, or when we hit `cancelAllUploads`.
+  bool _foregroundServiceRequested = false;
 
   List<SyncTask> get uploadQueue => List.unmodifiable(_uploadQueue);
   List<SyncTask> get downloadQueue => List.unmodifiable(_downloadQueue);
@@ -123,6 +153,94 @@ class SyncService {
     _cancelledBuckets.remove(bucket);
   }
 
+  /// Cancel a single queued or in-progress upload by its [localPath].
+  ///
+  /// Behavior:
+  ///   - If the task is still queued (in [_uploadQueue]), remove it before
+  ///     it ever starts.
+  ///   - If the task is in-flight, mark it cancelled. The active
+  ///     [FulaApiService.uploadLargeFileFromPath] future cannot be aborted
+  ///     today (the FRB binding doesn't expose a cancellation token; see
+  ///     `fula-flutter/src/api/forest.rs:put_flat_from_path`); whatever
+  ///     resolution it produces is then suppressed so the UI doesn't flip
+  ///     to "synced" and no retry is scheduled.
+  ///   - Persistent SyncTask row is removed and SyncState transitions to
+  ///     [SyncStatus.notSynced]. UploadProgressManager.failUpload is called
+  ///     so the batch progress widget releases its slot.
+  Future<void> cancelTask(String localPath) async {
+    debugPrint('SyncService: cancelTask($localPath)');
+
+    // Mark cancelled first so any concurrent retry callback / in-flight
+    // completion observes the flag and bails out.
+    _cancelledLocalPaths.add(localPath);
+
+    // Drop from the in-memory queue if still pending.
+    _uploadQueue.removeWhere((t) => t.localPath == localPath);
+
+    // Remove from persistent storage so restoreQueue doesn't pick it back
+    // up on next launch.
+    final taskId = _taskIdMap.remove(localPath);
+    if (taskId != null) {
+      await LocalStorageService.instance.removeSyncTask(taskId);
+    } else {
+      // Fall back to scanning persistent storage by localPath in case the
+      // taskIdMap was lost (e.g. restoreQueue race).
+      final all = LocalStorageService.instance.getPendingSyncTasks();
+      for (final t in all) {
+        if (t.localPath == localPath) {
+          await LocalStorageService.instance.removeSyncTask(t.id);
+        }
+      }
+    }
+
+    // Flip the SyncState so the file-row badge clears.
+    final state = LocalStorageService.instance.getSyncState(localPath);
+    if (state != null) {
+      await LocalStorageService.instance.addSyncState(
+        state.copyWith(status: SyncStatus.notSynced, errorMessage: null),
+      );
+      _notifyListeners(localPath, SyncStatus.notSynced);
+      if (state.displayPath != null && state.displayPath != localPath) {
+        _notifyListeners(state.displayPath!, SyncStatus.notSynced);
+      }
+    }
+
+    // Free the batch progress slot. If the upload was in-flight, this means
+    // the BatchUploadProgress widget no longer shows it; the underlying
+    // Future will still resolve eventually and _executeUpload's
+    // _cancelledLocalPaths check below will swallow the result.
+    if (_activeSync.containsKey(localPath)) {
+      UploadProgressManager.instance.failUpload(localPath);
+      _activeSync.remove(localPath);
+    }
+  }
+
+  /// Cancel every queued and in-progress upload. Convenience wrapper around
+  /// [cancelTask] used by the "Cancel all" sync-queue action and the
+  /// existing [clearAll] reset path.
+  Future<void> cancelAllUploads() async {
+    debugPrint('SyncService: cancelAllUploads');
+
+    // Snapshot both the queue and the in-flight set; cancelTask mutates them.
+    final paths = <String>{
+      ..._uploadQueue.map((t) => t.localPath),
+      ..._activeSync.keys,
+    };
+
+    for (final path in paths) {
+      await cancelTask(path);
+    }
+
+    // Belt-and-braces: ensure the in-memory queue is empty even if a task
+    // had no persistent row.
+    _uploadQueue.clear();
+    _downloadQueue.clear();
+
+    // If a foreground service was running for this batch, tear it down
+    // so the OS doesn't keep showing the notification.
+    await handleAppForegrounded();
+  }
+
   void addListener(SyncStatusCallback callback) {
     _listeners.add(callback);
   }
@@ -153,6 +271,10 @@ class SyncService {
     if (_taskIdMap.containsKey(localPath)) {
       return;
     }
+
+    // If this path was previously cancelled, clear the flag so the new
+    // upload completes normally.
+    _cancelledLocalPaths.remove(localPath);
 
     final task = SyncTask(
       localPath: localPath,
@@ -297,6 +419,32 @@ class SyncService {
   Future<void> processUploadQueue() async {
     if (_uploadQueue.isEmpty) return;
 
+    // Cross-isolate exclusion: the SyncForegroundService isolate may
+    // also try to drain the same persistent queue. If both ran in
+    // parallel each would generate its own DEK per upload → file
+    // encrypted twice at two different storage_keys, leaving orphaned
+    // cloud bytes. The lock is per-fd; release on every exit path.
+    // On platforms where the lock file path isn't writable (rare —
+    // documents dir is always writable on mobile/desktop), we fall
+    // through and just process anyway: the worst case is the race the
+    // lock prevents, not a deadlock.
+    if (!await _queueLock.tryAcquire()) {
+      debugPrint(
+        'SyncService.processUploadQueue: queue lock held by another '
+        'isolate (likely SyncForegroundService) — skipping this pass',
+      );
+      return;
+    }
+    try {
+      await _processUploadQueueLocked();
+    } finally {
+      await _queueLock.release();
+    }
+  }
+
+  Future<void> _processUploadQueueLocked() async {
+    if (_uploadQueue.isEmpty) return;
+
     // Track sync statistics for notification
     final totalToSync = _uploadQueue.length;
     int syncedCount = 0;
@@ -317,11 +465,24 @@ class SyncService {
       }
     }
 
-    // Start batch progress tracking
-    UploadProgressManager.instance.startBatch(
-      totalFiles: totalToSync,
-      totalBytes: totalBytes,
-    );
+    // Start batch progress tracking. Skip if a batch is already active —
+    // this happens on the retry/resume paths where processUploadQueue
+    // re-enters after a pause or after a retryable failure put the task
+    // back on the queue. Calling startBatch again would visibly reset
+    // the ETA to 0 (the field log showed two "Starting batch of 1 files
+    // (445.0 MB)" lines per single-file retry). Phase B's chunk-level
+    // resume will let us track real bytes-uploaded across attempts; for
+    // now this at least keeps the time-based ETA continuous.
+    if (!UploadProgressManager.instance.hasBatch) {
+      UploadProgressManager.instance.startBatch(
+        totalFiles: totalToSync,
+        totalBytes: totalBytes,
+      );
+    } else {
+      debugPrint(
+        'SyncService: continuing existing upload batch — not resetting ETA',
+      );
+    }
 
     // Show sync notification (required for foreground service)
     await SyncNotificationService.instance.showSyncNotification(
@@ -680,6 +841,17 @@ class SyncService {
         },
       );
 
+      // If cancelTask fired while we were awaiting the SDK, suppress success
+      // bookkeeping. cancelTask already flipped SyncState to notSynced and
+      // removed the persistent row; we just need to make sure we don't
+      // re-write synced over it. Phase B3 will deliver true mid-chunk abort.
+      if (_cancelledLocalPaths.contains(task.localPath)) {
+        debugPrint('Upload completed after cancel: ${task.remoteKey} — suppressing success state');
+        _cancelledLocalPaths.remove(task.localPath);
+        _activeSync.remove(task.localPath);
+        return;
+      }
+
       debugPrint('Upload completed: ${task.remoteKey}, etag: $etag');
 
       // Record upload completion for speed tracking and progress
@@ -743,6 +915,17 @@ class SyncService {
       debugPrint('Upload failed: $e');
       debugPrint('Stack: $stack');
 
+      // If cancelTask fired while we were awaiting the SDK, the error here
+      // is effectively the cancel taking effect (or a network failure that
+      // happened to coincide). cancelTask already cleaned up; don't retry,
+      // don't bump consecutive-failures, don't mark errored.
+      if (_cancelledLocalPaths.contains(task.localPath)) {
+        debugPrint('Upload failed after cancel: ${task.remoteKey} — suppressing retry');
+        _cancelledLocalPaths.remove(task.localPath);
+        _activeSync.remove(task.localPath);
+        return;
+      }
+
       // Track consecutive failures
       _consecutiveFailures++;
 
@@ -790,7 +973,9 @@ class SyncService {
 
         // Schedule retry with exponential backoff
         Future.delayed(delay, () {
-          if (!_isPaused && !_cancelledBuckets.contains(task.remoteBucket)) {
+          if (!_isPaused &&
+              !_cancelledBuckets.contains(task.remoteBucket) &&
+              !_cancelledLocalPaths.contains(task.localPath)) {
             _uploadQueue.add(task);
             _processUploadQueueAsync();
           }
@@ -971,9 +1156,11 @@ class SyncService {
     await processUploadQueue();
   }
 
+  /// Legacy entrypoint kept for callers outside the sync-queue UI; delegates
+  /// to [cancelAllUploads] so persistent state and SyncState badges stay in
+  /// sync with the in-memory queue.
   Future<void> cancelAll() async {
-    _uploadQueue.clear();
-    _downloadQueue.clear();
+    await cancelAllUploads();
   }
 
   Future<void> clearAll() async {
@@ -982,6 +1169,7 @@ class SyncService {
     _activeSync.clear();
     _verifiedBuckets.clear();
     _taskIdMap.clear();
+    _cancelledLocalPaths.clear();
     _isProcessingUpload = false;
     _activeUploads = 0;
     await LocalStorageService.instance.clearAllSyncStates();
@@ -995,6 +1183,44 @@ class SyncService {
       debugPrint('SyncService: Resuming ${_uploadQueue.length} pending uploads after wake');
       _processUploadQueueAsync();
     }
+  }
+
+  /// Called from `App.didChangeAppLifecycleState` when the app moves to
+  /// the background. If there are pending uploads on Android, this asks
+  /// MainActivity to bring up `SyncForegroundService` so the process is
+  /// protected from kill (and a separate FlutterEngine drains the queue
+  /// in case the activity dies). Coordinates with the service isolate
+  /// via [UploadQueueLock] so only one isolate processes at a time.
+  Future<void> handleAppBackgrounded() async {
+    if (!Platform.isAndroid) return;
+    if (_uploadQueue.isEmpty && _activeUploads == 0) {
+      debugPrint('SyncService: app backgrounded with empty queue — skipping FG service');
+      return;
+    }
+    if (_foregroundServiceRequested) return;
+    debugPrint('SyncService: app backgrounded with pending uploads — starting FG service');
+    try {
+      await _syncForegroundChannel.invokeMethod<void>('startUploadService');
+      _foregroundServiceRequested = true;
+    } catch (e) {
+      debugPrint('SyncService: startUploadService failed: $e');
+    }
+  }
+
+  /// Called from `App.didChangeAppLifecycleState` when the app returns
+  /// to the foreground. Tells the service to stop so the main isolate
+  /// can take back the queue. Safe to call even if no service was
+  /// started.
+  Future<void> handleAppForegrounded() async {
+    if (!Platform.isAndroid) return;
+    if (!_foregroundServiceRequested) return;
+    debugPrint('SyncService: app foregrounded — stopping FG service');
+    try {
+      await _syncForegroundChannel.invokeMethod<void>('stopUploadService');
+    } catch (e) {
+      debugPrint('SyncService: stopUploadService failed: $e');
+    }
+    _foregroundServiceRequested = false;
   }
 
   /// Restore pending tasks from persistent storage (call on app start)
@@ -1124,6 +1350,18 @@ class SyncService {
   /// Process queue with a timeout (for background tasks with limited execution time)
   Future<void> processQueueWithTimeout(Duration timeout) async {
     if (_isProcessingUpload) return;
+    // The background-isolate path also needs cross-isolate exclusion:
+    // if the main isolate is still processing when this runs (e.g.,
+    // WorkManager fired while the app was still alive), we'd race on
+    // the persistent queue with separate Rust clients. See the longer
+    // note in [processUploadQueue].
+    if (!await _queueLock.tryAcquire()) {
+      debugPrint(
+        'SyncService.processQueueWithTimeout: queue lock contended — '
+        'another isolate is already draining the queue. Skipping.',
+      );
+      return;
+    }
     _isProcessingUpload = true;
     try {
       final stopwatch = Stopwatch()..start();
@@ -1168,6 +1406,7 @@ class SyncService {
           'Active: $_activeUploads');
     } finally {
       _isProcessingUpload = false;
+      await _queueLock.release();
     }
   }
 

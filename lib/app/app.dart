@@ -177,6 +177,11 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       _refreshBloxConnection();
       // Resume any pending uploads that were interrupted by sleep
       SyncService.instance.resumeIfPending();
+      // Tell SyncForegroundService (if running) to stop — main isolate
+      // takes back ownership of the queue. Awaited cleanup is
+      // fire-and-forget; the service-side lock release is the source of
+      // truth, not this notification.
+      unawaited(SyncService.instance.handleAppForegrounded());
       // Restart file watchers and scan for changes missed while backgrounded
       FolderWatchService.instance.onAppResumed();
       // Restart collab folder watchers (stale after sleep/wake on Windows)
@@ -196,6 +201,16 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       if (Platform.isIOS) {
         unawaited(DumpIosBridge.instance.drainAppGroupContainer());
       }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      // App is moving to background. If uploads are still pending, ask
+      // MainActivity to bring up SyncForegroundService — that pins the
+      // process (foreground service notification) and spawns a fresh
+      // FlutterEngine that drains the queue from a separate isolate.
+      // Without this, swiping the app away kills the upload and the
+      // ongoing notification simultaneously.
+      unawaited(SyncService.instance.handleAppBackgrounded());
     }
   }
 
