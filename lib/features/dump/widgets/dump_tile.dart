@@ -83,7 +83,8 @@ class DumpTile extends ConsumerWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 10,
+                        height: 1.25,
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),

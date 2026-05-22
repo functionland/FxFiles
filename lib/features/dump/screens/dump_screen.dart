@@ -140,7 +140,9 @@ class _DumpScreenState extends ConsumerState<DumpScreen> {
               maxCrossAxisExtent: 180,
               mainAxisSpacing: 8,
               crossAxisSpacing: 8,
-              childAspectRatio: 0.78,
+              // Slightly taller (was 0.78) so 2 lines of description
+              // and the tag chip row don't squeeze the thumbnail.
+              childAspectRatio: 0.70,
             ),
             itemCount: filtered.length,
             itemBuilder: (context, index) {

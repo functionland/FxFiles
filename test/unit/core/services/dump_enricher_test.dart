@@ -8,6 +8,7 @@
 // Hot platform plugins (ML Kit, video_thumbnail) are skipped or
 // substituted via the test seams on DumpEnricher.
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -45,6 +46,54 @@ class _CannedClient extends http.BaseClient {
   }
 }
 
+/// HTTP mock that maps requested URLs to canned responses. Each stub
+/// provides a `matches` predicate (host check, path check, etc.) plus
+/// the response body, status, and content-type to return. Used by the
+/// link-thumbnail and Twitter-syndication tests where one enrich() call
+/// triggers multiple fetches (HTML page → og:image; or syndication
+/// JSON → media image).
+class _Stub {
+  final bool Function(Uri url) matches;
+  final List<int> body;
+  final int status;
+  final String contentType;
+  _Stub({
+    required this.matches,
+    required this.body,
+    this.status = 200,
+    this.contentType = 'text/html',
+  });
+}
+
+class _MultiUrlClient extends http.BaseClient {
+  final List<_Stub> stubs;
+  final List<Uri> requestedUrls = <Uri>[];
+  final List<Map<String, String>> requestedHeaders =
+      <Map<String, String>>[];
+  _MultiUrlClient(this.stubs);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requestedUrls.add(request.url);
+    requestedHeaders.add(Map<String, String>.from(request.headers));
+    for (final stub in stubs) {
+      if (stub.matches(request.url)) {
+        return http.StreamedResponse(
+          Stream<List<int>>.fromIterable([stub.body]),
+          stub.status,
+          headers: {'content-type': stub.contentType},
+          request: request,
+        );
+      }
+    }
+    return http.StreamedResponse(
+      const Stream<List<int>>.empty(),
+      404,
+      request: request,
+    );
+  }
+}
+
 DumpItem _item({
   required String id,
   required DumpCategory category,
@@ -77,6 +126,17 @@ void main() {
     DumpEnricher.instance.resetForTesting();
     DumpEnricher.instance.thumbsDirOverride =
         () async => Directory('${tempDir.path}/thumbs');
+    // Stub DNS so the SSRF guard works offline. Treat `localhost` as
+    // loopback (so the existing guard test still verifies blocking)
+    // and every other host as a synthetic public address — the
+    // private-IP check in `_isPublicHttpsTarget` runs against the
+    // returned addresses, not the hostname.
+    DumpEnricher.instance.dnsLookupOverride = (host) async {
+      if (host == 'localhost') {
+        return [InternetAddress.loopbackIPv4];
+      }
+      return [InternetAddress('203.0.113.10')]; // TEST-NET-3
+    };
   });
 
   tearDown(() async {
@@ -181,6 +241,404 @@ void main() {
       ));
       expect(res.status, DumpEnrichmentStatus.done);
       expect(res.description, 'Link');
+    });
+  });
+
+  group('Link enrichment — OG metadata + thumbnail', () {
+    test('og:image is downloaded, downscaled, and saved as thumbnail',
+        () async {
+      final pngImage = img.Image(width: 512, height: 512);
+      img.fill(pngImage, color: img.ColorRgb8(100, 50, 200));
+      final pngBytes = img.encodePng(pngImage);
+
+      final html = '''
+        <html><head>
+          <meta property="og:title" content="Test Article" />
+          <meta property="og:description" content="A short description" />
+          <meta property="og:image" content="https://images.example.com/hero.png" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'example.com',
+          body: html,
+          contentType: 'text/html; charset=utf-8',
+        ),
+        _Stub(
+          matches: (u) => u.host == 'images.example.com',
+          body: pngBytes,
+          contentType: 'image/png',
+        ),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp1',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+
+      expect(res.status, DumpEnrichmentStatus.done);
+      expect(res.title, 'Test Article');
+      expect(res.description, 'A short description');
+      expect(res.thumbnailPath, isNotNull);
+      final thumb = File(res.thumbnailPath!);
+      expect(await thumb.exists(), isTrue);
+      final decoded = img.decodeImage(await thumb.readAsBytes())!;
+      expect(decoded.width, lessThanOrEqualTo(256));
+      expect(decoded.height, lessThanOrEqualTo(256));
+    });
+
+    test('meta name="description" fallback when og:description absent',
+        () async {
+      final html = '''
+        <html><head>
+          <title>Plain Page</title>
+          <meta name="description" content="Fallback description here" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => true, body: html),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp2',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/no-og',
+      ));
+      expect(res.title, 'Plain Page');
+      expect(res.description, 'Fallback description here');
+      expect(res.thumbnailPath, isNull);
+    });
+
+    test('og:image pointing to localhost is blocked', () async {
+      final html = '''
+        <html><head>
+          <meta property="og:title" content="Try SSRF" />
+          <meta property="og:image" content="http://localhost/admin.png" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => u.host == 'example.com', body: html),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp3',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+      expect(res.title, 'Try SSRF');
+      expect(res.thumbnailPath, isNull);
+    });
+
+    test('non-image content-type for og:image is rejected', () async {
+      final html = '''
+        <html><head>
+          <meta property="og:title" content="Sneaky" />
+          <meta property="og:image" content="https://images.example.com/fake" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => u.host == 'example.com', body: html),
+        _Stub(
+          matches: (u) => u.host == 'images.example.com',
+          body: 'not an image'.codeUnits,
+          contentType: 'text/plain',
+        ),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp4',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+      expect(res.title, 'Sneaky');
+      expect(res.thumbnailPath, isNull);
+    });
+
+    test('non-ASCII OG metadata decodes correctly (Farsi UTF-8)',
+        () async {
+      // Farsi characters in HTML are encoded as UTF-8 multi-byte
+      // sequences. Before the UTF-8 fix in _readCapped, this would
+      // come back as mojibake (each byte interpreted as Latin-1).
+      const farsiTitle = 'مقاله آزمایشی';
+      const farsiDesc = 'این یک توضیح کوتاه است.';
+      final html = utf8.encode('''
+        <html><head>
+          <meta property="og:title" content="$farsiTitle" />
+          <meta property="og:description" content="$farsiDesc" />
+        </head><body></body></html>
+      ''');
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => true, body: html),
+      ]);
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp_farsi',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/farsi',
+      ));
+      expect(res.title, farsiTitle);
+      expect(res.description, farsiDesc);
+    });
+
+    test('long og:description is truncated to ~200 chars', () async {
+      final longDesc = 'X' * 400;
+      final html = '''
+        <html><head>
+          <meta property="og:title" content="LongDesc" />
+          <meta property="og:description" content="$longDesc" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => true, body: html),
+      ]);
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'lp5',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+      expect(res.description!.length, lessThanOrEqualTo(200));
+      expect(res.description!.endsWith('…'), isTrue);
+    });
+  });
+
+  group('Link enrichment — Twitter / X syndication', () {
+    test('computeTwitterSyndicationToken: non-empty, alphanumeric, no dots',
+        () {
+      final token = DumpEnricher.computeTwitterSyndicationToken(
+          '1234567890123456789');
+      expect(token, isNotEmpty);
+      expect(token.contains('.'), isFalse);
+      expect(RegExp(r'^[0-9a-z]+$').hasMatch(token), isTrue);
+    });
+
+    test(
+        'computeTwitterSyndicationToken: byte-exact match for realistic '
+        'snowflake-shaped tweet IDs', () {
+      // Reference values produced by Node.js using the canonical JS
+      // formula `((Number(id) / 1e15) * Math.PI).toString(36)
+      //         .replace(/(0+|\.)/g, '')`.
+      //
+      // Our Dart implementation matches JS for tweet IDs in the
+      // 10^17–10^18 range (where real X snowflake IDs sit) by
+      // generating digits until f reaches zero and returning the
+      // shortest truncation whose reverse-parse equals the original
+      // double. For IDs near `Number.MAX_SAFE_INTEGER` (≥ 9×10^18)
+      // and very small IDs (< 10^10), JS's V8 engine uses an
+      // additional delta-aware rounding step we don't fully port —
+      // the syndication call in `_enrichLink` falls back to a
+      // Twitterbot UA fetch when syndication returns nothing, so
+      // those edge cases still surface real thumbnails.
+      final cases = <String, String>{
+        '100000000000000000': '8q5qeon85v4',
+        '1000000000000000000': '2f9lc2ug9mm',
+        '1234567890123456789': '2zqic77uqyk',
+      };
+      cases.forEach((id, expected) {
+        expect(
+          DumpEnricher.computeTwitterSyndicationToken(id),
+          equals(expected),
+          reason: 'id=$id',
+        );
+      });
+    });
+
+    test('computeTwitterSyndicationToken: invalid id → empty', () {
+      expect(
+          DumpEnricher.computeTwitterSyndicationToken('not-a-number'), '');
+      expect(DumpEnricher.computeTwitterSyndicationToken(''), '');
+    });
+
+    test('x.com URL → syndication produces title/desc/thumb', () async {
+      final pngImage = img.Image(width: 300, height: 300);
+      img.fill(pngImage, color: img.ColorRgb8(20, 130, 200));
+      final pngBytes = img.encodePng(pngImage);
+
+      final json = jsonEncode({
+        'text': 'Hello world from the tweet body',
+        'user': {
+          'screen_name': 'alice',
+          'profile_image_url_https':
+              'https://pbs.twimg.com/profile_images/alice.png',
+        },
+        'mediaDetails': [
+          {
+            'media_url_https':
+                'https://pbs.twimg.com/media/tweet-image.jpg',
+          }
+        ],
+      });
+
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'cdn.syndication.twimg.com',
+          body: json.codeUnits,
+          contentType: 'application/json',
+        ),
+        _Stub(
+          matches: (u) => u.host == 'pbs.twimg.com',
+          body: pngBytes,
+          contentType: 'image/jpeg',
+        ),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'tw1',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://x.com/alice/status/1234567890123456789',
+      ));
+
+      expect(res.status, DumpEnrichmentStatus.done);
+      expect(res.title, 'Tweet by @alice');
+      expect(res.description, 'Hello world from the tweet body');
+      expect(res.thumbnailPath, isNotNull);
+      expect(await File(res.thumbnailPath!).exists(), isTrue);
+    });
+
+    test('syndication 404 falls back to Twitterbot UA OG fetch',
+        () async {
+      final html = '''
+        <html><head>
+          <meta property="og:title" content="Fallback Title" />
+        </head><body></body></html>
+      '''
+          .codeUnits;
+
+      final mc = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'cdn.syndication.twimg.com',
+          body: const <int>[],
+          status: 404,
+        ),
+        _Stub(matches: (u) => u.host == 'x.com', body: html),
+      ]);
+      DumpEnricher.instance.linkHttpClientOverride = mc;
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'tw2',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://x.com/bob/status/9999999999999999999',
+      ));
+      expect(res.title, 'Fallback Title');
+
+      // The x.com follow-up fetch must use Twitterbot UA — that's
+      // the only UA X actually serves OG metadata to (as of 2024+).
+      final xIdx = mc.requestedUrls.indexWhere((u) => u.host == 'x.com');
+      expect(xIdx, greaterThanOrEqualTo(0),
+          reason: 'expected an x.com fallback fetch');
+      expect(
+        mc.requestedHeaders[xIdx]['User-Agent'],
+        equals('Twitterbot/1.0'),
+      );
+    });
+
+    test('non-twitter URL uses default User-Agent (not Twitterbot)',
+        () async {
+      final mc = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'example.com',
+          body: '<title>Generic</title>'.codeUnits,
+        ),
+      ]);
+      DumpEnricher.instance.linkHttpClientOverride = mc;
+
+      await DumpEnricher.instance.enrich(_item(
+        id: 'tw_ua_default',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+
+      final idx =
+          mc.requestedUrls.indexWhere((u) => u.host == 'example.com');
+      expect(idx, greaterThanOrEqualTo(0));
+      expect(
+        mc.requestedHeaders[idx]['User-Agent'],
+        equals('FxFiles-Dump/1.0'),
+      );
+    });
+
+    test('mobile.twitter.com / twitter.com hosts also route to syndication',
+        () async {
+      final json = jsonEncode({
+        'text': 'mobile tweet',
+        'user': {'screen_name': 'm'},
+      });
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'cdn.syndication.twimg.com',
+          body: json.codeUnits,
+          contentType: 'application/json',
+        ),
+      ]);
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'tw3',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload:
+            'https://mobile.twitter.com/m/status/1234567890123456789',
+      ));
+      expect(res.title, 'Tweet by @m');
+      expect(res.description, 'mobile tweet');
+    });
+
+    test('non-twitter URL does not call the syndication endpoint',
+        () async {
+      final mc = _MultiUrlClient([
+        _Stub(
+          matches: (u) => true,
+          body: '<title>Wiki</title>'.codeUnits,
+        ),
+      ]);
+      DumpEnricher.instance.linkHttpClientOverride = mc;
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'tw4',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://en.wikipedia.org/wiki/Test',
+      ));
+      expect(res.title, 'Wiki');
+      expect(
+        mc.requestedUrls
+            .any((u) => u.host == 'cdn.syndication.twimg.com'),
+        isFalse,
+        reason: 'non-twitter URLs must not hit syndication',
+      );
+    });
+
+    test('x.com profile URL (no /status/) skips syndication', () async {
+      final mc = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'x.com',
+          body: '<title>Alice on X</title>'.codeUnits,
+        ),
+      ]);
+      DumpEnricher.instance.linkHttpClientOverride = mc;
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'tw5',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://x.com/alice',
+      ));
+      expect(res.title, 'Alice on X');
+      expect(
+        mc.requestedUrls
+            .any((u) => u.host == 'cdn.syndication.twimg.com'),
+        isFalse,
+      );
     });
   });
 

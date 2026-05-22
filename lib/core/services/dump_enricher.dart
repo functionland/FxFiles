@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -57,6 +58,7 @@ class DumpEnricher {
   // Link enrichment — R14 SSRF + privacy guards.
   static const Duration _kLinkTimeout = Duration(seconds: 5);
   static const int _kLinkMaxBodyBytes = 1024 * 1024;
+  static const int _kLinkImageMaxBytes = 5 * 1024 * 1024;
   static const int _kLinkMaxRedirects = 3;
   static const String _kLinkUserAgent = 'FxFiles-Dump/1.0';
 
@@ -73,6 +75,14 @@ class DumpEnricher {
   // testable without network access.
   @visibleForTesting
   http.Client? linkHttpClientOverride;
+
+  // Test seam — overrides DNS lookups inside `_isPublicHttpsTarget`,
+  // so SSRF-guard behaviour can be exercised in environments where
+  // real DNS is unavailable or unreliable (CI sandboxes, offline dev
+  // boxes). Production code leaves this null and uses the real
+  // `InternetAddress.lookup`.
+  @visibleForTesting
+  Future<List<InternetAddress>> Function(String host)? dnsLookupOverride;
 
   // Test seam — override the destination dir for thumbnails so tests
   // can isolate filesystem effects under tmp.
@@ -140,10 +150,45 @@ class DumpEnricher {
       );
     }
 
-    final ogTitle = await _fetchOgTitle(uri);
+    _LinkMetadata metadata;
+    // X (Twitter) URLs: try the syndication API first — anonymous OG
+    // scraping is blocked on x.com, so the general path returns
+    // nothing useful with our normal User-Agent. If syndication fails
+    // (token mismatch for certain IDs, tweet deleted, endpoint
+    // changed), fall back to fetching the page with the Twitterbot
+    // UA, which Twitter still serves OG metadata to (it's how their
+    // own card validator works). Only if that also returns nothing
+    // do we fall through to the URL-host display.
+    final tweetId = _extractTweetId(uri);
+    if (tweetId != null) {
+      metadata = await _fetchTweetSyndication(tweetId);
+      if (metadata.title == null &&
+          metadata.description == null &&
+          metadata.imageUrl == null) {
+        metadata = await _fetchLinkMetadata(
+          uri,
+          userAgent: 'Twitterbot/1.0',
+        );
+      }
+    } else {
+      metadata = await _fetchLinkMetadata(uri);
+    }
+
+    String? thumbnailPath;
+    if (metadata.imageUrl != null) {
+      thumbnailPath =
+          await _fetchAndCacheLinkImage(metadata.imageUrl!, item.id);
+    }
+
     return DumpEnrichmentResult(
-      title: ogTitle?.isNotEmpty == true ? ogTitle : uri.host,
-      description: raw,
+      title: (metadata.title != null && metadata.title!.isNotEmpty)
+          ? metadata.title
+          : uri.host,
+      description: (metadata.description != null &&
+              metadata.description!.isNotEmpty)
+          ? metadata.description
+          : raw,
+      thumbnailPath: thumbnailPath,
       status: DumpEnrichmentStatus.done,
     );
   }
@@ -315,7 +360,8 @@ class DumpEnricher {
 
     List<InternetAddress> addresses;
     try {
-      addresses = await InternetAddress.lookup(uri.host).timeout(
+      final lookup = dnsLookupOverride ?? InternetAddress.lookup;
+      addresses = await lookup(uri.host).timeout(
         const Duration(seconds: 3),
       );
     } on TimeoutException {
@@ -373,7 +419,16 @@ class DumpEnricher {
     return true; // Unknown family — be conservative.
   }
 
-  Future<String?> _fetchOgTitle(Uri uri) async {
+  /// Fetches HTML + extracts og:title / og:description / og:image.
+  /// Optional [userAgent] overrides the default `FxFiles-Dump/1.0` —
+  /// used by the X fallback path which retries with `Twitterbot/1.0`
+  /// so Twitter serves us OG metadata (their card-validator crawler
+  /// UA is one of the few accepted by post-2023 X).
+  Future<_LinkMetadata> _fetchLinkMetadata(
+    Uri uri, {
+    String? userAgent,
+  }) async {
+    final ua = userAgent ?? _kLinkUserAgent;
     final client = linkHttpClientOverride ?? http.Client();
     final ownsClient = linkHttpClientOverride == null;
     try {
@@ -382,33 +437,119 @@ class DumpEnricher {
       for (var i = 0; i <= _kLinkMaxRedirects; i++) {
         final request = http.Request('GET', current)
           ..followRedirects = false
-          ..headers['User-Agent'] = _kLinkUserAgent
+          ..headers['User-Agent'] = ua
           ..headers['Accept'] = 'text/html,application/xhtml+xml';
         final streamed =
             await client.send(request).timeout(_kLinkTimeout);
         if (streamed.statusCode >= 300 && streamed.statusCode < 400) {
           final loc = streamed.headers['location'];
           if (loc == null || loc.isEmpty || i == _kLinkMaxRedirects) {
-            return null;
+            return const _LinkMetadata();
           }
           current = current.resolve(loc);
           if (!await _isPublicHttpsTarget(current)) {
-            return null; // redirect to a private target — bail.
+            return const _LinkMetadata();
           }
           continue;
         }
-        if (streamed.statusCode != 200) return null;
+        if (streamed.statusCode != 200) return const _LinkMetadata();
         final ct = streamed.headers['content-type'] ?? '';
-        if (!ct.contains('html') && !ct.contains('xml')) return null;
+        if (!ct.contains('html') && !ct.contains('xml')) {
+          return const _LinkMetadata();
+        }
         final body = await _readCapped(streamed, _kLinkMaxBodyBytes)
             .timeout(_kLinkTimeout);
-        return _extractOgTitle(body);
+        return _extractLinkMetadata(body, current);
+      }
+      return const _LinkMetadata();
+    } on TimeoutException {
+      return const _LinkMetadata();
+    } catch (e) {
+      debugPrint('DumpEnricher: link metadata fetch failed for $uri: $e');
+      return const _LinkMetadata();
+    } finally {
+      if (ownsClient) client.close();
+    }
+  }
+
+  /// Downloads `imageUrl`, downscales it to the standard thumbnail
+  /// envelope (≤ 256 px long edge, JPEG q80), and writes it to
+  /// `dump_thumbs/<dumpItemId>.jpg`. Returns the saved path or null on
+  /// any failure (private target, non-image content type, decode fail,
+  /// size cap exceeded, network timeout). Applies the same R14 SSRF
+  /// guards as the HTML fetch path plus a 5 MB body cap and an
+  /// `image/*` content-type check.
+  Future<String?> _fetchAndCacheLinkImage(
+      Uri imageUrl, String dumpItemId) async {
+    if (imageUrl.scheme != 'http' && imageUrl.scheme != 'https') {
+      return null;
+    }
+    if (!await _isPublicHttpsTarget(imageUrl)) return null;
+
+    final client = linkHttpClientOverride ?? http.Client();
+    final ownsClient = linkHttpClientOverride == null;
+    try {
+      var current = imageUrl;
+      for (var i = 0; i <= _kLinkMaxRedirects; i++) {
+        final request = http.Request('GET', current)
+          ..followRedirects = false
+          ..headers['User-Agent'] = _kLinkUserAgent
+          ..headers['Accept'] = 'image/*';
+        final streamed =
+            await client.send(request).timeout(_kLinkTimeout);
+
+        if (streamed.statusCode >= 300 && streamed.statusCode < 400) {
+          final loc = streamed.headers['location'];
+          if (loc == null || loc.isEmpty || i == _kLinkMaxRedirects) {
+            return null;
+          }
+          current = current.resolve(loc);
+          if (!await _isPublicHttpsTarget(current)) return null;
+          continue;
+        }
+
+        if (streamed.statusCode != 200) return null;
+        final ct = (streamed.headers['content-type'] ?? '').toLowerCase();
+        if (!ct.startsWith('image/')) return null;
+
+        final builder = BytesBuilder(copy: false);
+        await for (final chunk in streamed.stream) {
+          builder.add(chunk);
+          if (builder.length >= _kLinkImageMaxBytes) break;
+        }
+        final raw = builder.takeBytes();
+        final bytes = raw.length > _kLinkImageMaxBytes
+            ? raw.sublist(0, _kLinkImageMaxBytes)
+            : raw;
+
+        final decoded = img.decodeImage(bytes);
+        if (decoded == null) return null;
+
+        final longEdge = decoded.width >= decoded.height
+            ? decoded.width
+            : decoded.height;
+        final scale = longEdge > _kThumbMaxLongEdge
+            ? _kThumbMaxLongEdge / longEdge
+            : 1.0;
+        final targetW =
+            (decoded.width * scale).round().clamp(1, _kThumbMaxLongEdge);
+        final targetH =
+            (decoded.height * scale).round().clamp(1, _kThumbMaxLongEdge);
+        final resized = (scale < 1.0)
+            ? img.copyResize(decoded, width: targetW, height: targetH)
+            : decoded;
+        final jpegBytes =
+            img.encodeJpg(resized, quality: _kThumbJpegQuality);
+        return await _writeBytesToThumbs(
+          Uint8List.fromList(jpegBytes),
+          '$dumpItemId.jpg',
+        );
       }
       return null;
     } on TimeoutException {
       return null;
     } catch (e) {
-      debugPrint('DumpEnricher: OG fetch failed for $uri: $e');
+      debugPrint('DumpEnricher: image fetch failed for $imageUrl: $e');
       return null;
     } finally {
       if (ownsClient) client.close();
@@ -423,38 +564,65 @@ class DumpEnricher {
     }
     final bytes = builder.takeBytes();
     final clipped = bytes.length > cap ? bytes.sublist(0, cap) : bytes;
-    // HTML is usually UTF-8 / Latin-1. Try UTF-8 then fall back to
-    // a tolerant Latin-1 decode.
-    try {
-      return String.fromCharCodes(clipped);
-    } catch (_) {
-      return '';
-    }
+    // Modern web pages (and Twitter's syndication JSON) are UTF-8.
+    // `String.fromCharCodes` would treat each byte as Latin-1, which
+    // corrupts every multi-byte UTF-8 character — Farsi, CJK, emoji,
+    // and most non-English content turns into mojibake. `allowMalformed`
+    // replaces any actual non-UTF-8 bytes with U+FFFD instead of
+    // throwing, so legacy Latin-1 / Windows-1252 pages still decode
+    // (lossily but without crashing).
+    return utf8.decode(clipped, allowMalformed: true);
   }
 
   static final RegExp _ogTitleRe = RegExp(
     r'''<meta\s+[^>]*?property=["']og:title["'][^>]*?content=["']([^"']+)["']''',
     caseSensitive: false,
   );
+  static final RegExp _ogDescRe = RegExp(
+    r'''<meta\s+[^>]*?property=["']og:description["'][^>]*?content=["']([^"']+)["']''',
+    caseSensitive: false,
+  );
+  static final RegExp _ogImageRe = RegExp(
+    r'''<meta\s+[^>]*?property=["']og:image(?::secure_url)?["'][^>]*?content=["']([^"']+)["']''',
+    caseSensitive: false,
+  );
+  static final RegExp _metaDescRe = RegExp(
+    r'''<meta\s+[^>]*?name=["']description["'][^>]*?content=["']([^"']+)["']''',
+    caseSensitive: false,
+  );
   static final RegExp _titleTagRe =
       RegExp(r'<title[^>]*>(.*?)</title>', caseSensitive: false, dotAll: true);
 
-  String? _extractOgTitle(String html) {
-    final og = _ogTitleRe.firstMatch(html);
-    if (og != null) {
-      final raw = og.group(1);
-      if (raw != null && raw.trim().isNotEmpty) {
-        return _decodeEntities(raw).trim();
+  _LinkMetadata _extractLinkMetadata(String html, Uri baseUrl) {
+    String? extract(RegExp re) {
+      final m = re.firstMatch(html);
+      if (m == null) return null;
+      final raw = m.group(1);
+      if (raw == null || raw.trim().isEmpty) return null;
+      return _decodeEntities(raw).trim();
+    }
+
+    String? title = extract(_ogTitleRe) ?? extract(_titleTagRe);
+    String? description = extract(_ogDescRe) ?? extract(_metaDescRe);
+    if (description != null && description.length > _kNoteDescMaxChars) {
+      description = '${description.substring(0, _kNoteDescMaxChars - 1)}…';
+    }
+
+    Uri? imageUrl;
+    final imgRaw = extract(_ogImageRe);
+    if (imgRaw != null) {
+      try {
+        imageUrl = baseUrl.resolve(imgRaw);
+      } catch (_) {
+        imageUrl = null;
       }
     }
-    final tt = _titleTagRe.firstMatch(html);
-    if (tt != null) {
-      final raw = tt.group(1);
-      if (raw != null && raw.trim().isNotEmpty) {
-        return _decodeEntities(raw).trim();
-      }
-    }
-    return null;
+
+    return _LinkMetadata(
+      title: title,
+      description: description,
+      imageUrl: imageUrl,
+    );
   }
 
   String _decodeEntities(String s) {
@@ -464,6 +632,221 @@ class DumpEnricher {
         .replaceAll('&gt;', '>')
         .replaceAll('&quot;', '"')
         .replaceAll('&#39;', "'");
+  }
+
+  // ----------------------------------------------------------------
+  // Twitter / X — syndication API path
+  // ----------------------------------------------------------------
+  //
+  // X (formerly Twitter) actively blocks anonymous OG scraping post-
+  // 2023 — the general `_fetchLinkMetadata` returns blank HTML for
+  // x.com/twitter.com hosts. Instead, hit the same undocumented
+  // endpoint that Twitter's own embed widget uses:
+  //   https://cdn.syndication.twimg.com/tweet-result?id=<id>&token=<t>
+  //
+  // No auth needed, but the `token` query param is derived from the
+  // tweet ID via a known JS formula (mirrored in
+  // [computeTwitterSyndicationToken]). This endpoint is undocumented
+  // and may change without warning — `_enrichLink` falls back to the
+  // general OG fetch if syndication returns nothing.
+
+  static final RegExp _twitterStatusRe = RegExp(
+    r'^/[^/]+/status(?:es)?/(\d+)',
+  );
+
+  bool _isTwitterHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'x.com' ||
+        h == 'twitter.com' ||
+        h == 'mobile.twitter.com' ||
+        h.endsWith('.twitter.com') ||
+        h.endsWith('.x.com');
+  }
+
+  String? _extractTweetId(Uri uri) {
+    if (!_isTwitterHost(uri.host)) return null;
+    final m = _twitterStatusRe.firstMatch(uri.path);
+    return m?.group(1);
+  }
+
+  /// Computes the syndication API token using Twitter's own JS
+  /// formula:
+  ///   `((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '')`
+  /// This matches what `react-tweet` and other open-source embed
+  /// renderers compute, mirroring Twitter's own client-side widget.
+  @visibleForTesting
+  static String computeTwitterSyndicationToken(String tweetId) {
+    final id = double.tryParse(tweetId);
+    if (id == null || id.isNaN || id.isInfinite) return '';
+    final n = (id / 1e15) * 3.141592653589793;
+    return _doubleToBase36(n).replaceAll(RegExp(r'(0+|\.)'), '');
+  }
+
+  /// Port of JS `Number.prototype.toString(36)` for non-negative
+  /// finite doubles. JS uses a shortest-round-trip algorithm
+  /// (Grisu/Ryu): it produces the shortest sequence of digits such
+  /// that re-parsing yields the same IEEE 754 double.
+  ///
+  /// We mirror that by generating ~23 base-36 digits of the
+  /// fractional part (one more than the 22 needed to cover the
+  /// 53-bit mantissa, so we have a digit available for rounding),
+  /// then at each length trying both the truncated and the rounded-up
+  /// variant. The shortest variant whose reverse parse equals the
+  /// input wins. Without this, the Twitter syndication token has
+  /// either too many digits (truncate-only) or wrong digits (no
+  /// rounding) and the API rejects the request.
+  static String _doubleToBase36(double n) {
+    if (n.isNaN || n.isInfinite || n < 0) return '';
+    final intPart = n.floor();
+    final fracPart = n - intPart;
+    if (fracPart == 0) return intPart.toRadixString(36);
+
+    // Generate 23 fractional digits — 22 is enough for the 53-bit
+    // mantissa, plus one extra to drive rounding decisions.
+    const maxDigits = 23;
+    final digits = <int>[];
+    var f = fracPart;
+    for (var i = 0; i < maxDigits && f > 0; i++) {
+      f *= 36;
+      final d = f.floor();
+      f -= d;
+      digits.add(d);
+    }
+
+    double parseBack(int ip, List<int> frac) {
+      if (frac.isEmpty) return ip.toDouble();
+      var fracVal = 0;
+      for (final d in frac) {
+        fracVal = fracVal * 36 + d;
+      }
+      var denom = 1.0;
+      for (var i = 0; i < frac.length; i++) {
+        denom *= 36;
+      }
+      return ip.toDouble() + fracVal.toDouble() / denom;
+    }
+
+    String build(int ip, List<int> frac) {
+      final intS = ip.toRadixString(36);
+      if (frac.isEmpty) return intS;
+      final buf = StringBuffer(intS)..write('.');
+      for (final d in frac) {
+        buf.write(d < 10
+            ? String.fromCharCode(48 + d)
+            : String.fromCharCode(87 + d));
+      }
+      return buf.toString();
+    }
+
+    // Try each length from shortest to longest. At each length try
+    // the truncated form first, then the rounded-up form (carry
+    // propagated through fractional digits and into the integer part
+    // if necessary).
+    for (var len = 1; len <= digits.length; len++) {
+      final truncated = digits.sublist(0, len);
+      if (parseBack(intPart, truncated) == n) {
+        return build(intPart, truncated);
+      }
+
+      // Rounded variant: increment the last fractional digit with
+      // carry. Only meaningful when there's at least one more digit
+      // we could have generated.
+      final rounded = List<int>.from(truncated);
+      var carry = 1;
+      for (var i = rounded.length - 1; i >= 0 && carry > 0; i--) {
+        rounded[i] += carry;
+        if (rounded[i] >= 36) {
+          rounded[i] = 0;
+          carry = 1;
+        } else {
+          carry = 0;
+        }
+      }
+      final roundedIntPart = intPart + carry;
+      if (parseBack(roundedIntPart, rounded) == n) {
+        return build(roundedIntPart, rounded);
+      }
+    }
+
+    return build(intPart, digits);
+  }
+
+  Future<_LinkMetadata> _fetchTweetSyndication(String tweetId) async {
+    final token = computeTwitterSyndicationToken(tweetId);
+    if (token.isEmpty) return const _LinkMetadata();
+
+    final url = Uri.https(
+      'cdn.syndication.twimg.com',
+      '/tweet-result',
+      <String, String>{'id': tweetId, 'token': token, 'lang': 'en'},
+    );
+
+    if (!await _isPublicHttpsTarget(url)) return const _LinkMetadata();
+
+    final client = linkHttpClientOverride ?? http.Client();
+    final ownsClient = linkHttpClientOverride == null;
+    try {
+      final request = http.Request('GET', url)
+        ..followRedirects = false
+        ..headers['User-Agent'] = _kLinkUserAgent
+        ..headers['Accept'] = 'application/json';
+      final streamed =
+          await client.send(request).timeout(_kLinkTimeout);
+      if (streamed.statusCode != 200) {
+        return const _LinkMetadata();
+      }
+      final body = await _readCapped(streamed, _kLinkMaxBodyBytes)
+          .timeout(_kLinkTimeout);
+      final dynamic decoded;
+      try {
+        decoded = jsonDecode(body);
+      } catch (_) {
+        return const _LinkMetadata();
+      }
+      if (decoded is! Map<String, dynamic>) return const _LinkMetadata();
+
+      final text = decoded['text'] as String?;
+      final user = decoded['user'] as Map<String, dynamic>?;
+      final author = user?['screen_name'] as String?;
+      final mediaDetails = decoded['mediaDetails'] as List<dynamic>?;
+
+      String? imageUrlString;
+      if (mediaDetails != null && mediaDetails.isNotEmpty) {
+        final first = mediaDetails.first;
+        if (first is Map<String, dynamic>) {
+          imageUrlString = first['media_url_https'] as String?;
+        }
+      }
+      imageUrlString ??= user?['profile_image_url_https'] as String?;
+
+      Uri? imageUrl;
+      if (imageUrlString != null && imageUrlString.isNotEmpty) {
+        imageUrl = Uri.tryParse(imageUrlString);
+      }
+
+      final title = (author != null && author.isNotEmpty)
+          ? 'Tweet by @$author'
+          : null;
+      String? desc;
+      if (text != null && text.isNotEmpty) {
+        desc = text.length > _kNoteDescMaxChars
+            ? '${text.substring(0, _kNoteDescMaxChars - 1)}…'
+            : text;
+      }
+
+      return _LinkMetadata(
+        title: title,
+        description: desc,
+        imageUrl: imageUrl,
+      );
+    } on TimeoutException {
+      return const _LinkMetadata();
+    } catch (e) {
+      debugPrint('DumpEnricher: tweet syndication failed: $e');
+      return const _LinkMetadata();
+    } finally {
+      if (ownsClient) client.close();
+    }
   }
 
   // ----------------------------------------------------------------
@@ -518,11 +901,14 @@ class DumpEnricher {
       if (!await file.exists()) return null;
       final size = await file.length();
       if (size > 1024 * 1024) {
-        // Cap text-payload reads at 1 MB to bound memory.
+        // Cap text-payload reads at 1 MB to bound memory. Decode as
+        // UTF-8 (same reasoning as in _readCapped — Latin-1 mangles
+        // non-English content). `allowMalformed` keeps us from
+        // throwing if the cap split a multi-byte UTF-8 sequence.
         final raf = await file.open();
         try {
           final bytes = await raf.read(1024 * 1024);
-          return String.fromCharCodes(bytes);
+          return utf8.decode(bytes, allowMalformed: true);
         } finally {
           await raf.close();
         }
@@ -578,6 +964,19 @@ class DumpEnricher {
   void resetForTesting() {
     imageLabelOverride = null;
     linkHttpClientOverride = null;
+    dnsLookupOverride = null;
     thumbsDirOverride = null;
   }
+}
+
+/// Parsed link metadata bag passed between the fetchers and
+/// `_enrichLink`. All fields may be null when the source page returns
+/// no OG tags, no `<title>`, or no `<meta name="description">`. The
+/// caller falls back to URL host / raw URL / no thumbnail when fields
+/// are missing.
+class _LinkMetadata {
+  final String? title;
+  final String? description;
+  final Uri? imageUrl;
+  const _LinkMetadata({this.title, this.description, this.imageUrl});
 }

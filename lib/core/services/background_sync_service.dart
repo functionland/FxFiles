@@ -106,6 +106,20 @@ void callbackDispatcher() {
 }
 
 Future<void> _executePeriodicSync() async {
+  // Drain any newly-shared dumps first (R3 follow-up). Runs even when
+  // offline — staged files are read locally, then `SyncService
+  // .queueUpload` enqueues them; the actual network upload below
+  // skips when no connectivity and resumes on the next tick when
+  // we're back online. Without this hook, dumps staged by the
+  // Kotlin share Activity sit in `dump_pending/` until the user
+  // foregrounds the app — which defeats the share-target UX.
+  try {
+    await DumpService.instance.init();
+    await DumpService.instance.drainPendingDir();
+  } catch (e) {
+    debugPrint('Periodic dump drain failed (continuing): $e');
+  }
+
   final connectivity = await Connectivity().checkConnectivity();
   if (connectivity.contains(ConnectivityResult.none)) {
     debugPrint('No network connection, skipping sync');
@@ -261,6 +275,16 @@ class BackgroundSyncService {
           // which is the right primitive for a 770 MB user-initiated
           // download. BGProcessingTask is OS-scheduled and not suitable.
           await _initializeServicesForBackground();
+          // Drain newly-shared dumps from the App Group container +
+          // local pending dir — same reasoning as Android's
+          // _executePeriodicSync. Failure is non-fatal; the regular
+          // sync queue below still runs.
+          try {
+            await DumpService.instance.init();
+            await DumpService.instance.drainPendingDir();
+          } catch (e) {
+            debugPrint('iOS bg dump drain failed (continuing): $e');
+          }
           await SyncService.instance.restoreQueue();
           // iOS BGProcessingTask has longer time (up to 30 minutes)
           await SyncService.instance.processQueueWithTimeout(
@@ -271,6 +295,14 @@ class BackgroundSyncService {
         case 'onBackgroundRefresh':
           // iOS triggered background refresh - quick check only
           await _initializeServicesForBackground();
+          // Quick dump drain in case Share Extension staged something
+          // since the last foreground/BGProcessingTask drain.
+          try {
+            await DumpService.instance.init();
+            await DumpService.instance.drainPendingDir();
+          } catch (e) {
+            debugPrint('iOS refresh dump drain failed (continuing): $e');
+          }
           await SyncService.instance.restoreQueue();
           // BGAppRefreshTask has ~30 seconds
           await SyncService.instance.processQueueWithTimeout(
@@ -346,6 +378,16 @@ class BackgroundSyncService {
       _desktopSyncTimer = Timer(interval, () async {
         try {
           if (!FulaApiService.instance.isConfigured) return;
+          // Drain any locally-staged dumps before the regular sync
+          // pass. Desktop doesn't have a system share-target today so
+          // dump_pending is typically empty here — harmless no-op if
+          // so, and future-proof if a Windows share path lands later.
+          try {
+            await DumpService.instance.init();
+            await DumpService.instance.drainPendingDir();
+          } catch (e) {
+            debugPrint('Desktop dump drain failed (continuing): $e');
+          }
           final connectivity = await Connectivity().checkConnectivity();
           if (connectivity.contains(ConnectivityResult.none)) return;
           await SyncService.instance.restoreQueue();
