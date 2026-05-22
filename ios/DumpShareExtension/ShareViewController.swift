@@ -39,6 +39,14 @@ class ShareViewController: UIViewController {
         category: "ShareViewController"
     )
 
+    // Re-entry guard (Session 6 / advisor R-S6-A1): the OS can call
+    // viewDidAppear more than once during the extension's lifecycle
+    // (e.g. animation re-entry, OS-driven resize). Without this flag,
+    // each redundant call would spin up a fresh `processShare()` Task,
+    // creating duplicate transaction directories + uploads from the
+    // same user gesture.
+    private var didKickOffProcessing = false
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Headless — never show a sheet, never block the share gesture.
@@ -51,7 +59,10 @@ class ShareViewController: UIViewController {
         // Kick off after the view tree is mounted so `extensionContext`
         // is guaranteed non-nil. `Task { ... }` detaches from the
         // controller's lifecycle so `completeRequest` still runs even
-        // if the OS tears down the view mid-flight.
+        // if the OS tears down the view mid-flight. Guarded so a
+        // re-entrant viewDidAppear doesn't double-process the share.
+        if didKickOffProcessing { return }
+        didKickOffProcessing = true
         Task { [weak self] in
             await self?.processShare()
         }
@@ -192,10 +203,15 @@ class ShareViewController: UIViewController {
                     try FileManager.default.moveItem(at: tmp, to: dest)
                     self.applyProtection(to: dest)
                     let mime = UTType(typeIdentifier)?.preferredMIMEType
+                    // Codex review (Session 6): `mime as Any` boxes
+                    // `Optional.none` into an `Any` slot, which
+                    // `JSONSerialization` rejects. Use `NSNull()`
+                    // explicitly when the UTType has no preferred
+                    // MIME so the manifest serializes cleanly.
                     continuation.resume(returning: [
                         "localFile": localFile,
                         "originalName": originalName,
-                        "mimeType": mime as Any,
+                        "mimeType": (mime as Any?) ?? NSNull(),
                     ])
                 } catch {
                     Self.logger.error("file stage failed: \(String(describing: error), privacy: .public)")
@@ -297,7 +313,11 @@ class ShareViewController: UIViewController {
             "v": 1,
             "txnId": txnId,
             "createdAtMs": Int(Date().timeIntervalSince1970 * 1000),
-            "sourceApp": "ios-share",
+            // Use the same field name Android writes (Session 2's
+            // DumpShareActivity.kt → "sourcePackage") so the
+            // Dart-side `_drainOneDescriptor` reads one schema for
+            // both platforms.
+            "sourcePackage": "ios-share",
             "items": items,
         ]
         let data = try JSONSerialization.data(

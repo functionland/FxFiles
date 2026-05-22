@@ -33,8 +33,13 @@ class DumpIosBridge {
 
   /// Drains every committed transaction (a `<txn>/manifest.json` is
   /// present in the App Group container) and feeds it into
-  /// `DumpService.ingestAndSchedule`. Returns the total number of
-  /// newly-ingested [DumpItem]s across all drained transactions.
+  /// `DumpService.ingestAndSchedule`. After successful in-memory
+  /// ingestion, asks the native side to delete the sidecar JSONs it
+  /// wrote into `Documents/dump_pending/` — without that ack the
+  /// sidecar would be re-ingested by `DumpService.drainPendingDir`
+  /// on the next resume (idempotent thanks to R8 dedup, but wasteful).
+  /// If the ack call fails the sidecar stays as a recovery net.
+  /// Returns the total number of newly-ingested [DumpItem]s.
   Future<int> drainAppGroupContainer() async {
     if (!_isIosEnabled) return 0;
     final List<dynamic>? raw;
@@ -49,6 +54,7 @@ class DumpIosBridge {
     if (raw == null || raw.isEmpty) return 0;
 
     var total = 0;
+    final ackTxnIds = <String>[];
     for (final entry in raw) {
       try {
         final txn = (entry as Map).cast<String, Object?>();
@@ -66,18 +72,37 @@ class DumpIosBridge {
             paths.map((p) => p.split(Platform.pathSeparator).last).toList();
 
         final textPayload = txn['textPayload'] as String?;
-        final sourceApp = txn['sourceApp'] as String?;
+        // Accept either the new canonical `sourcePackage` field or
+        // the legacy `sourceApp` field (older extension builds may
+        // still write the latter for one release transition).
+        final sourcePackage = (txn['sourcePackage'] as String?) ??
+            (txn['sourceApp'] as String?);
+        final txnId = txn['txnId'] as String?;
 
         final created = await DumpService.instance.ingestAndSchedule(
           cachedPaths: paths,
           mimeTypes: mimeTypes,
           originalNames: originalNames,
           textPayload: textPayload,
-          sourcePackage: sourceApp,
+          sourcePackage: sourcePackage,
         );
         total += created.length;
+        if (txnId != null) ackTxnIds.add(txnId);
       } catch (e) {
         debugPrint('DumpIosBridge: malformed descriptor entry skipped: $e');
+      }
+    }
+
+    if (ackTxnIds.isNotEmpty) {
+      try {
+        await _channel.invokeMethod<bool>(
+          'ackTxns',
+          <String, dynamic>{'txnIds': ackTxnIds},
+        );
+      } catch (e) {
+        // Best-effort — failures leave sidecars on disk for
+        // drainPendingDir to re-pick-up later. Idempotent via R8.
+        debugPrint('DumpIosBridge: ackTxns failed (sidecars retained): $e');
       }
     }
     return total;

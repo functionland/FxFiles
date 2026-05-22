@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/background_sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/dump_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
@@ -188,6 +189,18 @@ Future<ProviderContainer> _initializeApp() async {
   } catch (e) {
     debugPrint('LocalStorageService initialization failed: $e');
     // Continue - app can still run with limited functionality
+  }
+
+  // Bind the DumpService → SyncService status listener on cold start
+  // (Session 6 / Cursor review): without this, a queued-from-prior-
+  // session upload that finishes BEFORE the first share/drain of
+  // this process would emit `SyncStatus.synced` to a never-bound
+  // listener, leaving the DumpItem stuck in `uploading`. init() is
+  // idempotent and the storage layer was already opened above.
+  try {
+    await DumpService.instance.init().timeout(const Duration(seconds: 2));
+  } catch (e) {
+    debugPrint('DumpService initialization failed: $e');
   }
 
   // Initialize deep link service (must be early to catch initial links)

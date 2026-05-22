@@ -24,6 +24,12 @@ import os
     private var modelDownloadChannel: FlutterMethodChannel?
     private var dumpBridgeChannel: FlutterMethodChannel?
     private var dumpNotificationChannel: FlutterMethodChannel?
+    /// Serializes Dump-drain access (Session 6 / Codex review): the
+    /// BGTask handler and the MethodChannel-driven foreground drain
+    /// both call `drainAppGroupContainerSync`. Without this lock they
+    /// could enumerate the same txn dir, race the move, and corrupt
+    /// transaction state (partial moves, double-claims, etc.).
+    private let dumpDrainLock = NSLock()
     // Retain the handler so its delegate (which holds the URLSession)
     // outlives method-call dispatch. Otherwise iOS won't deliver the
     // background-session events to a deallocated delegate.
@@ -147,6 +153,27 @@ import os
                         DispatchQueue.main.async {
                             result(descriptors)
                         }
+                    }
+                case "ackTxns":
+                    // Session 6 / advisor handoff fix: after the
+                    // Dart side has durably written a Hive row for
+                    // each item in a txn, it acks the txnId so we
+                    // can delete the on-disk sidecar JSON. If the
+                    // ack never arrives (process kill mid-ingest),
+                    // the sidecar stays and `DumpService.drainPendingDir`
+                    // picks it up on next resume.
+                    let txnIds: [String]
+                    if let args = call.arguments as? [String: Any],
+                       let raw = args["txnIds"] as? [String] {
+                        txnIds = raw
+                    } else if let raw = call.arguments as? [String] {
+                        txnIds = raw
+                    } else {
+                        txnIds = []
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        self?.deleteDumpSidecars(txnIds: txnIds)
+                        DispatchQueue.main.async { result(true) }
                     }
                 default:
                     result(FlutterMethodNotImplemented)
@@ -400,16 +427,33 @@ import os
 
     /// Reads the App Group's `dump_pending/<txn>/` directories that
     /// have a committed `manifest.json`. For each, moves the payloads
-    /// into the main app's `Documents/dump_pending/` and returns one
-    /// descriptor map per transaction. The App Group txn dir is
-    /// deleted on successful move; orphan dirs older than 7 days are
-    /// swept (R6).
+    /// into the main app's `Documents/dump_pending/`, writes a
+    /// sidecar JSON descriptor (so `DumpService.drainPendingDir` can
+    /// recover even if Dart never ingests the in-memory return), and
+    /// returns one descriptor map per transaction. Orphan dirs older
+    /// than 7 days are swept (R6).
+    ///
+    /// Session 6 hardening (Codex review):
+    /// - Serialized via [dumpDrainLock] so BGTask + foreground drains
+    ///   can't race. (One can call this nested via recursion — we
+    ///   never do — so a non-recursive lock is fine.)
+    /// - Partial-move failure rolls back already-moved payloads back
+    ///   to the App Group txn dir so the next pass sees a complete
+    ///   txn to retry.
+    /// - Writes a sidecar JSON into `Documents/dump_pending/<txnId>.json`
+    ///   in the SAME schema Android's `DumpShareActivity` writes, so
+    ///   `DumpService.drainPendingDir` recovers any txn that wasn't
+    ///   ingested via the in-memory descriptor return (e.g. when the
+    ///   BGTask path ran but Dart wasn't woken).
+    /// - Normalises the source-app field to `sourcePackage` (was
+    ///   `sourceApp`) so both platforms use one key.
     ///
     /// Returns descriptor list to the Dart side via
     /// `MethodChannel("land.fx.files/dump_ios_bridge").drainAppGroupContainer`.
-    /// Synchronous + thread-safe — called from main-isolate
-    /// MethodChannel dispatch and from the BGTask handler.
     private func drainAppGroupContainerSync() -> [[String: Any]] {
+        dumpDrainLock.lock()
+        defer { dumpDrainLock.unlock() }
+
         guard let groupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: AppDelegate.appGroupIdentifier
         ) else {
@@ -450,8 +494,6 @@ import os
             let manifestURL = txnDir.appendingPathComponent(AppDelegate.dumpManifestName)
 
             if !FileManager.default.fileExists(atPath: manifestURL.path) {
-                // Incomplete txn — keep it for now; sweep if older
-                // than the TTL.
                 if let created = try? txnDir.resourceValues(forKeys: [.creationDateKey]).creationDate,
                    now.timeIntervalSince(created) > AppDelegate.dumpStaleTxnTTLSeconds {
                     try? FileManager.default.removeItem(at: txnDir)
@@ -472,7 +514,12 @@ import os
                 continue
             }
 
+            // Track every successful move so we can roll back on a
+            // partial-failure case. Each tuple: source URL inside the
+            // App Group txn dir + destination URL in the app sandbox.
+            var movedPairs: [(source: URL, dest: URL)] = []
             var movedPaths: [String] = []
+            var sidecarItems: [[String: Any]] = []
             var mimeTypes: [Any] = []
             var originalNames: [String] = []
             var textPayload: String? = nil
@@ -485,8 +532,6 @@ import os
                 }
                 let sourceURL = txnDir.appendingPathComponent(localFile)
                 if !FileManager.default.fileExists(atPath: sourceURL.path) {
-                    // Payload missing — skip the whole txn and let TTL
-                    // sweep it later.
                     moveFailed = true
                     break
                 }
@@ -500,16 +545,21 @@ import os
                         [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                         ofItemAtPath: dest.path
                     )
+                    movedPairs.append((source: sourceURL, dest: dest))
                     movedPaths.append(dest.path)
-                    mimeTypes.append(item["mimeType"] ?? NSNull())
-                    if let originalName = item["originalName"] as? String {
-                        originalNames.append(originalName)
-                    } else {
-                        originalNames.append(localFile)
-                    }
-                    if textPayload == nil, let tp = item["textPayload"] as? String {
+                    let mime = item["mimeType"] ?? NSNull()
+                    mimeTypes.append(mime)
+                    let originalName = (item["originalName"] as? String) ?? localFile
+                    originalNames.append(originalName)
+                    if textPayload == nil,
+                       let tp = item["textPayload"] as? String {
                         textPayload = tp
                     }
+                    sidecarItems.append([
+                        "localFile": dest.lastPathComponent,
+                        "originalName": originalName,
+                        "mimeType": mime,
+                    ])
                 } catch {
                     debugPrint("Dump drain move failed: \(error)")
                     moveFailed = true
@@ -518,16 +568,52 @@ import os
             }
 
             if moveFailed || movedPaths.isEmpty {
-                // Don't ack — leave the txn dir for retry next pass.
+                // Codex review: roll back any successful moves so the
+                // next drain pass sees a complete txn to retry. Without
+                // this, partial state would leave files stranded in the
+                // app sandbox + the manifest still expecting them in
+                // the App Group — infinite stuck.
+                for pair in movedPairs.reversed() {
+                    try? FileManager.default.moveItem(at: pair.dest, to: pair.source)
+                }
                 continue
             }
 
+            let txnId = (manifest["txnId"] as? String) ?? txnDir.lastPathComponent
+            // Source-app field: accept the legacy `sourceApp` key from
+            // older extension builds, but write the canonical
+            // `sourcePackage` going forward (matches Android schema).
+            let sourcePackage = (manifest["sourcePackage"] as? String)
+                ?? (manifest["sourceApp"] as? String)
+                ?? "ios-share"
+
+            // Write a sidecar JSON BEFORE deleting the App Group txn
+            // so the drain is recoverable: if the BGTask handler runs
+            // here (no Dart caller waiting on the return value), the
+            // sidecar is still on disk for the next foreground's
+            // `DumpService.drainPendingDir` to pick up. If the
+            // foreground caller successfully ingests via the
+            // in-memory return, it calls `ackTxns` to delete the
+            // sidecar so we don't double-ingest on next resume.
+            writeDumpSidecar(
+                txnId: txnId,
+                items: sidecarItems,
+                textPayload: textPayload,
+                sourcePackage: sourcePackage,
+                in: appPendingDir
+            )
+
             var descriptor: [String: Any] = [
-                "txnId": manifest["txnId"] ?? txnDir.lastPathComponent,
+                "txnId": txnId,
                 "paths": movedPaths,
                 "mimeTypes": mimeTypes,
                 "originalNames": originalNames,
-                "sourceApp": manifest["sourceApp"] ?? "ios-share",
+                // New canonical key (older Dart code reading
+                // `sourceApp` continues to work since we also leave
+                // that intact in the legacy field below for one
+                // release transition).
+                "sourcePackage": sourcePackage,
+                "sourceApp": sourcePackage,
             ]
             if let tp = textPayload {
                 descriptor["textPayload"] = tp
@@ -539,6 +625,65 @@ import os
         }
 
         return descriptors
+    }
+
+    /// Writes `<appPendingDir>/<txnId>.json` atomically (tmp + rename)
+    /// containing a descriptor in the same schema Android's
+    /// `DumpShareActivity` writes, so the Dart-side
+    /// `DumpService.drainPendingDir` ingests it identically.
+    private func writeDumpSidecar(
+        txnId: String,
+        items: [[String: Any]],
+        textPayload: String?,
+        sourcePackage: String,
+        in appPendingDir: URL
+    ) {
+        let descriptor: [String: Any] = [
+            "v": 1,
+            "txnId": txnId,
+            "createdAtMs": Int(Date().timeIntervalSince1970 * 1000),
+            "sourcePackage": sourcePackage,
+            "textPayload": (textPayload as Any?) ?? NSNull(),
+            "items": items,
+        ]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: descriptor,
+            options: [.sortedKeys]
+        ) else {
+            return
+        }
+        let sidecarURL = appPendingDir.appendingPathComponent("\(txnId).json")
+        let tmpURL = sidecarURL.appendingPathExtension("tmp")
+        do {
+            try data.write(to: tmpURL, options: .atomic)
+            try FileManager.default.moveItem(at: tmpURL, to: sidecarURL)
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: sidecarURL.path
+            )
+        } catch {
+            debugPrint("Dump drain: failed to write sidecar for \(txnId): \(error)")
+            try? FileManager.default.removeItem(at: tmpURL)
+        }
+    }
+
+    /// Deletes the sidecar JSONs for [txnIds]. Invoked by Dart's
+    /// `DumpIosBridge` after it has successfully ingested the
+    /// in-memory descriptors — keeps the on-disk sidecar from being
+    /// re-ingested by `drainPendingDir` on the next resume. If an
+    /// ack is dropped (process kill mid-ingest, etc.) the sidecar
+    /// stays and the duplicate ingest is short-circuited by R8 dedup.
+    private func deleteDumpSidecars(txnIds: [String]) {
+        guard !txnIds.isEmpty else { return }
+        guard let documentsDir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first else { return }
+        let appPendingDir = documentsDir
+            .appendingPathComponent(AppDelegate.dumpPendingDirName, isDirectory: true)
+        for txnId in txnIds {
+            let sidecarURL = appPendingDir.appendingPathComponent("\(txnId).json")
+            try? FileManager.default.removeItem(at: sidecarURL)
+        }
     }
 
     /// Returns a URL inside [dir] that doesn't yet exist by prepending

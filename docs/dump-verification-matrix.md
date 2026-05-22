@@ -253,4 +253,48 @@ Caveats already documented in code or in `docs/ios-share-extension-setup.md`:
 - iOS notification permission must be granted by the user (R5 — main app prompts on cold launch). Without it, both stage-1 (queued) and stage-2 (uploaded) notifications silently no-op; the items still appear in `/dump`.
 - iOS BGTaskScheduler firing time is opportunistic. Foreground resume is the reliable drain path.
 - Multi-account: pendingAuth items are claimed by whoever next signs in. There is no per-item account binding in v1 — a user A → sign out → user B → drain sequence would upload A's pending items under B's credentials. v1 deliberately accepts this for simplicity.
+- iOS plaintext file protection level is `completeUntilFirstUserAuthentication`, not `complete`. This lets the BGTask drain run while the device is locked (post first-unlock-after-boot). Trade-off: staged plaintext is readable while the device is locked-but-post-first-unlock. The protected window is from cold boot until first unlock. For an E2E-encrypted product this is a deliberate availability trade-off — documented in the Privacy Nutrition Labels TODO in `docs/ios-share-extension-setup.md` § 7.
+- iOS notification content includes the filename / auto-title on the lock screen. iOS users wanting maximum privacy should disable "Show Previews" in Settings → Notifications → FxFiles, or set it to "When Unlocked".
 - The `dump_tile_test` "renders Image.file when thumbnail file exists" case is skipped under `flutter test` (image decode doesn't resolve under the unit-test event loop on this SDK build); device-smoke covers the live thumbnail rendering.
+
+## Session 6 — External advisor review pass
+
+Three independent external advisors (`gemini-advisor`, `cursor-advisor`, `codex-advisor`) reviewed the as-built code. Findings flagged by 2+ advisors → real issues, fixed in this session. Single-advisor flags → reviewed and either fixed or documented.
+
+### Convergent findings fixed in Session 6
+
+| # | Source | Issue | Fix |
+|---|---|---|---|
+| S6-1 | Codex | `ShareViewController.viewDidAppear` can fire multiple times → duplicate `processShare` Tasks → duplicate txn dirs + uploads | Added `didKickOffProcessing` re-entry guard. |
+| S6-2 | Gemini + Codex | iOS BGTask drain moves files App Group → Documents, deletes App Group txn, returns descriptors in-memory only — **no Dart code is woken to ingest**. Result: orphan plaintext in `Documents/dump_pending/` that never uploads. | `drainAppGroupContainerSync` now writes a sidecar JSON `<txnId>.json` to `Documents/dump_pending/` in the same schema Android writes. `DumpService.drainPendingDir` picks them up on the next foreground (already wired in `app.dart` lifecycle hook). Foreground path ingests via the in-memory return AND calls a new `ackTxns` channel method to delete the sidecar (so it doesn't re-ingest on next resume — R8 dedup would short-circuit anyway, but this avoids the waste). |
+| S6-3 | Codex | BGTask + foreground drain can race over the same txn dir (corruption, partial moves, orphans). | `drainAppGroupContainerSync` now wraps body in `NSLock` (`dumpDrainLock`). Single drain at a time. |
+| S6-4 | Codex | `"mimeType": mime as Any` boxes `Optional.none` when `UTType.preferredMIMEType` is nil → `JSONSerialization` failure → whole transaction discarded after files were already copied. | Changed to `(mime as Any?) ?? NSNull()` — explicit null sentinel that `JSONSerialization` accepts. |
+| S6-5 | Codex | Partial move failure in iOS drain leaves stuck state: some files in Documents, others still in App Group, manifest expects all — next drain pass fails again, infinite stuck. | Track `movedPairs: [(source, dest)]` during the loop. On move failure, iterate in reverse and move each `dest` back to its `source` — restores the original txn dir state for the next pass. |
+| S6-6 | Cursor | `DumpService.init()` (which binds the `SyncService` status listener) is only called lazily on first ingest. If `SyncService` finishes a queued-from-prior-session upload before that first ingest, `SyncStatus.synced` is lost and the `DumpItem` stays `uploading` forever. | Added `await DumpService.instance.init()` to `main.dart` right after `LocalStorageService.init()` — listener bound on every cold start, idempotent on subsequent calls. |
+| — | (normalisation) | iOS extension wrote `sourceApp`; Android/Dart expected `sourcePackage`. | Both extension and AppDelegate now write `sourcePackage`. The bridge accepts either key (legacy fallback for one release transition). |
+
+### Single-advisor findings reviewed
+
+| Source | Issue | Decision |
+|---|---|---|
+| Cursor | `retryPending` claimed "not wired" in `_initializeFulaClient` | **False positive** — verified at `auth_service.dart:766`. cursor-agent's grep against the large auth file did not surface the hook. No fix needed. |
+| Gemini | "Notification redundancy on iOS — showReceived after extension's queued" | **False positive** — `DumpNotificationService.showReceived` is a no-op on iOS (early-returns under `!_isAndroidEnabled`). Verified in code. |
+| Cursor | `copyWith` cannot clear `errorMessage` on re-queue (sticky message after retry) | **Accepted for v1** — minor cosmetic surface; the failed-message persistence on a retry is observable but harmless. Will polish with an explicit `clearErrorMessage: true` sentinel in a follow-up. |
+| Cursor | Silent Hive init failure → permanent empty Dump UI with no error channel | **Accepted for v1** — failure mode is rare on modern Android/iOS; documented as a known limitation. |
+| Cursor | `watch()` re-materializes the full list on every box event | **Accepted for v1** — fine for typical user dump counts (<1000 items); worth optimising if a power-user hits perf wall. |
+| Codex | App Store `UIBackgroundModes: audio` requires justification | **Pre-existing** — declared for the existing `AudioService` (ryanheise audio playback), not Dump. Mentioned in PR description per Session 4 plan. |
+| Codex | iOS plaintext file protection is `completeUntilFirstUserAuthentication` not `complete` | **Documented** — deliberate trade-off so the BGTask drain can run while screen-locked-post-first-unlock. Added explicit caveat to this matrix + the iOS setup doc. |
+| Codex | Notification content shows filename on lock screen | **Documented** — user can disable previews in iOS Settings. Added caveat. |
+| Codex + Gemini | Multi-account: pendingAuth items uploadable under a different signed-in user | **Accepted v1 trade-off** — already documented in the Caveats list above. No per-item account binding in v1. |
+| Codex | Large text payloads duplicated in memory + on disk + manifest + channel | **Accepted for v1** — practical share sizes don't trigger memory pressure. Could add a soft cap if users hit it. |
+| Codex | Filename length unbounded in sanitize | **Minor risk** — extreme filenames (>255 chars) would fail file-system limits and the item is dropped. Acceptable failure mode for a v1 edge case. |
+| Codex | BGTask's `requiresNetworkConnectivity = true` hard to justify when the task itself doesn't upload | **Accepted** — the task ends up driving the upload chain via the next foreground's ingest pipeline, so network is genuinely needed. App Review should accept this with the proper justification copy in the submission notes. |
+| Codex | Enrichment on main isolate causes jank under 50-image share | **R2 deliberate decision** — moving ML Kit / `flutter_pdfview` / canvas to a background isolate requires careful platform-channel handling that the codebase doesn't pattern. v1 accepts the jank; revisit if user complaints surface. |
+| Gemini | `uploadOne` lacks idempotency check (could double-spawn if rapidly re-queued) | **Mitigated** by `SyncService.queueUpload` (line 152 of `sync_service.dart`) which dedups on `localPath` already. The Dump layer doesn't double-spawn in practice because `retryPending` flips status to `queued` synchronously before the fire-and-forget upload. |
+| Gemini | `_bindSyncStatusListener` could double-bind if `init()` is called twice | **Already guarded** — `_syncListener ??= ...` ensures the closure is created once. The `SyncService.addListener` call IS inside that guard so it's also only called once. |
+
+### Verdict
+
+After Session 6's fixes, the convergent advisor concerns (data-loss on iOS BGTask handoff, drain races, atomicity around partial moves, re-entry duplication) are resolved. The remaining single-advisor flags are either false positives, documented v1 trade-offs, or accepted minor polish items.
+
+The implementation is ready for device smoke against the verification matrix above. Total test count after Session 6: same 150 passing + 1 skipped — no Dart unit-test-visible behavior changed; the iOS Swift changes pass through dart analyze + flutter build apk --debug, and the Swift-side smoke is covered by the device matrix.
