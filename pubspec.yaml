@@ -104,6 +104,10 @@ dependencies:
   # Sharing
   share_plus: ^12.0.1
 
+  # Dump manual-add flows (Session 3b) — camera capture for the
+  # "Take photo" sheet entry. `file_picker` already covers Import.
+  image_picker: ^1.1.2
+
   # QR Code
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.0.0

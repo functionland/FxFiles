@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:fula_files/features/home/screens/home_screen.dart';
@@ -23,6 +24,9 @@ import 'package:fula_files/features/automate/screens/automate_tasks_browser_scre
 import 'package:fula_files/features/automate/screens/automate_task_detail_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_task_run_screen.dart';
 import 'package:fula_files/features/dump/screens/dump_screen.dart';
+import 'package:fula_files/features/dump/screens/dump_item_viewer_screen.dart';
+import 'package:fula_files/features/dump/screens/dump_add_note_screen.dart';
+import 'package:fula_files/features/dump/screens/dump_doodle_screen.dart';
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
@@ -255,10 +259,33 @@ final routerProvider = Provider<GoRouter>((ref) {
         },
       ),
       // Dump feature — system share target + manual add flows. The
-      // /dump/:id and /dump/doodle routes land in Session 3 / 3b.
+      // /dump/doodle and /dump/add/note routes land in Session 3b.
       GoRoute(
         path: '/dump',
         builder: (context, state) => const DumpScreen(),
+      ),
+      GoRoute(
+        path: '/dump/add/note',
+        builder: (context, state) => const DumpAddNoteScreen(),
+      ),
+      GoRoute(
+        path: '/dump/doodle',
+        builder: (context, state) {
+          final path = state.extra as String?;
+          if (path == null || path.isEmpty) {
+            return const Scaffold(
+              body: Center(
+                child: Text('Missing captured photo path.'),
+              ),
+            );
+          }
+          return DumpDoodleScreen(capturedPath: path);
+        },
+      ),
+      GoRoute(
+        path: '/dump/:id',
+        builder: (context, state) =>
+            DumpItemViewerScreen(itemId: state.pathParameters['id']!),
       ),
       GoRoute(
         path: '/nfts',

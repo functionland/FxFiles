@@ -65,6 +65,7 @@
 	<array>
 		<string>land.fx.files.sync</string>
 		<string>land.fx.files.refresh</string>
+		<string>land.fx.files.dump</string>
 	</array>
 	<key>GIDClientID</key>
 	<string>1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com</string>

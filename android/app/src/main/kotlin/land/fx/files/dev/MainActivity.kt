@@ -75,6 +75,7 @@ class MainActivity : AudioServiceActivity() {
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
     private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
     private val SYNC_NOTIFICATION_CHANNEL = "land.fx.files/sync_notification"
+    private val DUMP_NOTIFICATION_CHANNEL = "land.fx.files/dump_notification"
     private val DEVICE_MEMORY_CHANNEL = "land.fx.files/device_memory"
     private val MODEL_DOWNLOAD_CHANNEL = "land.fx.files/model_download"
     private val SYNC_NOTIFICATION_ID = 9001
@@ -148,6 +149,57 @@ class MainActivity : AudioServiceActivity() {
                     }
                 }
                 else -> result.notImplemented()
+            }
+        }
+
+        // Dump notification channel — routes Dart's DumpNotificationService
+        // calls to the FxFilesApplication helpers.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DUMP_NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "showDumpReceived" -> {
+                        val count = call.argument<Int>("count") ?: 1
+                        FxFilesApplication.showDumpReceivedNotification(applicationContext, count)
+                        result.success(true)
+                    }
+                    "showDumpComplete" -> {
+                        val title = call.argument<String>("title") ?: "Dumped"
+                        val body = call.argument<String>("body") ?: ""
+                        val deepLink = call.argument<String>("deepLink")
+                        val hasErrors = call.argument<Boolean>("hasErrors") ?: false
+                        FxFilesApplication.showDumpCompleteNotification(
+                            applicationContext, title, body, deepLink, hasErrors
+                        )
+                        result.success(true)
+                    }
+                    "showDumpPendingAuth" -> {
+                        val title = call.argument<String>("title")
+                            ?: "Dump saved — sign in to upload"
+                        val body = call.argument<String>("body") ?: ""
+                        val deepLink = call.argument<String>("deepLink")
+                        FxFilesApplication.showDumpPendingAuthNotification(
+                            applicationContext, title, body, deepLink
+                        )
+                        result.success(true)
+                    }
+                    "showDumpFailed" -> {
+                        val title = call.argument<String>("title")
+                            ?: "Dump upload failed"
+                        val body = call.argument<String>("body") ?: ""
+                        val deepLink = call.argument<String>("deepLink")
+                        FxFilesApplication.showDumpFailedNotification(
+                            applicationContext, title, body, deepLink
+                        )
+                        result.success(true)
+                    }
+                    "hideDumpNotification" -> {
+                        FxFilesApplication.hideDumpNotification(applicationContext)
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("ERROR", "Dump notification call failed: ${e.message}", null)
             }
         }
 

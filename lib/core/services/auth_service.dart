@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/canonical_kek_input.dart';
 import 'package:fula_files/core/utils/seed_signing_input.dart';
+import 'package:fula_files/core/services/dump_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
@@ -755,6 +756,14 @@ class AuthService {
         // No-op if already started (re-init via settings save just keeps
         // the existing poller alive against the new client handle).
         unawaited(MasterHealthService.instance.start());
+
+        // Dump feature (R10 / Session 5): pending-auth retry hook —
+        // every time the encryption key + Fula client become
+        // available we ask DumpService to re-run any items the user
+        // staged while signed out. Idempotent + key-gated, so it's
+        // safe to call from every _initializeFulaClient site (cold
+        // restore, new sign-in, gateway switch, reinit).
+        unawaited(DumpService.instance.retryPending());
 
         // Verify public key is available (don't log key material)
         try {

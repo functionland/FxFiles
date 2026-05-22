@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/whatsapp_backup_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/dump_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String periodicSyncTask = 'periodicSync';
@@ -23,6 +24,10 @@ const String downloadTask = 'downloadTask';
 const String retryFailedTask = 'retryFailedTask';
 const String cleanupTask = 'cleanupIncomplete';
 const String appBackupTask = 'appBackup';
+// Dump feature — single WM task that drains `dump_pending/` (R3 Plan B).
+// Per R2 the enrichment task is gone: enrichment runs on the main
+// isolate in Session 3.
+const String dumpProcessTask = 'dumpProcessTask';
 
 @pragma('vm:entry-point')
 void callbackDispatcher() {
@@ -46,6 +51,16 @@ void callbackDispatcher() {
       // Restore auth session which initializes FulaApiService
       // Skip heavy operations (relinkMappings, restoreFromCloud) — main app handles those
       final hasSession = await AuthService.instance.checkExistingSession(skipHeavyOperations: true);
+
+      // Dump's drain task must run even without a session — it stages
+      // ingested rows as `pendingAuth` and they'll upload on next
+      // restore (R10 in the plan). Branch BEFORE the session-required
+      // early-return below.
+      if (task == dumpProcessTask) {
+        await DumpService.instance.init();
+        await DumpService.instance.drainPendingDir();
+        return true;
+      }
 
       if (!hasSession || !FulaApiService.instance.isConfigured) {
         debugPrint('Background task: Not configured (session: $hasSession, fula: ${FulaApiService.instance.isConfigured})');

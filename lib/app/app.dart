@@ -17,6 +17,8 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/services/share_folder_sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
+import 'package:fula_files/core/services/dump_service.dart';
+import 'package:fula_files/core/services/dump_ios_bridge.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show walletNavigatorKey;
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/features/settings/providers/settings_provider.dart';
@@ -40,6 +42,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
 
   StreamSubscription<Map<String, String?>>? _bloxPairingSubscription;
   StreamSubscription<Map<String, String?>>? _nftClaimSubscription;
+  StreamSubscription<String?>? _dumpDeepLinkSubscription;
   StreamSubscription<String>? _shellUploadSubscription;
   StreamSubscription<String>? _shellShareSubscription;
   StreamSubscription<String>? _shellCollabSubscription;
@@ -64,6 +67,11 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     // Listen for NFT claim deep links while app is running
     _nftClaimSubscription =
         DeepLinkService.instance.onNftClaimReceived.listen(_navigateToNftClaim);
+
+    // Listen for Dump deep links — emitted when the user taps a
+    // notification posted by `DumpNotificationService` (Phase 8).
+    _dumpDeepLinkSubscription =
+        DeepLinkService.instance.onDumpDeepLink.listen(_navigateToDump);
 
     // Listen for Windows shell context menu actions
     _shellUploadSubscription =
@@ -120,6 +128,7 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
   void dispose() {
     _bloxPairingSubscription?.cancel();
     _nftClaimSubscription?.cancel();
+    _dumpDeepLinkSubscription?.cancel();
     _shellUploadSubscription?.cancel();
     _shellShareSubscription?.cancel();
     _shellCollabSubscription?.cancel();
@@ -141,6 +150,13 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
     });
     final query = queryParts.isNotEmpty ? '?${queryParts.join('&')}' : '';
     ref.read(routerProvider).push('/blox-pairing$query');
+  }
+
+  /// Navigate to `/dump` (or `/dump/<id>`) in response to a Dump deep
+  /// link. `itemId` may be null for the bare `fxfiles://dump` URL.
+  void _navigateToDump(String? itemId) {
+    final route = itemId == null ? '/dump' : '/dump/$itemId';
+    ref.read(routerProvider).push(route);
   }
 
   /// Navigate to NftClaimScreen with the claim params from the deep link.
@@ -167,6 +183,19 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       CollabFolderSyncService.instance.onAppResumed();
       // Re-poll share folder syncs (download-only).
       ShareFolderSyncService.instance.onAppResumed();
+      // Dump (R3 Plan B): drain anything the Android share receiver
+      // staged into `dump_pending/` while the main app was backgrounded
+      // or not running. Fire-and-forget — its own in-process mutex
+      // (R9) deduplicates concurrent calls.
+      unawaited(DumpService.instance.drainPendingDir());
+      // iOS Share Extension handoff — the Share Extension stages into
+      // the App Group container; the bridge moves payloads into the
+      // main app sandbox and feeds them through ingestAndSchedule.
+      // Safe to call on every resume; native-side dedupes empty
+      // containers cheaply.
+      if (Platform.isIOS) {
+        unawaited(DumpIosBridge.instance.drainAppGroupContainer());
+      }
     }
   }
 

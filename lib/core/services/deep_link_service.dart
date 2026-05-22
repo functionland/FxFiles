@@ -21,6 +21,12 @@ class DeepLinkService {
   final _apiKeyReceivedController = StreamController<String>.broadcast();
   Stream<String> get onApiKeyReceived => _apiKeyReceivedController.stream;
 
+  // Stream controller for Dump deep-link navigation. Emits the
+  // optional item id (or `null` for the bare `/dump` root). The app
+  // subscribes and routes via go_router.
+  final _dumpDeepLinkController = StreamController<String?>.broadcast();
+  Stream<String?> get onDumpDeepLink => _dumpDeepLinkController.stream;
+
   /// Notify subscribers that an API key has been configured by an
   /// in-app flow (e.g. Mode B/C sign-in writes the JWT directly to
   /// SecureStorage). Mirrors the silent first-time-write path that the
@@ -276,6 +282,18 @@ class DeepLinkService {
     if (host == 'shell') {
       debugPrint('DeepLinkService: Shell context menu action received');
       _handleShellCommand(uri);
+      return;
+    }
+
+    if (host == 'dump') {
+      // `fxfiles://dump` → /dump root. `fxfiles://dump/<id>` →
+      // /dump/<id>. Notifications posted by DumpNotificationService
+      // tap here (Android PendingIntent + iOS UNNotification deep
+      // link in Session 4).
+      final segments = uri.pathSegments;
+      final itemId = segments.isEmpty ? null : segments.first;
+      debugPrint('DeepLinkService: Dump deeplink received (id=$itemId)');
+      _dumpDeepLinkController.add(itemId);
       return;
     }
 
