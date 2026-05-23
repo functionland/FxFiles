@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -1067,18 +1068,58 @@ class FulaApiService implements FulaApi {
   ///
   /// Pass to [uploadLargeFileResumable] / [resumeLargeFileUpload]; call
   /// [triggerCancel] to abort cooperatively.
-  fula.CancelHandle createCancelHandle() {
-    return fula.createCancelHandle();
+  @override
+  Future<fula.CancelHandle> createCancelHandle() async {
+    return await fula.createCancelHandle();
   }
 
-  /// Trigger cancellation on a previously-created handle.
+  /// Trigger cancellation on a previously-created handle. Fire-and-
+  /// forget per the interface contract — `cancelHandleTrigger` is
+  /// async at the FRB layer but only flips an `Arc<AtomicBool>` in
+  /// Rust, so the caller doesn't need to await it. `unawaited` keeps
+  /// the analyzer's `discarded_futures` lint quiet.
+  @override
   void triggerCancel(fula.CancelHandle handle) {
-    fula.cancelHandleTrigger(handle: handle);
+    unawaited(fula.cancelHandleTrigger(handle: handle));
   }
 
   /// Check whether a handle has been triggered.
-  bool isCancelTriggered(fula.CancelHandle handle) {
-    return fula.cancelHandleIsCancelled(handle: handle);
+  @override
+  Future<bool> isCancelTriggered(fula.CancelHandle handle) async {
+    return await fula.cancelHandleIsCancelled(handle: handle);
+  }
+
+  /// Discard a resumable upload's local state and best-effort delete its
+  /// already-uploaded chunks on the storage backend (fula-api#20).
+  ///
+  /// Idempotent — calling on a missing manifest returns success (the
+  /// "already cleaned up" case Phase C's `cancelTask` racing against
+  /// the SDK's own clean-completion auto-delete may hit).
+  ///
+  /// Failures from the underlying `abort_upload` SDK call (malformed
+  /// manifest, permission denied, etc.) are caught + logged here rather
+  /// than propagated — the caller's intent ("ensure this upload's local
+  /// state is gone, best-effort") is satisfied as long as the manifest
+  /// is no longer present after this call returns. The SDK's bridge
+  /// wrapper also catches the missing-manifest case as Ok, so the
+  /// behavior is "idempotent best-effort cleanup."
+  @override
+  Future<void> abortResumableUpload(String manifestPath) async {
+    if (manifestPath.isEmpty) return;
+    _ensureConfigured();
+    try {
+      await fula.abortResumableUpload(
+        client: _client!,
+        manifestPath: manifestPath,
+      );
+    } catch (e) {
+      // Log but don't propagate — abort is best-effort cleanup. The
+      // alternative is propagating to the UI which has no reasonable
+      // recovery (a stale manifest on disk is a disk-hygiene issue,
+      // not a data-correctness one — orphan chunks are eventually
+      // collected by the future GC sweep planned in fula-api §W.8.7).
+      debugPrint('FulaApiService.abortResumableUpload: $e');
+    }
   }
 
   /// Encrypt and upload large file - now uses fula_client's built-in encryption

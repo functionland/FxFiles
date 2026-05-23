@@ -292,7 +292,7 @@ class FakeFulaApi implements FulaApi {
   /// surface accidental cancel-path use in unit tests as an explicit
   /// signal to move the test to integration.
   @override
-  fula.CancelHandle createCancelHandle() {
+  Future<fula.CancelHandle> createCancelHandle() async {
     throw UnsupportedError(
       'FakeFulaApi.createCancelHandle: cancel paths must be exercised via '
       'the integration test harness, not unit tests. The FRB opaque '
@@ -308,10 +308,22 @@ class FakeFulaApi implements FulaApi {
   }
 
   @override
-  bool isCancelTriggered(fula.CancelHandle handle) {
+  Future<bool> isCancelTriggered(fula.CancelHandle handle) async {
     throw UnsupportedError(
       'FakeFulaApi.isCancelTriggered: see createCancelHandle for details.',
     );
+  }
+
+  /// Tracks every manifestPath the unit-under-test asked to abort. The
+  /// stub itself is a no-op (mirrors the SDK's idempotent missing-
+  /// manifest contract from fula-api#20), but recording the calls lets
+  /// tests assert that `SyncService.cancelTask` actually invokes the
+  /// cleanup path after the cancel handle propagates.
+  final List<String> abortedManifestPaths = [];
+
+  @override
+  Future<void> abortResumableUpload(String manifestPath) async {
+    abortedManifestPaths.add(manifestPath);
   }
 
   @override

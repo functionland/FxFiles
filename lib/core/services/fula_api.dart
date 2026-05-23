@@ -184,13 +184,39 @@ abstract class FulaApi {
   /// Create a fresh cancel handle for use with the resumable upload
   /// methods. Implementations wrap fula-api#18's `CancelHandle` opaque
   /// type.
-  fula.CancelHandle createCancelHandle();
+  ///
+  /// Async because the FRB-generated `fula.createCancelHandle()`
+  /// returns `Future<CancelHandle>` — the call dispatches into the
+  /// native lib via the Rust bridge.
+  Future<fula.CancelHandle> createCancelHandle();
 
   /// Trigger cancellation on a previously-created handle. Idempotent.
+  /// Fire-and-forget — the underlying FRB call is async but the
+  /// cancel-flag flip semantics don't need the caller to await it; the
+  /// in-flight upload polls the flag at chunk boundaries and short-
+  /// circuits as soon as it observes the new value.
   void triggerCancel(fula.CancelHandle handle);
 
   /// Check whether a handle has been triggered.
-  bool isCancelTriggered(fula.CancelHandle handle);
+  ///
+  /// Async for the same reason as [createCancelHandle] — the
+  /// FRB-generated call returns `Future<bool>`.
+  Future<bool> isCancelTriggered(fula.CancelHandle handle);
+
+  /// Discard a resumable upload's local state and best-effort delete its
+  /// already-uploaded chunks on the storage backend (fula-api#20).
+  ///
+  /// Use when the user decides to give up on a cancelled or failed
+  /// upload rather than resume it later. Idempotent — calling on a
+  /// manifest that doesn't exist (already aborted, or SDK auto-deleted
+  /// it on a prior clean completion) succeeds as a no-op.
+  ///
+  /// **Not a graceful stop.** This is POST-cancel cleanup. For
+  /// mid-flight abort use [triggerCancel] on a [createCancelHandle]
+  /// passed to [uploadLargeFileResumable] / [resumeLargeFileUpload].
+  ///
+  /// Wraps `abort_resumable_upload`.
+  Future<void> abortResumableUpload(String manifestPath);
 
   /// Delete an object from the master + the user's forest.
   Future<void> deleteObject(String bucket, String key);
