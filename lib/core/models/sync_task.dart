@@ -64,6 +64,24 @@ class SyncTask extends HiveObject {
   @HiveField(11)
   int retryCount;
 
+  /// Local filesystem path of the chunked-resumable upload manifest
+  /// (issue functionland/fula-api#17 / #18 — Phase C).
+  ///
+  /// `null` until the first resumable upload attempt assigns it. On
+  /// subsequent retries, `SyncService._executeUpload` checks the file
+  /// at this path: if it exists, the SDK can resume from the partial
+  /// manifest via `resume_flat_upload_from_path_cancellable` and
+  /// avoid re-uploading bytes that landed on the previous attempt.
+  /// On clean completion the SDK auto-deletes the manifest file; this
+  /// field remains for diagnostic logging until `cancelTask` /
+  /// `removeSyncTask` clears the row.
+  ///
+  /// Backward compatibility: existing SyncTask rows on disk have no
+  /// value here — Hive loads them with `null`, which the upload path
+  /// treats as "no resumable state, start fresh". Transparent migration.
+  @HiveField(12)
+  String? manifestPath;
+
   SyncTask({
     required this.id,
     required this.localPath,
@@ -77,6 +95,7 @@ class SyncTask extends HiveObject {
     this.completedAt,
     this.errorMessage,
     this.retryCount = 0,
+    this.manifestPath,
   }) : createdAt = createdAt ?? DateTime.now();
 
   /// Generate a unique ID for a new task
@@ -131,6 +150,7 @@ class SyncTask extends HiveObject {
     DateTime? completedAt,
     String? errorMessage,
     int? retryCount,
+    String? manifestPath,
   }) {
     return SyncTask(
       id: id ?? this.id,
@@ -145,6 +165,7 @@ class SyncTask extends HiveObject {
       completedAt: completedAt ?? this.completedAt,
       errorMessage: errorMessage ?? this.errorMessage,
       retryCount: retryCount ?? this.retryCount,
+      manifestPath: manifestPath ?? this.manifestPath,
     );
   }
 

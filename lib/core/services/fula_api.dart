@@ -17,6 +17,7 @@
 
 import 'dart:typed_data';
 
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
 
@@ -150,6 +151,46 @@ abstract class FulaApi {
     String filePath, {
     void Function(UploadProgress)? onProgress,
   });
+
+  /// Resumable variant — writes a chunked-upload manifest at
+  /// [manifestPath]. On failure the manifest stays on disk; call
+  /// [resumeLargeFileUpload] to pick up where this attempt left off.
+  /// Optional [cancelHandle] (created via [createCancelHandle]) lets
+  /// callers abort cooperatively.
+  ///
+  /// Wraps `put_flat_resumable_from_path_cancellable` from
+  /// fula-api#17 + #18.
+  Future<String> uploadLargeFileResumable(
+    String bucket,
+    String key,
+    String filePath,
+    String manifestPath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  });
+
+  /// Resume a previously-failed resumable upload from its manifest.
+  /// [filePath] MUST point at bytes identical to the original upload
+  /// (the SDK's BAO check enforces this).
+  ///
+  /// Wraps `resume_flat_upload_from_path_cancellable`.
+  Future<String> resumeLargeFileUpload(
+    String manifestPath,
+    String filePath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  });
+
+  /// Create a fresh cancel handle for use with the resumable upload
+  /// methods. Implementations wrap fula-api#18's `CancelHandle` opaque
+  /// type.
+  fula.CancelHandle createCancelHandle();
+
+  /// Trigger cancellation on a previously-created handle. Idempotent.
+  void triggerCancel(fula.CancelHandle handle);
+
+  /// Check whether a handle has been triggered.
+  bool isCancelTriggered(fula.CancelHandle handle);
 
   /// Delete an object from the master + the user's forest.
   Future<void> deleteObject(String bucket, String key);

@@ -953,6 +953,134 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Resumable variant of [uploadLargeFileFromPath] (Phase C, wraps
+  /// `put_flat_resumable_from_path_cancellable` from fula-api#17 + #18).
+  ///
+  /// Writes a chunked-upload manifest at [manifestPath]. On clean
+  /// completion the manifest is auto-deleted by the SDK. On failure the
+  /// manifest stays on disk; call [resumeLargeFileUpload] with the same
+  /// [manifestPath] and the same [filePath] to pick up where this
+  /// attempt left off.
+  ///
+  /// When [cancelHandle] is supplied, calling
+  /// `fula.cancelHandleTrigger(cancelHandle)` from another task aborts
+  /// the upload cooperatively. Chunks already in flight (up to the
+  /// SDK's `MAX_CONCURRENT_CHUNK_UPLOADS = 16` cap) finish; no new
+  /// chunks start. The manifest survives the cancel so the user can
+  /// resume later, or `abort_upload` (bridged in fula-api#20) cleans up.
+  ///
+  /// Bytes contract: the SDK's BAO root-hash check requires
+  /// bit-identical bytes between attempts. If the user edits the file
+  /// between this attempt and a subsequent [resumeLargeFileUpload], the
+  /// resume fails fast with a content-hash-mismatch error.
+  Future<String> uploadLargeFileResumable(
+    String bucket,
+    String key,
+    String filePath,
+    String manifestPath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    _ensureConfigured();
+    try {
+      await _ensureForestLoaded(bucket);
+
+      final fileSize = await File(filePath).length();
+
+      final result = cancelHandle != null
+          ? await fula.putFlatResumableFromPathCancellable(
+              client: _client!,
+              bucket: bucket,
+              path: key,
+              filePath: filePath,
+              manifestPath: manifestPath,
+              contentType: null,
+              cancel: cancelHandle,
+            )
+          : await fula.putFlatResumableFromPath(
+              client: _client!,
+              bucket: bucket,
+              path: key,
+              filePath: filePath,
+              manifestPath: manifestPath,
+              contentType: null,
+            );
+
+      if (onProgress != null) {
+        onProgress(UploadProgress(
+          bytesUploaded: fileSize,
+          totalBytes: fileSize,
+        ));
+      }
+
+      return result.etag;
+    } catch (e) {
+      throw FulaApiException('Failed to upload (resumable): $e');
+    }
+  }
+
+  /// Resume a previously-failed resumable upload (Phase C, wraps
+  /// `resume_flat_upload_from_path_cancellable` from fula-api#17 + #18).
+  ///
+  /// [filePath] MUST point at bytes identical to the original upload;
+  /// the SDK's BAO check rejects modified content. On clean completion
+  /// the manifest is auto-deleted.
+  ///
+  /// [cancelHandle] semantics match [uploadLargeFileResumable].
+  Future<String> resumeLargeFileUpload(
+    String manifestPath,
+    String filePath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    _ensureConfigured();
+    try {
+      final fileSize = await File(filePath).length();
+
+      final result = cancelHandle != null
+          ? await fula.resumeFlatUploadFromPathCancellable(
+              client: _client!,
+              manifestPath: manifestPath,
+              filePath: filePath,
+              cancel: cancelHandle,
+            )
+          : await fula.resumeFlatUploadFromPath(
+              client: _client!,
+              manifestPath: manifestPath,
+              filePath: filePath,
+            );
+
+      if (onProgress != null) {
+        onProgress(UploadProgress(
+          bytesUploaded: fileSize,
+          totalBytes: fileSize,
+        ));
+      }
+
+      return result.etag;
+    } catch (e) {
+      throw FulaApiException('Failed to resume upload: $e');
+    }
+  }
+
+  /// Create a fresh cancel handle for a resumable upload (Phase C).
+  ///
+  /// Pass to [uploadLargeFileResumable] / [resumeLargeFileUpload]; call
+  /// [triggerCancel] to abort cooperatively.
+  fula.CancelHandle createCancelHandle() {
+    return fula.createCancelHandle();
+  }
+
+  /// Trigger cancellation on a previously-created handle.
+  void triggerCancel(fula.CancelHandle handle) {
+    fula.cancelHandleTrigger(handle: handle);
+  }
+
+  /// Check whether a handle has been triggered.
+  bool isCancelTriggered(fula.CancelHandle handle) {
+    return fula.cancelHandleIsCancelled(handle: handle);
+  }
+
   /// Encrypt and upload large file - now uses fula_client's built-in encryption
   Future<String> encryptAndUploadLargeFile(
     String bucket,

@@ -241,13 +241,15 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
                     IconButton(
                       icon: const Icon(LucideIcons.x, size: 18),
                       tooltip: task.isInProgress
-                          // The in-flight upload can't be aborted today
-                          // (the encrypted SDK has no cancel hook on the
-                          // Flutter side — see Phase B3). Surface that
-                          // honestly: queued retries are stopped, but
-                          // bytes already in flight will finish in
-                          // background and just be discarded.
-                          ? 'Cancel queued retries (in-flight bytes will finish quietly)'
+                          // Phase C: cancel is now truly abortive via
+                          // the SDK's CancelHandle (fula-api#18). Up to
+                          // 16 chunks already in flight finish quickly
+                          // (cooperative semantics); the upload then
+                          // returns cancelled. Manifest survives so the
+                          // user can resume later (or the queue removes
+                          // the task entirely on this cancel — the
+                          // resume only happens if they re-queue).
+                          ? 'Cancel upload'
                           : 'Remove from queue',
                       onPressed: () => _cancelTask(task),
                     ),
@@ -317,12 +319,10 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(task.isInProgress
-              // Be honest about today's behavior: queued retries stop, but
-              // the current SDK call has no cancel hook so any bytes
-              // already in flight finish in the background and get
-              // dropped (no synced state, no error). Phase B3 will deliver
-              // true mid-chunk abort.
-              ? 'Cancelled — in-flight upload will finish in background and be discarded'
+              // Phase C: truly abortive via CancelHandle (fula-api#18).
+              // Cooperative semantics — up to ~16 chunks already in
+              // flight finish briefly, then the upload returns.
+              ? 'Cancelled — upload aborted'
               : 'Removed from queue'),
         ),
       );

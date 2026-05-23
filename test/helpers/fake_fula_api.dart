@@ -17,6 +17,7 @@
 
 import 'dart:typed_data';
 
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
@@ -237,6 +238,80 @@ class FakeFulaApi implements FulaApi {
     }
     final result = await uploadObject(bucket, key, Uint8List(0));
     return result.etag;
+  }
+
+  /// Counters and overrides for the Phase C resumable / cancellable
+  /// path. Default behaviour: same as `uploadLargeFileFromPath` —
+  /// synthesize a zero-byte upload result.
+  final Map<String, int> resumableUploadCalls = <String, int>{};
+  final Map<String, int> resumeUploadCalls = <String, int>{};
+  Object? resumableUploadError;
+  Object? resumeUploadError;
+
+  @override
+  Future<String> uploadLargeFileResumable(
+    String bucket,
+    String key,
+    String filePath,
+    String manifestPath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    final composite = '$bucket:$key';
+    resumableUploadCalls[composite] = (resumableUploadCalls[composite] ?? 0) + 1;
+    if (resumableUploadError != null) throw resumableUploadError!;
+    if (onProgress != null) {
+      onProgress(UploadProgress(bytesUploaded: 0, totalBytes: 0));
+    }
+    final result = await uploadObject(bucket, key, Uint8List(0));
+    return result.etag;
+  }
+
+  @override
+  Future<String> resumeLargeFileUpload(
+    String manifestPath,
+    String filePath, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    resumeUploadCalls[manifestPath] =
+        (resumeUploadCalls[manifestPath] ?? 0) + 1;
+    if (resumeUploadError != null) throw resumeUploadError!;
+    if (onProgress != null) {
+      onProgress(UploadProgress(bytesUploaded: 0, totalBytes: 0));
+    }
+    // Fakes don't have a manifest to consult; return a synthetic etag.
+    return 'bafkr4ifakeresumed${manifestPath.hashCode.toUnsigned(32).toRadixString(16)}';
+  }
+
+  /// The FRB-generated `fula.CancelHandle` is an opaque native type
+  /// that can only be constructed via a real `fula.createCancelHandle()`
+  /// call (which needs the native lib initialised). Unit tests using
+  /// [FakeFulaApi] cannot exercise the cancel path; integration tests
+  /// at `integration_test/` cover it instead. These methods throw to
+  /// surface accidental cancel-path use in unit tests as an explicit
+  /// signal to move the test to integration.
+  @override
+  fula.CancelHandle createCancelHandle() {
+    throw UnsupportedError(
+      'FakeFulaApi.createCancelHandle: cancel paths must be exercised via '
+      'the integration test harness, not unit tests. The FRB opaque '
+      'fula.CancelHandle type cannot be constructed without native init.',
+    );
+  }
+
+  @override
+  void triggerCancel(fula.CancelHandle handle) {
+    throw UnsupportedError(
+      'FakeFulaApi.triggerCancel: see createCancelHandle for details.',
+    );
+  }
+
+  @override
+  bool isCancelTriggered(fula.CancelHandle handle) {
+    throw UnsupportedError(
+      'FakeFulaApi.isCancelTriggered: see createCancelHandle for details.',
+    );
   }
 
   @override

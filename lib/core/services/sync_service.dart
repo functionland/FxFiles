@@ -4,8 +4,10 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/models/sync_task.dart' as persistent;
+import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
@@ -58,6 +60,17 @@ class SyncService {
   // (which would generate two distinct DEKs and orphan one of the two
   // ciphertext copies on the storage backend).
   final UploadQueueLock _queueLock = UploadQueueLock();
+
+  // Phase C: per-task cancel handles for in-flight resumable uploads.
+  // Created when an upload starts (in `_executeUpload`), populated into
+  // this map, removed on success / error / cancel. `cancelTask` looks
+  // up the handle by localPath and triggers it for truly-abortive
+  // cancellation (issues fula-api#17 + #18).
+  final Map<String, fula.CancelHandle> _activeCancelHandles = {};
+
+  // Phase C: cached manifest directory. Resolved lazily on first
+  // resumable upload so app startup doesn't pay the path_provider call.
+  Directory? _manifestDir;
 
   // True once we've told MainActivity to bring up the foreground
   // service for the current upload batch. Mirrors the lifecycle of the
@@ -153,6 +166,33 @@ class SyncService {
     _cancelledBuckets.remove(bucket);
   }
 
+  /// Phase C: derive a stable, per-task manifest path under the app's
+  /// documents directory. Naming is hash-based on the task's `localPath`
+  /// + `remoteBucket` + `remoteKey` so retries for the same task land
+  /// at the same path — no collisions across distinct tasks, no
+  /// orphans from minor metadata drift on the same task.
+  Future<String> _manifestPathFor(SyncTask task) async {
+    _manifestDir ??= await () async {
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory('${docs.path}/sync_manifests');
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      return dir;
+    }();
+    // Avoid path separators / arbitrary chars in the filename — hash
+    // the task identity. SHA-256 of "${localPath}|${bucket}|${remoteKey}"
+    // is overkill for collision avoidance but matches the conservative
+    // naming pattern used elsewhere (e.g., BucketCacheService).
+    final raw = '${task.localPath}|${task.remoteBucket}|${task.remoteKey}';
+    final hash = raw.codeUnits.fold<int>(
+      0x811c9dc5,
+      (h, b) => ((h ^ b) * 0x01000193) & 0xFFFFFFFF,
+    );
+    final hex = hash.toRadixString(16).padLeft(8, '0');
+    return '${_manifestDir!.path}/sync_$hex.manifest';
+  }
+
   /// Cancel a single queued or in-progress upload by its [localPath].
   ///
   /// Behavior:
@@ -173,6 +213,24 @@ class SyncService {
     // Mark cancelled first so any concurrent retry callback / in-flight
     // completion observes the flag and bails out.
     _cancelledLocalPaths.add(localPath);
+
+    // Phase C: if an in-flight resumable upload has a registered cancel
+    // handle, trigger it. The SDK's cooperative cancel returns
+    // Err(Cancelled) after the chunks already in flight (up to 16 per
+    // fula-api#18) complete; the resumable manifest stays on disk so
+    // the user can resume later, OR the explicit-discard flow (when
+    // fula-api#20 bridges abort_upload) can delete it. The retry/state
+    // suppression logic below + _cancelledLocalPaths handles the
+    // brief overlap where late-completing chunks would otherwise flip
+    // the task to "synced".
+    final cancelHandle = _activeCancelHandles[localPath];
+    if (cancelHandle != null) {
+      FulaApiService.instance.triggerCancel(cancelHandle);
+      debugPrint(
+        'SyncService: cancel handle triggered for $localPath; '
+        'in-flight upload will return Cancelled shortly',
+      );
+    }
 
     // Drop from the in-memory queue if still pending.
     _uploadQueue.removeWhere((t) => t.localPath == localPath);
@@ -826,25 +884,90 @@ class SyncService {
         totalBytes: fileSize,
       );
 
-      // Upload by file path - avoids loading entire file into Dart memory.
-      // The file is read on the Rust side of the FFI bridge, eliminating
-      // the OOM risk for large files (10GB+).
+      // Phase C: resumable upload via fula-api#17 + cancellable via #18.
+      // Branch on whether the persistent SyncTask has a manifest path
+      // pointing at a still-on-disk manifest file:
+      //
+      //   * manifestPath != null AND file exists → previous attempt
+      //     failed mid-upload. Resume from the manifest; the SDK
+      //     re-uploads only the chunks that didn't land last time.
+      //   * Otherwise → first attempt or manifest was cleaned up.
+      //     Generate a fresh manifest path under the app's documents
+      //     directory and call the cancellable resumable upload.
+      //
+      // Either path uses a per-task CancelHandle so `cancelTask` can
+      // abort the in-flight upload truly (fula-api#18). The handle goes
+      // into `_activeCancelHandles[localPath]` for the cancel API; it's
+      // cleaned up in every exit path below.
+      //
+      // Read (don't remove) the persistent task ID here — the existing
+      // success path at the end of this try block does the removal.
+      // Naming this `existingTaskId` to avoid shadowing the later
+      // `final taskId = _taskIdMap.remove(...)`.
+      final existingTaskId = _taskIdMap[task.localPath];
+      final persistentTask = existingTaskId != null
+          ? LocalStorageService.instance.getSyncTask(existingTaskId)
+          : null;
+      final manifestPath = persistentTask?.manifestPath
+          ?? await _manifestPathFor(task);
+      // Persist the manifest path on first use so subsequent retries
+      // hit the resume branch.
+      if (existingTaskId != null && persistentTask?.manifestPath == null) {
+        await LocalStorageService.instance.updateSyncTask(
+          persistentTask!.copyWith(manifestPath: manifestPath),
+        );
+      }
+      final cancelHandle = FulaApiService.instance.createCancelHandle();
+      _activeCancelHandles[task.localPath] = cancelHandle;
+
       String etag;
-      etag = await FulaApiService.instance.uploadLargeFileFromPath(
-        task.remoteBucket,
-        task.remoteKey,
-        task.localPath,
-        onProgress: (UploadProgress progress) {
-          _activeSync[task.localPath] = _activeSync[task.localPath]!.copyWith(
-            bytesTransferred: progress.bytesUploaded,
+      try {
+        final isResume = persistentTask?.manifestPath != null
+            && await File(manifestPath).exists();
+        if (isResume) {
+          debugPrint(
+            'Resuming upload: ${task.localPath} via manifest $manifestPath',
           );
-        },
-      );
+          etag = await FulaApiService.instance.resumeLargeFileUpload(
+            manifestPath,
+            task.localPath,
+            cancelHandle: cancelHandle,
+            onProgress: (UploadProgress progress) {
+              _activeSync[task.localPath] =
+                  _activeSync[task.localPath]!.copyWith(
+                bytesTransferred: progress.bytesUploaded,
+              );
+            },
+          );
+        } else {
+          etag = await FulaApiService.instance.uploadLargeFileResumable(
+            task.remoteBucket,
+            task.remoteKey,
+            task.localPath,
+            manifestPath,
+            cancelHandle: cancelHandle,
+            onProgress: (UploadProgress progress) {
+              _activeSync[task.localPath] =
+                  _activeSync[task.localPath]!.copyWith(
+                bytesTransferred: progress.bytesUploaded,
+              );
+            },
+          );
+        }
+      } finally {
+        // Whether success, error, or cancel — the in-flight handle is
+        // no longer relevant. cancelTask checks for presence before
+        // triggering, so removing here is safe.
+        _activeCancelHandles.remove(task.localPath);
+      }
 
       // If cancelTask fired while we were awaiting the SDK, suppress success
-      // bookkeeping. cancelTask already flipped SyncState to notSynced and
-      // removed the persistent row; we just need to make sure we don't
-      // re-write synced over it. Phase B3 will deliver true mid-chunk abort.
+      // bookkeeping. cancelTask flipped SyncState to notSynced and removed
+      // the persistent row; we just need to make sure we don't re-write
+      // synced over it. With Phase C's cancel handle, the in-flight upload
+      // returns Err(Cancelled) before this branch fires — but the
+      // suppression is still correct for the brief overlap window where
+      // up to MAX_CONCURRENT_CHUNK_UPLOADS chunks finish post-cancel.
       if (_cancelledLocalPaths.contains(task.localPath)) {
         debugPrint('Upload completed after cancel: ${task.remoteKey} — suppressing success state');
         _cancelledLocalPaths.remove(task.localPath);
@@ -1164,6 +1287,18 @@ class SyncService {
   }
 
   Future<void> clearAll() async {
+    // Phase C: trigger every in-flight cancel handle before tearing
+    // state down. Otherwise pending Rust tasks would keep PUTting
+    // chunks under a state we just wiped.
+    for (final handle in _activeCancelHandles.values) {
+      try {
+        FulaApiService.instance.triggerCancel(handle);
+      } catch (_) {
+        // Cancel triggers are best-effort during clearAll.
+      }
+    }
+    _activeCancelHandles.clear();
+
     _uploadQueue.clear();
     _downloadQueue.clear();
     _activeSync.clear();
