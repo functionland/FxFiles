@@ -48,6 +48,16 @@ class SyncForegroundService : Service() {
         /** Dart entrypoint to launch; must be top-level + `@pragma('vm:entry-point')`. */
         const val DART_ENTRYPOINT = "syncBackgroundEntrypoint"
 
+        /**
+         * Library URI containing [DART_ENTRYPOINT]. **MUST match the
+         * actual library where the function is declared**; without this
+         * the 2-arg `DartEntrypoint` constructor defaults to
+         * `package:<app>/main.dart` and Flutter AOT in release mode
+         * fails with `Could not resolve main entrypoint function`.
+         */
+        const val DART_ENTRYPOINT_LIBRARY =
+            "package:fula_files/sync_background_entrypoint.dart"
+
         /** Method channel used between the service and its Dart isolate. */
         const val METHOD_CHANNEL = "land.fx.files/sync_foreground_bridge"
 
@@ -242,8 +252,24 @@ class SyncForegroundService : Service() {
             // Run the dedicated entrypoint. This is NOT main(); it's a
             // separate top-level function annotated with
             // `@pragma('vm:entry-point')` in `lib/sync_background_entrypoint.dart`.
+            //
+            // **MUST use the 3-arg DartEntrypoint constructor.** The
+            // 2-arg form `DartEntrypoint(bundle, functionName)` defaults
+            // the library to `package:<app>/main.dart` — Flutter's AOT
+            // snapshot in release mode then can't find
+            // `syncBackgroundEntrypoint` there and surfaces:
+            //
+            //   E/flutter: Could not resolve main entrypoint function.
+            //   E/flutter: Could not run the run main Dart entrypoint.
+            //   E/flutter: Could not create root isolate.
+            //
+            // Debug mode silently "works" because the kernel has every
+            // library loaded, so it finds the symbol regardless of the
+            // library hint. Release-only failure. The 3-arg form passes
+            // the correct library URI for symbol resolution.
             val entrypoint = DartExecutor.DartEntrypoint(
                 loader.findAppBundlePath(),
+                DART_ENTRYPOINT_LIBRARY,
                 DART_ENTRYPOINT,
             )
             e.dartExecutor.executeDartEntrypoint(entrypoint)
