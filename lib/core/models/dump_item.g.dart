@@ -208,13 +208,16 @@ class DumpItemAdapter extends TypeAdapter<DumpItem> {
       thumbnailPath: fields[16] as String?,
       enrichmentStatus: fields[17] as DumpEnrichmentStatus? ??
           DumpEnrichmentStatus.pending,
+      // Field 18 added later — legacy rows persisted before the
+      // cloud-sync migration won't have it, so default to null.
+      thumbnailRemoteKey: fields[18] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, DumpItem obj) {
     writer
-      ..writeByte(18)
+      ..writeByte(19)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -250,7 +253,9 @@ class DumpItemAdapter extends TypeAdapter<DumpItem> {
       ..writeByte(16)
       ..write(obj.thumbnailPath)
       ..writeByte(17)
-      ..write(obj.enrichmentStatus);
+      ..write(obj.enrichmentStatus)
+      ..writeByte(18)
+      ..write(obj.thumbnailRemoteKey);
   }
 
   @override

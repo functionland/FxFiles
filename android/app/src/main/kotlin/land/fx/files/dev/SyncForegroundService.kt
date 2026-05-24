@@ -136,6 +136,15 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // Clear the relay's reference to this engine's messenger
+        // BEFORE destroying the engine — once destroyed, an in-flight
+        // invokeMethod from the main relay handler against the stale
+        // messenger can throw. Clearing first means a concurrent main-
+        // isolate cancel relay sees `bgMessenger == null` and falls
+        // back to the "no BG alive, Hive writes are sufficient"
+        // branch instead of racing the engine teardown.
+        CrossIsolateRelay.registerBgMessenger(null)
+
         // Tear down the method channel; the engine is allowed to live in
         // the cache momentarily but we destroy it explicitly so the next
         // service spin-up re-bootstraps cleanly (avoids stale Hive state
@@ -147,6 +156,14 @@ class SyncForegroundService : Service() {
             e.destroy()
         }
         engine = null
+        // Safety net: if the BG isolate was holding the upload-
+        // ownership lock when the service stopped (e.g. user
+        // foregrounded mid-upload and the engine was torn down before
+        // the Dart entrypoint's try/finally could release), force-
+        // clear ownership using the token the BG isolate registered
+        // at startup. No-op if the BG isolate already released
+        // cleanly or never acquired.
+        UploadOwnershipRegistry.forceReleaseBackgroundToken()
         super.onDestroy()
     }
 
@@ -249,6 +266,27 @@ class SyncForegroundService : Service() {
 
         val cached = FlutterEngineCache.getInstance().get(SYNC_ENGINE_KEY)
         engine = cached ?: FlutterEngine(applicationContext).also { e ->
+            // Process-wide upload ownership lock. **Install BEFORE
+            // executeDartEntrypoint** so the BG entrypoint's very first
+            // tryAcquire call has a handler waiting — otherwise we race
+            // against the Dart side's first invokeMethod and surface as
+            // MissingPluginException, which makes the lock degrade to
+            // "no-lock mode" and re-enables the dual-isolate race
+            // we're fixing. Without this channel, the BG isolate's
+            // UploadQueueLock can't talk to the same Kotlin singleton
+            // the main isolate uses, and both isolates race on the
+            // same SyncTask (different EncryptedClients ->
+            // different DEKs/IVs -> Frankenstein chunks ->
+            // server-rejected -> os error 103).
+            UploadOwnershipRegistry.installChannelHandler(
+                e.dartExecutor.binaryMessenger,
+            )
+
+            // Make this engine's messenger discoverable to the
+            // CrossIsolateRelay so main-isolate cancel signals can
+            // reach the BG entrypoint's MethodCallHandler.
+            CrossIsolateRelay.registerBgMessenger(e.dartExecutor.binaryMessenger)
+
             // Run the dedicated entrypoint. This is NOT main(); it's a
             // separate top-level function annotated with
             // `@pragma('vm:entry-point')` in `lib/sync_background_entrypoint.dart`.

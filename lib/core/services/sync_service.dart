@@ -59,7 +59,7 @@ class SyncService {
   // get two `EncryptedClient`s uploading the same SyncTask in parallel
   // (which would generate two distinct DEKs and orphan one of the two
   // ciphertext copies on the storage backend).
-  final UploadQueueLock _queueLock = UploadQueueLock();
+  final UploadQueueLock _queueLock = UploadQueueLock(ownerTag: 'sync-service');
 
   // Phase C: per-task cancel handles for in-flight resumable uploads.
   // Created when an upload starts (in `_executeUpload`), populated into
@@ -309,7 +309,34 @@ class SyncService {
       UploadProgressManager.instance.failUpload(localPath);
       _activeSync.remove(localPath);
     }
+
+    // Cross-isolate cancel relay (Android only). Everything above is
+    // PER-ISOLATE: `_cancelledLocalPaths`, `_activeCancelHandles`, and
+    // `_uploadQueue` are this isolate's in-memory state. If the upload
+    // is being driven by the BG isolate (SyncForegroundService), it
+    // has its own CancelHandle for the in-flight upload and the
+    // Hive deletes alone aren't enough to stop chunks from landing.
+    // Relay the signal through the native CrossIsolateRelay so the
+    // BG isolate runs its own `cancelTask` locally (and triggers
+    // its handle). Skip from the BG isolate itself — see role tag.
+    if (Platform.isAndroid &&
+        SyncNotificationService.isolateRole != 'background') {
+      try {
+        await _crossIsolateChannel.invokeMethod<bool>(
+          'cancelTaskInBgIsolate',
+          <String, dynamic>{'localPath': localPath},
+        );
+      } catch (e) {
+        debugPrint('SyncService.cancelTask: cross-isolate relay failed: $e');
+      }
+    }
   }
+
+  /// Channel that carries cancel signals from the main isolate to
+  /// the BG isolate's `SyncService.instance.cancelTask`. Routed by
+  /// `CrossIsolateRelay` on the Kotlin side.
+  static const MethodChannel _crossIsolateChannel =
+      MethodChannel('land.fx.files/sync_cross_isolate');
 
   /// Cancel every queued and in-progress upload. Convenience wrapper around
   /// [cancelTask] used by the "Cancel all" sync-queue action and the
@@ -544,7 +571,6 @@ class SyncService {
     // Track sync statistics for notification
     final totalToSync = _uploadQueue.length;
     int syncedCount = 0;
-    int errorCount = 0;
 
     // Calculate total bytes for progress tracking.
     // Iterate a snapshot copy to avoid ConcurrentModificationError when
@@ -628,12 +654,12 @@ class SyncService {
       }
       _lastUploadStart = DateTime.now();
 
-      // Start upload without awaiting - let it run in background
-      _executeUpload(task).then((_) {
-        // Success - no increment needed
-      }).catchError((e) {
-        errorCount++;
-      }).whenComplete(() {
+      // Start upload without awaiting - let it run in background.
+      // _executeUpload swallows its own errors (retries + give-up
+      // logic live inside it), so no .catchError needed here — the
+      // batch counters in UploadProgressManager are the source of
+      // truth for success/failure at completion time.
+      _executeUpload(task).whenComplete(() {
         _activeUploads--;
       });
 
@@ -654,10 +680,33 @@ class SyncService {
       return;
     }
 
-    // Show completion notification
+    // Source truth from UploadProgressManager rather than local
+    // `syncedCount` / `errorCount`. The local counters were
+    // increment-before-dispatch (syncedCount++ before _executeUpload
+    // ever ran) and errorCount-via-.catchError (never fired, because
+    // _executeUpload swallows its own retry+give-up paths). Net
+    // result: the old notification always said "Successfully synced N
+    // files" even when N attempts had all failed. The batch manager
+    // tracks the real outcome via completeUpload/failUpload calls.
+    final batch = UploadProgressManager.instance.batchProgress;
+    final completedFiles = batch?.completedFiles ?? 0;
+    final failedFiles = batch?.failedFiles ?? 0;
+
+    // Don't spam a "Sync complete" if nothing actually finished —
+    // e.g. a foreground/background handover where this isolate
+    // exited the loop because the other isolate took ownership, or
+    // a batch consisting entirely of cancelled tasks.
+    if (completedFiles == 0 && failedFiles == 0) {
+      debugPrint(
+        'SyncService: queue drained with zero completions/failures — '
+        'suppressing complete notification',
+      );
+      return;
+    }
+
     await SyncNotificationService.instance.showSyncCompleteNotification(
-      fileCount: syncedCount,
-      hasErrors: errorCount > 0,
+      fileCount: completedFiles,
+      hasErrors: failedFiles > 0,
     );
   }
 
@@ -977,6 +1026,23 @@ class SyncService {
       final cancelHandle = await FulaApiService.instance.createCancelHandle();
       _activeCancelHandles[task.localPath] = cancelHandle;
 
+      // Pre-handle cancel race: a cancel signal (cross-isolate relay or
+      // direct cancelTask call) could have landed between
+      // `_uploadQueue.removeAt(0)` in the dispatch loop and the handle
+      // registration above. In that window, `cancelTask` populated
+      // `_cancelledLocalPaths` but found no handle to trigger; the
+      // upload would otherwise proceed all the way through the SDK
+      // call before honouring the cancel. Now that the handle exists,
+      // trigger it eagerly so the SDK observes `Cancelled` at its
+      // first chunk-boundary poll.
+      if (_cancelledLocalPaths.contains(task.localPath)) {
+        debugPrint(
+          'Cancel arrived before handle registered for ${task.localPath} — '
+          'triggering eagerly',
+        );
+        FulaApiService.instance.triggerCancel(cancelHandle);
+      }
+
       String etag;
       try {
         final isResume = persistentTask?.manifestPath != null
@@ -990,8 +1056,16 @@ class SyncService {
             task.localPath,
             cancelHandle: cancelHandle,
             onProgress: (UploadProgress progress) {
-              _activeSync[task.localPath] =
-                  _activeSync[task.localPath]!.copyWith(
+              // Late-progress guard: cancelTask may have removed the
+              // `_activeSync` entry concurrently. The SDK keeps firing
+              // onProgress until it observes the cancel at its next
+              // chunk boundary (up to MAX_CONCURRENT_CHUNK_UPLOADS in
+              // flight). Without this guard the `!.copyWith` would
+              // throw "Null check operator used on a null value" and
+              // crash the BG isolate (or be swallowed by FRB).
+              final current = _activeSync[task.localPath];
+              if (current == null) return;
+              _activeSync[task.localPath] = current.copyWith(
                 bytesTransferred: progress.bytesUploaded,
               );
             },
@@ -1004,8 +1078,9 @@ class SyncService {
             manifestPath,
             cancelHandle: cancelHandle,
             onProgress: (UploadProgress progress) {
-              _activeSync[task.localPath] =
-                  _activeSync[task.localPath]!.copyWith(
+              final current = _activeSync[task.localPath];
+              if (current == null) return;
+              _activeSync[task.localPath] = current.copyWith(
                 bytesTransferred: progress.bytesUploaded,
               );
             },

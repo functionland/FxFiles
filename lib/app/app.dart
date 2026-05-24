@@ -18,6 +18,7 @@ import 'package:fula_files/core/services/collab_folder_sync_service.dart';
 import 'package:fula_files/core/services/share_folder_sync_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
 import 'package:fula_files/core/services/dump_service.dart';
+import 'package:fula_files/core/services/dump_storage_service.dart';
 import 'package:fula_files/core/services/dump_ios_bridge.dart';
 import 'package:fula_files/core/services/wallet_service.dart' show walletNavigatorKey;
 import 'package:fula_files/core/models/sync_state.dart';
@@ -211,6 +212,12 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       // Without this, swiping the app away kills the upload and the
       // ongoing notification simultaneously.
       unawaited(SyncService.instance.handleAppBackgrounded());
+      // Flush any pending dump-metadata sync immediately rather than
+      // waiting for the 2 s debounce to expire. If the OS kills the
+      // isolate after this point (Android can do that any time), the
+      // Timer would never fire and the just-shared row would not
+      // reach the cloud — meaning the next clean reset would lose it.
+      unawaited(DumpStorageService.instance.syncToCloud());
     }
   }
 

@@ -171,6 +171,124 @@ void main() {
     });
   });
 
+  group('ingestAndSchedule — duplicate notification UX', () {
+    late List<MethodCall> methodCalls;
+
+    setUp(() {
+      // Replace the outer setUp's pass-through handler with one that
+      // records every call so we can assert which notification method
+      // fired for each ingest scenario.
+      methodCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        MethodChannel(DumpNotificationService.channelName),
+        (call) async {
+          methodCalls.add(call);
+          return true;
+        },
+      );
+      // Force the Android channel even on the Windows test host so we
+      // exercise the Android-side routing (otherwise _isAndroidEnabled
+      // is false and the channel is never invoked).
+      DumpNotificationService.debugForceAndroid = true;
+      DumpService.instance.encryptionKeyProvider =
+          () async => Uint8List.fromList(List<int>.filled(32, 0x77));
+    });
+
+    tearDown(() {
+      DumpNotificationService.debugForceAndroid = null;
+    });
+
+    test(
+        're-dumping the same bytes posts showDumpDuplicate (not '
+        'showDumpComplete/showDumpReceived), with the duplicate count',
+        () async {
+      final f1 = await writeBytes('orig.bin', [10, 20, 30, 40, 50]);
+      final f2 = await writeBytes('redump.bin', [10, 20, 30, 40, 50]);
+
+      // First ingest: a fresh row — fires showDumpReceived as expected.
+      final first = await DumpService.instance.ingestAndSchedule(
+        cachedPaths: [f1.path],
+        mimeTypes: const [null],
+        originalNames: const ['orig.bin'],
+      );
+      expect(first.length, 1);
+      methodCalls.clear();
+
+      // Second ingest of identical bytes → R8 dedup → empty result.
+      // The hanging "Processing…" notification posted by Kotlin
+      // would normally never clear; showDumpDuplicate replaces it in
+      // place using the same notification id.
+      final second = await DumpService.instance.ingestAndSchedule(
+        cachedPaths: [f2.path],
+        mimeTypes: const [null],
+        originalNames: const ['redump.bin'],
+      );
+      expect(second, isEmpty);
+
+      final methods = methodCalls.map((c) => c.method).toList();
+      expect(methods, contains('showDumpDuplicate'),
+          reason: 'duplicate batch must update the hanging notification');
+      expect(methods, isNot(contains('showDumpComplete')),
+          reason: 'no items were uploaded — Complete must not fire');
+      expect(methods, isNot(contains('showDumpReceived')),
+          reason: 'we already had the Received from the share Activity');
+
+      final dupCall =
+          methodCalls.firstWhere((c) => c.method == 'showDumpDuplicate');
+      expect(dupCall.arguments['count'], 1);
+      expect(dupCall.arguments['title'], 'Already in Dump');
+    });
+
+    test('first-ever ingest fires showDumpReceived, not Duplicate',
+        () async {
+      final f = await writeBytes('brand-new.bin', [99, 100, 101, 102]);
+      methodCalls.clear();
+
+      final created = await DumpService.instance.ingestAndSchedule(
+        cachedPaths: [f.path],
+        mimeTypes: const [null],
+        originalNames: const ['brand-new.bin'],
+      );
+      expect(created.length, 1);
+
+      final methods = methodCalls.map((c) => c.method).toList();
+      expect(methods, contains('showDumpReceived'));
+      expect(methods, isNot(contains('showDumpDuplicate')));
+    });
+
+    test(
+        'partial-duplicate batch (some new, some dup) keeps '
+        'Received behaviour for the new ones — no Duplicate fired',
+        () async {
+      // Item A already in storage.
+      final a = await writeBytes('a-prior.bin', [0xA0, 0xA1, 0xA2]);
+      await DumpService.instance.ingestAndSchedule(
+        cachedPaths: [a.path],
+        mimeTypes: const [null],
+        originalNames: const ['a-prior.bin'],
+      );
+      methodCalls.clear();
+
+      // Now ingest a batch with one dup (same bytes as A) + one new (B).
+      final aDup = await writeBytes('a-redump.bin', [0xA0, 0xA1, 0xA2]);
+      final b = await writeBytes('b-new.bin', [0xB0, 0xB1, 0xB2, 0xB3]);
+
+      final created = await DumpService.instance.ingestAndSchedule(
+        cachedPaths: [aDup.path, b.path],
+        mimeTypes: const [null, null],
+        originalNames: const ['a-redump.bin', 'b-new.bin'],
+      );
+      expect(created.length, 1, reason: 'B is new, A is duped');
+
+      final methods = methodCalls.map((c) => c.method).toList();
+      expect(methods, contains('showDumpReceived'),
+          reason: 'the new item drives Received');
+      expect(methods, isNot(contains('showDumpDuplicate')),
+          reason: 'mixed batches surface via Complete for the new ones');
+    });
+  });
+
   group('ingestStagedPayload — classification routing', () {
     setUp(() {
       DumpService.instance.encryptionKeyProvider =

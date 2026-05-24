@@ -619,6 +619,148 @@ void main() {
       );
     });
 
+    test(
+        'facebook.com URL uses facebookexternalhit UA (not syndication, '
+        'not default)', () async {
+      final html = utf8.encode('''
+        <html><head>
+          <meta property="og:title" content="پست فیسبوک" />
+          <meta property="og:description" content="یک توضیح فارسی" />
+          <meta property="og:image" content="https://scontent.fb.com/img.jpg" />
+        </head><body></body></html>
+      ''');
+      final pngBytes =
+          img.encodePng(img.Image(width: 64, height: 64));
+      final mc = _MultiUrlClient([
+        _Stub(
+          matches: (u) => u.host == 'www.facebook.com',
+          body: html,
+          contentType: 'text/html; charset=utf-8',
+        ),
+        _Stub(
+          matches: (u) => u.host == 'scontent.fb.com',
+          body: pngBytes,
+          contentType: 'image/jpeg',
+        ),
+      ]);
+      DumpEnricher.instance.linkHttpClientOverride = mc;
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'fb1',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://www.facebook.com/share/p/abc123/',
+      ));
+
+      // Title + description come back as Farsi (UTF-8 round-trips).
+      expect(res.title, 'پست فیسبوک');
+      expect(res.description, 'یک توضیح فارسی');
+      expect(res.thumbnailPath, isNotNull);
+
+      // Verify the UA used for the FB page fetch — must NOT be the
+      // default, must be facebookexternalhit. Without this UA,
+      // Facebook serves a useless login wall.
+      final fbIdx =
+          mc.requestedUrls.indexWhere((u) => u.host == 'www.facebook.com');
+      expect(fbIdx, greaterThanOrEqualTo(0));
+      expect(
+        mc.requestedHeaders[fbIdx]['User-Agent'],
+        equals('facebookexternalhit/1.1'),
+      );
+      // And no syndication call should have happened (FB ≠ Twitter).
+      expect(
+        mc.requestedUrls
+            .any((u) => u.host == 'cdn.syndication.twimg.com'),
+        isFalse,
+      );
+    });
+
+    test('fb.com / fb.watch / m.facebook.com all route through FB UA',
+        () async {
+      for (final host in [
+        'fb.com',
+        'fb.watch',
+        'm.facebook.com',
+        'mbasic.facebook.com',
+      ]) {
+        final mc = _MultiUrlClient([
+          _Stub(
+            matches: (u) => u.host == host,
+            body: '<title>FB</title>'.codeUnits,
+          ),
+        ]);
+        DumpEnricher.instance.linkHttpClientOverride = mc;
+        await DumpEnricher.instance.enrich(_item(
+          id: 'fb_$host',
+          category: DumpCategory.link,
+          localCachePath: '${tempDir.path}/share.txt',
+          textPayload: 'https://$host/some-post',
+        ));
+        final idx = mc.requestedUrls.indexWhere((u) => u.host == host);
+        expect(idx, greaterThanOrEqualTo(0), reason: 'host=$host');
+        expect(
+          mc.requestedHeaders[idx]['User-Agent'],
+          equals('facebookexternalhit/1.1'),
+          reason: 'host=$host should use facebookexternalhit UA',
+        );
+      }
+    });
+
+    test('numeric character references in OG content decode correctly',
+        () async {
+      // Sites that emit Farsi/Arabic/CJK as numeric character
+      // references — &#1606; is Farsi 'ن' (noon); &#x646; is the
+      // same character in hex. &#65; is ASCII 'A'. Mixed with raw
+      // UTF-8 + named entities.
+      final html = utf8.encode('''
+        <html><head>
+          <meta property="og:title" content="&#65; &amp; B with &#1606;&#x648;&#x646; &gt; 1" />
+          <meta property="og:description" content="نکته: &#1601;&#1575;&#1585;&#1587;&#1740;" />
+        </head><body></body></html>
+      ''');
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => true, body: html),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'ent1',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+
+      // &#65; → 'A', &amp; → '&', &#1606; → 'ن', &#x648; → 'و',
+      // &#x646; → 'ن' again, &gt; → '>'.
+      expect(res.title, 'A & B with نون > 1');
+      // 'نکته: ' + decoded Farsi sequence
+      expect(res.description, 'نکته: فارسی');
+    });
+
+    test('malformed numeric references pass through unchanged',
+        () async {
+      final html = utf8.encode('''
+        <html><head>
+          <meta property="og:title" content="&#999999999; bad &#xZZZ; ok" />
+        </head><body></body></html>
+      ''');
+      DumpEnricher.instance.linkHttpClientOverride = _MultiUrlClient([
+        _Stub(matches: (u) => true, body: html),
+      ]);
+
+      final res = await DumpEnricher.instance.enrich(_item(
+        id: 'ent_bad',
+        category: DumpCategory.link,
+        localCachePath: '${tempDir.path}/share.txt',
+        textPayload: 'https://example.com/article',
+      ));
+      // The out-of-range decimal stays literal; the invalid-hex
+      // sequence (&#xZZZ;) doesn't match the regex at all, also
+      // literal.
+      expect(res.title, contains('&#999999999;'));
+      expect(res.title, contains('&#xZZZ;'));
+      expect(res.title, contains('ok'));
+    });
+
     test('x.com profile URL (no /status/) skips syndication', () async {
       final mc = _MultiUrlClient([
         _Stub(

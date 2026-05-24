@@ -55,38 +55,32 @@ class ModeChoiceScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 32),
               _ModeCard(
-                title: 'Maximum security',
-                subtitle: 'Sign in with Google or Apple AND a password.\n'
-                    'A leak of your Google account alone does NOT '
-                    'expose your files.',
+                title: 'Maximum Security',
+                subtitle: 'Email + Password',
                 badge: 'Recommended',
                 badgeColor: Colors.green,
                 icon: Icons.shield,
-                // `push` (not `go`) so back from the mode screen returns to this
-// chooser rather than collapsing the stack.
-onTap: () => context.push('/onboarding/mode-b'),
+                // `push` (not `go`) so back from the mode screen returns
+                // to this chooser rather than collapsing the stack.
+                onTap: () => context.push('/onboarding/mode-b'),
               ),
               const SizedBox(height: 16),
               _ModeCard(
-                title: 'Standard security',
-                subtitle: 'Sign in with Google or Apple only.\n'
-                    'Easiest. Your encryption is tied to your '
-                    'Google / Apple account.',
-                badge: 'Easiest',
-                badgeColor: Colors.blueGrey,
-                icon: Icons.account_circle_outlined,
-                onTap: () => context.push('/onboarding/mode-a'),
-              ),
-              const SizedBox(height: 16),
-              _ModeCard(
-                title: 'Passphrase only',
-                subtitle: 'No Google or Apple required.\n'
-                    'You\'ll get a 24-word recovery phrase. '
-                    'Lose it = lose your data forever.',
+                title: 'Maximum Privacy',
+                subtitle: 'No email, all local',
                 badge: 'Advanced',
                 badgeColor: Colors.deepPurple,
                 icon: Icons.key,
                 onTap: () => context.push('/onboarding/mode-c'),
+              ),
+              const SizedBox(height: 16),
+              _ModeCard(
+                title: 'Maximum Ease',
+                subtitle: 'Google or Apple only',
+                badge: 'Easiest',
+                badgeColor: Colors.blueGrey,
+                icon: Icons.account_circle_outlined,
+                onTap: () => context.push('/onboarding/mode-a'),
               ),
               const SizedBox(height: 24),
               Text(

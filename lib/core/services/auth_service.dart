@@ -22,6 +22,7 @@ import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
+import 'package:fula_files/core/services/dump_storage_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
@@ -204,6 +205,7 @@ class AuthService {
           WebsiteService.instance.restoreFromCloud();
           NftService.instance.restoreFromCloud();
           FolderWatchService.instance.restoreFromCloud();
+          DumpStorageService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -322,6 +324,7 @@ class AuthService {
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
+        DumpStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -479,6 +482,7 @@ class AuthService {
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
+        DumpStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -525,6 +529,7 @@ class AuthService {
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
+        DumpStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Browser sign-in post-setup error: $e');
@@ -546,6 +551,13 @@ class AuthService {
 
     debugPrint('AuthService: RustLib not initialized, attempting lazy init...');
     try {
+      // Platform-conditional pattern: iOS uses `ExternalLibrary.process`
+      // because the bridge is statically linked into the app binary;
+      // Android uses bare `RustLib.init()` which internally opens the
+      // dylib by name (dlopen returns the existing handle if already
+      // loaded). Using `ExternalLibrary.process` on Android fails
+      // because Android's `System.loadLibrary` defaults to RTLD_LOCAL,
+      // so the symbols aren't visible via `DynamicLibrary.process()`.
       if (Platform.isIOS) {
         await RustLib.init(
           externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
@@ -556,6 +568,22 @@ class AuthService {
       _rustLibInitialized = true;
       debugPrint('AuthService: RustLib initialized successfully on retry');
     } catch (e) {
+      // FRB throws `Bad state: Should not initialize flutter_rust_bridge
+      // twice` when a SECOND init runs in the SAME isolate. That can
+      // happen if some other code path (background entrypoint, plugin
+      // init order) called `RustLib.init` before us in this isolate but
+      // didn't call `markRustLibInitialized()`. The library IS usable
+      // either way, so treat the duplicate-init signal as success.
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('should not initialize flutter_rust_bridge twice') ||
+          msg.contains('already initialized')) {
+        debugPrint(
+          'AuthService: RustLib already initialized in this isolate; '
+          'flipping flag and continuing',
+        );
+        _rustLibInitialized = true;
+        return;
+      }
       debugPrint('AuthService: RustLib init retry failed: $e');
       rethrow;
     }
@@ -834,6 +862,7 @@ class AuthService {
       WebsiteService.instance.restoreFromCloud();
       NftService.instance.restoreFromCloud();
       FolderWatchService.instance.restoreFromCloud();
+      DumpStorageService.instance.restoreFromCloud();
     }
   }
 

@@ -223,6 +223,29 @@ fun FxFilesApplication.Companion.showDumpCompleteNotification(
         .notify(DUMP_RECEIVED_NOTIFICATION_ID, notif)
 }
 
+fun FxFilesApplication.Companion.showDumpDuplicateNotification(
+    context: Context,
+    title: String,
+    body: String,
+    deepLink: String?,
+) {
+    ensureDumpChannel(context)
+    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setContentIntent(dumpDeepLinkIntent(context, deepLink))
+        .setAutoCancel(true)
+        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        .build()
+    // Reuse the RECEIVED id so the OS replaces the hanging
+    // "Processing…" notification in-place rather than stacking
+    // a second entry alongside it.
+    (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+        .notify(DUMP_RECEIVED_NOTIFICATION_ID, notif)
+}
+
 fun FxFilesApplication.Companion.showDumpPendingAuthNotification(
     context: Context,
     title: String,

@@ -151,14 +151,14 @@ class DumpEnricher {
     }
 
     _LinkMetadata metadata;
-    // X (Twitter) URLs: try the syndication API first — anonymous OG
-    // scraping is blocked on x.com, so the general path returns
-    // nothing useful with our normal User-Agent. If syndication fails
-    // (token mismatch for certain IDs, tweet deleted, endpoint
-    // changed), fall back to fetching the page with the Twitterbot
-    // UA, which Twitter still serves OG metadata to (it's how their
-    // own card validator works). Only if that also returns nothing
-    // do we fall through to the URL-host display.
+    // Host-specific anti-scraper bypass:
+    //  * X (Twitter): try the syndication API first, fall back to
+    //    Twitterbot UA — anonymous FxFiles-Dump UA gets blank HTML.
+    //  * Facebook: directly use facebookexternalhit/1.1 — same UA
+    //    Meta's own preview crawler uses, which is what Facebook
+    //    serves OG metadata to. Without this we get the FB login
+    //    wall HTML, which has no useful OG.
+    //  * Everything else: default FxFiles-Dump/1.0.
     final tweetId = _extractTweetId(uri);
     if (tweetId != null) {
       metadata = await _fetchTweetSyndication(tweetId);
@@ -170,6 +170,11 @@ class DumpEnricher {
           userAgent: 'Twitterbot/1.0',
         );
       }
+    } else if (_isFacebookHost(uri.host)) {
+      metadata = await _fetchLinkMetadata(
+        uri,
+        userAgent: 'facebookexternalhit/1.1',
+      );
     } else {
       metadata = await _fetchLinkMetadata(uri);
     }
@@ -625,13 +630,36 @@ class DumpEnricher {
     );
   }
 
+  static final RegExp _numericEntityRe =
+      RegExp(r'&#([xX]?)([0-9a-fA-F]+);');
+
+  /// Decodes HTML entities found inside OG meta `content="..."`. Covers:
+  ///   * Five common named entities (`&amp;` → `&`, etc.).
+  ///   * Decimal numeric references like `&#1606;` (Farsi noon).
+  ///   * Hex numeric references like `&#x646;`.
+  /// Without numeric-reference support, sites that emit non-ASCII as
+  /// `&#nnnn;` (Wikipedia, some CMS-rendered pages, defensive
+  /// templating) leak the literal `&#nnnn;` onto the tile.
   String _decodeEntities(String s) {
-    return s
+    final named = s
         .replaceAll('&amp;', '&')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .replaceAll('&quot;', '"')
         .replaceAll('&#39;', "'");
+    return named.replaceAllMapped(_numericEntityRe, (m) {
+      final isHex = m.group(1)!.isNotEmpty;
+      final digits = m.group(2)!;
+      final cp = int.tryParse(digits, radix: isHex ? 16 : 10);
+      if (cp == null || cp < 0 || cp > 0x10FFFF) {
+        return m.group(0)!; // malformed — pass through.
+      }
+      try {
+        return String.fromCharCode(cp);
+      } catch (_) {
+        return m.group(0)!;
+      }
+    });
   }
 
   // ----------------------------------------------------------------
@@ -661,6 +689,20 @@ class DumpEnricher {
         h == 'mobile.twitter.com' ||
         h.endsWith('.twitter.com') ||
         h.endsWith('.x.com');
+  }
+
+  /// Facebook URL detection — covers their canonical share targets:
+  /// `www.facebook.com`, `m.facebook.com`, mobile variants, the
+  /// `fb.com` shortener, and the `fb.watch` video share format.
+  bool _isFacebookHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'facebook.com' ||
+        h == 'm.facebook.com' ||
+        h == 'mbasic.facebook.com' ||
+        h == 'web.facebook.com' ||
+        h == 'fb.com' ||
+        h == 'fb.watch' ||
+        h.endsWith('.facebook.com');
   }
 
   String? _extractTweetId(Uri uri) {

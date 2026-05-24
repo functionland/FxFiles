@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/dump_item.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/services/dump_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 
@@ -183,31 +185,71 @@ class _TagsRow extends StatelessWidget {
   }
 }
 
-class _ThumbnailBlock extends StatelessWidget {
+class _ThumbnailBlock extends StatefulWidget {
   final DumpItem item;
   const _ThumbnailBlock({required this.item});
 
   @override
-  Widget build(BuildContext context) {
-    final hasThumb = item.thumbnailPath != null &&
-        File(item.thumbnailPath!).existsSync();
+  State<_ThumbnailBlock> createState() => _ThumbnailBlockState();
+}
 
+class _ThumbnailBlockState extends State<_ThumbnailBlock> {
+  bool _lazyFetchKicked = false;
+
+  bool get _hasLocalThumb {
+    final p = widget.item.thumbnailPath;
+    if (p == null || p.isEmpty) return false;
+    try {
+      return File(p).existsSync();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _maybeKickLazyFetch();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThumbnailBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.id != widget.item.id) {
+      _lazyFetchKicked = false;
+    }
+    _maybeKickLazyFetch();
+  }
+
+  void _maybeKickLazyFetch() {
+    if (_lazyFetchKicked) return;
+    if (_hasLocalThumb) return;
+    final remoteKey = widget.item.thumbnailRemoteKey;
+    if (remoteKey == null || remoteKey.isEmpty) return;
+    _lazyFetchKicked = true;
+    // Fire-and-forget; the Hive watch stream will re-render this tile
+    // when the local path is updated on success.
+    unawaited(DumpService.instance.ensureLocalThumbnail(widget.item));
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (hasThumb)
+        if (_hasLocalThumb)
           Image.file(
-            File(item.thumbnailPath!),
+            File(widget.item.thumbnailPath!),
             fit: BoxFit.cover,
             errorBuilder: (_, __, ___) =>
-                _CategoryPlaceholder(category: item.category),
+                _CategoryPlaceholder(category: widget.item.category),
           )
         else
-          _CategoryPlaceholder(category: item.category),
+          _CategoryPlaceholder(category: widget.item.category),
         Positioned(
           top: 6,
           right: 6,
-          child: _StatusBadge(status: item.uploadStatus),
+          child: _StatusBadge(status: widget.item.uploadStatus),
         ),
       ],
     );

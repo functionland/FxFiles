@@ -23,6 +23,10 @@ import 'package:fula_files/core/services/sync_service.dart';
 /// bucket, separate from the user's main file bucket).
 const String kDumpBucket = 'dump';
 
+/// Cloud bucket holding the encrypted thumbnail JPEGs. Separate from
+/// the content bucket so listing/cleanup of either is independent.
+const String kDumpThumbsBucket = 'dump-thumbs';
+
 /// Subdirectory under `getApplicationDocumentsDirectory()` where the
 /// Android share receiver Activity stages payloads + descriptors and
 /// where the main app drains them from. NOT under cacheDir per the
@@ -34,6 +38,12 @@ const String kDumpPendingDir = 'dump_pending';
 /// bucket has been created (so we don't pay the network round-trip
 /// on every share).
 const String _kDumpBucketInitializedFlag = 'dump_bucket_initialized';
+
+/// Same flag, for the `dump-thumbs` bucket — without it, every
+/// post-enrichment thumbnail upload hits NoSuchBucket on a fresh
+/// account (confirmed in user logs after a clean reset).
+const String _kDumpThumbsBucketInitializedFlag =
+    'dump_thumbs_bucket_initialized';
 
 const int _kContentShaPrefixBytes = 1024 * 1024; // 1 MB
 
@@ -51,6 +61,7 @@ class DumpService {
 
   bool _isInitialized = false;
   bool _bucketEnsured = false;
+  bool _thumbsBucketEnsured = false;
 
   /// In-process drain mutex (R9). When a drain is in flight, concurrent
   /// callers join the same future instead of starting a parallel drain.
@@ -176,7 +187,20 @@ class DumpService {
       textPayload: textPayload,
       sourcePackage: sourcePackage,
     );
-    if (items.isEmpty) return items;
+    // When the whole batch dedup'd against existing rows (R8 — same
+    // contentSha + size + full-hash verify for files ≤ 50 MB), `items`
+    // is empty even though `cachedPaths` had real files. Without
+    // surfacing this, the Kotlin "Processing N dump(s)…" notification
+    // hangs indefinitely (showComplete/showFailed only fire for new
+    // items). Replace it with a clear "Already in Dump" update that
+    // reuses the same notification id so the OS swaps in-place.
+    if (items.isEmpty) {
+      if (cachedPaths.isNotEmpty) {
+        await DumpNotificationService.instance
+            .showDuplicate(count: cachedPaths.length);
+      }
+      return items;
+    }
     final hasKey = await _canEncryptNow();
     if (hasKey) {
       await DumpNotificationService.instance.showReceived(count: items.length);
@@ -267,6 +291,13 @@ class DumpService {
         mlLabels: result.mlLabels.isNotEmpty ? result.mlLabels : null,
         status: result.status,
       );
+      // Persist the thumbnail to cloud so it survives a reinstall.
+      // Fire-and-forget — the local thumbnail is already on disk and
+      // the tile renders from it immediately; cloud upload is the
+      // safety net for the next device.
+      if (result.thumbnailPath != null) {
+        unawaited(_uploadThumbnailToCloud(item.id, result.thumbnailPath!));
+      }
     } catch (e) {
       debugPrint('DumpService.scheduleEnrichment(${item.id}) failed: $e');
       try {
@@ -277,6 +308,97 @@ class DumpService {
       } catch (_) {
         // Last-ditch — never propagate.
       }
+    }
+  }
+
+  /// Reads the local thumbnail JPEG, encrypts and uploads it to the
+  /// `dump-thumbs` bucket, then records the remote key on the
+  /// DumpItem so `restoreFromCloud` can rehydrate it on a fresh
+  /// device. Non-fatal; failure leaves `thumbnailRemoteKey` null and
+  /// the tile keeps using the local file.
+  Future<void> _uploadThumbnailToCloud(
+    String dumpItemId,
+    String localPath,
+  ) async {
+    try {
+      if (!FulaApiService.instance.isConfigured) return;
+      final key = await AuthService.instance.getEncryptionKey();
+      if (key == null) return;
+      final file = File(localPath);
+      if (!await file.exists()) return;
+      // Must happen BEFORE encryptAndUpload — without it, the very
+      // first thumbnail upload on a fresh account hits NoSuchBucket
+      // and the row is left with `thumbnailRemoteKey = null` forever.
+      if (!await ensureDumpThumbsBucket()) {
+        debugPrint(
+            'DumpService._uploadThumbnailToCloud($dumpItemId): '
+            'dump-thumbs bucket unavailable — skipping');
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      final now = DateTime.now();
+      final yyyy = now.year.toString().padLeft(4, '0');
+      final mm = now.month.toString().padLeft(2, '0');
+      final remoteKey = '$yyyy/$mm/$dumpItemId.jpg';
+      await FulaApiService.instance.encryptAndUpload(
+        kDumpThumbsBucket,
+        remoteKey,
+        bytes,
+        key,
+        contentType: 'image/jpeg',
+      );
+      await DumpStorageService.instance
+          .updateThumbnailRemoteKey(dumpItemId, remoteKey);
+    } catch (e) {
+      debugPrint(
+          'DumpService._uploadThumbnailToCloud($dumpItemId): $e');
+    }
+  }
+
+  // Lazy-fetch dedup — one in-flight download per item id at a time
+  // so a scrolling grid doesn't fire 100 simultaneous fetches.
+  final Set<String> _thumbnailFetchInFlight = <String>{};
+
+  /// Best-effort lazy fetch of a missing local thumbnail. Called from
+  /// the grid tile when `thumbnailPath` is null or its file is gone
+  /// but `thumbnailRemoteKey` is set (typical state right after a
+  /// `restoreFromCloud` on a fresh device). Idempotent + dedup'd —
+  /// safe to call from every tile build. Updates
+  /// `DumpItem.thumbnailPath` on success which triggers the Hive
+  /// watch stream and re-renders the tile.
+  Future<void> ensureLocalThumbnail(DumpItem item) async {
+    final remoteKey = item.thumbnailRemoteKey;
+    if (remoteKey == null || remoteKey.isEmpty) return;
+    if (item.thumbnailPath != null) {
+      try {
+        if (await File(item.thumbnailPath!).exists()) return;
+      } catch (_) {/* fallthrough to re-fetch */}
+    }
+    if (_thumbnailFetchInFlight.contains(item.id)) return;
+    _thumbnailFetchInFlight.add(item.id);
+    try {
+      if (!FulaApiService.instance.isConfigured) return;
+      final key = await AuthService.instance.getEncryptionKey();
+      if (key == null) return;
+      final bytes = await FulaApiService.instance.downloadAndDecrypt(
+        kDumpThumbsBucket,
+        remoteKey,
+        key,
+      );
+      final docs = await getApplicationDocumentsDirectory();
+      final thumbsDir = Directory(p.join(docs.path, 'dump_thumbs'));
+      if (!await thumbsDir.exists()) {
+        await thumbsDir.create(recursive: true);
+      }
+      final dest = File(p.join(thumbsDir.path, '${item.id}.jpg'));
+      await dest.writeAsBytes(bytes, flush: true);
+      await DumpStorageService.instance
+          .updateThumbnailLocalPath(item.id, dest.path);
+    } catch (e) {
+      debugPrint(
+          'DumpService.ensureLocalThumbnail(${item.id}): $e');
+    } finally {
+      _thumbnailFetchInFlight.remove(item.id);
     }
   }
 
@@ -415,6 +537,44 @@ class DumpService {
     }
   }
 
+  /// Same as [ensureDumpBucket] but for the `dump-thumbs` bucket.
+  /// Called from `_uploadThumbnailToCloud` AND `ensureLocalThumbnail`
+  /// — without this the first thumbnail upload on a fresh account
+  /// fails with `NoSuchBucket: dump-thumbs` (visible in user logs).
+  Future<bool> ensureDumpThumbsBucket() async {
+    if (_thumbsBucketEnsured) return true;
+    final flag = LocalStorageService.instance
+            .getSetting<bool>(_kDumpThumbsBucketInitializedFlag) ??
+        false;
+    if (flag) {
+      _thumbsBucketEnsured = true;
+      return true;
+    }
+    try {
+      final exists =
+          await FulaApiService.instance.bucketExists(kDumpThumbsBucket);
+      if (!exists) {
+        await FulaApiService.instance.createBucket(kDumpThumbsBucket);
+      }
+      await LocalStorageService.instance
+          .saveSetting(_kDumpThumbsBucketInitializedFlag, true);
+      _thumbsBucketEnsured = true;
+      return true;
+    } catch (e) {
+      final s = e.toString();
+      if (s.contains('BucketAlreadyExists') ||
+          s.contains('BucketAlreadyOwnedByYou') ||
+          s.contains('bucket already exists')) {
+        _thumbsBucketEnsured = true;
+        await LocalStorageService.instance
+            .saveSetting(_kDumpThumbsBucketInitializedFlag, true);
+        return true;
+      }
+      debugPrint('DumpService.ensureDumpThumbsBucket non-fatal: $e');
+      return false;
+    }
+  }
+
   // ---- Internals ------------------------------------------------------
 
   Future<Directory> _pendingDirectory() async {
@@ -527,6 +687,7 @@ class DumpService {
     }
     _isInitialized = false;
     _bucketEnsured = false;
+    _thumbsBucketEnsured = false;
     _drainInFlight = null;
     encryptionKeyProvider = () => AuthService.instance.getEncryptionKey();
   }

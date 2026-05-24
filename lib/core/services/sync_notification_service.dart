@@ -13,8 +13,22 @@ class SyncNotificationService {
   SyncNotificationService._();
   static final SyncNotificationService instance = SyncNotificationService._();
 
+  /// Set to `'background'` by `sync_background_entrypoint.dart` when
+  /// running inside the SyncForegroundService's isolate. In that
+  /// isolate the `land.fx.files/sync_notification` channel is NOT
+  /// registered (it's a `MainActivity`-only handler) — every call
+  /// would surface as `MissingPluginException`. The BG isolate
+  /// instead routes notification updates through the
+  /// `sync_foreground_bridge` channel, which IS registered on the
+  /// service's FlutterEngine and updates the foreground notification
+  /// the service is already showing.
+  static String isolateRole = 'main';
+
   static const MethodChannel _androidChannel = MethodChannel('land.fx.files/sync_notification');
+  static const MethodChannel _bridgeChannel = MethodChannel('land.fx.files/sync_foreground_bridge');
   static const MethodChannel _iosChannel = MethodChannel('land.fx.files/ios_notification');
+
+  bool get _isBackgroundIsolate => isolateRole == 'background';
 
   bool _isShowing = false;
   bool _isListeningToProgress = false;
@@ -160,13 +174,27 @@ class SyncNotificationService {
     String? eta,
   }) async {
     try {
-      await _androidChannel.invokeMethod('showSyncNotification', {
-        'title': title,
-        'body': body,
-        'progress': progress,
-        'maxProgress': maxProgress,
-        'eta': eta,
-      });
+      if (_isBackgroundIsolate) {
+        // BG isolate: the `sync_notification` channel handler lives on
+        // MainActivity's engine, not ours — calling it here just
+        // throws MissingPluginException. Route through the bridge
+        // that SyncForegroundService DOES have registered.
+        await _bridgeChannel.invokeMethod('updateProgress', {
+          'title': title,
+          'body': body,
+          'progress': progress,
+          'maxProgress': maxProgress,
+          'eta': eta,
+        });
+      } else {
+        await _androidChannel.invokeMethod('showSyncNotification', {
+          'title': title,
+          'body': body,
+          'progress': progress,
+          'maxProgress': maxProgress,
+          'eta': eta,
+        });
+      }
       _isShowing = true;
     } catch (e) {
       debugPrint('Failed to show sync notification: $e');
@@ -208,13 +236,23 @@ class SyncNotificationService {
               : 'Syncing $current of $total files...';
         }
 
-        await _androidChannel.invokeMethod('showSyncNotification', {
-          'title': 'Syncing files ($percentage%)',
-          'body': body,
-          'progress': percentage,
-          'maxProgress': 100,
-          'eta': eta,
-        });
+        if (_isBackgroundIsolate) {
+          await _bridgeChannel.invokeMethod('updateProgress', {
+            'title': 'Syncing files ($percentage%)',
+            'body': body,
+            'progress': percentage,
+            'maxProgress': 100,
+            'eta': eta,
+          });
+        } else {
+          await _androidChannel.invokeMethod('showSyncNotification', {
+            'title': 'Syncing files ($percentage%)',
+            'body': body,
+            'progress': percentage,
+            'maxProgress': 100,
+            'eta': eta,
+          });
+        }
       } catch (e) {
         debugPrint('Failed to update sync notification: $e');
       }
@@ -228,6 +266,15 @@ class SyncNotificationService {
     stopListeningToProgress();
 
     if (Platform.isAndroid) {
+      if (_isBackgroundIsolate) {
+        // BG isolate doesn't own the FG service's notification — the
+        // service does, and it tears it down when the queue drains
+        // via the `stopService` bridge call. Calling hideSync here
+        // would only target MainActivity's separate notification ID,
+        // which doesn't exist in this isolate anyway. No-op.
+        _isShowing = false;
+        return;
+      }
       try {
         await _androidChannel.invokeMethod('hideSyncNotification');
         _isShowing = false;
@@ -254,6 +301,16 @@ class SyncNotificationService {
     stopListeningToProgress();
 
     if (Platform.isAndroid) {
+      if (_isBackgroundIsolate) {
+        // BG isolate: don't post a separate "complete" notification
+        // here. The FG service's own ongoing notification gets torn
+        // down by the bridge's `stopService` call when the entrypoint
+        // finishes draining. Posting via `sync_notification` here
+        // would just throw MissingPluginException (the channel only
+        // exists on MainActivity's engine).
+        _isShowing = false;
+        return;
+      }
       try {
         final title = hasErrors ? 'Sync completed with errors' : 'Sync complete';
         final body = hasErrors

@@ -88,6 +88,36 @@ class DumpNotificationService {
     }
   }
 
+  /// Update-in-place when a share batch turned out to be entirely
+  /// duplicates (R8 dedup already in your Dump). Without this, the
+  /// "Processing N dump(s)…" notification posted by Kotlin
+  /// `DumpShareActivity` would hang indefinitely because neither
+  /// `showComplete` nor `showFailed` ever fires for the duplicates.
+  /// Reuses `DUMP_RECEIVED_NOTIFICATION_ID` on Android so the OS
+  /// swaps the body in the same slot rather than stacking a second
+  /// notification. iOS posts a fresh one (extensions can't share an
+  /// id with the main app process).
+  Future<void> showDuplicate({required int count}) async {
+    final body = count == 1
+        ? 'This item is already in your Dump'
+        : '$count items already in your Dump';
+    final args = <String, dynamic>{
+      'title': 'Already in Dump',
+      'body': body,
+      'count': count,
+      'deepLink': 'fxfiles://dump',
+    };
+    if (_isAndroidEnabled) {
+      await _invokeAndroid('showDumpDuplicate', args);
+    }
+    if (_isIosEnabled) {
+      await _invokeIos('showDumpDuplicate', args);
+      // Dismiss the queued notification posted by the Share Extension
+      // since we no longer expect a follow-up "uploaded" notification.
+      await _invokeIos('dismissQueued', const <String, dynamic>{});
+    }
+  }
+
   Future<void> showPendingAuth({required int count}) async {
     final body = count == 1
         ? 'Sign in to upload 1 saved dump'

@@ -28,6 +28,7 @@ import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
 import 'package:fula_files/core/services/upload_queue_lock.dart';
@@ -36,6 +37,11 @@ import 'package:fula_files/core/services/upload_speed_tracker.dart';
 /// Method channel name (must match `SyncForegroundService.METHOD_CHANNEL`
 /// on the Kotlin side).
 const String _bridgeChannelName = 'land.fx.files/sync_foreground_bridge';
+
+/// Channel for events relayed from the main isolate (e.g. user-initiated
+/// cancel from Settings). Must match `CrossIsolateRelay.CHANNEL` on the
+/// Kotlin side.
+const String _crossIsolateChannelName = 'land.fx.files/sync_cross_isolate';
 
 /// How long this isolate waits for the main isolate to release the
 /// queue lock before giving up. Once the foreground service is up the
@@ -58,12 +64,45 @@ const Duration _idleShutdownAfter = Duration(seconds: 5);
 void syncBackgroundEntrypoint() {
   // Required before any method-channel use in a fresh isolate.
   WidgetsFlutterBinding.ensureInitialized();
+  // Route notification updates through the FG-service bridge instead
+  // of the MainActivity-only `sync_notification` channel. Without
+  // this, every progress tick fires MissingPluginException and the
+  // notification never updates from BG isolate work.
+  SyncNotificationService.isolateRole = 'background';
   unawaited(_run());
 }
 
 Future<void> _run() async {
   const bridge = MethodChannel(_bridgeChannelName);
   debugPrint('[sync-bg] Entrypoint starting');
+
+  // Receive relayed events from the main isolate (e.g. user cancelled
+  // a task from Settings). Install BEFORE the upload loop so a cancel
+  // fired during bootstrap is queued in BG's SyncService state and
+  // honoured as soon as the upload reaches a chunk boundary. The
+  // handler invokes BG's own cancelTask — which then triggers the
+  // local CancelHandle for the in-flight upload (per-isolate handle
+  // that main can't reach).
+  const crossIsolate = MethodChannel(_crossIsolateChannelName);
+  crossIsolate.setMethodCallHandler((call) async {
+    if (call.method == 'cancelTaskInBgIsolate') {
+      final args = call.arguments;
+      final localPath = args is Map ? args['localPath'] as String? : null;
+      if (localPath == null || localPath.isEmpty) return null;
+      debugPrint('[sync-bg] cross-isolate cancel for $localPath');
+      try {
+        await SyncService.instance.cancelTask(localPath);
+      } catch (e, st) {
+        // If the cancel arrived during bootstrap (Hive box not yet
+        // open, etc.), don't bring down the channel handler — the
+        // user's in-Hive delete still propagates, and on the next
+        // upload loop iteration the BG isolate will see the missing
+        // task and bail anyway. Log and continue.
+        debugPrint('[sync-bg] cross-isolate cancel failed: $e\n$st');
+      }
+    }
+    return null;
+  });
 
   try {
     await _bootstrap();
@@ -73,7 +112,28 @@ Future<void> _run() async {
     return;
   }
 
-  final lock = UploadQueueLock();
+  // Register this isolate's lock token with the native registry so
+  // SyncForegroundService.onDestroy can force-release the lock if the
+  // engine is torn down before our try/finally runs (e.g. user
+  // foregrounds mid-upload and `stopUploadService` arrives while we
+  // were inside an `await fula.uploadLargeFile`). The main isolate
+  // does NOT do this — Activity destroy can fire on rotation while
+  // the main isolate is still actively uploading, so tying main's
+  // release to a lifecycle event would corrupt exclusion.
+  //
+  // Fail-closed: if registration fails the engine-destroy safety net
+  // is unavailable, which means a mid-upload service teardown would
+  // leak ownership and block the main isolate forever. Bail out
+  // rather than upload without that net.
+  final registered = await UploadQueueLock.registerAsBackgroundIsolate();
+  if (!registered) {
+    debugPrint('[sync-bg] BG isolate token registration failed — bailing out '
+        'without uploading to avoid leaking ownership on engine destroy.');
+    await _requestStop(bridge);
+    return;
+  }
+
+  final lock = UploadQueueLock(ownerTag: 'background');
   final acquired = await lock.acquireWithTimeout(_lockAcquireTimeout);
   if (!acquired) {
     debugPrint('[sync-bg] Could not acquire queue lock within '
@@ -97,10 +157,21 @@ Future<void> _run() async {
 }
 
 Future<void> _bootstrap() async {
-  // FFI library init — same pattern as `callbackDispatcher` in
-  // `background_sync_service.dart`. On iOS the bridge uses a process-
-  // linked dylib; on Android we let RustLib.init pick up the shared
-  // library from the standard search path.
+  // FFI library init. On iOS the bridge is statically linked into the
+  // app binary, so `ExternalLibrary.process` works to bind to the
+  // already-loaded symbols. On Android `RustLib.init()` (no externalLibrary)
+  // calls `DynamicLibrary.open("libfula_client.so")` which on Android's
+  // dlopen returns the existing handle for an already-loaded lib (refcount
+  // bump, no reload) — which is what we want. We must NOT use
+  // `ExternalLibrary.process` on Android: `System.loadLibrary` defaults
+  // to RTLD_LOCAL so the symbols aren't visible via `DynamicLibrary.process()`,
+  // and the FRB sanity-check `frb_get_rust_content_hash` lookup fails.
+  //
+  // FRB v2.x's per-isolate "already initialized" guard fires only on the
+  // SECOND init within the same isolate. Background isolate is fresh, so
+  // bare `RustLib.init()` succeeds. The follow-on `markRustLibInitialized`
+  // below is what fixes the original failure mode (AuthService trying to
+  // lazy-init RustLib a second time in this isolate).
   if (Platform.isIOS) {
     await RustLib.init(
       externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
@@ -108,6 +179,12 @@ Future<void> _bootstrap() async {
   } else {
     await RustLib.init();
   }
+
+  // Mark the per-isolate AuthService flag so subsequent calls (e.g.
+  // `checkExistingSession` -> `ensureRustLibInitialized`) short-circuit
+  // and don't try to lazy-init RustLib a second time in this isolate
+  // (which would throw `Should not initialize twice`).
+  AuthService.markRustLibInitialized();
 
   await SecureStorageService.instance.init();
   await LocalStorageService.instance.init();

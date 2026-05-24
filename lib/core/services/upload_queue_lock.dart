@@ -1,180 +1,173 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter/services.dart';
 
 /// Cross-isolate exclusion for the upload queue.
 ///
-/// Two isolates can drain the same persistent SyncTask queue at the same
-/// time: the main UI isolate (MainActivity-hosted) and the background
-/// isolate hosted by [SyncForegroundService]. Each has its own
-/// `EncryptedClient` with its own DEK generator. If both pick up the
-/// same task, the file ends up encrypted twice at two different
-/// storage_keys; the forest registers only one, the other becomes
-/// orphaned cloud bytes (wasted bandwidth + storage).
+/// Two isolates can drain the same persistent SyncTask queue at the
+/// same time on Android: the main UI isolate (MainActivity-hosted) and
+/// the background isolate hosted by `SyncForegroundService`. Each has
+/// its own `EncryptedClient` with its own DEK generator. If both pick
+/// up the same task, the file ends up encrypted twice with two
+/// different keys; the forest registers only one, the other becomes
+/// orphaned cloud bytes — and the server typically rejects the
+/// Frankenstein assembly mid-upload (surfaces as `os error 103
+/// Software caused connection abort` at a random chunk).
 ///
-/// This lock uses an OS-level advisory file lock on
-/// `<documentsDir>/sync_queue.lock`. File locks are per-fd on Linux/
-/// Android (`flock`/`fcntl`); two Dart isolates opening the file
-/// separately each get their own fd, so the OS serializes them
-/// correctly. On process exit (including a swipe-away kill), the OS
-/// releases the lock automatically — no risk of a permanently-stuck
-/// queue.
+/// **Previous implementation was broken.** It used `dart:io`
+/// `RandomAccessFile.lock(FileLock.exclusive)`, which on Linux/Android
+/// is a POSIX `fcntl` advisory record-lock. POSIX advisory locks are
+/// **per-process**, not per-fd: multiple isolates inside the same OS
+/// process all see the same lock as "already owned by this process"
+/// and acquire successfully. Dart's own docs spell this out: "several
+/// isolates in the same process can obtain an exclusive lock on the
+/// same file."
+/// (api.dart.dev/dart-io/RandomAccessFile/lock.html)
 ///
-/// Usage:
-/// ```dart
-/// final lock = UploadQueueLock();
-/// final acquired = await lock.tryAcquire();
-/// if (!acquired) {
-///   // Another isolate owns the queue; back off.
-/// } else {
-///   try {
-///     await SyncService.instance.processUploadQueue();
-///   } finally {
-///     await lock.release();
-///   }
-/// }
-/// ```
+/// **Current implementation** delegates to a Kotlin process-singleton
+/// `UploadOwnershipRegistry` over the
+/// `land.fx.files/upload_ownership` MethodChannel. Kotlin holds the
+/// authoritative ownership state and a hold count; each Dart-side
+/// `tryAcquire` / `release` is a pass-through round-trip.
+///
+/// **Why stateless on the Dart side?** Two callers within the same
+/// instance acquiring concurrently (e.g. `processUploadQueue` and
+/// `processQueueWithTimeout` racing in `SyncService`) would otherwise
+/// either (a) double-count without local tracking, or (b) coalesce
+/// into one native acquire and have the first caller's release clear
+/// ownership while the second is still inside the critical section.
+/// Stateless pass-through avoids both: each call is an independent
+/// native operation, the native ref count is the only source of
+/// truth, and callers are required to balance acquire/release
+/// themselves (the usual try/finally pattern).
+///
+/// **Ownership token = per-isolate UUID.** All `UploadQueueLock`
+/// instances inside one isolate share the same token, so layered
+/// acquires (outer + inner) are recognised as re-entrant by the
+/// native registry (ref count bumps). Distinct isolates get distinct
+/// tokens; native treats them as separate owners and serialises.
+///
+/// **Fail-closed on Android.** If the native channel can't be reached
+/// for any reason on Android, [tryAcquire] returns `false` rather than
+/// degrading to "no-lock mode". The previous fail-open behaviour
+/// silently re-enabled the dual-isolate race in the exact scenarios
+/// the lock exists to prevent.
 class UploadQueueLock {
-  RandomAccessFile? _handle;
+  /// Per-isolate token used as the ownership identity. Generated
+  /// lazily on first use so it captures isolate-local memory: each
+  /// isolate (main / BG service / WorkManager) gets a distinct value.
+  /// All `UploadQueueLock` instances inside one isolate share it, so
+  /// layered acquires are recognised as re-entrant by the native
+  /// registry (ref-counted on the Kotlin side).
+  static String? _isolateToken;
 
-  /// `true` when this build couldn't create the lock file at all — e.g.,
-  /// the test environment (no `path_provider`), pure-Dart server runs,
-  /// or web. Callers should proceed without locking; there's only one
-  /// isolate in those configurations anyway.
-  bool _unavailable = false;
-  bool get isUnavailable => _unavailable;
+  static String _ensureIsolateToken() {
+    final cached = _isolateToken;
+    if (cached != null) return cached;
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    final rand = math.Random.secure().nextInt(1 << 32);
+    final fresh = '$ts-$rand';
+    _isolateToken = fresh;
+    return fresh;
+  }
 
-  /// Try to acquire the lock without blocking.
-  /// Returns `true` on success OR when the lock primitive isn't
-  /// available (test env, web). Returns `false` only when the lock
-  /// file exists but another isolate currently holds it.
-  Future<bool> tryAcquire() async {
-    if (_handle != null) return true; // Already held by this isolate.
-    if (_unavailable) return true; // Fall-through mode, no locking.
+  static const String _channelName = 'land.fx.files/upload_ownership';
+  static const MethodChannel _channel = MethodChannel(_channelName);
 
-    final File? file;
+  /// Register this isolate's token with the Kotlin side so the
+  /// service can force-release on engine destroy. Returns `true` on
+  /// success. Returns `false` on any failure — callers MUST check
+  /// and refuse to start a BG upload if this returns false, because
+  /// the engine-destroy safety net depends on this registration.
+  ///
+  /// Only the BG-isolate path needs this; main isolate releases via
+  /// its own try/finally and we deliberately don't tie main's release
+  /// to any Android lifecycle event (Activity destroy != isolate
+  /// destroy on rotation).
+  static Future<bool> registerAsBackgroundIsolate() async {
+    if (!Platform.isAndroid) return true;
     try {
-      file = await _lockFile();
+      final ok = await _channel.invokeMethod<bool>(
+        'registerBackgroundToken',
+        <String, dynamic>{'token': _ensureIsolateToken()},
+      );
+      return ok == true;
     } catch (e) {
       debugPrint(
-        'UploadQueueLock: lock file unavailable ($e) — degrading to '
-        'no-lock mode for this isolate.',
+        'UploadQueueLock.registerAsBackgroundIsolate: native channel '
+        'unavailable ($e). Refusing to mark this isolate as BG owner.',
       );
-      _unavailable = true;
-      return true;
-    }
-
-    final raf = await file.open(mode: FileMode.write);
-    try {
-      await raf.lock(FileLock.exclusive);
-      _handle = raf;
-      return true;
-    } catch (e) {
-      try {
-        await raf.close();
-      } catch (_) {/* ignore */}
-      debugPrint('UploadQueueLock.tryAcquire failed: $e');
       return false;
     }
   }
 
-  /// Acquire the lock, waiting at most [timeout] for another isolate to
-  /// release it. Returns `true` on success, `false` on timeout.
+  final String _ownerTag; // diagnostics only
+
+  UploadQueueLock({String? ownerTag}) : _ownerTag = ownerTag ?? 'unknown';
+
+  /// `true` when this build's lock primitive can't reach the native
+  /// registry on a platform that requires it. Set on non-Android
+  /// platforms (intentional no-op). On Android, channel errors do
+  /// NOT mark the lock as unavailable — they fail-closed and the
+  /// caller sees `tryAcquire` return `false`.
+  bool get isUnavailable => !Platform.isAndroid;
+
+  /// Try to acquire the lock without blocking. On Android, returns
+  /// `false` if another isolate currently holds it OR if the native
+  /// channel is unreachable. On non-Android, always returns `true`
+  /// (no cross-isolate concern exists outside Android).
   ///
-  /// Implemented as a poll because `RandomAccessFile.lock` doesn't
-  /// expose a timeout. Poll interval is 250 ms — small enough that the
-  /// handoff feels responsive when the holding isolate finishes a
-  /// chunk, large enough that the background poll is cheap.
+  /// **Caller contract:** Every successful `tryAcquire` MUST be
+  /// matched by exactly one `release` in a `try/finally`. The lock
+  /// is stateless on the Dart side; no idempotence guard.
+  Future<bool> tryAcquire() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      final acquired = await _channel.invokeMethod<bool>(
+        'tryAcquire',
+        <String, dynamic>{'token': _ensureIsolateToken()},
+      );
+      return acquired == true;
+    } catch (e) {
+      debugPrint(
+        'UploadQueueLock.tryAcquire ($_ownerTag): native channel '
+        'unreachable ($e). Refusing to acquire — caller should '
+        'retry or skip this drain pass.',
+      );
+      return false;
+    }
+  }
+
+  /// Acquire the lock, waiting at most [timeout] for another isolate
+  /// to release it. Returns `true` on success, `false` on timeout.
   Future<bool> acquireWithTimeout(Duration timeout) async {
-    if (_handle != null) return true;
-    if (_unavailable) return true;
+    if (!Platform.isAndroid) return true;
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
-      if (await _tryAcquireNonBlocking()) return true;
-      if (_unavailable) return true;
+      if (await tryAcquire()) return true;
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     return false;
   }
 
-  /// Release the lock if currently held. Idempotent.
+  /// Release the lock. Should be called exactly once for each
+  /// successful `tryAcquire`. Idempotent on the native side — a
+  /// release call against a token that no longer owns is a no-op.
   Future<void> release() async {
-    final raf = _handle;
-    if (raf == null) return;
-    _handle = null;
+    if (!Platform.isAndroid) return;
     try {
-      await raf.unlock();
-    } catch (e) {
-      debugPrint('UploadQueueLock.release: unlock failed: $e');
-    }
-    try {
-      await raf.close();
-    } catch (e) {
-      debugPrint('UploadQueueLock.release: close failed: $e');
-    }
-  }
-
-  /// True if this lock instance currently holds the lock.
-  bool get isHeld => _handle != null;
-
-  Future<bool> _tryAcquireNonBlocking() async {
-    final File file;
-    try {
-      file = await _lockFile();
+      await _channel.invokeMethod<bool>(
+        'release',
+        <String, dynamic>{'token': _ensureIsolateToken()},
+      );
     } catch (e) {
       debugPrint(
-        'UploadQueueLock._tryAcquireNonBlocking: lock file unavailable '
-        '($e) — degrading to no-lock mode.',
+        'UploadQueueLock.release ($_ownerTag): native channel failed: $e. '
+        'Lock may be stuck until the holding isolate or process exits.',
       );
-      _unavailable = true;
-      return true;
     }
-    final raf = await file.open(mode: FileMode.write);
-    try {
-      // `dart:io` exposes lock() as blocking. We approximate
-      // non-blocking by issuing the lock and racing it against a 50ms
-      // timeout — if it hasn't completed by then, treat as "contended".
-      // This is best-effort; on the platforms we care about (Android,
-      // iOS, macOS, Linux) the lock acquire is near-instant when
-      // uncontended.
-      bool acquired = false;
-      await raf.lock(FileLock.exclusive).timeout(
-        const Duration(milliseconds: 50),
-        onTimeout: () {
-          // Lock not granted in 50ms; assume contended.
-          return raf;
-        },
-      ).then((_) {
-        acquired = true;
-      }).catchError((Object _) {
-        acquired = false;
-      });
-      if (acquired) {
-        _handle = raf;
-        return true;
-      }
-      try {
-        await raf.unlock();
-      } catch (_) {/* ignore — may not have been locked */}
-      await raf.close();
-      return false;
-    } catch (e) {
-      try {
-        await raf.close();
-      } catch (_) {/* ignore */}
-      debugPrint('UploadQueueLock._tryAcquireNonBlocking failed: $e');
-      return false;
-    }
-  }
-
-  Future<File> _lockFile() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/sync_queue.lock');
-    if (!await file.exists()) {
-      await file.create(recursive: true);
-    }
-    return file;
   }
 }

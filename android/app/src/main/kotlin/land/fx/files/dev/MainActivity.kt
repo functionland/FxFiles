@@ -86,6 +86,20 @@ class MainActivity : AudioServiceActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // Process-wide upload ownership lock (cross-isolate mutex).
+        // Replaces the broken dart:io file lock for coordinating between
+        // this activity's isolate and SyncForegroundService's isolate.
+        UploadOwnershipRegistry.installChannelHandler(
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+
+        // Cross-isolate event relay (main -> BG). Used so user-initiated
+        // cancellations from the Settings Sync-Queue screen reach the BG
+        // isolate's CancelHandle and actually stop the in-flight upload.
+        CrossIsolateRelay.installMainHandler(
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+
         // Notification channel - for opening notification settings
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -202,6 +216,16 @@ class MainActivity : AudioServiceActivity() {
                         val hasErrors = call.argument<Boolean>("hasErrors") ?: false
                         FxFilesApplication.showDumpCompleteNotification(
                             applicationContext, title, body, deepLink, hasErrors
+                        )
+                        result.success(true)
+                    }
+                    "showDumpDuplicate" -> {
+                        val title = call.argument<String>("title")
+                            ?: "Already in Dump"
+                        val body = call.argument<String>("body") ?: ""
+                        val deepLink = call.argument<String>("deepLink")
+                        FxFilesApplication.showDumpDuplicateNotification(
+                            applicationContext, title, body, deepLink
                         )
                         result.success(true)
                     }
