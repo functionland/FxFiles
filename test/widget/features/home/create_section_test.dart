@@ -1,10 +1,10 @@
-// Widget tests for the CREATE section after the Dump feature
-// restructured it to a 2x2 grid (Phase 1 of the Dump plan).
+// Widget tests for the CREATE section after the Shelf feature
+// restructured it to a 2x2 grid (Phase 1 of the Shelf plan).
 //
 // Verifies:
 //  - all 4 tiles render with the expected labels
-//  - the Dump tile is the 4th tile (row 2, col 2)
-//  - tapping Dump triggers go_router navigation to /dump
+//  - the Shelf tile is the 4th tile (row 2, col 2)
+//  - tapping Shelf triggers go_router navigation to /shelf
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,8 +13,8 @@ import 'package:showcaseview/showcaseview.dart';
 
 import 'package:fula_files/features/home/widgets/create_section.dart';
 
-class _DumpTarget extends StatelessWidget {
-  const _DumpTarget();
+class _ShelfTarget extends StatelessWidget {
+  const _ShelfTarget();
   @override
   Widget build(BuildContext context) =>
       const Scaffold(body: Center(child: Text('DUMP_ROUTE_LANDING')));
@@ -25,7 +25,7 @@ GoRouter _testRouter(Widget home) {
     initialLocation: '/',
     routes: [
       GoRoute(path: '/', builder: (_, __) => home),
-      GoRoute(path: '/dump', builder: (_, __) => const _DumpTarget()),
+      GoRoute(path: '/shelf', builder: (_, __) => const _ShelfTarget()),
       GoRoute(
         path: '/websites',
         builder: (_, __) =>
@@ -77,11 +77,11 @@ void main() {
     expect(find.text('Website'), findsOneWidget);
     expect(find.text('NFT'), findsOneWidget);
     expect(find.text('Automate'), findsOneWidget);
-    expect(find.text('Dump'), findsOneWidget);
+    expect(find.text('Shelf'), findsOneWidget);
     expect(find.text('CREATE'), findsOneWidget);
   });
 
-  testWidgets('Dump tile shows the expected badge', (tester) async {
+  testWidgets('Shelf tile shows the expected badge', (tester) async {
     await _pump(
       tester,
       isWebsiteEnabled: true,
@@ -91,14 +91,14 @@ void main() {
     expect(find.text('share to FxFiles'), findsOneWidget);
   });
 
-  testWidgets('tapping Dump tile navigates to /dump', (tester) async {
+  testWidgets('tapping Shelf tile navigates to /shelf', (tester) async {
     await _pump(
       tester,
       isWebsiteEnabled: true,
       isNftEnabled: true,
     );
 
-    await tester.tap(find.text('Dump'));
+    await tester.tap(find.text('Shelf'));
     // First pump fires go_router's redirect; second settles the
     // new route's first frame.
     await tester.pumpAndSettle();

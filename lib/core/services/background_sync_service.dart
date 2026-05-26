@@ -15,7 +15,7 @@ import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/whatsapp_backup_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
-import 'package:fula_files/core/services/dump_service.dart';
+import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 const String periodicSyncTask = 'periodicSync';
@@ -24,7 +24,7 @@ const String downloadTask = 'downloadTask';
 const String retryFailedTask = 'retryFailedTask';
 const String cleanupTask = 'cleanupIncomplete';
 const String appBackupTask = 'appBackup';
-// Dump feature — single WM task that drains `dump_pending/` (R3 Plan B).
+// Shelf feature — single WM task that drains `dump_pending/` (R3 Plan B).
 // Per R2 the enrichment task is gone: enrichment runs on the main
 // isolate in Session 3.
 const String dumpProcessTask = 'dumpProcessTask';
@@ -52,13 +52,13 @@ void callbackDispatcher() {
       // Skip heavy operations (relinkMappings, restoreFromCloud) — main app handles those
       final hasSession = await AuthService.instance.checkExistingSession(skipHeavyOperations: true);
 
-      // Dump's drain task must run even without a session — it stages
+      // Shelf's drain task must run even without a session — it stages
       // ingested rows as `pendingAuth` and they'll upload on next
       // restore (R10 in the plan). Branch BEFORE the session-required
       // early-return below.
       if (task == dumpProcessTask) {
-        await DumpService.instance.init();
-        await DumpService.instance.drainPendingDir();
+        await ShelfService.instance.init();
+        await ShelfService.instance.drainPendingDir();
         return true;
       }
 
@@ -114,8 +114,8 @@ Future<void> _executePeriodicSync() async {
   // Kotlin share Activity sit in `dump_pending/` until the user
   // foregrounds the app — which defeats the share-target UX.
   try {
-    await DumpService.instance.init();
-    await DumpService.instance.drainPendingDir();
+    await ShelfService.instance.init();
+    await ShelfService.instance.drainPendingDir();
   } catch (e) {
     debugPrint('Periodic dump drain failed (continuing): $e');
   }
@@ -280,8 +280,8 @@ class BackgroundSyncService {
           // _executePeriodicSync. Failure is non-fatal; the regular
           // sync queue below still runs.
           try {
-            await DumpService.instance.init();
-            await DumpService.instance.drainPendingDir();
+            await ShelfService.instance.init();
+            await ShelfService.instance.drainPendingDir();
           } catch (e) {
             debugPrint('iOS bg dump drain failed (continuing): $e');
           }
@@ -298,8 +298,8 @@ class BackgroundSyncService {
           // Quick dump drain in case Share Extension staged something
           // since the last foreground/BGProcessingTask drain.
           try {
-            await DumpService.instance.init();
-            await DumpService.instance.drainPendingDir();
+            await ShelfService.instance.init();
+            await ShelfService.instance.drainPendingDir();
           } catch (e) {
             debugPrint('iOS refresh dump drain failed (continuing): $e');
           }
@@ -383,8 +383,8 @@ class BackgroundSyncService {
           // dump_pending is typically empty here — harmless no-op if
           // so, and future-proof if a Windows share path lands later.
           try {
-            await DumpService.instance.init();
-            await DumpService.instance.drainPendingDir();
+            await ShelfService.instance.init();
+            await ShelfService.instance.drainPendingDir();
           } catch (e) {
             debugPrint('Desktop dump drain failed (continuing): $e');
           }

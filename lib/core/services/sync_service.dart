@@ -546,11 +546,16 @@ class SyncService {
     // also try to drain the same persistent queue. If both ran in
     // parallel each would generate its own DEK per upload → file
     // encrypted twice at two different storage_keys, leaving orphaned
-    // cloud bytes. The lock is per-fd; release on every exit path.
-    // On platforms where the lock file path isn't writable (rare —
-    // documents dir is always writable on mobile/desktop), we fall
-    // through and just process anyway: the worst case is the race the
-    // lock prevents, not a deadlock.
+    // cloud bytes. The lock now delegates to a Kotlin process-singleton
+    // (`UploadOwnershipRegistry`) over MethodChannel — POSIX file locks
+    // would have been per-process and so visible-but-useless to two
+    // isolates inside one Android process. See `upload_queue_lock.dart`
+    // for the why-stateless rationale. **Fail-closed on Android**: if
+    // the native channel is unreachable, `tryAcquire` returns false and
+    // we SKIP this pass rather than process anyway — the previous
+    // fail-open behaviour silently reintroduced the exact race the
+    // lock exists to prevent. Release on every exit path via the
+    // try/finally below.
     if (!await _queueLock.tryAcquire()) {
       debugPrint(
         'SyncService.processUploadQueue: queue lock held by another '

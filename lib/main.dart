@@ -15,7 +15,7 @@ import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/background_sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
-import 'package:fula_files/core/services/dump_service.dart';
+import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/face_storage_service.dart';
 import 'package:fula_files/core/services/face_detection_service.dart';
 import 'package:fula_files/core/services/playlist_service.dart';
@@ -33,6 +33,7 @@ import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/sync_background_entrypoint.dart';
 import 'package:fula_files/core/services/tray_service.dart';
 import 'package:fula_files/core/services/upload_speed_tracker.dart';
+import 'package:fula_files/core/services/shelf_suggestion_dismissals_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/ai_task_service.dart';
@@ -197,16 +198,16 @@ Future<ProviderContainer> _initializeApp() async {
     // Continue - app can still run with limited functionality
   }
 
-  // Bind the DumpService → SyncService status listener on cold start
+  // Bind the ShelfService → SyncService status listener on cold start
   // (Session 6 / Cursor review): without this, a queued-from-prior-
   // session upload that finishes BEFORE the first share/drain of
   // this process would emit `SyncStatus.synced` to a never-bound
-  // listener, leaving the DumpItem stuck in `uploading`. init() is
+  // listener, leaving the ShelfItem stuck in `uploading`. init() is
   // idempotent and the storage layer was already opened above.
   try {
-    await DumpService.instance.init().timeout(const Duration(seconds: 2));
+    await ShelfService.instance.init().timeout(const Duration(seconds: 2));
   } catch (e) {
-    debugPrint('DumpService initialization failed: $e');
+    debugPrint('ShelfService initialization failed: $e');
   }
 
   // Initialize deep link service (must be early to catch initial links)
@@ -242,6 +243,12 @@ Future<ProviderContainer> _initializeApp() async {
 
   // Initialize tag storage service (non-blocking)
   TagStorageService.instance.init();
+
+  // Device-local persistence for dismissed dump-tag suggestions.
+  // Non-blocking — provider tolerates uninitialized state by returning
+  // an empty dismissed set, so the worst case during cold-start is one
+  // re-suggestion if the user dismissed something seconds before kill.
+  ShelfSuggestionDismissalsService.instance.init();
 
   // Initialize website service (non-blocking)
   WebsiteService.instance.init();

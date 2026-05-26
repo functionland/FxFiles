@@ -1,10 +1,10 @@
 # iOS Share Extension — Xcode setup
 
-The Dump feature's iOS Share Extension (Session 4 of
-[the Dump plan](../../.claude/plans/i-want-to-add-buzzing-anchor.md))
+The Shelf feature's iOS Share Extension (Session 4 of
+[the Shelf plan](../../.claude/plans/i-want-to-add-buzzing-anchor.md))
 needs a one-time Xcode target setup that can't be expressed in the
 Flutter source tree. The source files are already in place at
-`ios/DumpShareExtension/`; the steps below wire them into the Xcode
+`ios/ShelfShareExtension/`; the steps below wire them into the Xcode
 project + the Apple Developer Portal.
 
 **Do this once per developer machine. Skipping any step leaves the
@@ -30,41 +30,41 @@ In Xcode:
 
 1. **File ▸ New ▸ Target…**
 2. iOS tab → **Share Extension** → **Next**.
-3. Product Name: `DumpShareExtension`.
+3. Product Name: `ShelfShareExtension`.
    - Bundle Identifier should auto-fill to
-     `land.fx.files.DumpShare` (must match
+     `land.fx.files.ShelfShare` (must match
      `ShareViewController.appGroupIdentifier`'s parent bundle id +
      the Xcode setup checked in below).
 4. Language: **Swift**.
 5. Embed in Application: **Runner**.
 6. **Finish**.
-7. When Xcode prompts "Activate "DumpShareExtension" scheme?" choose
+7. When Xcode prompts "Activate "ShelfShareExtension" scheme?" choose
    **Cancel** — you'll continue to build via `Runner`.
 
 Xcode auto-creates a default `ShareViewController.swift` +
 `Info.plist` + `MainInterface.storyboard` in a new
-`DumpShareExtension/` group. **Delete all three of them** from both
+`ShelfShareExtension/` group. **Delete all three of them** from both
 disk and the Xcode project. They'll be replaced by the checked-in
 files.
 
 ## 3 · Add the checked-in source files to the new target
 
-Right-click the `DumpShareExtension` group in the Xcode navigator →
+Right-click the `ShelfShareExtension` group in the Xcode navigator →
 **Add Files to "Runner"…** and select:
 
-- `ios/DumpShareExtension/Info.plist`
-- `ios/DumpShareExtension/DumpShareExtension.entitlements`
-- `ios/DumpShareExtension/ShareViewController.swift`
+- `ios/ShelfShareExtension/Info.plist`
+- `ios/ShelfShareExtension/ShelfShareExtension.entitlements`
+- `ios/ShelfShareExtension/ShareViewController.swift`
 
-Make sure **only `DumpShareExtension`** is checked in the target
+Make sure **only `ShelfShareExtension`** is checked in the target
 membership panel for all three files (NOT `Runner`).
 
-Then, in the `DumpShareExtension` target's **Build Settings**:
+Then, in the `ShelfShareExtension` target's **Build Settings**:
 
 - Search for **Info.plist File** → set it to
-  `DumpShareExtension/Info.plist`.
+  `ShelfShareExtension/Info.plist`.
 - Search for **Code Signing Entitlements** → set it to
-  `DumpShareExtension/DumpShareExtension.entitlements`.
+  `ShelfShareExtension/ShelfShareExtension.entitlements`.
 
 Delete the auto-generated `MainInterface.storyboard` reference if it
 still appears in the target — `ShareViewController` is a custom
@@ -75,7 +75,7 @@ instead).
 
 ## 4 · Link required frameworks
 
-In the `DumpShareExtension` target's **General ▸ Frameworks and
+In the `ShelfShareExtension` target's **General ▸ Frameworks and
 Libraries**, add:
 
 - `Foundation` (usually auto-linked)
@@ -89,14 +89,14 @@ modern `UniformTypeIdentifiers` API (revision R12).
 ## 5 · Configure the App Group in the Apple Developer Portal
 
 Both `Runner` (main app, bundle id `land.fx.files` / dev variant) and
-`DumpShareExtension` (`land.fx.files.DumpShare` / dev variant) need
+`ShelfShareExtension` (`land.fx.files.ShelfShare` / dev variant) need
 to share an App Group named exactly **`group.land.fx.files`**.
 
 1. https://developer.apple.com/account → Identifiers → **+** →
    **App Groups** → name + identifier `group.land.fx.files` → continue.
 2. Identifiers → click **`land.fx.files`** (main app) → enable
    **App Groups** → check `group.land.fx.files` → Save.
-3. Identifiers → click **`land.fx.files.DumpShare`** (extension; create
+3. Identifiers → click **`land.fx.files.ShelfShare`** (extension; create
    if it doesn't exist yet — Xcode auto-creates on first build) →
    enable **App Groups** → check `group.land.fx.files` → Save.
 4. Profiles → regenerate the development + distribution profiles for
@@ -106,7 +106,7 @@ to share an App Group named exactly **`group.land.fx.files`**.
 In Xcode, **Signing & Capabilities** for both targets should now show
 **App Groups → group.land.fx.files** with a green checkmark.
 
-The checked-in `Runner.entitlements` + `DumpShareExtension.entitlements`
+The checked-in `Runner.entitlements` + `ShelfShareExtension.entitlements`
 already declare the App Group; Xcode just needs the matching portal
 config to sign with the new entitlement.
 
@@ -123,7 +123,7 @@ Note: `BGTaskScheduler.shared.register` MUST run before
 ## 7 · Verify Privacy Nutrition Labels
 
 Before the next App Store submission, update the privacy declaration
-to reflect the Dump feature's data handling:
+to reflect the Shelf feature's data handling:
 
 - **Data linked to user**: user-content files (shared via the share
   sheet), URL metadata fetched for link previews.
@@ -132,7 +132,7 @@ to reflect the Dump feature's data handling:
 - **Tracking**: none.
 
 The link enrichment HTTP fetch (R14 SSRF guards in
-`DumpEnricher`) makes outbound requests to URLs the user shares,
+`ShelfEnricher`) makes outbound requests to URLs the user shares,
 which is a third-party network exposure. Disclose accordingly.
 
 ## 8 · Build & smoke
@@ -144,13 +144,13 @@ flutter run -d <ios-device>                    # interactive smoke
 
 Once running on a real device:
 
-1. Open Photos.app → pick an image → **Share** → "FxFiles Dump"
+1. Open Photos.app → pick an image → **Share** → "FxFiles Shelf"
    should appear in the third row of share targets.
 2. Tap it. The Share Extension fires headlessly (no compose UI).
-   Expect a "FxFiles Dump — Queued 1 item…" notification within ~1 s.
+   Expect a "FxFiles Shelf — Queued 1 item…" notification within ~1 s.
 3. Switch back to FxFiles. The lifecycle observer drains the App
-   Group container; the dump tile appears in `/dump` within a few
-   seconds; the queued notification is replaced by "Dumped: …".
+   Group container; the Shelf tile appears in `/shelf` within a few
+   seconds; the queued notification is replaced by "Saved to Shelf: …".
 
 If step 1 fails: re-check step 4 (frameworks) + step 5 (App Group)
 and `Info.plist`'s `NSExtensionActivationRule` accepts the content
@@ -160,12 +160,12 @@ If step 2 fails (sheet appears but no notification): the user hasn't
 granted notification permission yet. Open FxFiles once first — the
 main app's `AppDelegate.requestNotificationPermission` runs on cold
 launch. The share will silently stage either way (R5 design — the
-extension never blocks on permission); the dumps just won't surface
+extension never blocks on permission); the items just won't surface
 a toast until the user permits notifications.
 
-If step 3 fails (queued notification persists, no "Dumped" follow-up):
+If step 3 fails (queued notification persists, no "Saved to Shelf" follow-up):
 check the lifecycle hook in `lib/app/app.dart` is running on
-`AppLifecycleState.resumed` and `DumpIosBridge.drainAppGroupContainer`
+`AppLifecycleState.resumed` and `ShelfIosBridge.drainAppGroupContainer`
 is invoked. Logs from `AppDelegate.drainAppGroupContainerSync` should
-report the txn count under `os_log`'s `land.fx.files.DumpShare`
+report the txn count under `os_log`'s `land.fx.files.ShelfShare`
 subsystem.

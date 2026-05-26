@@ -21,11 +21,11 @@ class DeepLinkService {
   final _apiKeyReceivedController = StreamController<String>.broadcast();
   Stream<String> get onApiKeyReceived => _apiKeyReceivedController.stream;
 
-  // Stream controller for Dump deep-link navigation. Emits the
+  // Stream controller for Shelf deep-link navigation. Emits the
   // optional item id (or `null` for the bare `/dump` root). The app
   // subscribes and routes via go_router.
-  final _dumpDeepLinkController = StreamController<String?>.broadcast();
-  Stream<String?> get onDumpDeepLink => _dumpDeepLinkController.stream;
+  final _shelfDeepLinkController = StreamController<String?>.broadcast();
+  Stream<String?> get onShelfDeepLink => _shelfDeepLinkController.stream;
 
   /// Notify subscribers that an API key has been configured by an
   /// in-app flow (e.g. Mode B/C sign-in writes the JWT directly to
@@ -285,15 +285,15 @@ class DeepLinkService {
       return;
     }
 
-    if (host == 'dump') {
-      // `fxfiles://dump` → /dump root. `fxfiles://dump/<id>` →
-      // /dump/<id>. Notifications posted by DumpNotificationService
+    if (host == 'shelf') {
+      // `fxfiles://shelf` → /shelf root. `fxfiles://shelf/<id>` →
+      // /shelf/<id>. Notifications posted by ShelfNotificationService
       // tap here (Android PendingIntent + iOS UNNotification deep
       // link in Session 4).
       final segments = uri.pathSegments;
       final itemId = segments.isEmpty ? null : segments.first;
-      debugPrint('DeepLinkService: Dump deeplink received (id=$itemId)');
-      _dumpDeepLinkController.add(itemId);
+      debugPrint('DeepLinkService: Shelf deeplink received (id=$itemId)');
+      _shelfDeepLinkController.add(itemId);
       return;
     }
 

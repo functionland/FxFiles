@@ -3,10 +3,10 @@ import UniformTypeIdentifiers
 import UserNotifications
 import os
 
-/// Custom headless share-extension controller for the FxFiles Dump
+/// Custom headless share-extension controller for the FxFiles Shelf
 /// feature.
 ///
-/// Hardening (Dump plan Session 4 / R4–R7, R12, R13):
+/// Hardening (Shelf plan Session 4 / R4–R7, R12, R13):
 /// - R12: uses `UniformTypeIdentifiers` (`UTType.image` / `.movie` /
 ///        `.fileURL` / `.url` / `.plainText`), not the deprecated
 ///        `kUTType*` constants from `MobileCoreServices`.
@@ -35,7 +35,7 @@ class ShareViewController: UIViewController {
     static let pendingDirName = "dump_pending"
     static let manifestName = "manifest.json"
     private static let logger = Logger(
-        subsystem: "land.fx.files.DumpShare",
+        subsystem: "land.fx.files.ShelfShare",
         category: "ShareViewController"
     )
 
@@ -109,7 +109,7 @@ class ShareViewController: UIViewController {
             forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
         ) else {
             throw NSError(
-                domain: "land.fx.files.DumpShare",
+                domain: "land.fx.files.ShelfShare",
                 code: 1,
                 userInfo: [
                     NSLocalizedDescriptionKey: "App Group container not available — entitlement misconfigured?",
@@ -335,7 +335,7 @@ class ShareViewController: UIViewController {
 
     private func postQueuedNotification(count: Int, txnId: String) async {
         let content = UNMutableNotificationContent()
-        content.title = "FxFiles Dump"
+        content.title = "Shelf"
         content.body = count == 1
             ? "Queued 1 item — will upload when FxFiles next runs"
             : "Queued \(count) items — will upload when FxFiles next runs"

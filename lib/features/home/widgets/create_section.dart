@@ -51,8 +51,8 @@ class CreateSection extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            // 2x2 grid: Website + NFT (top), Automate + Dump (bottom).
-            // The Dump tile was added in the Dump feature (see plan at
+            // 2x2 grid: Website + NFT (top), Automate + Shelf (bottom).
+            // The Shelf tile was added in the Shelf feature (see plan at
             // C:\Users\ehsan\.claude\plans\i-want-to-add-buzzing-anchor.md).
             Row(
               children: [
@@ -105,10 +105,10 @@ class CreateSection extends StatelessWidget {
                 Expanded(
                   child: _CreateTile(
                     icon: LucideIcons.inbox,
-                    label: 'Dump',
+                    label: 'Shelf',
                     badge: 'share to FxFiles',
                     locked: false,
-                    onTap: () => context.push('/dump'),
+                    onTap: () => context.push('/shelf'),
                   ),
                 ),
                 // ⚠️ HIDDEN — AI tile is dormant. It was a 5th tile in the

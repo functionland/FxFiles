@@ -17,7 +17,7 @@ import java.util.UUID
 /**
  * Receives share-sheet intents (ACTION_SEND / ACTION_SEND_MULTIPLE) and
  * stages the payload into `<filesDir>/dump_pending/` so the main Flutter
- * app can drain + ingest on its next foreground / WorkManager tick (Dump
+ * app can drain + ingest on its next foreground / WorkManager tick (Shelf
  * plan revision R3 "Plan B" — Kotlin-only Activity, no Flutter engine
  * spin-up).
  *
@@ -27,15 +27,15 @@ import java.util.UUID
  *  1. Copy each URI/text payload into `dump_pending/<filename>`.
  *  2. Write a descriptor JSON (`<txn>.json`) listing the files +
  *     mime hints + original names + optional textPayload.
- *  3. Post the "Dump received — processing…" notification through
- *     [FxFilesApplication.showDumpReceivedNotification].
+ *  3. Post the "Shelf received — processing…" notification through
+ *     [FxFilesApplication.showShelfReceivedNotification].
  *  4. `finish()`.
  *
  * Staging directory contract: Dart's
  * `path_provider.getApplicationDocumentsDirectory()` on Android maps to
  * `context.getDir("flutter", MODE_PRIVATE)` (i.e.
  * `/data/data/<pkg>/app_flutter/`), NOT `context.getFilesDir()`. We
- * stage into the SAME directory so the Dart `DumpService.drainPendingDir`
+ * stage into the SAME directory so the Dart `ShelfService.drainPendingDir`
  * sees what we write. If a future `path_provider` major upgrade
  * changes that mapping, this constant + the Dart side both need to
  * follow.
@@ -273,7 +273,7 @@ class DumpShareActivity : Activity() {
 
     private fun postReceivedNotification(count: Int) {
         try {
-            FxFilesApplication.showDumpReceivedNotification(
+            FxFilesApplication.showShelfReceivedNotification(
                 context = applicationContext,
                 count = count,
             )

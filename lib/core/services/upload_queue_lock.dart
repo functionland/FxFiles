@@ -77,6 +77,22 @@ class UploadQueueLock {
   static const String _channelName = 'land.fx.files/upload_ownership';
   static const MethodChannel _channel = MethodChannel(_channelName);
 
+  /// Test seam — when non-null, overrides the runtime `Platform.isAndroid`
+  /// check so unit tests can exercise both the pass-through (host) and
+  /// channel-driven (Android) branches from a single `flutter test` run.
+  /// `null` in production. Flutter's `debugDefaultTargetPlatformOverride`
+  /// is **not** sufficient here: it changes the framework's `TargetPlatform`
+  /// but does NOT affect `dart:io`'s `Platform.isAndroid`, which still
+  /// reports the host OS.
+  @visibleForTesting
+  static bool? debugIsAndroidOverride;
+
+  static bool get _isAndroid =>
+      debugIsAndroidOverride ?? Platform.isAndroid;
+
+  @visibleForTesting
+  static Duration debugPollInterval = const Duration(milliseconds: 250);
+
   /// Register this isolate's token with the Kotlin side so the
   /// service can force-release on engine destroy. Returns `true` on
   /// success. Returns `false` on any failure — callers MUST check
@@ -88,7 +104,7 @@ class UploadQueueLock {
   /// to any Android lifecycle event (Activity destroy != isolate
   /// destroy on rotation).
   static Future<bool> registerAsBackgroundIsolate() async {
-    if (!Platform.isAndroid) return true;
+    if (!_isAndroid) return true;
     try {
       final ok = await _channel.invokeMethod<bool>(
         'registerBackgroundToken',
@@ -113,7 +129,7 @@ class UploadQueueLock {
   /// platforms (intentional no-op). On Android, channel errors do
   /// NOT mark the lock as unavailable — they fail-closed and the
   /// caller sees `tryAcquire` return `false`.
-  bool get isUnavailable => !Platform.isAndroid;
+  bool get isUnavailable => !_isAndroid;
 
   /// Try to acquire the lock without blocking. On Android, returns
   /// `false` if another isolate currently holds it OR if the native
@@ -124,7 +140,7 @@ class UploadQueueLock {
   /// matched by exactly one `release` in a `try/finally`. The lock
   /// is stateless on the Dart side; no idempotence guard.
   Future<bool> tryAcquire() async {
-    if (!Platform.isAndroid) return true;
+    if (!_isAndroid) return true;
     try {
       final acquired = await _channel.invokeMethod<bool>(
         'tryAcquire',
@@ -144,11 +160,11 @@ class UploadQueueLock {
   /// Acquire the lock, waiting at most [timeout] for another isolate
   /// to release it. Returns `true` on success, `false` on timeout.
   Future<bool> acquireWithTimeout(Duration timeout) async {
-    if (!Platform.isAndroid) return true;
+    if (!_isAndroid) return true;
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       if (await tryAcquire()) return true;
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await Future<void>.delayed(debugPollInterval);
     }
     return false;
   }
@@ -157,7 +173,7 @@ class UploadQueueLock {
   /// successful `tryAcquire`. Idempotent on the native side — a
   /// release call against a token that no longer owns is a no-op.
   Future<void> release() async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod<bool>(
         'release',

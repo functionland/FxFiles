@@ -16,13 +16,13 @@ import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/canonical_kek_input.dart';
 import 'package:fula_files/core/utils/seed_signing_input.dart';
-import 'package:fula_files/core/services/dump_service.dart';
+import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
-import 'package:fula_files/core/services/dump_storage_service.dart';
+import 'package:fula_files/core/services/shelf_storage_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
@@ -205,7 +205,7 @@ class AuthService {
           WebsiteService.instance.restoreFromCloud();
           NftService.instance.restoreFromCloud();
           FolderWatchService.instance.restoreFromCloud();
-          DumpStorageService.instance.restoreFromCloud();
+          ShelfStorageService.instance.restoreFromCloud();
         }
         return true;
       }
@@ -324,7 +324,7 @@ class AuthService {
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
-        DumpStorageService.instance.restoreFromCloud();
+        ShelfStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -482,7 +482,7 @@ class AuthService {
         WebsiteService.instance.restoreFromCloud();
         NftService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
-        DumpStorageService.instance.restoreFromCloud();
+        ShelfStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
@@ -529,7 +529,7 @@ class AuthService {
         TagStorageService.instance.restoreFromCloud();
         WebsiteService.instance.restoreFromCloud();
         FolderWatchService.instance.restoreFromCloud();
-        DumpStorageService.instance.restoreFromCloud();
+        ShelfStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
       debugPrint('Browser sign-in post-setup error: $e');
@@ -787,11 +787,11 @@ class AuthService {
 
         // Dump feature (R10 / Session 5): pending-auth retry hook —
         // every time the encryption key + Fula client become
-        // available we ask DumpService to re-run any items the user
+        // available we ask ShelfService to re-run any items the user
         // staged while signed out. Idempotent + key-gated, so it's
         // safe to call from every _initializeFulaClient site (cold
         // restore, new sign-in, gateway switch, reinit).
-        unawaited(DumpService.instance.retryPending());
+        unawaited(ShelfService.instance.retryPending());
 
         // Verify public key is available (don't log key material)
         try {
@@ -862,7 +862,7 @@ class AuthService {
       WebsiteService.instance.restoreFromCloud();
       NftService.instance.restoreFromCloud();
       FolderWatchService.instance.restoreFromCloud();
-      DumpStorageService.instance.restoreFromCloud();
+      ShelfStorageService.instance.restoreFromCloud();
     }
   }
 

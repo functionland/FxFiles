@@ -87,7 +87,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Dump feature share target. Pure Kotlin Activity (no Flutter
+        <!-- Shelf feature share target. Pure Kotlin Activity (no Flutter
              engine spin-up) declared with a translucent NoDisplay theme
              so the user never sees a transition. See the class doc on
              DumpShareActivity for the staging-directory contract. -->
@@ -99,7 +99,7 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:launchMode="singleInstance"
-            android:label="FxFiles Dump">
+            android:label="Shelf">
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
                 <category android:name="android.intent.category.DEFAULT"/>

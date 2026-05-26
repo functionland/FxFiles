@@ -75,7 +75,7 @@ class MainActivity : AudioServiceActivity() {
     private val NOTIFICATION_CHANNEL = "land.fx.files/notification"
     private val BATTERY_CHANNEL = "land.fx.files/battery_optimization"
     private val SYNC_NOTIFICATION_CHANNEL = "land.fx.files/sync_notification"
-    private val DUMP_NOTIFICATION_CHANNEL = "land.fx.files/dump_notification"
+    private val SHELF_NOTIFICATION_CHANNEL = "land.fx.files/dump_notification"
     private val DEVICE_MEMORY_CHANNEL = "land.fx.files/device_memory"
     private val MODEL_DOWNLOAD_CHANNEL = "land.fx.files/model_download"
     private val SYNC_NOTIFICATION_ID = 9001
@@ -199,64 +199,64 @@ class MainActivity : AudioServiceActivity() {
             }
         }
 
-        // Dump notification channel — routes Dart's DumpNotificationService
+        // Shelf notification channel — routes Dart's ShelfNotificationService
         // calls to the FxFilesApplication helpers.
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DUMP_NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHELF_NOTIFICATION_CHANNEL).setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
-                    "showDumpReceived" -> {
+                    "showShelfReceived" -> {
                         val count = call.argument<Int>("count") ?: 1
-                        FxFilesApplication.showDumpReceivedNotification(applicationContext, count)
+                        FxFilesApplication.showShelfReceivedNotification(applicationContext, count)
                         result.success(true)
                     }
-                    "showDumpComplete" -> {
-                        val title = call.argument<String>("title") ?: "Dumped"
+                    "showShelfComplete" -> {
+                        val title = call.argument<String>("title") ?: "Saved to Shelf"
                         val body = call.argument<String>("body") ?: ""
                         val deepLink = call.argument<String>("deepLink")
                         val hasErrors = call.argument<Boolean>("hasErrors") ?: false
-                        FxFilesApplication.showDumpCompleteNotification(
+                        FxFilesApplication.showShelfCompleteNotification(
                             applicationContext, title, body, deepLink, hasErrors
                         )
                         result.success(true)
                     }
-                    "showDumpDuplicate" -> {
+                    "showShelfDuplicate" -> {
                         val title = call.argument<String>("title")
-                            ?: "Already in Dump"
+                            ?: "Already in Shelf"
                         val body = call.argument<String>("body") ?: ""
                         val deepLink = call.argument<String>("deepLink")
-                        FxFilesApplication.showDumpDuplicateNotification(
+                        FxFilesApplication.showShelfDuplicateNotification(
                             applicationContext, title, body, deepLink
                         )
                         result.success(true)
                     }
-                    "showDumpPendingAuth" -> {
+                    "showShelfPendingAuth" -> {
                         val title = call.argument<String>("title")
-                            ?: "Dump saved — sign in to upload"
+                            ?: "Shelf saved — sign in to upload"
                         val body = call.argument<String>("body") ?: ""
                         val deepLink = call.argument<String>("deepLink")
-                        FxFilesApplication.showDumpPendingAuthNotification(
+                        FxFilesApplication.showShelfPendingAuthNotification(
                             applicationContext, title, body, deepLink
                         )
                         result.success(true)
                     }
-                    "showDumpFailed" -> {
+                    "showShelfFailed" -> {
                         val title = call.argument<String>("title")
-                            ?: "Dump upload failed"
+                            ?: "Shelf upload failed"
                         val body = call.argument<String>("body") ?: ""
                         val deepLink = call.argument<String>("deepLink")
-                        FxFilesApplication.showDumpFailedNotification(
+                        FxFilesApplication.showShelfFailedNotification(
                             applicationContext, title, body, deepLink
                         )
                         result.success(true)
                     }
-                    "hideDumpNotification" -> {
-                        FxFilesApplication.hideDumpNotification(applicationContext)
+                    "hideShelfNotification" -> {
+                        FxFilesApplication.hideShelfNotification(applicationContext)
                         result.success(true)
                     }
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {
-                result.error("ERROR", "Dump notification call failed: ${e.message}", null)
+                result.error("ERROR", "Shelf notification call failed: ${e.message}", null)
             }
         }
 

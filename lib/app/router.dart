@@ -23,10 +23,10 @@ import 'package:fula_files/features/ai_tasks/screens/ai_task_run_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_tasks_browser_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_task_detail_screen.dart';
 import 'package:fula_files/features/automate/screens/automate_task_run_screen.dart';
-import 'package:fula_files/features/dump/screens/dump_screen.dart';
-import 'package:fula_files/features/dump/screens/dump_item_viewer_screen.dart';
-import 'package:fula_files/features/dump/screens/dump_add_note_screen.dart';
-import 'package:fula_files/features/dump/screens/dump_doodle_screen.dart';
+import 'package:fula_files/features/shelf/screens/shelf_screen.dart';
+import 'package:fula_files/features/shelf/screens/shelf_item_viewer_screen.dart';
+import 'package:fula_files/features/shelf/screens/shelf_add_note_screen.dart';
+import 'package:fula_files/features/shelf/screens/shelf_doodle_screen.dart';
 import 'package:fula_files/features/nft/screens/nfts_browser_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_detail_screen.dart';
 import 'package:fula_files/features/nft/screens/nft_claim_screen.dart';
@@ -258,18 +258,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           return AutomateTaskRunScreen(tagId: tagId);
         },
       ),
-      // Dump feature — system share target + manual add flows. The
+      // Shelf feature — system share target + manual add flows. The
       // /dump/doodle and /dump/add/note routes land in Session 3b.
       GoRoute(
-        path: '/dump',
-        builder: (context, state) => const DumpScreen(),
+        path: '/shelf',
+        builder: (context, state) => const ShelfScreen(),
       ),
       GoRoute(
-        path: '/dump/add/note',
-        builder: (context, state) => const DumpAddNoteScreen(),
+        path: '/shelf/add/note',
+        builder: (context, state) => const ShelfAddNoteScreen(),
       ),
       GoRoute(
-        path: '/dump/doodle',
+        path: '/shelf/doodle',
         builder: (context, state) {
           final path = state.extra as String?;
           if (path == null || path.isEmpty) {
@@ -279,13 +279,13 @@ final routerProvider = Provider<GoRouter>((ref) {
               ),
             );
           }
-          return DumpDoodleScreen(capturedPath: path);
+          return ShelfDoodleScreen(capturedPath: path);
         },
       ),
       GoRoute(
-        path: '/dump/:id',
+        path: '/shelf/:id',
         builder: (context, state) =>
-            DumpItemViewerScreen(itemId: state.pathParameters['id']!),
+            ShelfItemViewerScreen(itemId: state.pathParameters['id']!),
       ),
       GoRoute(
         path: '/nfts',

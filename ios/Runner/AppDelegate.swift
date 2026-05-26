@@ -24,7 +24,7 @@ import os
     private var modelDownloadChannel: FlutterMethodChannel?
     private var dumpBridgeChannel: FlutterMethodChannel?
     private var dumpNotificationChannel: FlutterMethodChannel?
-    /// Serializes Dump-drain access (Session 6 / Codex review): the
+    /// Serializes Shelf-drain access (Session 6 / Codex review): the
     /// BGTask handler and the MethodChannel-driven foreground drain
     /// both call `drainAppGroupContainerSync`. Without this lock they
     /// could enumerate the same txn dir, race the move, and corrupt
@@ -136,9 +136,9 @@ import os
                 self?.modelDownloadHandler.handle(call, result: result)
             }
 
-            // Dump bridge — drains the Share Extension's App Group
+            // Shelf bridge — drains the Share Extension's App Group
             // staging directory and reports the descriptors back so
-            // the Dart side can call DumpService.ingestAndSchedule.
+            // the Dart side can call ShelfService.ingestAndSchedule.
             // See lib/core/services/dump_ios_bridge.dart for the
             // Dart-side contract.
             dumpBridgeChannel = FlutterMethodChannel(
@@ -160,7 +160,7 @@ import os
                     // each item in a txn, it acks the txnId so we
                     // can delete the on-disk sidecar JSON. If the
                     // ack never arrives (process kill mid-ingest),
-                    // the sidecar stays and `DumpService.drainPendingDir`
+                    // the sidecar stays and `ShelfService.drainPendingDir`
                     // picks it up on next resume.
                     let txnIds: [String]
                     if let args = call.arguments as? [String: Any],
@@ -172,7 +172,7 @@ import os
                         txnIds = []
                     }
                     DispatchQueue.global(qos: .userInitiated).async {
-                        self?.deleteDumpSidecars(txnIds: txnIds)
+                        self?.deleteShelfSidecars(txnIds: txnIds)
                         DispatchQueue.main.async { result(true) }
                     }
                 default:
@@ -180,8 +180,8 @@ import os
                 }
             }
 
-            // Dump notification channel — Dart-side
-            // DumpNotificationService posts stage-2 ("Dumped …")
+            // Shelf notification channel — Dart-side
+            // ShelfNotificationService posts stage-2 ("Saved to Shelf …")
             // notifications via this channel; the Share Extension
             // posts stage-1 ("queued") directly. See plan Phase 8 +
             // R15 (privacy-private visibility) + R5 (auth from main
@@ -191,7 +191,7 @@ import os
                 binaryMessenger: controller.binaryMessenger
             )
             dumpNotificationChannel?.setMethodCallHandler { [weak self] call, result in
-                self?.handleDumpNotificationCall(call, result: result)
+                self?.handleShelfNotificationCall(call, result: result)
             }
         }
 
@@ -201,7 +201,7 @@ import os
         // Submit an initial drain BGTask — R4: only the main app
         // submits, never the Share Extension. The handler re-arms
         // itself after each fire.
-        submitDumpDrainTask()
+        submitShelfDrainTask()
 
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
@@ -223,7 +223,7 @@ import os
             self.handleBackgroundRefresh(task: task as! BGAppRefreshTask)
         }
 
-        // Register Dump drain task — see Dump plan revision R4. iOS
+        // Register Shelf drain task — see Shelf plan revision R4. iOS
         // schedules this opportunistically (charging + Wi-Fi + recent
         // app use); the foreground `AppLifecycleState.resumed` drain
         // on the Dart side is the primary path.
@@ -231,7 +231,7 @@ import os
             forTaskWithIdentifier: AppDelegate.dumpDrainTaskIdentifier,
             using: nil
         ) { task in
-            self.handleDumpDrainTask(task: task as! BGProcessingTask)
+            self.handleShelfDrainTask(task: task as! BGProcessingTask)
         }
     }
 
@@ -382,15 +382,15 @@ import os
         }
     }
 
-    // MARK: - Dump drain (Share Extension handoff)
+    // MARK: - Shelf drain (Share Extension handoff)
 
-    private func handleDumpDrainTask(task: BGProcessingTask) {
+    private func handleShelfDrainTask(task: BGProcessingTask) {
         // Re-arm BEFORE doing the work so we always have a pending
         // request — iOS only ever has one of these in flight at once.
-        submitDumpDrainTask()
+        submitShelfDrainTask()
 
         task.expirationHandler = {
-            debugPrint("Dump drain BGTask expiring")
+            debugPrint("Shelf drain BGTask expiring")
             task.setTaskCompleted(success: false)
         }
 
@@ -404,11 +404,11 @@ import os
             // user opens the app. Here we just stage to the main app
             // sandbox so the descriptors survive until then.
             task.setTaskCompleted(success: true)
-            debugPrint("Dump drain BGTask completed (\(descriptors.count) txns)")
+            debugPrint("Shelf drain BGTask completed (\(descriptors.count) txns)")
         }
     }
 
-    func submitDumpDrainTask() {
+    func submitShelfDrainTask() {
         let request = BGProcessingTaskRequest(
             identifier: AppDelegate.dumpDrainTaskIdentifier
         )
@@ -421,14 +421,14 @@ import os
             // app not in a launch-recent state, or quota exceeded.
             // Either way we surface to logs only — the foreground
             // drain path is the reliable channel.
-            debugPrint("submitDumpDrainTask failed: \(error)")
+            debugPrint("submitShelfDrainTask failed: \(error)")
         }
     }
 
     /// Reads the App Group's `dump_pending/<txn>/` directories that
     /// have a committed `manifest.json`. For each, moves the payloads
     /// into the main app's `Documents/dump_pending/`, writes a
-    /// sidecar JSON descriptor (so `DumpService.drainPendingDir` can
+    /// sidecar JSON descriptor (so `ShelfService.drainPendingDir` can
     /// recover even if Dart never ingests the in-memory return), and
     /// returns one descriptor map per transaction. Orphan dirs older
     /// than 7 days are swept (R6).
@@ -442,7 +442,7 @@ import os
     ///   txn to retry.
     /// - Writes a sidecar JSON into `Documents/dump_pending/<txnId>.json`
     ///   in the SAME schema Android's `DumpShareActivity` writes, so
-    ///   `DumpService.drainPendingDir` recovers any txn that wasn't
+    ///   `ShelfService.drainPendingDir` recovers any txn that wasn't
     ///   ingested via the in-memory descriptor return (e.g. when the
     ///   BGTask path ran but Dart wasn't woken).
     /// - Normalises the source-app field to `sourcePackage` (was
@@ -457,7 +457,7 @@ import os
         guard let groupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: AppDelegate.appGroupIdentifier
         ) else {
-            debugPrint("Dump drain: App Group container not available")
+            debugPrint("Shelf drain: App Group container not available")
             return []
         }
         let appGroupPending = groupURL
@@ -497,7 +497,7 @@ import os
                 if let created = try? txnDir.resourceValues(forKeys: [.creationDateKey]).creationDate,
                    now.timeIntervalSince(created) > AppDelegate.dumpStaleTxnTTLSeconds {
                     try? FileManager.default.removeItem(at: txnDir)
-                    debugPrint("Dump drain: pruned stale incomplete txn \(txnDir.lastPathComponent)")
+                    debugPrint("Shelf drain: pruned stale incomplete txn \(txnDir.lastPathComponent)")
                 }
                 continue
             }
@@ -505,7 +505,7 @@ import os
             guard let data = try? Data(contentsOf: manifestURL),
                   let raw = try? JSONSerialization.jsonObject(with: data),
                   let manifest = raw as? [String: Any] else {
-                debugPrint("Dump drain: manifest unreadable in \(txnDir.lastPathComponent)")
+                debugPrint("Shelf drain: manifest unreadable in \(txnDir.lastPathComponent)")
                 continue
             }
             guard let items = manifest["items"] as? [[String: Any]],
@@ -561,7 +561,7 @@ import os
                         "mimeType": mime,
                     ])
                 } catch {
-                    debugPrint("Dump drain move failed: \(error)")
+                    debugPrint("Shelf drain move failed: \(error)")
                     moveFailed = true
                     break
                 }
@@ -591,11 +591,11 @@ import os
             // so the drain is recoverable: if the BGTask handler runs
             // here (no Dart caller waiting on the return value), the
             // sidecar is still on disk for the next foreground's
-            // `DumpService.drainPendingDir` to pick up. If the
+            // `ShelfService.drainPendingDir` to pick up. If the
             // foreground caller successfully ingests via the
             // in-memory return, it calls `ackTxns` to delete the
             // sidecar so we don't double-ingest on next resume.
-            writeDumpSidecar(
+            writeShelfSidecar(
                 txnId: txnId,
                 items: sidecarItems,
                 textPayload: textPayload,
@@ -630,8 +630,8 @@ import os
     /// Writes `<appPendingDir>/<txnId>.json` atomically (tmp + rename)
     /// containing a descriptor in the same schema Android's
     /// `DumpShareActivity` writes, so the Dart-side
-    /// `DumpService.drainPendingDir` ingests it identically.
-    private func writeDumpSidecar(
+    /// `ShelfService.drainPendingDir` ingests it identically.
+    private func writeShelfSidecar(
         txnId: String,
         items: [[String: Any]],
         textPayload: String?,
@@ -662,18 +662,18 @@ import os
                 ofItemAtPath: sidecarURL.path
             )
         } catch {
-            debugPrint("Dump drain: failed to write sidecar for \(txnId): \(error)")
+            debugPrint("Shelf drain: failed to write sidecar for \(txnId): \(error)")
             try? FileManager.default.removeItem(at: tmpURL)
         }
     }
 
     /// Deletes the sidecar JSONs for [txnIds]. Invoked by Dart's
-    /// `DumpIosBridge` after it has successfully ingested the
+    /// `ShelfIosBridge` after it has successfully ingested the
     /// in-memory descriptors — keeps the on-disk sidecar from being
     /// re-ingested by `drainPendingDir` on the next resume. If an
     /// ack is dropped (process kill mid-ingest, etc.) the sidecar
     /// stays and the duplicate ingest is short-circuited by R8 dedup.
-    private func deleteDumpSidecars(txnIds: [String]) {
+    private func deleteShelfSidecars(txnIds: [String]) {
         guard !txnIds.isEmpty else { return }
         guard let documentsDir = FileManager.default.urls(
             for: .documentDirectory, in: .userDomainMask
@@ -700,11 +700,11 @@ import os
         return candidate
     }
 
-    // MARK: - Dump notification (stage 2 — "uploaded")
+    // MARK: - Shelf notification (stage 2 — "uploaded")
 
-    /// Called by Dart's `DumpNotificationService` on iOS. Mirrors the
+    /// Called by Dart's `ShelfNotificationService` on iOS. Mirrors the
     /// shape of the Android MethodChannel handler in MainActivity.kt.
-    private func handleDumpNotificationCall(
+    private func handleShelfNotificationCall(
         _ call: FlutterMethodCall,
         result: @escaping FlutterResult
     ) {
@@ -715,18 +715,18 @@ import os
                 options: [.alert, .badge, .sound]
             ) { granted, error in
                 if let error = error {
-                    debugPrint("Dump notification permission error: \(error)")
+                    debugPrint("Shelf notification permission error: \(error)")
                     result(false)
                 } else {
                     result(granted)
                 }
             }
-        case "showDumpQueued",
-             "showDumpReceived",
-             "showDumpComplete",
-             "showDumpPendingAuth",
-             "showDumpFailed":
-            postDumpNotification(call: call, result: result)
+        case "showShelfQueued",
+             "showShelfReceived",
+             "showShelfComplete",
+             "showShelfPendingAuth",
+             "showShelfFailed":
+            postShelfNotification(call: call, result: result)
         case "dismissQueued":
             // Called by stage 2 to clear the stage-1 notifications.
             UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
@@ -739,7 +739,7 @@ import os
                 }
                 result(true)
             }
-        case "hideDumpNotification":
+        case "hideShelfNotification":
             UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
                 let ids = delivered
                     .map { $0.request.identifier }
@@ -755,12 +755,12 @@ import os
         }
     }
 
-    private func postDumpNotification(
+    private func postShelfNotification(
         call: FlutterMethodCall,
         result: @escaping FlutterResult
     ) {
         let args = (call.arguments as? [String: Any]) ?? [:]
-        let title = (args["title"] as? String) ?? "Dump"
+        let title = (args["title"] as? String) ?? "Shelf"
         let body = (args["body"] as? String) ?? ""
         let deepLink = args["deepLink"] as? String
         let content = UNMutableNotificationContent()
@@ -779,11 +779,11 @@ import os
         // `dismissQueued` can target the right cohort.
         let prefix: String
         switch call.method {
-        case "showDumpQueued":      prefix = "dump.queued"
-        case "showDumpReceived":    prefix = "dump.received"
-        case "showDumpComplete":    prefix = "dump.uploaded"
-        case "showDumpPendingAuth": prefix = "dump.pendingAuth"
-        case "showDumpFailed":      prefix = "dump.failed"
+        case "showShelfQueued":      prefix = "dump.queued"
+        case "showShelfReceived":    prefix = "dump.received"
+        case "showShelfComplete":    prefix = "dump.uploaded"
+        case "showShelfPendingAuth": prefix = "dump.pendingAuth"
+        case "showShelfFailed":      prefix = "dump.failed"
         default:                    prefix = "dump"
         }
         let request = UNNotificationRequest(
@@ -793,7 +793,7 @@ import os
         )
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                debugPrint("postDumpNotification failed: \(error)")
+                debugPrint("postShelfNotification failed: \(error)")
                 result(false)
             } else {
                 result(true)

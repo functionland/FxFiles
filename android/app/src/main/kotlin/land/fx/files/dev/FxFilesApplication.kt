@@ -21,15 +21,15 @@ class FxFilesApplication : Application() {
         const val SYNC_CHANNEL_ID = "fxfiles_sync_channel"
         const val SYNC_NOTIFICATION_ID = 9001
 
-        // Dump feature notification channel + IDs. Separate from sync
-        // because the semantics are different (Dump is a finished
+        // Shelf feature notification channel + IDs. Separate from sync
+        // because the semantics are different (Shelf is a finished
         // event, sync is ongoing progress). Received and complete
         // share the same ID so the OS updates in place; pendingAuth
         // and failed get their own IDs so they don't get clobbered.
-        const val DUMP_CHANNEL_ID = "fxfiles_dump_channel"
-        const val DUMP_RECEIVED_NOTIFICATION_ID = 9101
-        const val DUMP_PENDING_AUTH_NOTIFICATION_ID = 9102
-        const val DUMP_FAILED_NOTIFICATION_ID = 9103
+        const val SHELF_CHANNEL_ID = "fxfiles_dump_channel"
+        const val SHELF_RECEIVED_NOTIFICATION_ID = 9101
+        const val SHELF_PENDING_AUTH_NOTIFICATION_ID = 9102
+        const val SHELF_FAILED_NOTIFICATION_ID = 9103
 
         private var instance: FxFilesApplication? = null
 
@@ -122,16 +122,16 @@ class FxFilesApplication : Application() {
         }
         notificationManager.createNotificationChannel(syncChannel)
 
-        // Dump channel — IMPORTANCE_DEFAULT so finished-event posts
+        // Shelf channel — IMPORTANCE_DEFAULT so finished-event posts
         // surface to the user without being silenced. Lock-screen
         // visibility deliberately PRIVATE (R15) so filenames don't
         // leak on a locked device.
         val dumpChannel = NotificationChannel(
-            DUMP_CHANNEL_ID,
-            "Dump",
+            SHELF_CHANNEL_ID,
+            "Shelf",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
-            description = "Notifies when shared content lands in your Dump"
+            description = "Notifies when shared content lands in your Shelf"
             setShowBadge(true)
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
@@ -140,23 +140,23 @@ class FxFilesApplication : Application() {
 }
 
 // ---------------------------------------------------------------------------
-// Dump notification helpers (declared at file-scope, used by the
-// DumpShareActivity AND the MainActivity MethodChannel handler). Each
+// Shelf notification helpers (declared at file-scope, used by the
+// ShelfShareActivity AND the MainActivity MethodChannel handler). Each
 // helper ensures the channel exists (idempotent) so they're safe even
 // if some future startup path skips Application.onCreate.
 // ---------------------------------------------------------------------------
 
-private fun ensureDumpChannel(context: Context) {
+private fun ensureShelfChannel(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE)
             as NotificationManager
-    if (mgr.getNotificationChannel(FxFilesApplication.DUMP_CHANNEL_ID) == null) {
+    if (mgr.getNotificationChannel(FxFilesApplication.SHELF_CHANNEL_ID) == null) {
         val ch = NotificationChannel(
-            FxFilesApplication.DUMP_CHANNEL_ID,
-            "Dump",
+            FxFilesApplication.SHELF_CHANNEL_ID,
+            "Shelf",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
-            description = "Notifies when shared content lands in your Dump"
+            description = "Notifies when shared content lands in your Shelf"
             setShowBadge(true)
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
@@ -174,17 +174,17 @@ private fun dumpDeepLinkIntent(context: Context, deepLink: String?): PendingInte
     return PendingIntent.getActivity(context, 0, intent, flags)
 }
 
-fun FxFilesApplication.Companion.showDumpReceivedNotification(
+fun FxFilesApplication.Companion.showShelfReceivedNotification(
     context: Context,
     count: Int,
 ) {
-    ensureDumpChannel(context)
-    val body = if (count == 1) "Processing 1 dump…" else "Processing $count dumps…"
-    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+    ensureShelfChannel(context)
+    val body = if (count == 1) "Processing 1 item…" else "Processing $count items…"
+    val notif = NotificationCompat.Builder(context, SHELF_CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_upload)
-        .setContentTitle("FxFiles Dump")
+        .setContentTitle("Shelf")
         .setContentText(body)
-        .setContentIntent(dumpDeepLinkIntent(context, "fxfiles://dump"))
+        .setContentIntent(dumpDeepLinkIntent(context, "fxfiles://shelf"))
         .setOngoing(false)
         .setPriority(NotificationCompat.PRIORITY_DEFAULT)
         .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -192,22 +192,22 @@ fun FxFilesApplication.Companion.showDumpReceivedNotification(
         .setProgress(0, 0, true)
         .build()
     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .notify(DUMP_RECEIVED_NOTIFICATION_ID, notif)
+        .notify(SHELF_RECEIVED_NOTIFICATION_ID, notif)
 }
 
-fun FxFilesApplication.Companion.showDumpCompleteNotification(
+fun FxFilesApplication.Companion.showShelfCompleteNotification(
     context: Context,
     title: String,
     body: String,
     deepLink: String?,
     hasErrors: Boolean,
 ) {
-    ensureDumpChannel(context)
+    ensureShelfChannel(context)
     val icon = if (hasErrors)
         android.R.drawable.stat_sys_warning
     else
         android.R.drawable.stat_sys_upload_done
-    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+    val notif = NotificationCompat.Builder(context, SHELF_CHANNEL_ID)
         .setSmallIcon(icon)
         .setContentTitle(title)
         .setContentText(body)
@@ -220,17 +220,17 @@ fun FxFilesApplication.Companion.showDumpCompleteNotification(
     // stacking. Per the plan: "The Android notification ID stays
     // stable across the two posts so the OS updates in place".
     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .notify(DUMP_RECEIVED_NOTIFICATION_ID, notif)
+        .notify(SHELF_RECEIVED_NOTIFICATION_ID, notif)
 }
 
-fun FxFilesApplication.Companion.showDumpDuplicateNotification(
+fun FxFilesApplication.Companion.showShelfDuplicateNotification(
     context: Context,
     title: String,
     body: String,
     deepLink: String?,
 ) {
-    ensureDumpChannel(context)
-    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+    ensureShelfChannel(context)
+    val notif = NotificationCompat.Builder(context, SHELF_CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_upload_done)
         .setContentTitle(title)
         .setContentText(body)
@@ -243,17 +243,17 @@ fun FxFilesApplication.Companion.showDumpDuplicateNotification(
     // "Processing…" notification in-place rather than stacking
     // a second entry alongside it.
     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .notify(DUMP_RECEIVED_NOTIFICATION_ID, notif)
+        .notify(SHELF_RECEIVED_NOTIFICATION_ID, notif)
 }
 
-fun FxFilesApplication.Companion.showDumpPendingAuthNotification(
+fun FxFilesApplication.Companion.showShelfPendingAuthNotification(
     context: Context,
     title: String,
     body: String,
     deepLink: String?,
 ) {
-    ensureDumpChannel(context)
-    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+    ensureShelfChannel(context)
+    val notif = NotificationCompat.Builder(context, SHELF_CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_warning)
         .setContentTitle(title)
         .setContentText(body)
@@ -263,17 +263,17 @@ fun FxFilesApplication.Companion.showDumpPendingAuthNotification(
         .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
         .build()
     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .notify(DUMP_PENDING_AUTH_NOTIFICATION_ID, notif)
+        .notify(SHELF_PENDING_AUTH_NOTIFICATION_ID, notif)
 }
 
-fun FxFilesApplication.Companion.showDumpFailedNotification(
+fun FxFilesApplication.Companion.showShelfFailedNotification(
     context: Context,
     title: String,
     body: String,
     deepLink: String?,
 ) {
-    ensureDumpChannel(context)
-    val notif = NotificationCompat.Builder(context, DUMP_CHANNEL_ID)
+    ensureShelfChannel(context)
+    val notif = NotificationCompat.Builder(context, SHELF_CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_warning)
         .setContentTitle(title)
         .setContentText(body)
@@ -283,13 +283,13 @@ fun FxFilesApplication.Companion.showDumpFailedNotification(
         .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
         .build()
     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .notify(DUMP_FAILED_NOTIFICATION_ID, notif)
+        .notify(SHELF_FAILED_NOTIFICATION_ID, notif)
 }
 
-fun FxFilesApplication.Companion.hideDumpNotification(context: Context) {
+fun FxFilesApplication.Companion.hideShelfNotification(context: Context) {
     val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE)
             as NotificationManager
-    mgr.cancel(DUMP_RECEIVED_NOTIFICATION_ID)
-    mgr.cancel(DUMP_PENDING_AUTH_NOTIFICATION_ID)
-    mgr.cancel(DUMP_FAILED_NOTIFICATION_ID)
+    mgr.cancel(SHELF_RECEIVED_NOTIFICATION_ID)
+    mgr.cancel(SHELF_PENDING_AUTH_NOTIFICATION_ID)
+    mgr.cancel(SHELF_FAILED_NOTIFICATION_ID)
 }
