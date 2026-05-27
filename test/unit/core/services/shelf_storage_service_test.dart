@@ -711,4 +711,180 @@ void main() {
       expect(ShelfStorageService.instance.getById('does-not-exist'), isNull);
     });
   });
+
+  group('User-defined display order', () {
+    test('add() prepends each new id so newest lands at position 0',
+        () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      await ShelfStorageService.instance.add(_item(id: 'c'));
+      expect(ShelfStorageService.instance.getOrder(), ['c', 'b', 'a']);
+    });
+
+    test('delete() removes the id from the persisted order', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      await ShelfStorageService.instance.add(_item(id: 'c'));
+      await ShelfStorageService.instance.delete('b');
+      expect(ShelfStorageService.instance.getOrder(), ['c', 'a']);
+    });
+
+    test('setOrder sanitises against live ids (drops unknowns)', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      await ShelfStorageService.instance.setOrder(['b', 'ghost', 'a']);
+      expect(ShelfStorageService.instance.getOrder(), ['b', 'a']);
+    });
+
+    test('setOrder dedupes', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      await ShelfStorageService.instance.setOrder(['a', 'b', 'a']);
+      expect(ShelfStorageService.instance.getOrder(), ['a', 'b']);
+    });
+
+    test('setOrder is a no-op when the supplied list equals current order',
+        () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      // Capture the timestamp of the current order's last write by
+      // grabbing a sync snapshot via the override.
+      final calls = <String>[];
+      ShelfStorageService.instance.cloudSyncUploadOverride =
+          (data, key) async {
+        calls.add(jsonDecode(utf8.decode(data))['order'].toString());
+      };
+      // setOrder with the same content should not trigger a re-sync.
+      await ShelfStorageService.instance.setOrder(['b', 'a']);
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final firstCallCount = calls.length;
+
+      await ShelfStorageService.instance.setOrder(['b', 'a']);
+      await Future<void>.delayed(const Duration(seconds: 3));
+      expect(calls.length, firstCallCount,
+          reason: 'No-op write must not schedule another upload');
+    });
+  });
+
+  group('Pending-delete tombstones', () {
+    test('mark + get round-trip', () async {
+      await ShelfStorageService.instance.init();
+      final entry = ShelfPendingDeleteEntry(
+        itemId: 'gone',
+        markedAt: DateTime.utc(2026, 5, 25, 10),
+        remoteKey: '2026/05/gone.bin',
+        thumbnailRemoteKey: '2026/05/gone.jpg',
+      );
+      await ShelfStorageService.instance.markPendingDelete(entry);
+      expect(
+        ShelfStorageService.instance.getPendingDeleteIds(),
+        contains('gone'),
+      );
+      final fetched = ShelfStorageService.instance.getPendingDelete('gone');
+      expect(fetched, isNotNull);
+      expect(fetched!.remoteKey, '2026/05/gone.bin');
+      expect(fetched.thumbnailRemoteKey, '2026/05/gone.jpg');
+    });
+
+    test('clearPendingDelete removes the tombstone', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.markPendingDelete(
+        ShelfPendingDeleteEntry(
+          itemId: 'gone',
+          markedAt: DateTime.utc(2026, 5, 25, 10),
+        ),
+      );
+      await ShelfStorageService.instance.clearPendingDelete('gone');
+      expect(ShelfStorageService.instance.getPendingDeleteIds(), isEmpty);
+    });
+
+    test('getPendingDelete returns null for unknown ids', () async {
+      await ShelfStorageService.instance.init();
+      expect(
+        ShelfStorageService.instance.getPendingDelete('never-seen'),
+        isNull,
+      );
+    });
+  });
+
+  group('Cloud manifest v2 — order field round-trip', () {
+    test('syncToCloud uploads v=2 payload with the order field', () async {
+      await ShelfStorageService.instance.init();
+
+      final captured = <Map<String, dynamic>>[];
+      ShelfStorageService.instance.cloudSyncUploadOverride =
+          (data, key) async {
+        captured.add(
+          jsonDecode(utf8.decode(data)) as Map<String, dynamic>,
+        );
+      };
+
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.add(_item(id: 'b'));
+      await ShelfStorageService.instance.setOrder(['b', 'a']);
+
+      // Wait past the 2s debounce.
+      await Future<void>.delayed(const Duration(seconds: 3));
+      expect(captured, isNotEmpty);
+      final last = captured.last;
+      expect(last['v'], 2, reason: 'Manifest must advertise v2');
+      expect(last['order'], ['b', 'a'],
+          reason: 'order array must round-trip in the payload');
+    });
+
+    test(
+        'restoreFromCloud reads order field and writes it locally; '
+        'sanitises against current items', () async {
+      await ShelfStorageService.instance.init();
+
+      // Pretend the cloud has items b and c, plus an order list that
+      // includes a ghost id "x" we should drop on restore.
+      final payload = jsonEncode({
+        'v': 2,
+        'updatedAt': '2026-05-25T10:00:00Z',
+        'items': [
+          _item(id: 'b').toJson(),
+          _item(id: 'c').toJson(),
+        ],
+        'order': ['x', 'c', 'b'],
+      });
+      ShelfStorageService.instance.cloudSyncDownloadOverride = (_) async {
+        return Uint8List.fromList(utf8.encode(payload));
+      };
+
+      final restored = await ShelfStorageService.instance.restoreFromCloud();
+      expect(restored, greaterThanOrEqualTo(2));
+      // 'x' was filtered out; 'c' and 'b' were preserved (in input
+      // order from the manifest).
+      expect(ShelfStorageService.instance.getOrder(), ['c', 'b']);
+    });
+
+    test('restoreFromCloud accepts v1 payload (no order field) without '
+        'wiping the local order', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.setOrder(['a']);
+
+      final v1Payload = jsonEncode({
+        'v': 1,
+        'updatedAt': '2026-05-25T10:00:00Z',
+        'items': [_item(id: 'a').toJson()],
+        // NOTE: no `order` key.
+      });
+      ShelfStorageService.instance.cloudSyncDownloadOverride =
+          (_) async => Uint8List.fromList(utf8.encode(v1Payload));
+
+      await ShelfStorageService.instance.restoreFromCloud();
+      expect(
+        ShelfStorageService.instance.getOrder(),
+        ['a'],
+        reason: 'v1 restore must NOT wipe the locally-set order',
+      );
+    });
+  });
 }

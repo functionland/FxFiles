@@ -1,10 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 
+import 'package:fula_files/core/models/shelf_item.dart';
+import 'package:fula_files/core/services/shelf_storage_service.dart';
 import 'package:fula_files/features/shelf/providers/shelf_providers.dart';
 import 'package:fula_files/features/shelf/widgets/shelf_add_sheet.dart';
 import 'package:fula_files/features/shelf/widgets/shelf_filter_bar.dart';
@@ -134,20 +138,67 @@ class _ShelfScreenState extends ConsumerState<ShelfScreen> {
               },
             );
           }
-          return GridView.builder(
-            padding: const EdgeInsets.fromLTRB(8, 4, 8, 16),
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 180,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              // Slightly taller (was 0.78) so 2 lines of description
-              // and the tag chip row don't squeeze the thumbnail.
-              childAspectRatio: 0.70,
-            ),
+          // Reorder is only available on the full unfiltered list —
+          // dragging a tile within a filtered subset would mean the
+          // visible positions don't map cleanly onto the underlying
+          // persisted order (index drift). Clearing filters re-enables
+          // reorder. The filter bar makes that one-tap.
+          final reorderEnabled = filter.isEmpty && !hasQuery;
+          const gridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 180,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            // Slightly taller (was 0.78) so 2 lines of description
+            // and the tag chip row don't squeeze the thumbnail.
+            childAspectRatio: 0.70,
+          );
+          const padding = EdgeInsets.fromLTRB(8, 4, 8, 16);
+
+          if (!reorderEnabled) {
+            return GridView.builder(
+              padding: padding,
+              gridDelegate: gridDelegate,
+              itemCount: filtered.length,
+              itemBuilder: (context, index) {
+                final item = filtered[index];
+                return ShelfTile(
+                  key: ValueKey(item.id),
+                  item: item,
+                  onTap: () => context.push('/shelf/${item.id}'),
+                );
+              },
+            );
+          }
+
+          return ReorderableGridView.builder(
+            padding: padding,
+            gridDelegate: gridDelegate,
             itemCount: filtered.length,
+            onDragStart: (_) {
+              HapticFeedback.mediumImpact();
+              ref.read(shelfDraggingProvider.notifier).setDragging(true);
+            },
+            onReorder: (oldIndex, newIndex) =>
+                _handleReorder(filtered, oldIndex, newIndex),
+            // Adds a subtle scale + shadow to the dragged tile so the
+            // user can see which item they're carrying.
+            dragWidgetBuilderV2: DragWidgetBuilderV2(
+              builder: (index, child, screenshot) {
+                return Transform.scale(
+                  scale: 1.05,
+                  child: Material(
+                    elevation: 8,
+                    borderRadius: BorderRadius.circular(12),
+                    clipBehavior: Clip.antiAlias,
+                    child: child,
+                  ),
+                );
+              },
+            ),
             itemBuilder: (context, index) {
               final item = filtered[index];
               return ShelfTile(
+                key: ValueKey(item.id),
                 item: item,
                 onTap: () => context.push('/shelf/${item.id}'),
               );
@@ -156,6 +207,28 @@ class _ShelfScreenState extends ConsumerState<ShelfScreen> {
         },
       ),
     );
+  }
+
+  /// Persists a reorder. `onReorder` always fires on drop (not during
+  /// the drag), so this is the single place where we flip the
+  /// dragging flag back to `false` and commit the new sequence.
+  void _handleReorder(List<ShelfItem> filtered, int oldIndex, int newIndex) {
+    final ids = filtered.map((i) => i.id).toList();
+    if (oldIndex < 0 ||
+        oldIndex >= ids.length ||
+        newIndex < 0 ||
+        newIndex >= ids.length) {
+      ref.read(shelfDraggingProvider.notifier).setDragging(false);
+      return;
+    }
+    final moved = ids.removeAt(oldIndex);
+    ids.insert(newIndex, moved);
+
+    // Persist asynchronously, but flip the dragging flag synchronously
+    // so the sortedShelfItemsProvider is unfrozen on the next frame
+    // (with the new order already on disk by then in normal cases).
+    unawaited(ShelfStorageService.instance.setOrder(ids));
+    ref.read(shelfDraggingProvider.notifier).setDragging(false);
   }
 }
 

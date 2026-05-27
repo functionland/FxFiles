@@ -23,6 +23,18 @@ class ShelfStorageService {
 
   static const String _boxName = 'dump_items';
 
+  /// Holds the user-defined display order as a single JSON-encoded
+  /// `List<String>` of item ids under the key `'order'`. New box name —
+  /// no historical data, so we use the post-rename feature name.
+  static const String _orderBoxName = 'shelf_order';
+  static const String _orderKey = 'order';
+
+  /// Tombstones for items the user removed but whose cloud-side cleanup
+  /// (blob + thumb delete) has not yet succeeded. Keyed by item id;
+  /// value is a JSON `PendingDeleteEntry`. Retry pass walks this box
+  /// on every init + after each successful manifest sync.
+  static const String _pendingDeletesBoxName = 'shelf_pending_deletes';
+
   /// Threshold below which `findDuplicate` does a full-file SHA-256
   /// verification (R8 in the Shelf plan). Above this, we accept the
   /// candidate match (size + 1MB-prefix sha) and document the
@@ -34,6 +46,12 @@ class ShelfStorageService {
   /// convention.
   static const String _metadataBucket = 'dump-metadata';
 
+  /// Current cloud manifest payload version. v1 was items-only; v2
+  /// adds the `'order'` field (per-user display order). Restore tolerates
+  /// both — a v1 payload restores items with no order applied (default
+  /// newest-first sort).
+  static const int _manifestVersion = 2;
+
   /// Debounce window for cloud sync. Two seconds matches TagStorageService.
   /// Shorter means the user is less likely to lose a sync to "shared
   /// then immediately closed the app" — the longer this is, the wider
@@ -43,6 +61,8 @@ class ShelfStorageService {
   static const Duration _syncDebounce = Duration(seconds: 2);
 
   Box<ShelfItem>? _box;
+  Box<String>? _orderBox;
+  Box<String>? _pendingDeletesBox;
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized && (_box?.isOpen ?? false);
 
@@ -98,12 +118,35 @@ class ShelfStorageService {
     } catch (e) {
       debugPrint('Failed to open dump_items box: $e');
     }
+
+    // Order box — non-fatal if it fails to open; UI falls back to
+    // default newest-first sort.
+    try {
+      _orderBox = await Hive.openBox<String>(_orderBoxName)
+          .timeout(const Duration(milliseconds: 1500));
+    } catch (e) {
+      debugPrint('Failed to open shelf_order box: $e');
+    }
+
+    // Pending-deletes tombstone box — non-fatal if it fails to open;
+    // cloud-cleanup retry just won't run this session (next launch
+    // retries).
+    try {
+      _pendingDeletesBox = await Hive.openBox<String>(_pendingDeletesBoxName)
+          .timeout(const Duration(milliseconds: 1500));
+    } catch (e) {
+      debugPrint('Failed to open shelf_pending_deletes box: $e');
+    }
   }
 
   Future<void> add(ShelfItem item) async {
     final box = _box;
     if (box == null) return;
     await box.put(item.id, item);
+    // Prepend to user-defined order so new arrivals land at the top
+    // by default. Reorder-by-drag persists a permutation of this list;
+    // future arrivals always go to position 0.
+    await _prependToOrder(item.id);
     _scheduleSyncToCloud();
   }
 
@@ -221,7 +264,145 @@ class ShelfStorageService {
     final box = _box;
     if (box == null) return;
     await box.delete(id);
+    // Drop the id from the user-defined order so the next sync ships a
+    // sanitised list. Keeping the orphan id is harmless (we filter on
+    // restore) but bloats the manifest over time.
+    await _removeFromOrder(id);
     _scheduleSyncToCloud();
+  }
+
+  // ----- User-defined order --------------------------------------------
+
+  /// Returns the persisted display order. Items missing from this list
+  /// (e.g. brand-new arrivals between the last manifest sync and the
+  /// next provider rebuild) are surfaced separately by the sort layer.
+  List<String> getOrder() {
+    final box = _orderBox;
+    if (box == null) return const <String>[];
+    final raw = box.get(_orderKey);
+    if (raw == null || raw.isEmpty) return const <String>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const <String>[];
+      return decoded.cast<String>();
+    } catch (e) {
+      debugPrint('ShelfStorageService.getOrder: decode failed: $e');
+      return const <String>[];
+    }
+  }
+
+  /// Persist the user's preferred display order. The argument is
+  /// sanitised — duplicates dropped, ids with no live ShelfItem
+  /// removed — before writing, so a stale caller can't corrupt the
+  /// stored list. Schedules a debounced cloud-manifest sync.
+  Future<void> setOrder(List<String> ids) async {
+    final orderBox = _orderBox;
+    if (orderBox == null) return;
+    final liveIds = _box?.keys.cast<String>().toSet() ?? const <String>{};
+    final seen = <String>{};
+    final cleaned = <String>[];
+    for (final id in ids) {
+      if (!liveIds.contains(id)) continue;
+      if (!seen.add(id)) continue;
+      cleaned.add(id);
+    }
+    // No-op write skip: avoids a redundant cloud-manifest re-upload
+    // when the UI fires onReorder for an unchanged final position
+    // (e.g. drag picked up then dropped onto the same slot).
+    final current = getOrder();
+    if (_listEquals(current, cleaned)) return;
+    await orderBox.put(_orderKey, jsonEncode(cleaned));
+    _scheduleSyncToCloud();
+  }
+
+  /// Watch the persisted order as a stream of snapshots. The provider
+  /// layer maps this into the sort step.
+  Stream<List<String>> watchOrder() async* {
+    final box = _orderBox;
+    if (box == null) {
+      yield const <String>[];
+      return;
+    }
+    yield getOrder();
+    yield* box.watch(key: _orderKey).map((_) => getOrder());
+  }
+
+  Future<void> _prependToOrder(String id) async {
+    final box = _orderBox;
+    if (box == null) return;
+    final current = getOrder();
+    if (current.isNotEmpty && current.first == id) return; // no-op
+    final updated = <String>[id, ...current.where((x) => x != id)];
+    await box.put(_orderKey, jsonEncode(updated));
+  }
+
+  Future<void> _removeFromOrder(String id) async {
+    final box = _orderBox;
+    if (box == null) return;
+    final current = getOrder();
+    if (!current.contains(id)) return;
+    final updated = current.where((x) => x != id).toList(growable: false);
+    await box.put(_orderKey, jsonEncode(updated));
+  }
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  // ----- Pending-delete tombstones --------------------------------------
+
+  /// Snapshot of every item id awaiting cloud-side cleanup. Used by
+  /// the provider layer to hide them from the visible grid even
+  /// before the Hive row is removed.
+  Set<String> getPendingDeleteIds() {
+    final box = _pendingDeletesBox;
+    if (box == null) return const <String>{};
+    return box.keys.cast<String>().toSet();
+  }
+
+  /// Returns the structured entry for a pending delete (remote keys
+  /// snapshot, marked-at timestamp) so the retry pass can rerun the
+  /// cloud deletes without re-reading the (now-removed) ShelfItem.
+  ShelfPendingDeleteEntry? getPendingDelete(String id) {
+    final box = _pendingDeletesBox;
+    if (box == null) return null;
+    final raw = box.get(id);
+    if (raw == null) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+      return ShelfPendingDeleteEntry.fromJson(decoded);
+    } catch (e) {
+      debugPrint('ShelfStorageService.getPendingDelete($id): decode failed: $e');
+      return null;
+    }
+  }
+
+  Future<void> markPendingDelete(ShelfPendingDeleteEntry entry) async {
+    final box = _pendingDeletesBox;
+    if (box == null) return;
+    await box.put(entry.itemId, jsonEncode(entry.toJson()));
+  }
+
+  Future<void> clearPendingDelete(String id) async {
+    final box = _pendingDeletesBox;
+    if (box == null) return;
+    if (!box.containsKey(id)) return;
+    await box.delete(id);
+  }
+
+  Stream<Set<String>> watchPendingDeleteIds() async* {
+    final box = _pendingDeletesBox;
+    if (box == null) {
+      yield const <String>{};
+      return;
+    }
+    yield getPendingDeleteIds();
+    yield* box.watch().map((_) => getPendingDeleteIds());
   }
 
   /// Items left in [ShelfUploadStatus.pendingAuth] — picked up by the
@@ -282,6 +463,10 @@ class ShelfStorageService {
     _syncDebounceTimer = null;
     await _box?.close();
     _box = null;
+    await _orderBox?.close();
+    _orderBox = null;
+    await _pendingDeletesBox?.close();
+    _pendingDeletesBox = null;
     _isInitialized = false;
   }
 
@@ -388,8 +573,24 @@ class ShelfStorageService {
               'skipping malformed entry: $e');
         }
       }
+      // v2 manifest carries the user-defined order. v1 payloads omit
+      // it; we leave the local order untouched in that case so a
+      // partial cross-device restore from an older client doesn't
+      // wipe the locally-set order. Sanitise against the post-restore
+      // item set.
+      final cloudOrder = raw['order'];
+      if (cloudOrder is List) {
+        final liveIds = box.keys.cast<String>().toSet();
+        final cleaned = cloudOrder
+            .whereType<String>()
+            .where(liveIds.contains)
+            .toSet()
+            .toList(growable: false);
+        await _orderBox?.put(_orderKey, jsonEncode(cleaned));
+      }
       debugPrint('ShelfStorageService.restoreFromCloud: restored $restored '
-          'of ${items.length} dump items');
+          'of ${items.length} dump items '
+          '(order: ${cloudOrder is List ? cloudOrder.length : 0})');
       return restored;
     } catch (e) {
       debugPrint(
@@ -423,10 +624,16 @@ class ShelfStorageService {
       if (box == null) return;
 
       final items = box.values.map((i) => i.toJson()).toList(growable: false);
+      // Sanitise the order against the current item set on the way
+      // out — drops any orphan ids (e.g. a delete that happened
+      // between the in-memory list snapshot and now).
+      final liveIds = box.keys.cast<String>().toSet();
+      final order = getOrder().where(liveIds.contains).toList(growable: false);
       final payload = <String, dynamic>{
-        'v': 1,
+        'v': _manifestVersion,
         'updatedAt': DateTime.now().toUtc().toIso8601String(),
         'items': items,
+        'order': order,
       };
       final data = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
 
@@ -545,5 +752,51 @@ class ShelfStorageService {
       debugPrint('Failed to hash $path: $e');
       return null;
     }
+  }
+}
+
+/// Tombstone record for a deleted ShelfItem whose cloud-side cleanup
+/// (blob + thumb delete) has not yet succeeded. Persisted in
+/// `'shelf_pending_deletes'` so the retry pass on the next session can
+/// finish the job even if the original delete attempt was interrupted
+/// by an app kill / network drop.
+class ShelfPendingDeleteEntry {
+  final String itemId;
+  final DateTime markedAt;
+  final String? remoteKey;
+  final String? thumbnailRemoteKey;
+
+  /// Path of the resumable-upload manifest that was in flight when the
+  /// delete fired, if any. Used by the orchestrator to abort the
+  /// upload so it can't write back a `remoteKey` against an item that
+  /// no longer exists.
+  final String? resumableManifestPath;
+
+  const ShelfPendingDeleteEntry({
+    required this.itemId,
+    required this.markedAt,
+    this.remoteKey,
+    this.thumbnailRemoteKey,
+    this.resumableManifestPath,
+  });
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'itemId': itemId,
+        'markedAt': markedAt.toUtc().toIso8601String(),
+        if (remoteKey != null) 'remoteKey': remoteKey,
+        if (thumbnailRemoteKey != null)
+          'thumbnailRemoteKey': thumbnailRemoteKey,
+        if (resumableManifestPath != null)
+          'resumableManifestPath': resumableManifestPath,
+      };
+
+  factory ShelfPendingDeleteEntry.fromJson(Map<String, dynamic> json) {
+    return ShelfPendingDeleteEntry(
+      itemId: json['itemId'] as String,
+      markedAt: DateTime.parse(json['markedAt'] as String),
+      remoteKey: json['remoteKey'] as String?,
+      thumbnailRemoteKey: json['thumbnailRemoteKey'] as String?,
+      resumableManifestPath: json['resumableManifestPath'] as String?,
+    );
   }
 }

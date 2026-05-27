@@ -409,23 +409,31 @@ class _ActionsMenuButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.55),
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: IconButton(
-        iconSize: 16,
-        padding: const EdgeInsets.all(4),
-        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-        visualDensity: VisualDensity.compact,
-        tooltip: 'More options',
-        icon: const Icon(LucideIcons.moreVertical, color: Colors.white),
-        onPressed: () => _openActions(context),
+    // Wrapped in GestureDetector with an empty `onLongPress` so a
+    // long-press on the 3-dot button does NOT bubble up to the parent
+    // ReorderableGridView and start a drag — the user expects the
+    // menu (via tap), not to pick this tile up to move it.
+    return GestureDetector(
+      onLongPress: () {},
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.55),
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: IconButton(
+          iconSize: 16,
+          padding: const EdgeInsets.all(4),
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          visualDensity: VisualDensity.compact,
+          tooltip: 'More options',
+          icon: const Icon(LucideIcons.moreVertical, color: Colors.white),
+          onPressed: () => _openActions(context),
+        ),
       ),
     );
   }
 
   Future<void> _openActions(BuildContext context) async {
+    final theme = Theme.of(context);
     await showAdaptiveSheet<void>(
       context: context,
       builder: (sheetCtx) => SafeArea(
@@ -447,10 +455,72 @@ class _ActionsMenuButton extends StatelessWidget {
                 );
               },
             ),
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(
+                LucideIcons.trash2,
+                color: theme.colorScheme.error,
+              ),
+              title: Text(
+                'Remove from Shelf',
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+              subtitle: const Text(
+                'Also removes from cloud. Can\'t be undone.',
+              ),
+              onTap: () async {
+                Navigator.pop(sheetCtx);
+                if (!context.mounted) return;
+                await _confirmAndDelete(context);
+              },
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmAndDelete(BuildContext context) async {
+    final theme = Theme.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Remove from Shelf?'),
+        content: const Text(
+          'This item will be removed from this device and from cloud '
+          'storage. This can\'t be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: theme.colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+
+    // Capture messenger now — `deleteItem` is async and the tile may
+    // unmount mid-call once the tombstone hides it.
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await ShelfService.instance.deleteItem(item);
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Removed from Shelf')),
+      );
+    } catch (e) {
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Could not remove: $e')),
+      );
+    }
   }
 }
 

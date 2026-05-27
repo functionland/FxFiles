@@ -15,9 +15,11 @@ import 'package:fula_files/core/services/shelf_classifier.dart';
 import 'package:fula_files/core/services/shelf_enricher.dart';
 import 'package:fula_files/core/services/shelf_notification_service.dart';
 import 'package:fula_files/core/services/shelf_storage_service.dart';
+import 'package:fula_files/core/services/shelf_suggestion_dismissals_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
+import 'package:fula_files/core/services/tag_storage_service.dart';
 
 /// Cloud bucket dedicated to Shelf items (Phase plan: dedicated `dump`
 /// bucket, separate from the user's main file bucket).
@@ -33,6 +35,13 @@ const String kShelfThumbsBucket = 'dump-thumbs';
 /// plan's "Staging" architectural decision (OS may purge cacheDir
 /// between retries).
 const String kShelfPendingDir = 'dump_pending';
+
+/// Subdirectory under `getApplicationDocumentsDirectory()` for cached
+/// thumbnails. Owned exclusively by the Shelf feature — the local
+/// delete path uses a `p.isWithin` containment check against this dir
+/// before touching a file referenced by `ShelfItem.thumbnailPath`, so
+/// a corrupted row can't direct us to delete arbitrary files.
+const String kShelfThumbsDirName = 'dump_thumbs';
 
 /// Hive flag inside the `settings` box that records whether the dump
 /// bucket has been created (so we don't pay the network round-trip
@@ -80,6 +89,211 @@ class ShelfService {
     await ShelfStorageService.instance.init();
     _bindSyncStatusListener();
     _isInitialized = true;
+    // Resume any deletes whose cloud cleanup was interrupted by an
+    // app kill / network drop in a previous session. Fire-and-forget —
+    // never blocks init.
+    unawaited(retryPendingDeletes());
+  }
+
+  // ---- Deletion --------------------------------------------------------
+  //
+  // Two-phase delete (per the design review's data-integrity hardening):
+  //
+  //   1. Write a tombstone (`ShelfPendingDeleteEntry`) so the UI can
+  //      hide the row immediately AND a retry pass on the next session
+  //      can finish the cloud cleanup if we're interrupted.
+  //   2. Cancel any in-flight upload (`SyncService.cancelTask` — per-
+  //      item, NOT bucket-wide; bucket-wide would clobber unrelated
+  //      shelf uploads). The cancel handles resumable-manifest abort
+  //      internally if a manifest exists.
+  //   3. Batch-remove all tag associations under `dump://<id>` via the
+  //      existing `removeAllTagsFromFile` (single storage write +
+  //      coalesced share-refresh — not N share-refreshes).
+  //   4. Clear dismissals.
+  //   5. Remove local cache + thumbnail files. The thumbnail path is
+  //      checked to be inside our managed dir before deletion (defense
+  //      against a corrupted `thumbnailPath` pointing outside the
+  //      sandbox).
+  //   6. Remove the Hive row. ShelfStorageService.delete drops the id
+  //      from the order list and schedules a debounced cloud-manifest
+  //      sync — the next manifest no longer carries the deleted item.
+  //   7. Attempt cloud blob + thumb delete. If any fails, the
+  //      tombstone is retained and the retry pass on next init / sync
+  //      will rerun the deletes.
+  //
+  // The orchestration order is deliberate: tombstone FIRST so the row
+  // is hidden before any work begins; Hive removal LATE so the row
+  // survives a partial-failure mid-operation (the retry pass uses the
+  // tombstone, not the Hive row). Cloud cleanup is LAST so a network
+  // failure doesn't block local UX.
+
+  /// Remove [item] from the Shelf. Local effects are immediate (item
+  /// disappears from the grid); cloud cleanup is best-effort with
+  /// automatic retry on the next session if it fails today.
+  ///
+  /// Idempotent — calling twice with the same item is harmless:
+  /// already-deleted local rows + files no-op; already-deleted cloud
+  /// blobs surface as `NoSuchKey` which we treat as success.
+  Future<void> deleteItem(ShelfItem item) async {
+    debugPrint('ShelfService.deleteItem(${item.id}): start');
+
+    await ShelfStorageService.instance.markPendingDelete(
+      ShelfPendingDeleteEntry(
+        itemId: item.id,
+        markedAt: DateTime.now(),
+        remoteKey: item.remoteKey,
+        thumbnailRemoteKey: item.thumbnailRemoteKey,
+        // resumableManifestPath is owned by SyncService; cancelTask
+        // looks it up internally so we don't need to capture it here.
+        resumableManifestPath: null,
+      ),
+    );
+
+    if (item.localCachePath.isNotEmpty) {
+      try {
+        await SyncService.instance.cancelTask(item.localCachePath);
+      } catch (e) {
+        debugPrint('ShelfService.deleteItem(${item.id}): cancelTask: $e');
+      }
+    }
+
+    try {
+      await TagStorageService.instance.removeAllTagsFromFile(
+        localPath: 'dump://${item.id}',
+      );
+    } catch (e) {
+      debugPrint('ShelfService.deleteItem(${item.id}): tag cleanup: $e');
+    }
+
+    try {
+      await ShelfSuggestionDismissalsService.instance.clearAll(item.id);
+    } catch (e) {
+      debugPrint('ShelfService.deleteItem(${item.id}): dismissal clear: $e');
+    }
+
+    await _removeLocalFiles(item);
+
+    await ShelfStorageService.instance.delete(item.id);
+
+    final cloudCleanupOk = await _attemptCloudCleanup(
+      remoteKey: item.remoteKey,
+      thumbnailRemoteKey: item.thumbnailRemoteKey,
+    );
+    if (cloudCleanupOk) {
+      await ShelfStorageService.instance.clearPendingDelete(item.id);
+      debugPrint('ShelfService.deleteItem(${item.id}): complete');
+    } else {
+      debugPrint(
+        'ShelfService.deleteItem(${item.id}): cloud cleanup incomplete; '
+        'tombstone retained for retry',
+      );
+    }
+  }
+
+  /// Resume any deletes whose cloud cleanup didn't finish in a prior
+  /// session. Walks the pending-deletes box and re-attempts the cloud
+  /// blob + thumb deletes. Removes the tombstone on success.
+  ///
+  /// Fired from `init()` and after each successful manifest sync. Safe
+  /// to call concurrently — each id is processed independently and
+  /// `FulaApiService.deleteObject` is idempotent.
+  Future<void> retryPendingDeletes() async {
+    if (!ShelfStorageService.instance.isInitialized) return;
+    if (!FulaApiService.instance.isConfigured) return;
+
+    final ids = ShelfStorageService.instance.getPendingDeleteIds();
+    if (ids.isEmpty) return;
+
+    debugPrint('ShelfService.retryPendingDeletes: ${ids.length} tombstone(s)');
+    for (final id in ids) {
+      final entry = ShelfStorageService.instance.getPendingDelete(id);
+      if (entry == null) {
+        // Corrupted box entry — drop it to avoid an infinite loop.
+        await ShelfStorageService.instance.clearPendingDelete(id);
+        continue;
+      }
+      final ok = await _attemptCloudCleanup(
+        remoteKey: entry.remoteKey,
+        thumbnailRemoteKey: entry.thumbnailRemoteKey,
+      );
+      if (ok) {
+        await ShelfStorageService.instance.clearPendingDelete(id);
+      }
+    }
+  }
+
+  /// Returns true iff every non-null cloud key was successfully removed
+  /// (or was already absent — `NoSuchKey` counts as success). On any
+  /// other failure the caller retains the tombstone for retry.
+  Future<bool> _attemptCloudCleanup({
+    required String? remoteKey,
+    required String? thumbnailRemoteKey,
+  }) async {
+    var ok = true;
+    if (remoteKey != null && remoteKey.isNotEmpty) {
+      ok = await _deleteCloudObjectIdempotent(kShelfBucket, remoteKey) && ok;
+    }
+    if (thumbnailRemoteKey != null && thumbnailRemoteKey.isNotEmpty) {
+      ok = await _deleteCloudObjectIdempotent(
+            kShelfThumbsBucket,
+            thumbnailRemoteKey,
+          ) &&
+          ok;
+    }
+    return ok;
+  }
+
+  Future<bool> _deleteCloudObjectIdempotent(String bucket, String key) async {
+    try {
+      await FulaApiService.instance.deleteObject(bucket, key);
+      return true;
+    } catch (e) {
+      final s = e.toString();
+      // Already gone → idempotent success. The server-side delete
+      // either ran on a previous attempt (and our manifest just didn't
+      // catch up) or the upload never landed.
+      if (s.contains('NoSuchKey') ||
+          s.contains('Not Found') ||
+          s.contains('not found') ||
+          s.contains('404')) {
+        return true;
+      }
+      debugPrint(
+        'ShelfService._deleteCloudObjectIdempotent($bucket/$key): $e',
+      );
+      return false;
+    }
+  }
+
+  Future<void> _removeLocalFiles(ShelfItem item) async {
+    if (item.localCachePath.isNotEmpty) {
+      try {
+        final f = File(item.localCachePath);
+        if (await f.exists()) await f.delete();
+      } catch (e) {
+        debugPrint('ShelfService._removeLocalFiles cache(${item.id}): $e');
+      }
+    }
+    final thumb = item.thumbnailPath;
+    if (thumb != null && thumb.isNotEmpty) {
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final managedDir =
+            p.canonicalize(p.join(docs.path, kShelfThumbsDirName));
+        final canonicalThumb = p.canonicalize(thumb);
+        if (p.isWithin(managedDir, canonicalThumb)) {
+          final f = File(thumb);
+          if (await f.exists()) await f.delete();
+        } else {
+          debugPrint(
+            'ShelfService._removeLocalFiles: refusing to delete '
+            'thumbnail outside managed dir ($managedDir): $thumb',
+          );
+        }
+      } catch (e) {
+        debugPrint('ShelfService._removeLocalFiles thumb(${item.id}): $e');
+      }
+    }
   }
 
   // ---- Ingestion -------------------------------------------------------
