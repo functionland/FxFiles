@@ -1,12 +1,16 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
@@ -118,11 +122,139 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
             error: (_, __) => const SizedBox.shrink(),
           ),
 
-          // Section C: Generations history
+          // Section C: Stable shareable link (per group, IPNS-backed)
+          _buildStableLinkSection(context),
+
+          // Section D: Generations history
           _buildGenerationsSection(context, generationsAsync, currentTag),
         ],
       ),
     );
+  }
+
+  // ============================================================================
+  // STABLE LINK SECTION
+  // ============================================================================
+
+  /// The group's stable shareable link (IPNS-backed). Appears once the first
+  /// generation has published a pointer; it always resolves to the group's
+  /// latest generation, so the user shares it once and it never changes — and
+  /// it keeps working even if fx's servers are down (the link is served by a
+  /// Cloudflare Worker reading the free w3name service, and the content is
+  /// fetched from public IPFS gateways — none of which is fx).
+  Widget _buildStableLinkSection(BuildContext context) {
+    final pointer = IpnsPointerService.instance.pointerFor(widget.tagId);
+    if (pointer == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+
+    if (!pointer.published) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                valueColor: AlwaysStoppedAnimation(muted),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text('Preparing shareable link…',
+                style: TextStyle(fontSize: 12, color: muted)),
+          ],
+        ),
+      );
+    }
+
+    final link = pointer.frontDoorUrl;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: theme.colorScheme.primary.withValues(alpha: 0.25)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(LucideIcons.link, size: 15, color: theme.colorScheme.primary),
+                const SizedBox(width: 6),
+                Text('Shareable link',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.primary)),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'Always opens the latest version — share once, it never changes.',
+              style: TextStyle(fontSize: 11, color: muted),
+            ),
+            const SizedBox(height: 8),
+            SelectableText(
+              link,
+              maxLines: 2,
+              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _shareStableLink(link),
+                    icon: const Icon(LucideIcons.share2, size: 15),
+                    label: const Text('Share'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _copyStableLink(context, link),
+                    icon: const Icon(LucideIcons.copy, size: 15),
+                    label: const Text('Copy'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Open',
+                  icon: const Icon(LucideIcons.externalLink, size: 16),
+                  onPressed: () => _openStableLink(link),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _shareStableLink(String url) async {
+    await SharePlus.instance.share(ShareParams(text: url));
+  }
+
+  Future<void> _copyStableLink(BuildContext context, String url) async {
+    await Clipboard.setData(ClipboardData(text: url));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Link copied to clipboard')),
+      );
+    }
+  }
+
+  Future<void> _openStableLink(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   // ============================================================================

@@ -36,6 +36,7 @@ import 'package:fula_files/core/services/upload_speed_tracker.dart';
 import 'package:fula_files/core/services/shelf_suggestion_dismissals_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/ai_task_service.dart';
 import 'package:fula_files/core/services/ai_model_service.dart';
 import 'package:fula_files/core/services/automate_task_service.dart';
@@ -252,6 +253,9 @@ Future<ProviderContainer> _initializeApp() async {
 
   // Initialize website service (non-blocking)
   WebsiteService.instance.init();
+
+  // Stable per-group website link (IPNS pointer) store (non-blocking).
+  IpnsPointerService.instance.init();
 
   // Initialize AI Automation feature services (non-blocking). The LLM
   // model itself is NOT loaded here — that happens lazily on first

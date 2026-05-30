@@ -186,4 +186,28 @@ class SecureStorageKeys {
   // with context `"fula:user-entry-signing:v1"`. Only populated for
   // Mode B/C users; Mode A keeps this absent. Stored base64-encoded.
   static const String userEntrySigningSeed = 'user_entry_signing_seed_v1';
+
+  // Website stable-link (IPNS) feature.
+  //
+  // Per-group Ed25519 private seed (32 bytes, base64-encoded), keyed by the
+  // website group's tagId via this prefix (cf. [appPasswordSaltPrefix]). The
+  // group's permanent IPNS name (`k51…`) is derived from the public key; this
+  // seed is what lets the app re-sign IPNS record updates on every
+  // regeneration. Backed up in the encrypted cloud sync so reinstalls / other
+  // devices can keep updating the same name. Treated as MEDIUM sensitivity:
+  // it only controls a pointer to already-public content, but a leak allows
+  // repointing the user's stable link.
+  static const String groupIpnsPrivKeyPrefix = 'group_ipns_priv_';
+
+  // Optional override for the stateless front-door Worker base URL the stable
+  // share link is built from (default `https://fxfiles.top/w/`). The IPNS
+  // name is appended. Empty/absent -> the bundled default.
+  static const String websiteLinkWorkerBaseUrl = 'website_link_worker_base_url';
+
+  // Optional override for the IPNS publishing endpoint (default w3name at
+  // `https://name.web3.storage`). The app POSTs the signed IPNS record to
+  // `{endpoint}/name/{ipnsName}`. Swappable to fx's own IPNS publisher without
+  // changing the (publisher-independent) IPNS name.
+  static const String websiteIpnsPublishEndpoint =
+      'website_ipns_publish_endpoint';
 }

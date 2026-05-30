@@ -21,6 +21,7 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
+import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
@@ -824,6 +825,25 @@ Design:
 
     // Sync completed generation to cloud
     _scheduleSyncToCloud();
+
+    // Stable per-group link: re-point the group's IPNS name at the new CID so a
+    // link the user shared once now serves this generation. Best-effort and
+    // non-blocking — a publish failure must never fail or delay the generation
+    // (the link simply updates on the next successful publish).
+    _publishStableLink(generation);
+  }
+
+  /// Fire-and-forget IPNS publish of the group's stable link to the latest CID.
+  /// Errors are swallowed (logged) so they never affect the generation flow.
+  void _publishStableLink(WebsiteGeneration generation) {
+    final cid = generation.resultCid;
+    if (cid == null || cid.isEmpty) return;
+    IpnsPointerService.instance.publishLatest(generation.tagId, cid).then((_) {
+      // Nudge listeners so the freshly-published link surfaces in the UI.
+      _statusController.add(generation);
+    }).catchError((Object e) {
+      debugPrint('Stable-link IPNS publish failed (non-fatal): $e');
+    });
   }
 
   // ============================================================================
@@ -1481,6 +1501,11 @@ Design:
         debugPrint('Failed to restore website generations from cloud: $e');
       }
     }
+
+    // Stable-link pointers + their signing keys live in a sibling encrypted
+    // blob; restore them alongside website data so a fresh install / new device
+    // keeps the same shareable IPNS links and can keep updating them.
+    await IpnsPointerService.instance.restoreFromCloud();
   }
 
   /// Dispose resources

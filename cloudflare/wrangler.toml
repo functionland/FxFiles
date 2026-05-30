@@ -1,0 +1,29 @@
+# Wrangler config for the FxFiles stable-link resolver Worker.
+# Deploy:  cd cloudflare && npx wrangler deploy
+name = "fxfiles-link-resolver"
+main = "ipns-resolver-worker.js"
+compatibility_date = "2026-01-01"
+
+# Serve links as https://fxfiles.top/w/<name> (matches the app's bundled default
+# IpnsPointerService.defaultWorkerBase). The fxfiles.top zone is on this
+# Cloudflare account; for this route to attach, the apex needs a PROXIED
+# (orange-cloud) DNS record — if there isn't one already, add a dummy
+# `AAAA  fxfiles.top  100::` (proxied) in the dashboard, then `npx wrangler deploy`.
+routes = [
+  { pattern = "fxfiles.top/w/*", zone_name = "fxfiles.top" }
+]
+
+# Built-in per-IP rate limiter (loose, free; consumed in the Worker as
+# env.RW_LIMITER). `period` must be 10 or 60 seconds. 60 requests/min per IP is
+# very generous for a human opening links and throttles floods. Tune `limit`, or
+# delete this block to disable the in-Worker limiter (the Worker still runs).
+[[ratelimits]]
+name = "RW_LIMITER"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+# Cleaner alternative (auto-creates DNS, no apex record needed): bind a
+# subdomain as a Custom Domain and set websiteLinkWorkerBaseUrl in the app to
+# match, e.g.
+#   routes = [ { pattern = "link.fxfiles.top", custom_domain = true } ]
+#   -> links become https://link.fxfiles.top/w/<name>
