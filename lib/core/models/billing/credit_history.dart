@@ -17,12 +17,14 @@ enum CreditTransactionType {
       case 'purchase':
         return CreditTransactionType.purchase;
       case 'usage':
+      case 'hourly_deduction':
         return CreditTransactionType.usage;
       case 'withdrawal':
         return CreditTransactionType.withdrawal;
       case 'refund':
         return CreditTransactionType.refund;
       case 'bonus':
+      case 'referral_bonus':
         return CreditTransactionType.bonus;
       case 'adjustment':
         return CreditTransactionType.adjustment;
@@ -124,7 +126,11 @@ class CreditHistoryEntry extends Equatable {
   }
 
   String get formattedAmount {
-    final prefix = txType.isCredit ? '+' : '-';
+    // amount_fula arrives already signed from the backend (credits positive,
+    // debits negative), so the sign must come from the value itself. Deriving
+    // it from txType double-counted the sign: a +10 bonus rendered as "-10"
+    // and a -1500 adjustment as "--1500".
+    final prefix = amountFula >= 0 ? '+' : '';
     return '$prefix${amountFula.toStringAsFixed(2)} FULA';
   }
 

@@ -15,7 +15,10 @@ class HistoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isCredit = entry.txType.isCredit;
+    // Sign-based: amount_fula arrives already signed from the backend, so the
+    // amount's own sign is the source of truth for credit (+/green) vs debit
+    // (-/red). txType can't decide this — an adjustment may be either.
+    final isCredit = entry.amountFula >= 0;
     final color = isCredit ? const Color(0xFF06B597) : Colors.red;
 
     return ListTile(
