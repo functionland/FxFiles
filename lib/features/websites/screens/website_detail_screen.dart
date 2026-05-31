@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
@@ -662,6 +663,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       styles: result.styles,
       palette: result.palette,
       body: result.prompt,
+      contactForm: result.contactForm,
     );
     await ref.read(websiteProvider.notifier).startGeneration(
           tagId: widget.tagId,
@@ -689,6 +691,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     required List<String> styles,
     required String palette,
     required String body,
+    ContactFormConfig? contactForm,
   }) {
     final buffer = StringBuffer()
       ..writeln('Website Name: $websiteName')
@@ -698,6 +701,9 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     }
     if (palette.isNotEmpty) {
       buffer.writeln('Palette: $palette');
+    }
+    if (contactForm != null && contactForm.enabled) {
+      buffer.writeln('ContactForm: ${contactForm.encode()}');
     }
     buffer
       ..writeln()
@@ -714,6 +720,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     String? initialPalette,
     String? initialPrompt,
     bool initialEnableTracking = false,
+    ContactFormConfig? initialContactForm,
     List<AssetNote> assetNotes = const [],
   }) {
     return Navigator.of(context).push<GenerateWebsitePromptResult>(
@@ -726,6 +733,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           initialPalette: initialPalette,
           initialPrompt: initialPrompt,
           initialEnableTracking: initialEnableTracking,
+          initialContactForm: initialContactForm,
           assetNotes: assetNotes,
         ),
       ),
@@ -779,6 +787,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       initialPalette: parsed.palette,
       initialPrompt: seededPrompt,
       initialEnableTracking: gen.trackingEnabled,
+      initialContactForm: parsed.contactForm,
       assetNotes: assetNotes,
     );
     if (result == null || !mounted) return;
@@ -792,6 +801,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       styles: result.styles,
       palette: result.palette,
       body: result.prompt,
+      contactForm: result.contactForm,
     );
     await ref.read(websiteProvider.notifier).startGeneration(
           tagId: widget.tagId,

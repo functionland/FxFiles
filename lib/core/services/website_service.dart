@@ -16,6 +16,7 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 
 import 'package:crypto/crypto.dart';
 
+import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/auth_service.dart';
@@ -23,6 +24,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/utils/contact_form_snippet.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 
@@ -220,6 +222,8 @@ Design:
       RegExp(r'^Styles:\s*(.*)$', multiLine: true);
   static final RegExp _paletteLinePattern =
       RegExp(r'^Palette:\s*(.*)$', multiLine: true);
+  static final RegExp _contactFormLinePattern =
+      RegExp(r'^ContactForm:\s*(.*)$', multiLine: true);
 
   /// A single user-supplied note about one attached asset. [cid] is null
   /// when the preview is rendered before upload — the section then explains
@@ -277,9 +281,71 @@ Design:
     return buffer.toString();
   }
 
+  /// Build the auto-added CONTACT FORM block: an explicit client-side-form
+  /// authorization (overriding the "NO forms" system constraint), the field
+  /// spec, and the verbatim HTML+JS snippet the generator must embed unchanged.
+  static String _buildContactFormBlock(ContactFormConfig cfg) {
+    final isEmail = cfg.channel == ContactFormChannel.email;
+    final channelWord = isEmail ? 'Email' : 'WhatsApp';
+    final appWord = isEmail ? 'mail app' : 'WhatsApp';
+    final linkWord = isEmail ? 'mailto:' : 'wa.me';
+
+    final fieldLines = StringBuffer();
+    for (final f in cfg.usableFields) {
+      final opts =
+          f.type == ContactFormFieldType.multiSelect && f.options.isNotEmpty
+              ? ' [options: ${f.options.join(', ')}]'
+              : '';
+      fieldLines.writeln('- "${f.label.trim()}" — ${_fieldControlLabel(f.type)}'
+          '${f.required ? ' (required)' : ''}$opts');
+    }
+
+    final b = StringBuffer()
+      ..writeln('=== CONTACT FORM (auto-added — overrides the "NO forms with '
+          'action URLs" rule) ===')
+      ..writeln('Add a contact form to the page. This is an explicit EXCEPTION '
+          'to the "NO forms" constraint above: the form is 100% CLIENT-SIDE — '
+          'it has NO action attribute, submits to NO server, and makes NO '
+          'network request. On submit it composes a $linkWord deep link from the '
+          'entered values and navigates to it, so the visitor only taps Send in '
+          'their $appWord.')
+      ..writeln()
+      ..writeln('Channel: $channelWord. The destination is already baked into '
+          'the script below.')
+      ..writeln('Fields to collect (render in this order, themed to match the '
+          'site):')
+      ..write(fieldLines.toString())
+      ..writeln()
+      ..writeln('Embed the following form EXACTLY as given. You MAY restyle it '
+          'with CSS / class names / a wrapping container so it matches the '
+          "site's palette and typography, and you may place it in a sensible "
+          '"Contact" section. You MUST NOT change the <script>, the URL '
+          'construction, the phone-number handling, or the encodeURIComponent '
+          'calls — copy them verbatim:')
+      ..writeln()
+      ..writeln(buildContactFormSnippet(cfg))
+      ..write('=== END CONTACT FORM ===');
+    return b.toString();
+  }
+
+  static String _fieldControlLabel(ContactFormFieldType t) {
+    switch (t) {
+      case ContactFormFieldType.text:
+        return 'single-line text input';
+      case ContactFormFieldType.multiline:
+        return 'multi-line text area';
+      case ContactFormFieldType.number:
+        return 'number input';
+      case ContactFormFieldType.email:
+        return 'email input';
+      case ContactFormFieldType.multiSelect:
+        return 'multiple-select (checkboxes)';
+    }
+  }
+
   /// Build the prompt sent to the AI: system constraints, optional hidden
-  /// category/style/palette blocks, optional per-asset user notes, then
-  /// `User request:` and the stored prompt.
+  /// category/style/palette blocks, optional contact-form block, optional
+  /// per-asset user notes, then `User request:` and the stored prompt.
   String _buildAiPrompt(
     String storedPrompt, {
     List<AssetNote> assetNotes = const [],
@@ -332,6 +398,18 @@ Design:
         ..writeln('=== END PALETTE PREFERENCE ===');
     }
 
+    final contactFormMatch = _contactFormLinePattern.firstMatch(storedPrompt);
+    final contactForm = contactFormMatch != null
+        ? ContactFormConfig.tryParse(contactFormMatch.group(1) ?? '')
+        : null;
+    if (contactForm != null &&
+        contactForm.enabled &&
+        contactForm.usableFields.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln(_buildContactFormBlock(contactForm));
+    }
+
     final notesSection = _buildAssetNotesSection(
       notes: assetNotes,
       cidsAvailable: cidsAvailable,
@@ -342,10 +420,17 @@ Design:
         ..writeln(notesSection);
     }
 
+    // Echo the user's request, but strip the machine-readable `ContactForm:`
+    // line — its spec + verbatim snippet were already expanded above, so
+    // echoing the raw JSON would waste output budget and risk the AI rendering
+    // it literally on the page.
+    final echoPrompt = storedPrompt
+        .replaceAll(RegExp(r'^ContactForm:.*$\n?', multiLine: true), '')
+        .trimRight();
     buffer
       ..writeln()
       ..writeln('User request:')
-      ..write(storedPrompt);
+      ..write(echoPrompt);
     return buffer.toString();
   }
 
@@ -363,6 +448,7 @@ Design:
     required String palette,
     required String body,
     List<AssetNote> assetNotes = const [],
+    ContactFormConfig? contactForm,
   }) {
     final buffer = StringBuffer()
       ..writeln('Website Name: $websiteName')
@@ -372,6 +458,9 @@ Design:
     }
     if (palette.isNotEmpty) {
       buffer.writeln('Palette: $palette');
+    }
+    if (contactForm != null && contactForm.enabled) {
+      buffer.writeln('ContactForm: ${contactForm.encode()}');
     }
     buffer
       ..writeln()
@@ -831,6 +920,71 @@ Design:
     // non-blocking — a publish failure must never fail or delay the generation
     // (the link simply updates on the next successful publish).
     _publishStableLink(generation);
+
+    // Best-effort: if a contact form was requested, confirm it actually
+    // rendered in the published HTML and warn (without auto-respending FULA) if
+    // it didn't. Fire-and-forget — never blocks or fails the generation.
+    _verifyContactFormRendered(generation);
+  }
+
+  /// Warning written to [WebsiteGeneration.statusMessage] when the post-publish
+  /// check can't find the contact form in the live site. The leading ⚠️ is the
+  /// signal the generation card uses to render it as a warning (no Hive schema
+  /// change needed). Kept as a constant so the write is idempotent.
+  static const String contactFormMissingWarning =
+      '⚠️ The contact form may not have rendered — open the site to check, or '
+      'use Recreate to generate it again.';
+
+  /// Best-effort check that a requested contact form actually rendered in the
+  /// published site. The app never sees the AI's HTML directly, but the result
+  /// is public on IPFS, so we fetch the page and look for the form marker
+  /// (`id="cf"`). We intentionally check only the marker, not the JS tokens:
+  /// the generator may inline the script or split it into a separate file, so
+  /// requiring the JS would false-warn on a good site. On a miss we annotate
+  /// [generation.statusMessage] with [contactFormMissingWarning] and let the
+  /// user decide to Recreate — we never auto-regenerate (that would silently
+  /// spend FULA) and never fail the generation over a best-effort network check.
+  void _verifyContactFormRendered(WebsiteGeneration generation) {
+    final match = _contactFormLinePattern.firstMatch(generation.prompt);
+    final cfg = match != null
+        ? ContactFormConfig.tryParse(match.group(1) ?? '')
+        : null;
+    if (cfg == null || !cfg.enabled || cfg.usableFields.isEmpty) return;
+
+    final url = generation.gatewayUrl;
+    if (url == null || url.isEmpty) return;
+
+    Future<void> run() async {
+      // Allow a few attempts for IPFS gateway propagation before concluding
+      // the form is missing.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await Future.delayed(const Duration(seconds: 3));
+        }
+        try {
+          final res = await http
+              .get(Uri.parse(url))
+              .timeout(const Duration(seconds: 15));
+          if (res.statusCode != 200) continue;
+          // Look only for the form marker. The script may be inlined or split
+          // into a separate script.js (both permitted by the generator), so we
+          // deliberately do NOT require the JS tokens — that would false-warn on
+          // a perfectly good externalized-script site.
+          if (res.body.contains('id="cf"')) return;
+        } catch (_) {
+          // Network/propagation hiccup — retry.
+        }
+      }
+      // Exhausted attempts without finding the form. Surface a warning.
+      if (generation.statusMessage != contactFormMissingWarning) {
+        generation.statusMessage = contactFormMissingWarning;
+        generation.updatedAt = DateTime.now();
+        await _generationsBox.put(generation.id, generation);
+        _statusController.add(generation);
+      }
+    }
+
+    unawaited(run());
   }
 
   /// Fire-and-forget IPNS publish of the group's stable link to the latest CID.

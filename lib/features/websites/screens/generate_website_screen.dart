@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
+import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/services/website_service.dart';
+import 'package:fula_files/core/utils/target_uri_builder.dart';
 
 /// Result returned by [GenerateWebsiteScreen] when the user taps Publish.
 typedef GenerateWebsitePromptResult = ({
@@ -12,6 +14,7 @@ typedef GenerateWebsitePromptResult = ({
   String palette,
   String prompt,
   bool enableTracking,
+  ContactFormConfig? contactForm,
 });
 
 /// Palette options shown in the generator. Labels are stored verbatim in the
@@ -177,6 +180,41 @@ const List<String> _categoryOptions = [
   'Other',
 ];
 
+/// Mutable per-row state for one contact-form field in the generator UI.
+/// Owns its [TextEditingController]s; the screen disposes them.
+class _ContactFieldRow {
+  final TextEditingController label;
+  ContactFormFieldType type;
+  bool required;
+  final TextEditingController options; // comma-separated; multi-select only
+
+  _ContactFieldRow({
+    String label = '',
+    this.type = ContactFormFieldType.text,
+    this.required = false,
+    String options = '',
+  })  : label = TextEditingController(text: label),
+        options = TextEditingController(text: options);
+
+  void dispose() {
+    label.dispose();
+    options.dispose();
+  }
+
+  ContactFormField toField() => ContactFormField(
+        label: label.text.trim(),
+        type: type,
+        required: required,
+        options: type == ContactFormFieldType.multiSelect
+            ? options.text
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList()
+            : const [],
+      );
+}
+
 
 /// Full-screen replacement for the previous "Generate website" dialog.
 ///
@@ -190,6 +228,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
   final String? initialPalette;
   final String? initialPrompt;
   final bool initialEnableTracking;
+  final ContactFormConfig? initialContactForm;
 
   /// Per-asset user notes captured in the website detail screen. Used by the
   /// "preview full prompt" eye icon so the user can see exactly what the AI
@@ -205,6 +244,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
     this.initialPalette,
     this.initialPrompt,
     this.initialEnableTracking = false,
+    this.initialContactForm,
     this.assetNotes = const [],
   });
 
@@ -219,6 +259,11 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late String _palette;
   late String _selectedStyle;
   late bool _enableTracking;
+  late bool _contactFormEnabled;
+  late ContactFormChannel _channel;
+  late final TextEditingController _destinationController;
+  late final TextEditingController _emailSubjectController;
+  late final List<_ContactFieldRow> _fields;
   // Current pricing snapshot. Seeded synchronously from the service's
   // in-memory cache (or the hardcoded fallback) so the cost line always
   // renders on first frame; refreshed asynchronously from the server's
@@ -255,12 +300,33 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     _selectedStyle = (firstValid != null && firstValid.isNotEmpty)
         ? firstValid
         : _styleOptions.first.label;
+
+    final cf = widget.initialContactForm;
+    _contactFormEnabled = cf?.enabled ?? false;
+    _channel = cf?.channel ?? ContactFormChannel.whatsapp;
+    _destinationController =
+        TextEditingController(text: cf?.destination ?? '');
+    _emailSubjectController =
+        TextEditingController(text: cf?.emailSubject ?? '');
+    _fields = (cf?.fields ?? const <ContactFormField>[])
+        .map((f) => _ContactFieldRow(
+              label: f.label,
+              type: f.type,
+              required: f.required,
+              options: f.options.join(', '),
+            ))
+        .toList();
   }
 
   @override
   void dispose() {
     _nameController.dispose();
     _promptController.dispose();
+    _destinationController.dispose();
+    _emailSubjectController.dispose();
+    for (final f in _fields) {
+      f.dispose();
+    }
     super.dispose();
   }
 
@@ -278,6 +344,18 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   void _submit() {
     final name = _nameController.text.trim();
     if (name.isEmpty) return;
+
+    final contactForm = _currentContactForm();
+    if (contactForm.enabled) {
+      final error = _validateContactForm(contactForm);
+      if (error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error)),
+        );
+        return;
+      }
+    }
+
     final result = (
       websiteName: name,
       category: _category,
@@ -285,9 +363,55 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
       palette: _palette,
       prompt: _promptController.text.trim(),
       enableTracking: _enableTracking,
+      contactForm: contactForm.enabled ? contactForm : null,
     );
     Navigator.of(context).pop<GenerateWebsitePromptResult>(result);
   }
+
+  /// Assemble the contact-form config from the current UI state.
+  ContactFormConfig _currentContactForm() => ContactFormConfig(
+        enabled: _contactFormEnabled,
+        channel: _channel,
+        destination: _destinationController.text.trim(),
+        emailSubject: _emailSubjectController.text.trim(),
+        fields: _fields.map((r) => r.toField()).toList(),
+      );
+
+  /// Returns a human-readable error when an enabled contact form is unusable,
+  /// or null when it's good to submit.
+  String? _validateContactForm(ContactFormConfig cfg) {
+    final dest = cfg.destination.trim();
+    if (cfg.channel == ContactFormChannel.whatsapp) {
+      if (TargetUriBuilder.normalizePhone(dest) == null) {
+        return 'Enter a valid WhatsApp number (7–15 digits, with country code).';
+      }
+    } else {
+      if (!_looksLikeEmail(dest)) {
+        return 'Enter a valid destination email address.';
+      }
+    }
+    final usable = cfg.usableFields;
+    if (usable.isEmpty) {
+      return 'Add at least one form field with a label.';
+    }
+    for (final f in usable) {
+      if (f.type == ContactFormFieldType.multiSelect && f.options.isEmpty) {
+        return 'Multi-select field "${f.label}" needs at least one option.';
+      }
+    }
+    return null;
+  }
+
+  /// Loose email check — same posture as TargetUriBuilder; the mail app does
+  /// the real validation when the link opens.
+  bool _looksLikeEmail(String s) {
+    final at = s.indexOf('@');
+    if (at <= 0 || at == s.length - 1) return false;
+    if (s.indexOf('.', at) <= at + 1) return false;
+    return true;
+  }
+
+  void _addField() => setState(() => _fields.add(_ContactFieldRow()));
 
   void _showPromptPreview() {
     final fullPrompt = WebsiteService.instance.buildPreviewPrompt(
@@ -297,6 +421,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
       palette: _palette,
       body: _promptController.text.trim(),
       assetNotes: widget.assetNotes,
+      contactForm: _contactFormEnabled ? _currentContactForm() : null,
     );
 
     showDialog<void>(
@@ -449,6 +574,8 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 ),
                 const SizedBox(height: 16),
                 _buildTrackingToggle(theme),
+                const SizedBox(height: 16),
+                _buildContactFormSection(theme),
               ],
             ),
           ),
@@ -542,6 +669,225 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildContactFormSection(ThemeData theme) {
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.4)),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(LucideIcons.send, size: 18, color: muted),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 10),
+                      child: Text(
+                        'Add a contact form',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, bottom: 10),
+                      child: Text(
+                        'Visitors fill it in and tap Send — it opens WhatsApp or '
+                        'their mail app with the message pre-composed. No server, '
+                        'nothing collected by us.',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: muted, height: 1.35),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: _contactFormEnabled,
+                onChanged: (v) => setState(() {
+                  _contactFormEnabled = v;
+                  if (v && _fields.isEmpty) _fields.add(_ContactFieldRow());
+                }),
+              ),
+            ],
+          ),
+          if (_contactFormEnabled) ...[
+            const SizedBox(height: 4),
+            SegmentedButton<ContactFormChannel>(
+              segments: const [
+                ButtonSegment(
+                  value: ContactFormChannel.whatsapp,
+                  label: Text('WhatsApp'),
+                ),
+                ButtonSegment(
+                  value: ContactFormChannel.email,
+                  label: Text('Email'),
+                ),
+              ],
+              selected: {_channel},
+              onSelectionChanged: (s) => setState(() => _channel = s.first),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _destinationController,
+              keyboardType: _channel == ContactFormChannel.email
+                  ? TextInputType.emailAddress
+                  : TextInputType.phone,
+              decoration: InputDecoration(
+                labelText: _channel == ContactFormChannel.whatsapp
+                    ? 'WhatsApp number'
+                    : 'Destination email',
+                hintText: _channel == ContactFormChannel.whatsapp
+                    ? 'e.g. +1 555 123 4567'
+                    : 'you@example.com',
+                isDense: true,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            if (_channel == ContactFormChannel.email) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _emailSubjectController,
+                decoration: const InputDecoration(
+                  labelText: 'Email subject (optional)',
+                  hintText: 'e.g. New enquiry from your website',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Form fields',
+                style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.7)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < _fields.length; i++) _buildFieldRow(theme, i),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _addField,
+                icon: const Icon(LucideIcons.plus, size: 16),
+                label: const Text('Add field'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFieldRow(ThemeData theme, int index) {
+    final row = _fields[index];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                flex: 5,
+                child: TextField(
+                  controller: row.label,
+                  decoration: const InputDecoration(
+                    labelText: 'Label',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 4,
+                child: DropdownButtonFormField<ContactFormFieldType>(
+                  initialValue: row.type,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: ContactFormFieldType.values
+                      .map((t) => DropdownMenuItem(
+                            value: t,
+                            child: Text(_fieldTypeLabel(t)),
+                          ))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setState(() => row.type = v);
+                  },
+                ),
+              ),
+              IconButton(
+                onPressed: () =>
+                    setState(() => _fields.removeAt(index).dispose()),
+                icon: const Icon(LucideIcons.x, size: 18),
+                tooltip: 'Remove field',
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          if (row.type == ContactFormFieldType.multiSelect) ...[
+            const SizedBox(height: 8),
+            TextField(
+              controller: row.options,
+              decoration: const InputDecoration(
+                labelText: 'Options (comma-separated)',
+                hintText: 'e.g. Sales, Support, Press',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text(
+                'Required',
+                style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.7)),
+              ),
+              Switch(
+                value: row.required,
+                onChanged: (v) => setState(() => row.required = v),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _fieldTypeLabel(ContactFormFieldType t) {
+    switch (t) {
+      case ContactFormFieldType.text:
+        return 'Text';
+      case ContactFormFieldType.multiline:
+        return 'Multi-line';
+      case ContactFormFieldType.number:
+        return 'Number';
+      case ContactFormFieldType.email:
+        return 'Email';
+      case ContactFormFieldType.multiSelect:
+        return 'Multi-select';
+    }
   }
 
   Widget _buildStyleHeader(ThemeData theme) {

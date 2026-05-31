@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/website_service.dart';
 
@@ -135,9 +136,15 @@ class _GenerationStatusCardState extends State<GenerationStatusCard> {
           Expanded(
             child: Text(
               generation.statusMessage!,
+              maxLines: generation.statusMessage!.startsWith('⚠') ? 3 : 1,
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.grey[600],
+                color: generation.statusMessage!.startsWith('⚠')
+                    ? Theme.of(context).colorScheme.error
+                    : Colors.grey[600],
+                fontWeight: generation.statusMessage!.startsWith('⚠')
+                    ? FontWeight.w600
+                    : FontWeight.normal,
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -150,6 +157,10 @@ class _GenerationStatusCardState extends State<GenerationStatusCard> {
   Widget _buildPromptSection(BuildContext context) {
     final fullPrompt = widget.generation.prompt;
     final userPortion = extractUserPrompt(fullPrompt);
+    // Hide the machine-readable `ContactForm:` JSON line from the human preview.
+    final displayPrompt = fullPrompt
+        .replaceAll(RegExp(r'^ContactForm:.*$\n?', multiLine: true), '')
+        .trimRight();
     final style = Theme.of(context).textTheme.bodySmall?.copyWith(
           color: Colors.grey[700],
         );
@@ -163,7 +174,7 @@ class _GenerationStatusCardState extends State<GenerationStatusCard> {
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Text(
-                fullPrompt,
+                displayPrompt,
                 maxLines: _promptExpanded ? null : 2,
                 overflow: _promptExpanded
                     ? TextOverflow.visible
@@ -452,14 +463,21 @@ String extractUserPrompt(String stored) {
   List<String> styles,
   String palette,
   String userBody,
+  ContactFormConfig? contactForm,
 }) parseStoredPrompt(String stored) {
   final namePattern = RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
   final categoryPattern = RegExp(r'^Category:\s*(.*)$', multiLine: true);
   final stylesPattern = RegExp(r'^Styles:\s*(.*)$', multiLine: true);
   final palettePattern = RegExp(r'^Palette:\s*(.*)$', multiLine: true);
+  final contactFormPattern =
+      RegExp(r'^ContactForm:\s*(.*)$', multiLine: true);
 
   final nameMatch = namePattern.firstMatch(stored);
   final categoryMatch = categoryPattern.firstMatch(stored);
+  final contactFormMatch = contactFormPattern.firstMatch(stored);
+  final contactForm = contactFormMatch != null
+      ? ContactFormConfig.tryParse(contactFormMatch.group(1) ?? '')
+      : null;
 
   if (nameMatch == null || categoryMatch == null) {
     return (
@@ -468,6 +486,7 @@ String extractUserPrompt(String stored) {
       styles: const <String>[],
       palette: '',
       userBody: stored.trim(),
+      contactForm: contactForm,
     );
   }
 
@@ -497,5 +516,6 @@ String extractUserPrompt(String stored) {
     styles: styles,
     palette: palette,
     userBody: body,
+    contactForm: contactForm,
   );
 }
