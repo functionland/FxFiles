@@ -892,6 +892,31 @@ class FulaApiService implements FulaApi {
     return downloadObject(bucket, key);
   }
 
+  /// P6 metadata MERGE-read: download a per-user manifest from BOTH the `-v8`
+  /// sibling and the legacy bucket, returning the successfully-decrypted,
+  /// non-empty blobs in priority order [v8, legacy]. The caller applies them
+  /// ADDITIVELY (v8 wins a conflicting id; legacy fills gaps). When v8 routing
+  /// is off / [base] is unmanaged this is just `[legacy]`. NEVER throws — a
+  /// missing/erroring bucket is skipped, so a failed v8 read can't hide legacy.
+  Future<List<Uint8List>> downloadMetadataMerged(
+    String base,
+    String key,
+    Uint8List encryptionKey,
+  ) async {
+    final v8 = BucketVersionResolver.writeBucket(base);
+    final buckets = v8 == base ? <String>[base] : <String>[v8, base];
+    final blobs = <Uint8List>[];
+    for (final bucket in buckets) {
+      try {
+        final d = await downloadAndDecrypt(bucket, key, encryptionKey);
+        if (d.isNotEmpty) blobs.add(d);
+      } catch (e) {
+        debugPrint('downloadMetadataMerged: $bucket miss: $e');
+      }
+    }
+    return blobs;
+  }
+
   /// Encrypt and upload - now just calls uploadObject with metadata
   /// The encryptionKey parameter is ignored as fula_client handles encryption internally
   Future<String> encryptAndUpload(

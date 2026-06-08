@@ -81,8 +81,12 @@ void main() {
       );
     });
 
-    test('migrated metadata buckets (dump/tag) route writes to -v8', () {
-      for (final b in <String>['dump-metadata', 'tag-metadata']) {
+    test('migrated metadata buckets route writes to -v8', () {
+      for (final b in <String>[
+        'dump-metadata',
+        'tag-metadata',
+        'nft-metadata',
+      ]) {
         expect(BucketVersionResolver.writeBucket(b), '$b-v8', reason: b);
         expect(BucketVersionResolver.isForbiddenWriteTarget(b), isTrue,
             reason: b);
@@ -93,11 +97,12 @@ void main() {
       }
     });
 
-    test('un-migrated metadata buckets still pass through (incremental)', () {
-      expect(
-          BucketVersionResolver.writeBucket('fula-metadata'), 'fula-metadata');
-      expect(BucketVersionResolver.writeBucket('nft-metadata'), 'nft-metadata');
-      expect(BucketVersionResolver.isForbiddenWriteTarget('fula-metadata'),
+    test('asset / un-migrated buckets still pass through (incremental)', () {
+      // Asset buckets are a separate (Type-B) scope — never in the metadata set.
+      expect(BucketVersionResolver.writeBucket('website-assets'),
+          'website-assets');
+      expect(BucketVersionResolver.writeBucket('app-backups'), 'app-backups');
+      expect(BucketVersionResolver.isForbiddenWriteTarget('website-assets'),
           isFalse);
     });
   });
