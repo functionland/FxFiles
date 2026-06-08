@@ -49,7 +49,7 @@ void main() {
 
     test('unmanaged buckets pass through (shelf / metadata / custom / test)', () {
       for (final b in <String>[
-        'dump', 'dump-thumbs', 'tag-metadata', 'face-metadata', 'playlists',
+        'dump', 'dump-thumbs', 'face-metadata', 'playlists',
         'fula-metadata', 'website-assets', 'nft-assets',
         'integration-test', 'my-custom-folder',
       ]) {
@@ -76,27 +76,28 @@ void main() {
       expect(BucketVersionResolver.isForbiddenWriteTarget('images-v8'), isFalse);
       expect(BucketVersionResolver.isForbiddenWriteTarget('dump'), isFalse);
       expect(
-        BucketVersionResolver.isForbiddenWriteTarget('tag-metadata'),
+        BucketVersionResolver.isForbiddenWriteTarget('fula-metadata'),
         isFalse,
       );
     });
 
-    test('migrated metadata bucket (dump-metadata) routes writes to -v8', () {
-      expect(BucketVersionResolver.writeBucket('dump-metadata'),
-          'dump-metadata-v8');
-      expect(BucketVersionResolver.isForbiddenWriteTarget('dump-metadata'),
-          isTrue);
-      // ...but a metadata bucket does NOT get the content LIST-merge, and is
-      // not a managed content base.
-      expect(BucketVersionResolver.readBuckets('dump-metadata'),
-          <String>['dump-metadata']);
-      expect(BucketVersionResolver.isManagedBase('dump-metadata'), isFalse);
+    test('migrated metadata buckets (dump/tag) route writes to -v8', () {
+      for (final b in <String>['dump-metadata', 'tag-metadata']) {
+        expect(BucketVersionResolver.writeBucket(b), '$b-v8', reason: b);
+        expect(BucketVersionResolver.isForbiddenWriteTarget(b), isTrue,
+            reason: b);
+        // ...but a metadata bucket does NOT get the content LIST-merge, nor is
+        // it a managed content base.
+        expect(BucketVersionResolver.readBuckets(b), <String>[b], reason: b);
+        expect(BucketVersionResolver.isManagedBase(b), isFalse, reason: b);
+      }
     });
 
     test('un-migrated metadata buckets still pass through (incremental)', () {
-      expect(BucketVersionResolver.writeBucket('tag-metadata'), 'tag-metadata');
-      expect(BucketVersionResolver.writeBucket('fula-metadata'), 'fula-metadata');
-      expect(BucketVersionResolver.isForbiddenWriteTarget('tag-metadata'),
+      expect(
+          BucketVersionResolver.writeBucket('fula-metadata'), 'fula-metadata');
+      expect(BucketVersionResolver.writeBucket('nft-metadata'), 'nft-metadata');
+      expect(BucketVersionResolver.isForbiddenWriteTarget('fula-metadata'),
           isFalse);
     });
   });

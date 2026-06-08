@@ -50,6 +50,7 @@ class BucketVersionResolver {
   /// flag flip strands them at the guard.
   static const Set<String> managedMetadataBuckets = <String>{
     'dump-metadata', // shelf (P6)
+    'tag-metadata', // tags (P6)
   };
 
   /// A bucket whose writes route to a `-v8` sibling: a content category OR a

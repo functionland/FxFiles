@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/utils/hive_cipher.dart';
@@ -20,6 +21,12 @@ class TagStorageService {
 
   // S3 bucket for tag metadata
   static const String _tagMetadataBucket = 'tag-metadata';
+
+  /// Bucket tags are WRITTEN to: `tag-metadata-v8` when v8 routing is enabled
+  /// (legacy is gc-damaged and rejects writes), else `tag-metadata`. Restore
+  /// merges this with legacy.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_tagMetadataBucket);
   bool _bucketChecked = false;
   bool _bucketExists = false;
 
@@ -436,10 +443,10 @@ class TagStorageService {
     debugPrint('TagStorageService: ensuring bucket exists: $_tagMetadataBucket');
 
     try {
-      await FulaApiService.instance.createBucket(_tagMetadataBucket);
+      await FulaApiService.instance.createBucket(_writeBucket);
       _bucketExists = true;
       _bucketChecked = true;
-      debugPrint('Tag metadata bucket ready: $_tagMetadataBucket');
+      debugPrint('Tag metadata bucket ready: $_writeBucket');
       return true;
     } catch (e) {
       debugPrint('TagStorageService: createBucket error: $e');
@@ -454,7 +461,7 @@ class TagStorageService {
       }
 
       try {
-        await FulaApiService.instance.listObjects(_tagMetadataBucket);
+        await FulaApiService.instance.listObjects(_writeBucket);
         _bucketExists = true;
         _bucketChecked = true;
         return true;
@@ -559,7 +566,7 @@ class TagStorageService {
       final key = '.fula/tags/$userId.json';
       debugPrint('TagStorageService: uploading to bucket=$_tagMetadataBucket, key=$key, dataSize=${data.length}');
       await FulaApiService.instance.encryptAndUpload(
-        _tagMetadataBucket,
+        _writeBucket,
         key,
         data,
         encryptionKey,
@@ -603,68 +610,59 @@ class TagStorageService {
       return;
     }
 
-    try {
-      final encryptionKey = await AuthService.instance.getEncryptionKey();
-      debugPrint('TagStorageService restore: encryption key is ${encryptionKey != null ? "available" : "NULL"}');
-      if (encryptionKey == null) {
-        debugPrint('Tag restore skipped: no encryption key');
-        return;
-      }
+    final encryptionKey = await AuthService.instance.getEncryptionKey();
+    if (encryptionKey == null) {
+      debugPrint('Tag restore skipped: no encryption key');
+      return;
+    }
+    final userId = await _getUserId();
+    if (userId == null) {
+      debugPrint('Tag restore skipped: no user ID');
+      return;
+    }
+    final key = '.fula/tags/$userId.json';
 
-      final userId = await _getUserId();
-      debugPrint('TagStorageService restore: user ID is ${userId ?? "NULL"}');
-      if (userId == null) {
-        debugPrint('Tag restore skipped: no user ID');
-        return;
-      }
-
-      final key = '.fula/tags/$userId.json';
-      debugPrint('TagStorageService: attempting to download from bucket=$_tagMetadataBucket, key=$key');
-
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _tagMetadataBucket,
-        key,
-        encryptionKey,
-      );
-
-      debugPrint('TagStorageService: downloaded ${data.length} bytes from cloud');
-
-      final jsonStr = utf8.decode(data);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final metadata = TagCloudMetadata.fromJson(json);
-
-      debugPrint('TagStorageService: parsed metadata with ${metadata.tags.length} tags and ${metadata.taggedFiles.length} tagged files');
-
-      // Only restore if local is empty or cloud has data
-      if (_tagsBox.isEmpty || metadata.tags.isNotEmpty) {
-        // Clear existing data
-        await _tagsBox.clear();
-        await _taggedFilesBox.clear();
-
-        // Restore tags
+    // MERGE legacy + v8 (NOT a fallback, NOT clear-then-load): read BOTH and
+    // restore ADDITIVELY — never clobbers a tag already present locally, so a
+    // false-empty / un-migrated v8 read can NEVER wipe local tags. v8 (the
+    // current snapshot) is read first so it wins a conflicting id; legacy fills
+    // rows only the pre-migration bucket has. Sign-out clears local (clearAll);
+    // this rebuilds from both buckets on the next sign-in.
+    final v8 = _writeBucket;
+    final buckets = v8 == _tagMetadataBucket
+        ? <String>[_tagMetadataBucket]
+        : <String>[v8, _tagMetadataBucket];
+    var addedAny = false;
+    for (final bucket in buckets) {
+      try {
+        final data = await FulaApiService.instance
+            .downloadAndDecrypt(bucket, key, encryptionKey);
+        final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+        final metadata = TagCloudMetadata.fromJson(json);
         for (final tag in metadata.tags) {
+          if (_tagsBox.containsKey(tag.id)) continue; // additive — don't clobber
           await _tagsBox.put(tag.id, tag);
+          addedAny = true;
         }
-
-        // Restore tagged files
         for (final tf in metadata.taggedFiles) {
+          if (_taggedFilesBox.containsKey(tf.id)) continue;
           await _taggedFilesBox.put(tf.id, tf);
+          addedAny = true;
         }
-
-        debugPrint('Restored ${metadata.tags.length} tags and ${metadata.taggedFiles.length} tagged files from cloud');
-        _notifyListeners();
-      } else {
-        debugPrint('TagStorageService: skipped restore - local has ${_tagsBox.length} tags, cloud has ${metadata.tags.length}');
-      }
-    } catch (e) {
-      final errorStr = e.toString();
-      // NoSuchKey is expected for new users
-      if (errorStr.contains('NoSuchKey') || errorStr.contains('Object not found') || errorStr.contains('404')) {
-        debugPrint('Tag restore: no cloud data found (new user or never synced)');
-      } else {
-        debugPrint('Failed to restore tags from cloud: $e');
+        debugPrint('TagStorageService: merged ${metadata.tags.length} tags / '
+            '${metadata.taggedFiles.length} files from $bucket');
+      } catch (e) {
+        final s = e.toString();
+        if (s.contains('NoSuchKey') ||
+            s.contains('Object not found') ||
+            s.contains('404')) {
+          debugPrint('Tag restore: no data in $bucket (new/never-synced)');
+        } else {
+          debugPrint('TagStorageService: $bucket restore error: $e');
+        }
       }
     }
+    if (addedAny) _notifyListeners();
   }
 
   /// Relink tagged files after reinstall (match cloud files to local files)
