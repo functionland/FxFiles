@@ -480,9 +480,10 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       // a file may be linked under the legacy base (`images`) or the `-v8`
       // sibling (`images-v8`) depending on whether it was uploaded, downloaded
       // from the gallery, or reconciled — any of those should resolve when
-      // browsing the v8 bucket. And queueUpload records the cloud key in
-      // `remotePath` (leaving `remoteKey` null), so match either key field —
-      // otherwise an on-disk file is mis-shown as "cloud only".
+      // browsing the v8 bucket. Match either key field (remoteKey OR
+      // remotePath) to also resolve older states written before queueUpload
+      // populated remoteKey — otherwise an on-disk file is mis-shown as
+      // "cloud only".
       final cur = _currentBucket;
       final sb = state.bucket;
       final bucketMatches = cur != null &&
@@ -722,7 +723,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   localPath: localFile.path,
                   remotePath: localFile.name,
                   remoteKey: localFile.name,
-                  bucket: bucketName,
+                  // v8: link to the bucket the object actually lives in (e.g.
+                  // images-v8) so the cloud explorer + linked-key lookups match.
+                  bucket: cloudFile.sourceBucket ?? bucketName,
                   status: SyncStatus.synced,
                   lastSyncedAt: cloudFile.lastModified ?? DateTime.now(),
                   etag: cloudFile.etag,
@@ -731,6 +734,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   displayPath: Platform.isIOS && localFile.iosAssetId != null ? localFile.path : null,
                   iosAssetId: localFile.iosAssetId,
                 ));
+              } else if (currentState.status == SyncStatus.synced &&
+                  cloudFile.sourceBucket != null &&
+                  currentState.bucket != cloudFile.sourceBucket &&
+                  BucketVersionResolver.sameFamily(
+                      currentState.bucket, cloudFile.sourceBucket!)) {
+                // Heal a STALE bucket: a file recorded under 'images' that now
+                // lives in 'images-v8' (a re-upload, or a pre-fix download).
+                // Share + delete routing read the EXACT SyncState.bucket, so an
+                // un-healed stale bucket would target the wrong bucket. Only
+                // heal a synced state within the same family (never touch
+                // in-progress/error states).
+                await LocalStorageService.instance.addSyncState(
+                  currentState.copyWith(bucket: cloudFile.sourceBucket),
+                );
               }
               // Do NOT overwrite existing states (syncing, error, etc.)
             } else {

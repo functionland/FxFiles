@@ -35,10 +35,19 @@ class LegacyListingCache {
   @visibleForTesting
   LegacyListingCache.forTest();
 
-  /// Bump the suffix if the cached JSON shape (FulaObject.toJson) changes.
-  static const String boxName = 'legacy_listing_v1';
+  /// Bump the suffix if the cached JSON shape changes. v2 wraps the object
+  /// list with a freeze timestamp (TTL).
+  static const String boxName = 'legacy_listing_v2';
 
-  final Map<String, List<FulaObject>> _mem = <String, List<FulaObject>>{};
+  /// A frozen legacy listing self-expires after this (the B1 escape hatch): a
+  /// one-off incomplete freeze self-heals within a day, while an immutable
+  /// legacy bucket is otherwise re-fetched at most once/day (cheap — ~0.5-1s
+  /// when healthy). Mutable so tests can force expiry. Tunable.
+  static Duration freezeTtl = const Duration(days: 1);
+
+  /// Each entry carries WHEN it was frozen, so [getFrozen] can expire it.
+  final Map<String, ({DateTime frozenAt, List<FulaObject> objects})> _mem =
+      <String, ({DateTime frozenAt, List<FulaObject> objects})>{};
   Box<String>? _box;
   bool _initialized = false;
   Future<void>? _initFuture;
@@ -59,15 +68,25 @@ class LegacyListingCache {
     try {
       final cipher = await getHiveMetadataCipher();
       _box = await Hive.openBox<String>(boxName, encryptionCipher: cipher);
+      // Best-effort: drop the orphaned pre-TTL v1 box (superseded by v2).
+      try {
+        await Hive.deleteBoxFromDisk('legacy_listing_v1');
+      } catch (_) {/* never block startup on cleanup */}
       for (final key in _box!.keys) {
         final raw = _box!.get(key);
         if (raw == null) continue;
         try {
-          final list = (jsonDecode(raw) as List)
+          final decoded = jsonDecode(raw) as Map;
+          final frozenAt = DateTime.fromMillisecondsSinceEpoch(
+              (decoded['frozenAt'] as num).toInt());
+          final list = (decoded['objects'] as List)
               .map((e) => FulaObject.fromJson(
                   (e as Map).cast<String, dynamic>()))
               .toList();
-          _mem[key as String] = List<FulaObject>.unmodifiable(list);
+          _mem[key as String] = (
+            frozenAt: frozenAt,
+            objects: List<FulaObject>.unmodifiable(list),
+          );
         } catch (e) {
           // Corrupt/old-shape entry — drop it; it'll re-freeze on next load.
           debugPrint('LegacyListingCache: dropping bad entry "$key": $e');
@@ -81,21 +100,33 @@ class LegacyListingCache {
     }
   }
 
-  /// The frozen legacy listing for (user, bucket), or null if not frozen yet.
-  /// An EMPTY list means "frozen, genuinely empty" (do NOT re-load); null means
-  /// "never frozen — load it".
-  List<FulaObject>? getFrozen(String userId, String bucket) =>
-      _mem[_k(userId, bucket)];
+  /// The frozen legacy listing for (user, bucket), or null if not frozen (or
+  /// the freeze has EXPIRED past [freezeTtl] — treated as never-frozen so the
+  /// caller reloads + re-freezes). An EMPTY list means "frozen, genuinely
+  /// empty" (do NOT re-load); null means "never frozen / expired — load it".
+  List<FulaObject>? getFrozen(String userId, String bucket) {
+    final entry = _mem[_k(userId, bucket)];
+    if (entry == null) return null;
+    if (DateTime.now().difference(entry.frozenAt) >= freezeTtl) return null;
+    return entry.objects;
+  }
 
   /// Freeze a fresh listing. Callers MUST only call this for a non-stale,
   /// successful load (see the file header).
   Future<void> freeze(
       String userId, String bucket, List<FulaObject> objects) async {
     final key = _k(userId, bucket);
-    _mem[key] = List<FulaObject>.unmodifiable(objects);
+    final now = DateTime.now();
+    _mem[key] =
+        (frozenAt: now, objects: List<FulaObject>.unmodifiable(objects));
     try {
       await _box?.put(
-          key, jsonEncode(objects.map((o) => o.toJson()).toList()));
+        key,
+        jsonEncode(<String, dynamic>{
+          'frozenAt': now.millisecondsSinceEpoch,
+          'objects': objects.map((o) => o.toJson()).toList(),
+        }),
+      );
     } catch (e) {
       debugPrint('LegacyListingCache: persist failed for "$key": $e');
     }

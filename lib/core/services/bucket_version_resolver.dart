@@ -58,6 +58,14 @@ class BucketVersionResolver {
       ? bucket.substring(0, bucket.length - versionSuffix.length - 1)
       : bucket;
 
+  /// True if [a] and [b] belong to the same bucket family — the same base
+  /// after stripping a `-v8` suffix (`sameFamily('images', 'images-v8')`). A
+  /// null [a] never matches. Used by sync-state / mapping lookups so a file
+  /// recorded under either the legacy base or its `-v8` sibling resolves when
+  /// queried for either.
+  static bool sameFamily(String? a, String b) =>
+      a != null && baseOf(a) == baseOf(b);
+
   /// The bucket a new upload for [base] should be written to.
   ///
   /// When [enabled], a managed base routes to its `-v8` sibling. Everything

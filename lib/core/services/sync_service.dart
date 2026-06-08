@@ -440,6 +440,10 @@ class SyncService {
     final state = SyncState(
       localPath: localPath,
       remotePath: remoteKey,
+      // Populate remoteKey too (not just remotePath): linked-key lookups and
+      // the cloud-explorer matcher key off remoteKey, so leaving it null made
+      // freshly-uploaded files (esp. in -v8 buckets) look "cloud only".
+      remoteKey: remoteKey,
       bucket: routedBucket,
       status: SyncStatus.notSynced,
       displayPath: displayPath, // Store virtual path for iOS UI lookup

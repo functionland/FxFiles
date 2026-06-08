@@ -104,5 +104,15 @@ void main() {
       expect(BucketVersionResolver.baseOf('dump'), 'dump');
       expect(BucketVersionResolver.baseOf('my-custom-v8'), 'my-custom');
     });
+
+    test('sameFamily matches base <-> v8 sibling (null never matches)', () {
+      expect(BucketVersionResolver.sameFamily('images', 'images-v8'), isTrue);
+      expect(BucketVersionResolver.sameFamily('images-v8', 'images'), isTrue);
+      expect(BucketVersionResolver.sameFamily('images', 'images'), isTrue);
+      expect(BucketVersionResolver.sameFamily('images-v8', 'images-v8'), isTrue);
+      expect(BucketVersionResolver.sameFamily('images', 'videos'), isFalse);
+      expect(BucketVersionResolver.sameFamily('images-v8', 'videos-v8'), isFalse);
+      expect(BucketVersionResolver.sameFamily(null, 'images'), isFalse);
+    });
   });
 }

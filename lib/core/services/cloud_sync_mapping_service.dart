@@ -8,6 +8,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 
 /// Represents a mapping between a local file and its cloud counterpart
@@ -93,7 +94,8 @@ class CloudSyncMappingService {
   /// Check if a remote key has a mapping (meaning it was uploaded from a local file)
   /// This can be used to avoid showing cloud files as "cloud-only" if they have local links
   bool hasMapping(String remoteKey, String bucket) {
-    return _mappings.any((m) => m.remoteKey == remoteKey && m.bucket == bucket);
+    return _mappings.any(
+        (m) => m.remoteKey == remoteKey && BucketVersionResolver.sameFamily(m.bucket, bucket));
   }
 
   /// Look up a mapping by local file path. Used by tag-share to resolve which
@@ -118,7 +120,7 @@ class CloudSyncMappingService {
   /// Used for efficient cloud-only detection
   Set<String> getMappedRemoteKeys(String bucket) {
     return _mappings
-        .where((m) => m.bucket == bucket)
+        .where((m) => BucketVersionResolver.sameFamily(m.bucket, bucket))
         .map((m) => m.remoteKey)
         .toSet();
   }
@@ -127,7 +129,7 @@ class CloudSyncMappingService {
   Map<String, String> getMappedRemoteKeysWithPaths(String bucket) {
     final map = <String, String>{};
     for (final m in _mappings) {
-      if (m.bucket == bucket && m.localPath != null) {
+      if (BucketVersionResolver.sameFamily(m.bucket, bucket) && m.localPath != null) {
         map[m.remoteKey] = m.localPath!;
       }
     }

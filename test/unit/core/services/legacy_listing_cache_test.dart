@@ -68,6 +68,18 @@ void main() {
       await c.freeze('user-A', 'images', [obj('a.jpg')]);
       expect(c.getFrozen('user-B', 'images'), isNull);
     });
+
+    test('freeze expires after freezeTtl (the escape hatch)', () async {
+      final c = LegacyListingCache.forTest();
+      final original = LegacyListingCache.freezeTtl;
+      addTearDown(() => LegacyListingCache.freezeTtl = original);
+      await c.freeze(_uid, 'images', [obj('a.jpg')]);
+      expect(c.getFrozen(_uid, 'images')!.single.key, 'a.jpg',
+          reason: 'within TTL → returned');
+      LegacyListingCache.freezeTtl = Duration.zero;
+      expect(c.getFrozen(_uid, 'images'), isNull,
+          reason: 'expired freeze is treated as never-frozen → reload');
+    });
   });
 
   group('listCategoryCached', () {
