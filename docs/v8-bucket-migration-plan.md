@@ -212,10 +212,10 @@ Each: **Scope** (bounded files) · **Deliverable** (measurable) · **E2E gate** 
 - Deliverable: **a folder/tag share includes v8 items**, per-entry bucket emitted.
 - E2E gate: folder share spanning a legacy + a v8 `__e2e` item → manifest has both with correct per-entry buckets; an existing single-file share still resolves. ⚠️ **Portal (`pinning-webui`) per-entry-bucket fetch is a separate-repo follow-up** for full recipient-side resolution.
 
-**Phase 9 — (optional) Website asset repoint.**
-- Scope: `_assetBucket` → resolver.
-- Deliverable: new generations write to `website-assets-v8`; existing IPNS links still resolve.
-- E2E gate: publish `__e2e` site → assets in v8 + IPNS→CID resolves; a known existing site link still resolves. **Collaboration: no phase needed** (already per-file bucket-aware).
+**Phase 9 — Website asset repoint — DECIDED: SKIPPED (2026-06-08, not needed).**
+- v8 exists ONLY to escape gc damage to the per-bucket **encrypted forest** index nodes (which makes a forest read-modify-write throw 410 on write). `website-assets` has **no forest**: `_uploadAssetUnencrypted` does a plain `http.put($apiGateway/website-assets/$key)` (unencrypted, bypasses fula_client; the etag IS the IPFS CID), the site serves assets **by CID** (`_buildGatewayUrl(cid)`) so the bucket name is irrelevant to serving, and the app never lists `website-assets`. Server logs for a real asset PUT show only `bucket:`/`object:` pins — **no `__fula_forest_v7_nodes/`, no index-node pins, no `v8-node:`** — and it returns 200, never 410. The deployed server put_object pin fix keeps assets gc-safe regardless.
+- The only encrypted website path, `website-metadata` (+ its `ipns-pointer` co-writer), was migrated in **P6 (`2dc8b08`)**. `website_service.dart` is the sole `website-assets` writer (grep-verified; the `features/websites` UI does zero writes).
+- Routing `website-assets`→`-v8` would add v8-awareness to the dead-simple direct-PUT path (the resolver is wired into `FulaApiService`/`queueUpload`, not raw `http.put`) for **zero** durability/functional gain — net-negative (complexity + risk on a proven, live path). **Same applies to `nft-assets`** (identical unencrypted `http.put` pattern in `nft_service.dart`; `nft-metadata` already v8 via `524b8f3`). Reviewed: built-in advisor + Cursor (both: skip; migration would *reduce* cohesion by leaking the forest abstraction into a non-forest path).
 
 **Goal checkpoints:** Goal 1 (uploads unblocked) is *mechanically* met at **Phase 1**, *user-visible* at **Phase 2**. Goal 2 (steady-state fast) is met at **Phase 3**. Phases 4–9 extend "for everything" + harden correctness/consistency.
 
