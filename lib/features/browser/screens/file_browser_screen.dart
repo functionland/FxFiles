@@ -476,7 +476,21 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final allSyncStates = LocalStorageService.instance.getAllSyncStates();
 
     for (final state in allSyncStates) {
-      if (state.bucket == _currentBucket && state.remoteKey == cloudObj.key) {
+      // Match on the bucket FAMILY (same base) rather than the exact bucket:
+      // a file may be linked under the legacy base (`images`) or the `-v8`
+      // sibling (`images-v8`) depending on whether it was uploaded, downloaded
+      // from the gallery, or reconciled — any of those should resolve when
+      // browsing the v8 bucket. And queueUpload records the cloud key in
+      // `remotePath` (leaving `remoteKey` null), so match either key field —
+      // otherwise an on-disk file is mis-shown as "cloud only".
+      final cur = _currentBucket;
+      final sb = state.bucket;
+      final bucketMatches = cur != null &&
+          sb != null &&
+          BucketVersionResolver.baseOf(sb) == BucketVersionResolver.baseOf(cur);
+      final keyMatches =
+          state.remoteKey == cloudObj.key || state.remotePath == cloudObj.key;
+      if (bucketMatches && keyMatches) {
         // Found matching sync state - check if local file exists
         final file = File(state.localPath);
         if (await file.exists()) {
@@ -561,28 +575,6 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   /// Pull-to-refresh for a category: drop the frozen legacy cache so the next
   /// load re-reads the legacy bucket (the escape hatch if a frozen listing was
   /// ever incomplete), then reload.
-  Future<void> _refreshCategory() async {
-    // Only touch the legacy cache when v8 routing is active for this bucket;
-    // flag-off this is a plain reload (no encrypted box opened).
-    try {
-      final category = widget.category;
-      if (category != null) {
-        final base = _categoryFromString(category).bucketName;
-        if (BucketVersionResolver.enabled &&
-            BucketVersionResolver.isManagedBase(base)) {
-          final userId = await deriveUserId();
-          if (userId != null) {
-            await LegacyListingCache.instance.init();
-            await LegacyListingCache.instance.clear(userId, base);
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('_refreshCategory: legacy cache clear failed: $e');
-    }
-    await _loadCategoryFiles();
-  }
-
   Future<void> _loadCategoryFiles() async {
     if (!mounted) return;
     setState(() {
@@ -938,7 +930,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   /// Get category from bucket name (nullable for unknown buckets)
   FileCategory? _categoryFromBucket(String bucket) {
-    switch (bucket.toLowerCase()) {
+    // A `<base>-v8` migration bucket maps to its base category (an `images-v8`
+    // object is still an image), so strip the suffix before matching.
+    switch (BucketVersionResolver.baseOf(bucket).toLowerCase()) {
       case 'images': return FileCategory.images;
       case 'videos': return FileCategory.videos;
       case 'audio': return FileCategory.audio;
@@ -1532,7 +1526,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final thumbScrollItems = _buildThumbScrollItems();
 
     final listView = RefreshIndicator(
-      onRefresh: _isCategoryMode ? _refreshCategory : _loadFiles,
+      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
       child: ListView.builder(
         controller: _scrollController,
         cacheExtent: 500,
@@ -1602,7 +1596,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         : _files.length + (_hasMore ? 1 : 0);
 
     final gridView = RefreshIndicator(
-      onRefresh: _isCategoryMode ? _refreshCategory : _loadFiles,
+      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final baseCols = _viewMode == ViewMode.largeGrid ? 2 : 4;
@@ -3771,7 +3765,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         localPath: downloadPath,
         remotePath: cloudFile.key,
         remoteKey: cloudFile.key,
-        bucket: bucket,
+        // v8: record the bucket the file actually lives in (e.g. images-v8),
+        // not the base category bucket — otherwise the cloud explorer for the
+        // v8 bucket can't link this freshly-downloaded file and keeps showing
+        // it as "cloud only".
+        bucket: cloudFile.sourceBucket ?? bucket,
         status: SyncStatus.synced,
         lastSyncedAt: DateTime.now(),
         etag: cloudFile.etag,

@@ -96,5 +96,13 @@ void main() {
       expect(BucketVersionResolver.isV8('images'), isFalse);
       expect(BucketVersionResolver.isV8('dump'), isFalse);
     });
+
+    test('baseOf strips a -v8 suffix (else passthrough)', () {
+      expect(BucketVersionResolver.baseOf('images-v8'), 'images');
+      expect(BucketVersionResolver.baseOf('documents-v8'), 'documents');
+      expect(BucketVersionResolver.baseOf('images'), 'images');
+      expect(BucketVersionResolver.baseOf('dump'), 'dump');
+      expect(BucketVersionResolver.baseOf('my-custom-v8'), 'my-custom');
+    });
   });
 }

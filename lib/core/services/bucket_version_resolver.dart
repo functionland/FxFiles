@@ -50,6 +50,14 @@ class BucketVersionResolver {
   /// True if [bucket] is a `-v8` sibling (e.g. `images-v8`).
   static bool isV8(String bucket) => bucket.endsWith('-$versionSuffix');
 
+  /// The base (legacy) bucket name for [bucket]: strips a trailing `-v8`
+  /// suffix if present, else returns [bucket] unchanged. So `baseOf('images-v8')
+  /// == 'images'` and `baseOf('images') == 'images'`. Inverse-ish of
+  /// [writeBucket]; used to map a v8 bucket back to its category/base.
+  static String baseOf(String bucket) => isV8(bucket)
+      ? bucket.substring(0, bucket.length - versionSuffix.length - 1)
+      : bucket;
+
   /// The bucket a new upload for [base] should be written to.
   ///
   /// When [enabled], a managed base routes to its `-v8` sibling. Everything
