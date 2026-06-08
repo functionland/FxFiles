@@ -41,12 +41,20 @@ class LegacyListingCache {
   final Map<String, List<FulaObject>> _mem = <String, List<FulaObject>>{};
   Box<String>? _box;
   bool _initialized = false;
+  Future<void>? _initFuture;
 
   String _k(String userId, String bucket) => '$userId:$bucket';
 
-  /// Open the encrypted box and hydrate the in-memory map. Idempotent.
-  /// Production calls this once at startup; tests skip it (in-memory only).
-  Future<void> init() async {
+  /// Open the encrypted box and hydrate the in-memory map. Idempotent AND
+  /// single-flight: concurrent callers (an initial category load racing a
+  /// pull-to-refresh, or two category screens opening at once) share ONE
+  /// in-flight open, so the Hive box is never opened twice (a concurrent
+  /// double-open can throw). `_init` swallows all errors, so the memoized
+  /// future never rejects. Production calls this once at startup; tests skip
+  /// it (in-memory only).
+  Future<void> init() => _initFuture ??= _init();
+
+  Future<void> _init() async {
     if (_initialized) return;
     try {
       final cipher = await getHiveMetadataCipher();
