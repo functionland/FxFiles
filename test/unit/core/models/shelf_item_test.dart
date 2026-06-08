@@ -31,6 +31,7 @@ ShelfItem _sampleItem({
   String? autoDescription,
   String? thumbnailPath,
   ShelfEnrichmentStatus enrichmentStatus = ShelfEnrichmentStatus.pending,
+  String? sourceBucket,
 }) {
   return ShelfItem(
     id: id,
@@ -51,6 +52,7 @@ ShelfItem _sampleItem({
     autoDescription: autoDescription,
     thumbnailPath: thumbnailPath,
     enrichmentStatus: enrichmentStatus,
+    sourceBucket: sourceBucket,
   );
 }
 
@@ -209,6 +211,7 @@ void main() {
         autoDescription: 'document, text',
         thumbnailPath: '/data/dump_thumbs/roundtrip-1.jpg',
         enrichmentStatus: ShelfEnrichmentStatus.done,
+        sourceBucket: 'dump-v8',
       );
 
       await box.put(original.id, original);
@@ -232,6 +235,7 @@ void main() {
       expect(read.autoDescription, original.autoDescription);
       expect(read.thumbnailPath, original.thumbnailPath);
       expect(read.enrichmentStatus, original.enrichmentStatus);
+      expect(read.sourceBucket, original.sourceBucket);
 
       await box.close();
     });

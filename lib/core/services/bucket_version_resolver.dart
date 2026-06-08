@@ -28,10 +28,13 @@ class BucketVersionResolver {
   /// exactly as before the migration: writes and reads both target the legacy
   /// buckets, and the legacy-write guard is inert.
   ///
-  /// It stays false in production until the Phase 2 read-merge ships — routing
-  /// uploads to `images-v8` while the gallery still lists `images` would hide
-  /// new uploads from the user. Tests flip it to exercise the routing.
-  static bool enabled = false;
+  /// Currently **true** on the `feat/v8-bucket-migration` branch: content
+  /// (P1/P2), the P6 metadata buckets, and the P7 shelf-content buckets are all
+  /// routed and live-verified (device + server). The pre-flip gates in
+  /// `docs/v8-bucket-migration-premortem.md` (§10/§11) still gate merging this
+  /// branch to a production release; flag-off stays an exact no-op for a fast
+  /// rollback. Tests reset it around each case.
+  static bool enabled = true;
 
   /// Base buckets whose writes route to a `-v8` sibling and whose reads
   /// (Phase 2) merge `[base, base-v8]`. Phase 1 = content categories only.
@@ -56,10 +59,25 @@ class BucketVersionResolver {
     'app-metadata', // app store (P6)
   };
 
-  /// A bucket whose writes route to a `-v8` sibling: a content category OR a
-  /// migrated metadata bucket.
+  /// Shelf CONTENT buckets migrated to v8 (P7). Like [managedMetadataBuckets]
+  /// these route writes to a `-v8` sibling and are forbidden legacy write
+  /// targets — but they get NO list-merge: the shelf addresses each blob by the
+  /// explicit `remoteKey` recorded in its manifest (it never *lists* these
+  /// buckets), so a read targets one known bucket (carried per-item on
+  /// `ShelfItem.sourceBucket`), not a merged listing. Add a bucket here ONLY
+  /// once ALL of its writers are routed, or the flag flip strands them at the
+  /// write guard.
+  static const Set<String> managedContentKeyedBuckets = <String>{
+    'dump', // shelf item bodies (P7)
+    'dump-thumbs', // shelf thumbnails (P7)
+  };
+
+  /// A bucket whose writes route to a `-v8` sibling: a content category, a
+  /// migrated metadata bucket, or a migrated shelf-content bucket.
   static bool _routesToV8(String b) =>
-      managedBaseBuckets.contains(b) || managedMetadataBuckets.contains(b);
+      managedBaseBuckets.contains(b) ||
+      managedMetadataBuckets.contains(b) ||
+      managedContentKeyedBuckets.contains(b);
 
   /// True if [bucket] is a managed *base* (legacy) bucket — i.e. one whose
   /// writes should be redirected to its `-v8` sibling.

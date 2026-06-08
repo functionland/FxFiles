@@ -47,9 +47,10 @@ void main() {
       expect(BucketVersionResolver.writeBucket('images-v8'), 'images-v8');
     });
 
-    test('unmanaged buckets pass through (shelf / metadata / custom / test)', () {
+    test('unmanaged buckets pass through (un-migrated metadata / custom / test)',
+        () {
       for (final b in <String>[
-        'dump', 'dump-thumbs', 'face-metadata', 'playlists',
+        'face-metadata', 'playlists',
         'fula-metadata', 'website-assets', 'nft-assets',
         'integration-test', 'my-custom-folder',
       ]) {
@@ -74,7 +75,10 @@ void main() {
 
     test('v8 siblings and unmanaged buckets are NOT forbidden', () {
       expect(BucketVersionResolver.isForbiddenWriteTarget('images-v8'), isFalse);
-      expect(BucketVersionResolver.isForbiddenWriteTarget('dump'), isFalse);
+      expect(
+        BucketVersionResolver.isForbiddenWriteTarget('website-assets'),
+        isFalse,
+      );
       expect(
         BucketVersionResolver.isForbiddenWriteTarget('fula-metadata'),
         isFalse,
@@ -92,6 +96,19 @@ void main() {
             reason: b);
         // ...but a metadata bucket does NOT get the content LIST-merge, nor is
         // it a managed content base.
+        expect(BucketVersionResolver.readBuckets(b), <String>[b], reason: b);
+        expect(BucketVersionResolver.isManagedBase(b), isFalse, reason: b);
+      }
+    });
+
+    test('migrated shelf-content buckets route writes to -v8 (no list-merge)',
+        () {
+      for (final b in <String>['dump', 'dump-thumbs']) {
+        expect(BucketVersionResolver.writeBucket(b), '$b-v8', reason: b);
+        expect(BucketVersionResolver.isForbiddenWriteTarget(b), isTrue,
+            reason: b);
+        // The shelf addresses each blob by the explicit key in its manifest —
+        // so no content LIST-merge, and not a managed content base.
         expect(BucketVersionResolver.readBuckets(b), <String>[b], reason: b);
         expect(BucketVersionResolver.isManagedBase(b), isFalse, reason: b);
       }

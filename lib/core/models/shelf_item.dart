@@ -114,6 +114,15 @@ class ShelfItem extends HiveObject {
   @HiveField(18)
   String? thumbnailRemoteKey;
 
+  /// The cloud bucket the file BODY was written to (`dump` legacy, or
+  /// `dump-v8` once the v8 migration routes it). Null on rows persisted
+  /// before P7 — treated as the legacy `dump` bucket. Integrity-critical:
+  /// it is the authoritative home used to route this item's body (and, by
+  /// version, its thumbnail) on delete and on a future cloud body-download,
+  /// so it stays correct even if the master v8 flag is later toggled.
+  @HiveField(19)
+  final String? sourceBucket;
+
   ShelfItem({
     required this.id,
     required this.receivedAt,
@@ -134,6 +143,7 @@ class ShelfItem extends HiveObject {
     this.thumbnailPath,
     this.enrichmentStatus = ShelfEnrichmentStatus.pending,
     this.thumbnailRemoteKey,
+    this.sourceBucket,
   });
 
   ShelfItem copyWith({
@@ -156,6 +166,7 @@ class ShelfItem extends HiveObject {
     String? thumbnailPath,
     ShelfEnrichmentStatus? enrichmentStatus,
     String? thumbnailRemoteKey,
+    String? sourceBucket,
   }) {
     return ShelfItem(
       id: id ?? this.id,
@@ -177,6 +188,7 @@ class ShelfItem extends HiveObject {
       thumbnailPath: thumbnailPath ?? this.thumbnailPath,
       enrichmentStatus: enrichmentStatus ?? this.enrichmentStatus,
       thumbnailRemoteKey: thumbnailRemoteKey ?? this.thumbnailRemoteKey,
+      sourceBucket: sourceBucket ?? this.sourceBucket,
     );
   }
 
@@ -212,6 +224,7 @@ class ShelfItem extends HiveObject {
         'autoDescription': autoDescription,
         'thumbnailRemoteKey': thumbnailRemoteKey,
         'enrichmentStatus': enrichmentStatus.name,
+        'sourceBucket': sourceBucket,
       };
 
   /// Rebuilds a [ShelfItem] from a cloud-sync JSON payload. Applies the
@@ -249,6 +262,7 @@ class ShelfItem extends HiveObject {
       thumbnailRemoteKey: json['thumbnailRemoteKey'] as String?,
       enrichmentStatus:
           _enrichmentStatusFromName(json['enrichmentStatus'] as String?),
+      sourceBucket: json['sourceBucket'] as String?,
     );
   }
 

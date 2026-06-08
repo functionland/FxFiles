@@ -217,6 +217,7 @@ class ShelfStorageService {
     ShelfUploadStatus status, {
     String? remoteKey,
     String? errorMessage,
+    String? sourceBucket,
   }) async {
     final existing = getById(id);
     if (existing == null) return;
@@ -224,6 +225,10 @@ class ShelfStorageService {
       uploadStatus: status,
       remoteKey: remoteKey ?? existing.remoteKey,
       errorMessage: errorMessage,
+      // The bucket the body is being written to (e.g. `dump-v8`). Recorded
+      // on the `uploading` transition so delete / future cloud-download can
+      // target the right bucket regardless of the v8 flag's later state.
+      sourceBucket: sourceBucket ?? existing.sourceBucket,
     );
     await update(updated);
   }
@@ -795,6 +800,13 @@ class ShelfPendingDeleteEntry {
   final String? remoteKey;
   final String? thumbnailRemoteKey;
 
+  /// The body bucket the deleted item lived in (`dump` / `dump-v8`), snapshot
+  /// from `ShelfItem.sourceBucket` at delete time. Lets the crash-retry pass
+  /// route the cloud body (and, by version, thumbnail) delete to the same
+  /// bucket the live delete would have, without re-reading the removed row.
+  /// Null for tombstones written before P7 / legacy items → legacy `dump`.
+  final String? sourceBucket;
+
   /// Path of the resumable-upload manifest that was in flight when the
   /// delete fired, if any. Used by the orchestrator to abort the
   /// upload so it can't write back a `remoteKey` against an item that
@@ -806,6 +818,7 @@ class ShelfPendingDeleteEntry {
     required this.markedAt,
     this.remoteKey,
     this.thumbnailRemoteKey,
+    this.sourceBucket,
     this.resumableManifestPath,
   });
 
@@ -815,6 +828,7 @@ class ShelfPendingDeleteEntry {
         if (remoteKey != null) 'remoteKey': remoteKey,
         if (thumbnailRemoteKey != null)
           'thumbnailRemoteKey': thumbnailRemoteKey,
+        if (sourceBucket != null) 'sourceBucket': sourceBucket,
         if (resumableManifestPath != null)
           'resumableManifestPath': resumableManifestPath,
       };
@@ -825,6 +839,7 @@ class ShelfPendingDeleteEntry {
       markedAt: DateTime.parse(json['markedAt'] as String),
       remoteKey: json['remoteKey'] as String?,
       thumbnailRemoteKey: json['thumbnailRemoteKey'] as String?,
+      sourceBucket: json['sourceBucket'] as String?,
       resumableManifestPath: json['resumableManifestPath'] as String?,
     );
   }
