@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
@@ -497,7 +498,23 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Read-only-legacy guard (v8 migration): refuse to WRITE to a managed
+  /// legacy content bucket — new data must go to its `-v8` sibling, never a
+  /// gc-damaged bucket. Inert while v8 routing is disabled. Reads and deletes
+  /// are intentionally NOT guarded (legacy content stays readable, and a user
+  /// may still attempt to clean up legacy objects).
+  void _guardLegacyWrite(String bucket) {
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      throw FulaApiException(
+        'Refusing to write to legacy bucket "$bucket": it is gc-damaged and '
+        'blocks writes. Route through BucketVersionResolver.writeBucket() so '
+        'the write targets "$bucket-${BucketVersionResolver.versionSuffix}".',
+      );
+    }
+  }
+
   Future<void> createBucket(String bucket) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await fula.encCreateBucket(client: _client!, name: bucket);
@@ -626,6 +643,7 @@ class FulaApiService implements FulaApi {
             ? DateTime.fromMillisecondsSinceEpoch(meta.modifiedAt! * 1000)
             : null,
         isDirectory: false,
+        sourceBucket: bucket,
         metadata: {
           'storageKey': meta.storageKey,
           'contentType': meta.contentType ?? '',
@@ -815,6 +833,7 @@ class FulaApiService implements FulaApi {
     String? contentType,
     Map<String, String>? metadata,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -887,6 +906,7 @@ class FulaApiService implements FulaApi {
     void Function(UploadProgress)? onProgress,
     Map<String, String>? metadata,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -925,6 +945,7 @@ class FulaApiService implements FulaApi {
     String filePath, {
     void Function(UploadProgress)? onProgress,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -982,6 +1003,7 @@ class FulaApiService implements FulaApi {
     fula.CancelHandle? cancelHandle,
     void Function(UploadProgress)? onProgress,
   }) async {
+    _guardLegacyWrite(bucket); // primary content-upload path (sync queue)
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);

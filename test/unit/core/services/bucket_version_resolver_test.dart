@@ -1,0 +1,100 @@
+// Unit tests for the v8 bucket-version resolver (Phase 1).
+//
+// Device-free + deterministic: no SDK, no login, no gateway. Run with
+// `flutter test test/unit/core/services/bucket_version_resolver_test.dart`.
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
+
+void main() {
+  // `enabled` is global mutable state — reset around every test so ordering
+  // can never leak the flag between tests.
+  setUp(() => BucketVersionResolver.enabled = false);
+  tearDown(() => BucketVersionResolver.enabled = false);
+
+  group('disabled (default — production-safe until Phase 2)', () {
+    test('writeBucket is a pure passthrough for every bucket', () {
+      for (final b in <String>[
+        'images', 'videos', 'audio', 'documents', // managed bases
+        'dump', 'dump-thumbs', 'tag-metadata', 'integration-test', // unmanaged
+        'images-v8', // already-v8
+      ]) {
+        expect(BucketVersionResolver.writeBucket(b), b, reason: 'bucket=$b');
+      }
+    });
+
+    test('readBuckets returns only the base', () {
+      expect(BucketVersionResolver.readBuckets('images'), <String>['images']);
+    });
+
+    test('no bucket is a forbidden write target', () {
+      expect(BucketVersionResolver.isForbiddenWriteTarget('images'), isFalse);
+      expect(BucketVersionResolver.isForbiddenWriteTarget('dump'), isFalse);
+    });
+  });
+
+  group('enabled', () {
+    setUp(() => BucketVersionResolver.enabled = true);
+
+    test('managed content bases route to their -v8 sibling', () {
+      expect(BucketVersionResolver.writeBucket('images'), 'images-v8');
+      expect(BucketVersionResolver.writeBucket('videos'), 'videos-v8');
+      expect(BucketVersionResolver.writeBucket('audio'), 'audio-v8');
+      expect(BucketVersionResolver.writeBucket('documents'), 'documents-v8');
+    });
+
+    test('writeBucket is idempotent — already-v8 passes through (no -v8-v8)', () {
+      expect(BucketVersionResolver.writeBucket('images-v8'), 'images-v8');
+    });
+
+    test('unmanaged buckets pass through (shelf / metadata / custom / test)', () {
+      for (final b in <String>[
+        'dump', 'dump-thumbs', 'tag-metadata', 'face-metadata', 'playlists',
+        'fula-metadata', 'website-assets', 'nft-assets',
+        'integration-test', 'my-custom-folder',
+      ]) {
+        expect(BucketVersionResolver.writeBucket(b), b, reason: 'bucket=$b');
+      }
+    });
+
+    test('readBuckets merges legacy + v8 for managed bases only', () {
+      expect(
+        BucketVersionResolver.readBuckets('images'),
+        <String>['images', 'images-v8'],
+      );
+      expect(BucketVersionResolver.readBuckets('dump'), <String>['dump']);
+    });
+
+    test('managed legacy bases are forbidden write targets', () {
+      expect(BucketVersionResolver.isForbiddenWriteTarget('images'), isTrue);
+      expect(BucketVersionResolver.isForbiddenWriteTarget('videos'), isTrue);
+      expect(BucketVersionResolver.isForbiddenWriteTarget('audio'), isTrue);
+      expect(BucketVersionResolver.isForbiddenWriteTarget('documents'), isTrue);
+    });
+
+    test('v8 siblings and unmanaged buckets are NOT forbidden', () {
+      expect(BucketVersionResolver.isForbiddenWriteTarget('images-v8'), isFalse);
+      expect(BucketVersionResolver.isForbiddenWriteTarget('dump'), isFalse);
+      expect(
+        BucketVersionResolver.isForbiddenWriteTarget('tag-metadata'),
+        isFalse,
+      );
+    });
+  });
+
+  group('classification helpers (flag-independent)', () {
+    test('isManagedBase', () {
+      expect(BucketVersionResolver.isManagedBase('images'), isTrue);
+      expect(BucketVersionResolver.isManagedBase('documents'), isTrue);
+      expect(BucketVersionResolver.isManagedBase('images-v8'), isFalse);
+      expect(BucketVersionResolver.isManagedBase('dump'), isFalse);
+    });
+
+    test('isV8', () {
+      expect(BucketVersionResolver.isV8('images-v8'), isTrue);
+      expect(BucketVersionResolver.isV8('documents-v8'), isTrue);
+      expect(BucketVersionResolver.isV8('images'), isFalse);
+      expect(BucketVersionResolver.isV8('dump'), isFalse);
+    });
+  });
+}

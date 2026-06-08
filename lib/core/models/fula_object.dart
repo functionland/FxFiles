@@ -8,6 +8,13 @@ class FulaObject {
   final bool isDirectory;
   final Map<String, String>? metadata;
 
+  /// The bucket this object physically lives in (v8 migration). Set by the
+  /// listing layer so that, in a merged legacy+v8 category view, each item's
+  /// later download / delete / share / thumbnail targets the correct bucket.
+  /// Null when unknown (constructed outside the listing path) — callers then
+  /// fall back to the category's default bucket.
+  final String? sourceBucket;
+
   FulaObject({
     required this.key,
     required this.size,
@@ -15,7 +22,19 @@ class FulaObject {
     this.etag,
     this.isDirectory = false,
     this.metadata,
+    this.sourceBucket,
   });
+
+  /// Return a copy tagged with [bucket] as its [sourceBucket].
+  FulaObject withSourceBucket(String bucket) => FulaObject(
+        key: key,
+        size: size,
+        lastModified: lastModified,
+        etag: etag,
+        isDirectory: isDirectory,
+        metadata: metadata,
+        sourceBucket: bucket,
+      );
 
   String get name {
     if (isDirectory) {
@@ -102,6 +121,32 @@ class FulaObject {
     if (size < 1024 * 1024 * 1024) return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(size / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
+
+  /// JSON for the v8 legacy-listing cache (Phase 3). Round-trips every field
+  /// including [sourceBucket] so a cached merged item still routes correctly.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'key': key,
+        'size': size,
+        'lastModified': lastModified?.millisecondsSinceEpoch,
+        'etag': etag,
+        'isDirectory': isDirectory,
+        'metadata': metadata,
+        'sourceBucket': sourceBucket,
+      };
+
+  factory FulaObject.fromJson(Map<String, dynamic> j) => FulaObject(
+        key: j['key'] as String,
+        size: (j['size'] as num?)?.toInt() ?? 0,
+        lastModified: j['lastModified'] == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(j['lastModified'] as int),
+        etag: j['etag'] as String?,
+        isDirectory: j['isDirectory'] as bool? ?? false,
+        metadata: (j['metadata'] as Map?)?.map(
+          (k, v) => MapEntry(k.toString(), v.toString()),
+        ),
+        sourceBucket: j['sourceBucket'] as String?,
+      );
 }
 
 class FulaObjectMetadata {
