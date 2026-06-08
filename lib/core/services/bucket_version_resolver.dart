@@ -44,9 +44,10 @@ class BucketVersionResolver {
 
   /// Metadata buckets migrated to v8 INCREMENTALLY (P6). A bucket here routes
   /// its WRITES to a `-v8` sibling and is a forbidden legacy write target, but
-  /// it does NOT get the content list-merge — metadata is a single per-user
-  /// manifest each service reads v8-then-legacy. Add a bucket here ONLY once
-  /// ALL of its writers are routed, or the flag flip strands them at the guard.
+  /// it does NOT get the content LIST-merge — each metadata service does its own
+  /// MERGE of the legacy + v8 manifests on restore (read both, combine, v8
+  /// wins). Add a bucket here ONLY once ALL of its writers are routed, or the
+  /// flag flip strands them at the guard.
   static const Set<String> managedMetadataBuckets = <String>{
     'dump-metadata', // shelf (P6)
   };

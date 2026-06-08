@@ -1716,6 +1716,8 @@ class AuthService {
       // Clear NFT collections, received NFTs, and tags (user-specific data)
       await NftService.instance.clearAll();
       await TagStorageService.instance.clearAll();
+      // Clear the shelf (dump) — sign-out wipes local FxFiles data.
+      await ShelfStorageService.instance.clearLocal();
 
       // Clear shares and collaborations (user-specific data)
       await SharingService.instance.clearAll();

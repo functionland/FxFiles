@@ -519,87 +519,100 @@ class ShelfStorageService {
     if (box == null) return 0;
     if (!_syncEnabled) return 0;
 
-    Uint8List? data;
-    try {
-      if (cloudSyncDownloadOverride != null) {
-        // Test mode — bypass auth + FulaApiService.
-        data = await cloudSyncDownloadOverride!('.fula/dumps/test.json');
-      } else {
-        final encryptionKey = await AuthService.instance.getEncryptionKey();
-        if (encryptionKey == null) {
-          debugPrint('ShelfStorageService.restoreFromCloud: '
-              'no encryption key — skipping');
-          return 0;
-        }
-        final userId = await _getUserId();
-        if (userId == null) {
-          debugPrint('ShelfStorageService.restoreFromCloud: '
-              'no userId — skipping');
-          return 0;
-        }
-        if (!FulaApiService.instance.isConfigured) {
-          debugPrint('ShelfStorageService.restoreFromCloud: '
-              'FulaApiService not configured — skipping');
-          return 0;
-        }
-        debugPrint('ShelfStorageService.restoreFromCloud: '
-            'downloading key=.fula/dumps/$userId.json (v8-then-legacy)');
-        data = await _downloadManifestV8ThenLegacy(
-          '.fula/dumps/$userId.json',
-          encryptionKey,
-        );
-        debugPrint('ShelfStorageService.restoreFromCloud: '
-            'downloaded ${data?.length ?? 0} bytes from cloud');
+    // Test mode — single blob, bypass auth + FulaApiService.
+    if (cloudSyncDownloadOverride != null) {
+      try {
+        final data = await cloudSyncDownloadOverride!('.fula/dumps/test.json');
+        return await _applyManifest(data, box, applyOrder: true);
+      } catch (e) {
+        debugPrint('ShelfStorageService.restoreFromCloud: override failed: $e');
+        return 0;
       }
-    } catch (e) {
-      debugPrint('ShelfStorageService.restoreFromCloud: download failed: $e');
+    }
+
+    final encryptionKey = await AuthService.instance.getEncryptionKey();
+    if (encryptionKey == null) {
+      debugPrint('ShelfStorageService.restoreFromCloud: no key — skipping');
       return 0;
     }
-    if (data == null || data.isEmpty) return 0;
+    final userId = await _getUserId();
+    if (userId == null) {
+      debugPrint('ShelfStorageService.restoreFromCloud: no userId — skipping');
+      return 0;
+    }
+    if (!FulaApiService.instance.isConfigured) {
+      debugPrint('ShelfStorageService.restoreFromCloud: not configured — skip');
+      return 0;
+    }
+    final key = '.fula/dumps/$userId.json';
 
+    // MERGE legacy + v8 (NOT a fallback): read BOTH and restore ADDITIVELY
+    // (never clobbers a row already present locally). v8 — the current full
+    // snapshot — is applied first so it wins a conflicting id and owns the
+    // order; legacy then fills rows that exist ONLY in the pre-migration bucket
+    // (e.g. another device's items never re-synced to v8). After sign-out wipes
+    // local Hive, this rebuilds the shelf from both buckets.
+    final v8 = _writeBucket;
+    final buckets = v8 == _metadataBucket
+        ? <String>[_metadataBucket]
+        : <String>[v8, _metadataBucket];
+    var restored = 0;
+    var orderApplied = false;
+    for (final bucket in buckets) {
+      try {
+        final data = await FulaApiService.instance
+            .downloadAndDecrypt(bucket, key, encryptionKey);
+        restored += await _applyManifest(data, box, applyOrder: !orderApplied);
+        if (!orderApplied && data.isNotEmpty) orderApplied = true;
+      } catch (e) {
+        debugPrint('ShelfStorageService.restoreFromCloud: $bucket miss/err: $e');
+      }
+    }
+    debugPrint('ShelfStorageService.restoreFromCloud: merged $restored items '
+        'from ${buckets.join("+")}');
+    return restored;
+  }
+
+  /// Apply one decrypted manifest blob into [box] ADDITIVELY (skips rows
+  /// already present locally — protects local edits, and the v8 snapshot when
+  /// legacy is applied second). [applyOrder] writes the manifest `order` only
+  /// when true — the first (v8) manifest in a merge owns the order.
+  Future<int> _applyManifest(Uint8List? data, Box<ShelfItem> box,
+      {required bool applyOrder}) async {
+    if (data == null || data.isEmpty) return 0;
     try {
-      final jsonStr = utf8.decode(data);
-      final raw = jsonDecode(jsonStr);
+      final raw = jsonDecode(utf8.decode(data));
       if (raw is! Map<String, dynamic>) return 0;
       final items = (raw['items'] as List?) ?? const <dynamic>[];
       var restored = 0;
       for (final entry in items) {
         if (entry is! Map<String, dynamic>) continue;
         try {
-          final restoredItem = ShelfItem.fromJson(entry);
-          // Don't clobber a row we already have locally — local state
-          // can be ahead of the cloud snapshot (e.g. an upload-in-
-          // progress on a shared item).
-          if (box.containsKey(restoredItem.id)) continue;
-          await box.put(restoredItem.id, restoredItem);
+          final item = ShelfItem.fromJson(entry);
+          if (box.containsKey(item.id)) continue; // additive — don't clobber
+          await box.put(item.id, item);
           restored++;
         } catch (e) {
-          debugPrint('ShelfStorageService.restoreFromCloud: '
-              'skipping malformed entry: $e');
+          debugPrint('ShelfStorageService: skipping malformed entry: $e');
         }
       }
-      // v2 manifest carries the user-defined order. v1 payloads omit
-      // it; we leave the local order untouched in that case so a
-      // partial cross-device restore from an older client doesn't
-      // wipe the locally-set order. Sanitise against the post-restore
-      // item set.
-      final cloudOrder = raw['order'];
-      if (cloudOrder is List) {
-        final liveIds = box.keys.cast<String>().toSet();
-        final cleaned = cloudOrder
-            .whereType<String>()
-            .where(liveIds.contains)
-            .toSet()
-            .toList(growable: false);
-        await _orderBox?.put(_orderKey, jsonEncode(cleaned));
+      // v2 manifest carries the user-defined order; v1 omits it (leave local
+      // order untouched). Sanitise against the live item set.
+      if (applyOrder) {
+        final cloudOrder = raw['order'];
+        if (cloudOrder is List) {
+          final liveIds = box.keys.cast<String>().toSet();
+          final cleaned = cloudOrder
+              .whereType<String>()
+              .where(liveIds.contains)
+              .toSet()
+              .toList(growable: false);
+          await _orderBox?.put(_orderKey, jsonEncode(cleaned));
+        }
       }
-      debugPrint('ShelfStorageService.restoreFromCloud: restored $restored '
-          'of ${items.length} dump items '
-          '(order: ${cloudOrder is List ? cloudOrder.length : 0})');
       return restored;
     } catch (e) {
-      debugPrint(
-          'ShelfStorageService.restoreFromCloud: parse failed: $e');
+      debugPrint('ShelfStorageService._applyManifest: parse failed: $e');
       return 0;
     }
   }
@@ -697,24 +710,15 @@ class ShelfStorageService {
     }
   }
 
-  /// Read the shelf manifest preferring the v8 bucket (the full current
-  /// snapshot once migrated), falling back to legacy if v8 is absent/unreadable.
-  /// Safe for the shelf because restore is ADDITIVE (never clobbers local).
-  Future<Uint8List?> _downloadManifestV8ThenLegacy(
-      String key, Uint8List encryptionKey) async {
-    final v8 = _writeBucket;
-    if (v8 != _metadataBucket) {
-      try {
-        final d = await FulaApiService.instance
-            .downloadAndDecrypt(v8, key, encryptionKey);
-        if (d.isNotEmpty) return d;
-        // v8 exists but empty → not migrated yet; fall through to legacy.
-      } catch (e) {
-        debugPrint('ShelfStorageService.restore: v8 ($v8) miss → legacy: $e');
-      }
-    }
-    return FulaApiService.instance
-        .downloadAndDecrypt(_metadataBucket, key, encryptionKey);
+  /// Clear ALL local shelf data — called on sign-out (the user is wiping their
+  /// local FxFiles state). Cloud manifests are left intact; a later sign-in
+  /// re-restores the shelf from legacy + v8.
+  Future<void> clearLocal() async {
+    if (!isInitialized) await init();
+    await _box?.clear();
+    await _orderBox?.clear();
+    await _pendingDeletesBox?.clear();
+    debugPrint('ShelfStorageService: local data cleared (sign-out)');
   }
 
   /// Ensure the `dump-metadata` bucket exists before we PUT into it.
