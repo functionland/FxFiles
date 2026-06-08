@@ -20,6 +20,7 @@ import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
@@ -62,6 +63,10 @@ class WebsiteService {
   static const _uuid = Uuid();
   static const String _assetBucket = 'website-assets';
   static const String _websiteMetadataBucket = 'website-metadata';
+
+  /// v8 write target for website metadata (`-v8` when enabled, else legacy).
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_websiteMetadataBucket);
   static const int _maxParsedContentBytes = 100000; // 100KB backend limit
 
   // Per-type per-file size caps. Limits aligned with what Anthropic's
@@ -1493,7 +1498,7 @@ Design:
     if (_metaBucketChecked && _metaBucketExists) return true;
 
     try {
-      await FulaApiService.instance.createBucket(_websiteMetadataBucket);
+      await FulaApiService.instance.createBucket(_writeBucket);
       _metaBucketExists = true;
       _metaBucketChecked = true;
       return true;
@@ -1508,7 +1513,7 @@ Design:
       }
 
       try {
-        await FulaApiService.instance.listObjects(_websiteMetadataBucket);
+        await FulaApiService.instance.listObjects(_writeBucket);
         _metaBucketExists = true;
         _metaBucketChecked = true;
         return true;
@@ -1576,7 +1581,7 @@ Design:
 
       final key = '.fula/websites/$userId.json';
       await FulaApiService.instance.encryptAndUpload(
-        _websiteMetadataBucket,
+        _writeBucket,
         key,
         data,
         encryptionKey,
@@ -1616,15 +1621,18 @@ Design:
       if (userId == null) return;
 
       final key = '.fula/websites/$userId.json';
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _websiteMetadataBucket,
-        key,
-        encryptionKey,
-      );
-
-      final jsonStr = utf8.decode(data);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final generationsList = json['generations'] as List<dynamic>? ?? [];
+      // MERGE legacy + v8: gather generations from BOTH buckets, v8 (read first)
+      // winning a duplicate id; legacy fills ids only it has.
+      final byId = <String, dynamic>{};
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_websiteMetadataBucket, key, encryptionKey)) {
+        final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+        for (final g in (j['generations'] as List<dynamic>? ?? [])) {
+          final id = (g as Map<String, dynamic>)['id'] as String?;
+          if (id != null) byId.putIfAbsent(id, () => g);
+        }
+      }
+      final generationsList = byId.values.toList();
 
       if (_generationsBox.isEmpty || generationsList.isNotEmpty) {
         // Preserve any in-progress local generations
