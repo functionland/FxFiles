@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/app_models.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
@@ -61,6 +62,10 @@ class AppStoreService {
 
   // Cloud sync state
   static const String _appMetadataBucket = 'app-metadata';
+
+  /// v8 write target for app metadata (`-v8` when enabled, else legacy).
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_appMetadataBucket);
   bool _metaBucketChecked = false;
   bool _metaBucketExists = false;
   bool _syncScheduled = false;
@@ -525,7 +530,7 @@ class AppStoreService {
 
       final key = '.fula/apps/$userId.json';
       await FulaApiService.instance.encryptAndUpload(
-        _appMetadataBucket,
+        _writeBucket,
         key,
         data,
         encryptionKey,
@@ -550,15 +555,18 @@ class AppStoreService {
       if (userId == null) return;
 
       final key = '.fula/apps/$userId.json';
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _appMetadataBucket,
-        key,
-        encryptionKey,
-      );
-
-      final jsonStr = utf8.decode(data);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final appsList = json['activatedApps'] as List<dynamic>? ?? [];
+      // MERGE legacy + v8: gather apps from BOTH buckets, v8 (read first) wins a
+      // duplicate appId; legacy fills appIds only it has.
+      final byId = <String, dynamic>{};
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_appMetadataBucket, key, encryptionKey)) {
+        final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+        for (final a in (j['activatedApps'] as List<dynamic>? ?? [])) {
+          final id = (a as Map<String, dynamic>)['appId'] as String?;
+          if (id != null) byId.putIfAbsent(id, () => a);
+        }
+      }
+      final appsList = byId.values.toList();
 
       if (_activatedAppsBox.isEmpty && appsList.isNotEmpty) {
         for (final appJson in appsList) {
@@ -584,7 +592,7 @@ class AppStoreService {
     if (_metaBucketChecked && _metaBucketExists) return true;
 
     try {
-      await FulaApiService.instance.createBucket(_appMetadataBucket);
+      await FulaApiService.instance.createBucket(_writeBucket);
       _metaBucketExists = true;
       _metaBucketChecked = true;
       return true;

@@ -53,6 +53,7 @@ class BucketVersionResolver {
     'tag-metadata', // tags (P6)
     'nft-metadata', // nft (P6)
     'website-metadata', // website + ipns-pointer (P6 — BOTH writers routed)
+    'app-metadata', // app store (P6)
   };
 
   /// A bucket whose writes route to a `-v8` sibling: a content category OR a
