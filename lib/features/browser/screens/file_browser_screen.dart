@@ -4046,7 +4046,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  /// P4: a managed legacy content bucket (images/videos/audio/documents) does
+  /// not support deletion while v8 is enabled — its objects are preserved so
+  /// existing share links keep working. v8-bucket files delete normally.
+  void _showLegacyDeleteBlockedMessage() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(
+          'Legacy-bucket files can\'t be deleted — they\'re preserved so '
+          'existing share links keep working. Files you add now delete normally.'),
+      backgroundColor: Colors.orange,
+      duration: Duration(seconds: 4),
+    ));
+  }
+
   Future<void> _deleteFromCloud(LocalFile file) async {
+    final category = FileCategory.fromPath(file.path);
+    // v8: delete the cloud copy from the bucket it was synced to (the SyncState
+    // records the real bucket — `-v8` for new uploads). A managed legacy bucket
+    // is delete-blocked (P4).
+    final bucket =
+        LocalStorageService.instance.getSyncState(file.path)?.bucket ??
+            category.bucketName;
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      _showLegacyDeleteBlockedMessage();
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -4064,12 +4089,6 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     if (confirmed == true) {
       try {
-        final category = FileCategory.fromPath(file.path);
-        // v8: delete the cloud copy from the bucket it was synced to (the
-        // SyncState records the real bucket — `-v8` for new uploads).
-        final bucket =
-            LocalStorageService.instance.getSyncState(file.path)?.bucket ??
-                category.bucketName;
         await FulaApiService.instance.deleteObject(bucket, file.name);
         
         // Remove sync state since file is no longer on cloud
@@ -4097,6 +4116,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _deleteCloudOnlyFile(FulaObject cloudFile, String bucket) async {
+    final targetBucket = cloudFile.sourceBucket ?? bucket;
+    if (BucketVersionResolver.isForbiddenWriteTarget(targetBucket)) {
+      _showLegacyDeleteBlockedMessage();
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -4114,8 +4138,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     if (confirmed == true) {
       try {
-        await FulaApiService.instance
-            .deleteObject(cloudFile.sourceBucket ?? bucket, cloudFile.key);
+        await FulaApiService.instance.deleteObject(targetBucket, cloudFile.key);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Deleted from cloud')),

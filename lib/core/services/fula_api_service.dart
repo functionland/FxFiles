@@ -513,6 +513,20 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Backstop for the P4 policy: a managed *legacy* content bucket does not
+  /// support deletion (its objects are preserved so existing share links keep
+  /// working). Only the `-v8` sibling can be deleted. The UI checks this first
+  /// and shows a friendly message; this guards any path that doesn't.
+  void _guardLegacyDelete(String bucket) {
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      throw FulaApiException(
+        'Legacy bucket "$bucket" does not support deletion: its objects are '
+        'preserved so existing share links keep working. Only files in '
+        '"$bucket-${BucketVersionResolver.versionSuffix}" can be deleted.',
+      );
+    }
+  }
+
   Future<void> createBucket(String bucket) async {
     _guardLegacyWrite(bucket);
     _ensureConfigured();
@@ -852,6 +866,7 @@ class FulaApiService implements FulaApi {
 
   /// Delete a file
   Future<void> deleteObject(String bucket, String key) async {
+    _guardLegacyDelete(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);

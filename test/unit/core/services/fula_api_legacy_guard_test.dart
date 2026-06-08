@@ -22,6 +22,10 @@ void main() {
       e is FulaApiException &&
       e.toString().contains('Refusing to write to legacy bucket');
 
+  bool isDeleteGuardError(Object? e) =>
+      e is FulaApiException &&
+      e.toString().contains('does not support deletion');
+
   group('FulaApiService read-only-legacy guard wiring (device-free)', () {
     test('enabled: every write method blocks a legacy managed bucket', () async {
       BucketVersionResolver.enabled = true;
@@ -62,6 +66,31 @@ void main() {
       await expectLater(
         FulaApiService.instance.createBucket('images'),
         throwsA(predicate((Object? e) => !isGuardError(e))),
+      );
+    });
+
+    test('P4 enabled: deleteObject blocks a managed legacy bucket', () async {
+      BucketVersionResolver.enabled = true;
+      await expectLater(
+        FulaApiService.instance.deleteObject('images', 'k'),
+        throwsA(predicate(isDeleteGuardError)),
+      );
+    });
+
+    test('P4 enabled: deleteObject on a v8 sibling is NOT delete-guarded', () async {
+      BucketVersionResolver.enabled = true;
+      // Guard lets it through; then it fails on "not configured" — a different
+      // error, proving the delete-guard did not fire.
+      await expectLater(
+        FulaApiService.instance.deleteObject('images-v8', 'k'),
+        throwsA(predicate((Object? e) => !isDeleteGuardError(e))),
+      );
+    });
+
+    test('P4 disabled: deleteObject is NOT delete-guarded (normal delete)', () async {
+      await expectLater(
+        FulaApiService.instance.deleteObject('images', 'k'),
+        throwsA(predicate((Object? e) => !isDeleteGuardError(e))),
       );
     });
   });
