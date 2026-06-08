@@ -381,6 +381,22 @@ updated," and have the client re-validate the freeze on any multi-device signal.
   legacy delete guard that routes to the tombstone path; delete UI uses
   `sourceBucket`.
 
+**CONFIRMED on-device (2026-06-08, flag-ON diagnostic, account ehsan6sha, moto g85).**
+v8 uploads route + succeed + merge correctly and the **category view shows correct
+status** — but the **cloud explorer** (`_isCloudMode`, browsing `images-v8`) shows the
+on-disk uploaded files as **"cloud only"** (no thumbnail). Root cause: the explorer's
+matcher `_findLocalFileForCloudObject` is v8-blind — Strategy 1 needs an exact
+`SyncState.bucket == 'images-v8'` match, and Strategy 2's directory fallback is dead
+because `_categoryFromBucket('images-v8')` returns null (`file_browser_screen.dart:
+940-949`). The **category view is correct because it is *local-file-driven*** (matches
+`localFile.name` against the merged cloud map, bucket-agnostic), whereas the explorer is
+*cloud-object-driven*. **Fix (in the 10.4 threading pass):** make `_categoryFromBucket`
+strip the `-v8` suffix, AND make the explorer matcher resolve base↔v8 (match
+`state.bucket ∈ readBuckets(base)`); also verify `SyncState.remoteKey` is populated on
+upload (`queueUpload` sets `remotePath` but not `remoteKey`, sync_service.dart:440-447).
+The **10.1 symmetry gap was ALSO confirmed live**: `documents` showed **empty** because its
+legacy listing throws a stale-manifest error → treated as empty.
+
 ### 10.5 Cryptographic + temporal robustness (Gemini, MEDIUM-HIGH)
 
 - **Key-rotation orphaning.** The frozen cache captures storage-keys/pointers at
