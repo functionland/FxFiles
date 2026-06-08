@@ -24,6 +24,7 @@ import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/legacy_listing_cache.dart';
 import 'package:fula_files/core/utils/user_id.dart';
@@ -561,15 +562,19 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   /// load re-reads the legacy bucket (the escape hatch if a frozen listing was
   /// ever incomplete), then reload.
   Future<void> _refreshCategory() async {
+    // Only touch the legacy cache when v8 routing is active for this bucket;
+    // flag-off this is a plain reload (no encrypted box opened).
     try {
-      if (widget.category != null) {
-        final userId = await deriveUserId();
-        if (userId != null) {
-          await LegacyListingCache.instance.init();
-          await LegacyListingCache.instance.clear(
-            userId,
-            _categoryFromString(widget.category!).bucketName,
-          );
+      final category = widget.category;
+      if (category != null) {
+        final base = _categoryFromString(category).bucketName;
+        if (BucketVersionResolver.enabled &&
+            BucketVersionResolver.isManagedBase(base)) {
+          final userId = await deriveUserId();
+          if (userId != null) {
+            await LegacyListingCache.instance.init();
+            await LegacyListingCache.instance.clear(userId, base);
+          }
         }
       }
     } catch (e) {
@@ -685,7 +690,13 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // v8 merge: legacy (loaded once, then frozen) + live v8. Falls back
           // to a plain single-bucket read if userId is unavailable; collapses
           // to just the legacy bucket while v8 routing is disabled.
-          final userId = await deriveUserId();
+          // Only take the v8 cache/merge path when routing would actually
+          // split this bucket (flag on + managed); otherwise a plain
+          // single-bucket read opens no encrypted legacy-cache box, so
+          // flag-off is a true no-op.
+          final useV8 = BucketVersionResolver.enabled &&
+              BucketVersionResolver.isManagedBase(bucketName);
+          final userId = useV8 ? await deriveUserId() : null;
           if (userId != null) await LegacyListingCache.instance.init();
           final cloudResult = userId == null
               ? await FulaApiService.instance.listObjectsCached(bucketName)

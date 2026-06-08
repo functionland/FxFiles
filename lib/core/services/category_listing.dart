@@ -138,16 +138,18 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
   LegacyListingCache cache,
   String userId,
   String base, {
-  String prefix = '',
   Duration timeout = const Duration(seconds: 10),
 }) async {
+  // No `prefix` param by design: a category is a FLAT whole-bucket view and
+  // the frozen legacy cache represents the ENTIRE bucket. Accepting a prefix
+  // would let a filtered listing be frozen as the full-bucket cache (silent
+  // corruption). Callers needing narrowing filter the merged result in-memory.
   final buckets = BucketVersionResolver.readBuckets(base);
 
   // Single bucket (unmanaged / v8 disabled): no legacy/v8 split, no caching.
   if (buckets.length == 1) {
     final r = await api.listObjectsCached(
       buckets.first,
-      prefix: prefix,
       timeout: timeout,
     );
     return (
@@ -170,8 +172,7 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
     legacyItems = frozen; // instant — legacy is never re-loaded once frozen
   } else {
     try {
-      final r =
-          await api.listObjectsCached(legacy, prefix: prefix, timeout: timeout);
+      final r = await api.listObjectsCached(legacy, timeout: timeout);
       legacyItems = r.objects;
       legacyStale = r.stale;
       if (!r.stale) {
@@ -191,7 +192,7 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
   var v8Stale = false;
   DateTime? v8Fetch;
   try {
-    final r = await api.listObjectsCached(v8, prefix: prefix, timeout: timeout);
+    final r = await api.listObjectsCached(v8, timeout: timeout);
     v8Items = r.objects;
     v8Stale = r.stale;
     v8Fetch = r.fetchedAt;
