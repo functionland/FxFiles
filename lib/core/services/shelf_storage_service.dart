@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:fula_files/core/models/shelf_item.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 
 /// Persistence for the Shelf feature. Singleton, mirrors the repo's
@@ -45,6 +46,12 @@ class ShelfStorageService {
   /// user. Key shape mirrors TagStorageService's `.fula/tags/<id>.json`
   /// convention.
   static const String _metadataBucket = 'dump-metadata';
+
+  /// The bucket the shelf manifest is WRITTEN to: `dump-metadata-v8` when v8
+  /// routing is enabled (the legacy bucket is gc-damaged and rejects writes),
+  /// else `dump-metadata`. Reads try this first, then fall back to legacy.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
 
   /// Current cloud manifest payload version. v1 was items-only; v2
   /// adds the `'order'` field (per-user display order). Restore tolerates
@@ -536,15 +543,13 @@ class ShelfStorageService {
           return 0;
         }
         debugPrint('ShelfStorageService.restoreFromCloud: '
-            'downloading bucket=$_metadataBucket '
-            'key=.fula/dumps/$userId.json');
-        data = await FulaApiService.instance.downloadAndDecrypt(
-          _metadataBucket,
+            'downloading key=.fula/dumps/$userId.json (v8-then-legacy)');
+        data = await _downloadManifestV8ThenLegacy(
           '.fula/dumps/$userId.json',
           encryptionKey,
         );
         debugPrint('ShelfStorageService.restoreFromCloud: '
-            'downloaded ${data.length} bytes from cloud');
+            'downloaded ${data?.length ?? 0} bytes from cloud');
       }
     } catch (e) {
       debugPrint('ShelfStorageService.restoreFromCloud: download failed: $e');
@@ -663,7 +668,7 @@ class ShelfStorageService {
               'starting upload of ${items.length} items '
               '(${dataWithUser.length} bytes)');
           await FulaApiService.instance.encryptAndUpload(
-            _metadataBucket,
+            _writeBucket,
             '.fula/dumps/$userId.json',
             dataWithUser,
             encryptionKey,
@@ -692,6 +697,26 @@ class ShelfStorageService {
     }
   }
 
+  /// Read the shelf manifest preferring the v8 bucket (the full current
+  /// snapshot once migrated), falling back to legacy if v8 is absent/unreadable.
+  /// Safe for the shelf because restore is ADDITIVE (never clobbers local).
+  Future<Uint8List?> _downloadManifestV8ThenLegacy(
+      String key, Uint8List encryptionKey) async {
+    final v8 = _writeBucket;
+    if (v8 != _metadataBucket) {
+      try {
+        final d = await FulaApiService.instance
+            .downloadAndDecrypt(v8, key, encryptionKey);
+        if (d.isNotEmpty) return d;
+        // v8 exists but empty → not migrated yet; fall through to legacy.
+      } catch (e) {
+        debugPrint('ShelfStorageService.restore: v8 ($v8) miss → legacy: $e');
+      }
+    }
+    return FulaApiService.instance
+        .downloadAndDecrypt(_metadataBucket, key, encryptionKey);
+  }
+
   /// Ensure the `dump-metadata` bucket exists before we PUT into it.
   /// Mirrors `TagStorageService._ensureBucketExists`: try `createBucket`
   /// (which is idempotent in spirit but throws on existing buckets in
@@ -704,9 +729,9 @@ class ShelfStorageService {
   Future<bool> _ensureMetadataBucket() async {
     if (_metadataBucketReady) return true;
     try {
-      await FulaApiService.instance.createBucket(_metadataBucket);
+      await FulaApiService.instance.createBucket(_writeBucket);
       _metadataBucketReady = true;
-      debugPrint('ShelfStorageService: metadata bucket created');
+      debugPrint('ShelfStorageService: metadata bucket created ($_writeBucket)');
       return true;
     } catch (e) {
       final s = e.toString();
@@ -720,7 +745,7 @@ class ShelfStorageService {
       // surface it differently — try a list as a tie-breaker before
       // giving up. If list succeeds, the bucket is there.
       try {
-        await FulaApiService.instance.listObjects(_metadataBucket);
+        await FulaApiService.instance.listObjects(_writeBucket);
         _metadataBucketReady = true;
         return true;
       } catch (_) {

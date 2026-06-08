@@ -80,6 +80,25 @@ void main() {
         isFalse,
       );
     });
+
+    test('migrated metadata bucket (dump-metadata) routes writes to -v8', () {
+      expect(BucketVersionResolver.writeBucket('dump-metadata'),
+          'dump-metadata-v8');
+      expect(BucketVersionResolver.isForbiddenWriteTarget('dump-metadata'),
+          isTrue);
+      // ...but a metadata bucket does NOT get the content LIST-merge, and is
+      // not a managed content base.
+      expect(BucketVersionResolver.readBuckets('dump-metadata'),
+          <String>['dump-metadata']);
+      expect(BucketVersionResolver.isManagedBase('dump-metadata'), isFalse);
+    });
+
+    test('un-migrated metadata buckets still pass through (incremental)', () {
+      expect(BucketVersionResolver.writeBucket('tag-metadata'), 'tag-metadata');
+      expect(BucketVersionResolver.writeBucket('fula-metadata'), 'fula-metadata');
+      expect(BucketVersionResolver.isForbiddenWriteTarget('tag-metadata'),
+          isFalse);
+    });
   });
 
   group('classification helpers (flag-independent)', () {

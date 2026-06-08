@@ -42,6 +42,20 @@ class BucketVersionResolver {
     'documents',
   };
 
+  /// Metadata buckets migrated to v8 INCREMENTALLY (P6). A bucket here routes
+  /// its WRITES to a `-v8` sibling and is a forbidden legacy write target, but
+  /// it does NOT get the content list-merge — metadata is a single per-user
+  /// manifest each service reads v8-then-legacy. Add a bucket here ONLY once
+  /// ALL of its writers are routed, or the flag flip strands them at the guard.
+  static const Set<String> managedMetadataBuckets = <String>{
+    'dump-metadata', // shelf (P6)
+  };
+
+  /// A bucket whose writes route to a `-v8` sibling: a content category OR a
+  /// migrated metadata bucket.
+  static bool _routesToV8(String b) =>
+      managedBaseBuckets.contains(b) || managedMetadataBuckets.contains(b);
+
   /// True if [bucket] is a managed *base* (legacy) bucket — i.e. one whose
   /// writes should be redirected to its `-v8` sibling.
   static bool isManagedBase(String bucket) =>
@@ -73,7 +87,7 @@ class BucketVersionResolver {
   /// buckets (migrated later), custom folder-sync targets, and the test
   /// bucket. Idempotent — `writeBucket('images-v8') == 'images-v8'`.
   static String writeBucket(String base) =>
-      (enabled && isManagedBase(base)) ? '$base-$versionSuffix' : base;
+      (enabled && _routesToV8(base)) ? '$base-$versionSuffix' : base;
 
   /// The buckets a read of [base] should cover — legacy first, then v8 — so a
   /// merged view shows old + new content. Consumed by the Phase 2 read-merge;
@@ -87,5 +101,5 @@ class BucketVersionResolver {
   /// managed *legacy* bucket is a bug — new data must never land in a
   /// gc-damaged bucket. Callers on the write path check this and throw.
   static bool isForbiddenWriteTarget(String bucket) =>
-      enabled && isManagedBase(bucket);
+      enabled && _routesToV8(bucket);
 }
