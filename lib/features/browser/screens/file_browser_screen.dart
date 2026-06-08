@@ -24,6 +24,9 @@ import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/category_listing.dart';
+import 'package:fula_files/core/services/legacy_listing_cache.dart';
+import 'package:fula_files/core/utils/user_id.dart';
 import 'package:fula_files/core/utils/safe_path.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/shared/widgets/master_health_banner.dart';
@@ -554,6 +557,27 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     return false; // At root, allow normal back
   }
 
+  /// Pull-to-refresh for a category: drop the frozen legacy cache so the next
+  /// load re-reads the legacy bucket (the escape hatch if a frozen listing was
+  /// ever incomplete), then reload.
+  Future<void> _refreshCategory() async {
+    try {
+      if (widget.category != null) {
+        final userId = await deriveUserId();
+        if (userId != null) {
+          await LegacyListingCache.instance.init();
+          await LegacyListingCache.instance.clear(
+            userId,
+            _categoryFromString(widget.category!).bucketName,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('_refreshCategory: legacy cache clear failed: $e');
+    }
+    await _loadCategoryFiles();
+  }
+
   Future<void> _loadCategoryFiles() async {
     if (!mounted) return;
     setState(() {
@@ -658,9 +682,19 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // client's outer write lock can't freeze the bucket-list view.
           // Stale results are still shown to the user; a fresh fetch will
           // run the next time _loadCategoryFiles fires.
-          final cloudResult = await FulaApiService.instance.listObjectsCached(
-            bucketName,
-          );
+          // v8 merge: legacy (loaded once, then frozen) + live v8. Falls back
+          // to a plain single-bucket read if userId is unavailable; collapses
+          // to just the legacy bucket while v8 routing is disabled.
+          final userId = await deriveUserId();
+          if (userId != null) await LegacyListingCache.instance.init();
+          final cloudResult = userId == null
+              ? await FulaApiService.instance.listObjectsCached(bucketName)
+              : await listCategoryCached(
+                  FulaApiService.instance,
+                  LegacyListingCache.instance,
+                  userId,
+                  bucketName,
+                );
           final cloudFiles = cloudResult.objects;
           debugPrint(
             'Cloud files in $bucketName: ${cloudFiles.length}'
@@ -1487,7 +1521,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final thumbScrollItems = _buildThumbScrollItems();
 
     final listView = RefreshIndicator(
-      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
+      onRefresh: _isCategoryMode ? _refreshCategory : _loadFiles,
       child: ListView.builder(
         controller: _scrollController,
         cacheExtent: 500,
@@ -1557,7 +1591,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         : _files.length + (_hasMore ? 1 : 0);
 
     final gridView = RefreshIndicator(
-      onRefresh: _isCategoryMode ? _loadCategoryFiles : _loadFiles,
+      onRefresh: _isCategoryMode ? _refreshCategory : _loadFiles,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final baseCols = _viewMode == ViewMode.largeGrid ? 2 : 4;
@@ -3704,12 +3738,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       if (encryptionKey != null) {
         // Download with local blox fallback to cloud
         data = await FulaApiService.instance.downloadWithLocalFallback(
-          bucket,
+          cloudFile.sourceBucket ?? bucket, // v8: item's real bucket
           cloudFile.key,
         );
       } else {
         // Fallback to plain download if no encryption key
-        data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
+        data = await FulaApiService.instance.downloadObject(cloudFile.sourceBucket ?? bucket, cloudFile.key);
         debugPrint('Downloaded ${cloudFile.key} without decryption (no key)');
       }
 
@@ -4005,7 +4039,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     if (confirmed == true) {
       try {
         final category = FileCategory.fromPath(file.path);
-        final bucket = category.bucketName;
+        // v8: delete the cloud copy from the bucket it was synced to (the
+        // SyncState records the real bucket — `-v8` for new uploads).
+        final bucket =
+            LocalStorageService.instance.getSyncState(file.path)?.bucket ??
+                category.bucketName;
         await FulaApiService.instance.deleteObject(bucket, file.name);
         
         // Remove sync state since file is no longer on cloud
@@ -4050,7 +4088,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     if (confirmed == true) {
       try {
-        await FulaApiService.instance.deleteObject(bucket, cloudFile.key);
+        await FulaApiService.instance
+            .deleteObject(cloudFile.sourceBucket ?? bucket, cloudFile.key);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Deleted from cloud')),

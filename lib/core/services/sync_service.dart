@@ -1605,10 +1605,18 @@ class SyncService {
         continue;
       }
 
-      // Add to in-memory queue
+      // Add to in-memory queue.
+      // Re-route UPLOAD tasks through the v8 resolver on restore: a task
+      // persisted to a legacy managed bucket (e.g. `images`) before the flag
+      // flipped would otherwise re-enter the queue as `images` and hit the
+      // read-only-legacy write guard. writeBucket is a no-op when the flag is
+      // off and idempotent on an already-v8 bucket. DOWNLOAD tasks keep their
+      // original bucket — the file may genuinely live in legacy.
       final task = SyncTask(
         localPath: persistentTask.localPath,
-        remoteBucket: persistentTask.remoteBucket,
+        remoteBucket: persistentTask.isUpload
+            ? BucketVersionResolver.writeBucket(persistentTask.remoteBucket)
+            : persistentTask.remoteBucket,
         remoteKey: persistentTask.remoteKey,
         direction: persistentTask.isUpload ? SyncDirection.upload : SyncDirection.download,
         encrypt: persistentTask.encrypt,

@@ -111,7 +111,7 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
     }
     anyStale = anyStale || r.stale;
     final f = r.fetchedAt;
-    if (f != null && (oldestFetch == null || f.isBefore(oldestFetch!))) {
+    if (f != null && (oldestFetch == null || f.isBefore(oldestFetch))) {
       oldestFetch = f;
     }
     for (final o in r.objects) {
