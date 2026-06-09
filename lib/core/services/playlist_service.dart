@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/playlist.dart';
+import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
@@ -13,6 +15,17 @@ class PlaylistService {
 
   static const String _playlistBucket = 'playlists';
   static const String _playlistPrefix = 'user-playlists/';
+
+  /// Reserved prefix (OUTSIDE `_playlistPrefix`, so the playlist list-scan
+  /// never parses these as playlists) for per-id delete tombstones. One
+  /// independent object per delete → no read-modify-write race across devices.
+  static const String _playlistTombstonePrefix = 'playlist-deleted/';
+
+  /// The bucket playlist WRITES/DELETES route to: `playlists-v8` once the
+  /// legacy (gc-damaged) forest is v8-managed, else `playlists`. Reads MERGE
+  /// both. No-op until `playlists` joins the managed set.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_playlistBucket);
 
   Box<Playlist>? _playlistBox;
   bool _isInitialized = false;
@@ -104,10 +117,15 @@ class PlaylistService {
 
     final playlist = box.get(id);
     if (playlist != null) {
-      // Delete from cloud if synced
-      if (playlist.cloudKey != null && FulaApiService.instance.isConfigured) {
+      // Write the tombstone + delete the cloud object BEFORE removing locally,
+      // so a failure can't leave a resurrectable cloud copy with no tombstone.
+      // Tombstone unconditionally (when configured) — a copy may exist in the
+      // cloud from another device even if this device never set `cloudKey`.
+      if (FulaApiService.instance.isConfigured) {
+        await _tombstonePlaylist(id);
+        final cloudKey = playlist.cloudKey ?? '$_playlistPrefix$id.json';
         try {
-          await FulaApiService.instance.deleteObject(_playlistBucket, playlist.cloudKey!);
+          await FulaApiService.instance.deleteObject(_writeBucket, cloudKey);
         } catch (e) {
           debugPrint('Error deleting playlist from cloud: $e');
         }
@@ -208,10 +226,10 @@ class PlaylistService {
     }
 
     try {
-      // Ensure bucket exists
-      final bucketExists = await FulaApiService.instance.bucketExists(_playlistBucket);
+      // Ensure bucket exists (the v8 write target once managed)
+      final bucketExists = await FulaApiService.instance.bucketExists(_writeBucket);
       if (!bucketExists) {
-        await FulaApiService.instance.createBucket(_playlistBucket);
+        await FulaApiService.instance.createBucket(_writeBucket);
       }
 
       // Convert playlist to JSON
@@ -223,7 +241,7 @@ class PlaylistService {
 
       // Upload playlist (key must match what downloadAndDecrypt uses)
       await FulaApiService.instance.encryptAndUpload(
-        _playlistBucket,
+        _writeBucket,
         cloudKey,
         data,
         encryptionKey,
@@ -268,47 +286,69 @@ class PlaylistService {
       throw PlaylistServiceException('User not authenticated');
     }
 
-    final cloudPlaylists = <Playlist>[];
-
     try {
-      // Check if bucket exists
-      final bucketExists = await FulaApiService.instance.bucketExists(_playlistBucket);
-      if (!bucketExists) {
-        debugPrint('Playlist bucket does not exist');
-        return cloudPlaylists;
-      }
+      // MERGE legacy + v8 — the legacy forest is gc-damaged, new writes land in
+      // `playlists-v8`. Iterate LEGACY FIRST (the frozen source of truth): a
+      // hard legacy error surfaces (we never silently return a v8-only view),
+      // while an absent v8 bucket (not created yet) is simply skipped. Drop the
+      // single `bucketExists` gate — a per-bucket list tolerant of NoSuchBucket
+      // never drops the OTHER bucket when one is absent.
+      final legacyBucket = _playlistBucket;
+      final v8Bucket = _writeBucket;
+      final buckets = v8Bucket == legacyBucket
+          ? <String>[legacyBucket]
+          : <String>[legacyBucket, v8Bucket];
 
-      // List all playlists in cloud
-      final objects = await FulaApiService.instance.listObjects(
-        _playlistBucket,
-        prefix: _playlistPrefix,
-      );
+      final v8Playlists = <Playlist>[];
+      final legacyPlaylists = <Playlist>[];
 
-      for (final obj in objects) {
-        if (obj.isDirectory || !obj.key.endsWith('.json')) continue;
+      for (final bucket in buckets) {
+        final isLegacy = bucket == legacyBucket;
 
+        List<FulaObject> objects;
         try {
-          // Download and decrypt
-          final data = await FulaApiService.instance.downloadAndDecrypt(
-            _playlistBucket,
-            obj.key,
-            encryptionKey,
-          );
-
-          final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-          final playlist = Playlist.fromJson(json);
-          playlist.cloudKey = obj.key;
-          playlist.isSyncedToCloud = true;
-
-          cloudPlaylists.add(playlist);
+          objects = await FulaApiService.instance
+              .listObjects(bucket, prefix: _playlistPrefix);
         } catch (e) {
-          debugPrint('Error loading playlist ${obj.key}: $e');
+          if (_isNotFoundError(e)) {
+            debugPrint('PlaylistService: $bucket absent, skipping: $e');
+            continue;
+          }
+          if (isLegacy) rethrow; // hard error on the source of truth → surface
+          debugPrint('PlaylistService: v8 list failed, using legacy only: $e');
+          continue; // hard error on v8 → tolerate as empty
+        }
+
+        final target = isLegacy ? legacyPlaylists : v8Playlists;
+        for (final obj in objects) {
+          if (obj.isDirectory || !obj.key.endsWith('.json')) continue;
+          try {
+            final data = await FulaApiService.instance
+                .downloadAndDecrypt(bucket, obj.key, encryptionKey);
+            final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+            final playlist = Playlist.fromJson(json);
+            playlist.cloudKey = obj.key;
+            playlist.isSyncedToCloud = true;
+            target.add(playlist);
+          } catch (e) {
+            debugPrint('Error loading playlist ${obj.key}: $e');
+          }
         }
       }
 
-      debugPrint('Fetched ${cloudPlaylists.length} playlists from cloud');
-      return cloudPlaylists;
+      final tombstoned = await _fetchTombstonedIds();
+      final merged = mergePlaylists(
+        v8: v8Playlists,
+        legacy: legacyPlaylists,
+        tombstoned: tombstoned,
+      );
+
+      debugPrint('Fetched ${merged.length} playlists from cloud '
+          '(v8=${v8Playlists.length} legacy=${legacyPlaylists.length} '
+          'tombstoned=${tombstoned.length})');
+      return merged;
     } catch (e) {
+      if (e is PlaylistServiceException) rethrow;
       throw PlaylistServiceException('Failed to fetch playlists: $e');
     }
   }
@@ -339,12 +379,80 @@ class PlaylistService {
       throw PlaylistServiceException('Cloud storage not configured');
     }
 
+    // Tombstone by the id embedded in the key so a legacy-only copy can't
+    // resurrect via the list-merge, then delete the v8 object.
+    final fileName = cloudKey.split('/').last;
+    final id = fileName.endsWith('.json')
+        ? fileName.substring(0, fileName.length - '.json'.length)
+        : fileName;
+    if (id.isNotEmpty) await _tombstonePlaylist(id);
+
     try {
-      await FulaApiService.instance.deleteObject(_playlistBucket, cloudKey);
+      await FulaApiService.instance.deleteObject(_writeBucket, cloudKey);
       debugPrint('Deleted playlist from cloud: $cloudKey');
     } catch (e) {
+      if (_isNotFoundError(e)) {
+        debugPrint('PlaylistService: no cloud object to delete: $cloudKey');
+        return;
+      }
       throw PlaylistServiceException('Failed to delete playlist from cloud: $e');
     }
+  }
+
+  /// Write a per-id delete tombstone to the v8 bucket so a deleted playlist
+  /// whose (immortal) legacy copy still lists can't resurrect via the merge.
+  /// One independent object per delete — no read-modify-write race across
+  /// devices (unlike a central deleted-ids manifest). No-op while unmanaged
+  /// (tombstones live only in v8). Best-effort: a failure may let the playlist
+  /// reappear until it is re-deleted online (parity with today's 410'd delete).
+  Future<void> _tombstonePlaylist(String id) async {
+    final v8Bucket = _writeBucket;
+    if (v8Bucket == _playlistBucket) return; // unmanaged → tombstones not used
+    try {
+      final body = jsonEncode({'deletedAt': DateTime.now().toIso8601String()});
+      await FulaApiService.instance.uploadObject(
+        v8Bucket,
+        '$_playlistTombstonePrefix$id.json',
+        Uint8List.fromList(utf8.encode(body)),
+        contentType: 'application/json',
+      );
+      debugPrint('PlaylistService: tombstoned playlist $id');
+    } catch (e) {
+      debugPrint('PlaylistService: tombstone write failed for $id: $e');
+    }
+  }
+
+  /// Read the set of tombstoned (deleted) playlist ids from the v8 bucket.
+  /// Tombstones are written ONLY to v8 (legacy is write-damaged), so this reads
+  /// v8 alone. A missing v8 bucket (fresh user, no syncs yet) → empty set; a
+  /// HARD error rethrows so a transient gateway failure can't silently drop the
+  /// filter and permanently resurrect a deleted playlist (the additive restore
+  /// never re-removes it).
+  Future<Set<String>> _fetchTombstonedIds() async {
+    final v8Bucket = _writeBucket;
+    if (v8Bucket == _playlistBucket) return <String>{}; // unmanaged → none
+    List<FulaObject> objects;
+    try {
+      objects = await FulaApiService.instance
+          .listObjects(v8Bucket, prefix: _playlistTombstonePrefix);
+    } catch (e) {
+      if (_isNotFoundError(e)) return <String>{}; // v8 bucket not created yet
+      rethrow;
+    }
+    return parseTombstonedPlaylistIds(
+      objects.where((o) => !o.isDirectory).map((o) => o.key),
+    );
+  }
+
+  /// True if [e] looks like a "missing object/bucket" rather than a hard
+  /// transport/server error (matches the FulaApiService merge-read heuristic).
+  static bool _isNotFoundError(Object e) {
+    final s = e.toString();
+    return s.contains('NoSuchKey') ||
+        s.contains('NoSuchBucket') ||
+        s.contains('bucket not found') ||
+        s.contains('404') ||
+        s.contains('not found');
   }
 
   // ============================================================================
@@ -366,6 +474,45 @@ class PlaylistService {
     await _playlistBox?.clear();
     debugPrint('Cleared all playlists');
   }
+}
+
+/// Pure cloud-side merge of playlists across the `[v8, legacy]` buckets.
+/// Combine by `playlist.id` — **v8 wins** a conflicting id (post-migration
+/// writes only land in v8, so its copy is always at least as new) — then drop
+/// any id that has a delete tombstone (a deleted playlist whose legacy copy is
+/// immortal). Subtraction happens AFTER the combine so a tombstoned v8 winner
+/// is still removed. Resolver-independent ⇒ device-free testable.
+List<Playlist> mergePlaylists({
+  required List<Playlist> v8,
+  required List<Playlist> legacy,
+  required Set<String> tombstoned,
+}) {
+  final byId = <String, Playlist>{};
+  for (final p in v8) {
+    byId.putIfAbsent(p.id, () => p);
+  }
+  for (final p in legacy) {
+    byId.putIfAbsent(p.id, () => p); // v8 already present ⇒ v8 wins
+  }
+  for (final id in tombstoned) {
+    byId.remove(id);
+  }
+  return byId.values.toList();
+}
+
+/// Extract deleted playlist ids from tombstone object keys of the shape
+/// `playlist-deleted/{id}.json` (the basename minus `.json`). Skips
+/// directories / non-json / empty without throwing. Pure ⇒ device-free testable.
+Set<String> parseTombstonedPlaylistIds(Iterable<String> keys) {
+  const suffix = '.json';
+  final ids = <String>{};
+  for (final key in keys) {
+    final fileName = key.split('/').last;
+    if (!fileName.endsWith(suffix)) continue;
+    final id = fileName.substring(0, fileName.length - suffix.length);
+    if (id.isNotEmpty) ids.add(id);
+  }
+  return ids;
 }
 
 class PlaylistServiceException implements Exception {

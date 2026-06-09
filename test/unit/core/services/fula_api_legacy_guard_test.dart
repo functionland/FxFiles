@@ -93,5 +93,30 @@ void main() {
         throwsA(predicate((Object? e) => !isDeleteGuardError(e))),
       );
     });
+
+    test('Type-B enabled: playlists + face-metadata writes are guarded', () async {
+      BucketVersionResolver.enabled = true;
+      final api = FulaApiService.instance;
+      for (final b in <String>['playlists', 'face-metadata']) {
+        await expectLater(api.createBucket(b),
+            throwsA(predicate(isGuardError)), reason: b);
+        await expectLater(api.uploadObject(b, 'k', Uint8List(0)),
+            throwsA(predicate(isGuardError)), reason: b);
+      }
+      // playlists has live deletes — the delete-guard must arm on legacy...
+      await expectLater(
+        api.deleteObject('playlists', 'k'),
+        throwsA(predicate(isDeleteGuardError)),
+      );
+      // ...but the v8 siblings escape both guards (routing target).
+      await expectLater(
+        api.createBucket('playlists-v8'),
+        throwsA(predicate((Object? e) => !isGuardError(e))),
+      );
+      await expectLater(
+        api.deleteObject('playlists-v8', 'k'),
+        throwsA(predicate((Object? e) => !isDeleteGuardError(e))),
+      );
+    });
   });
 }

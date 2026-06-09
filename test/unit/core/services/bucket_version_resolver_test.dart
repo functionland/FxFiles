@@ -50,7 +50,6 @@ void main() {
     test('unmanaged buckets pass through (un-migrated metadata / custom / test)',
         () {
       for (final b in <String>[
-        'face-metadata', 'playlists',
         'website-assets', 'nft-assets',
         'integration-test', 'my-custom-folder',
       ]) {
@@ -80,7 +79,7 @@ void main() {
         isFalse,
       );
       expect(
-        BucketVersionResolver.isForbiddenWriteTarget('face-metadata'),
+        BucketVersionResolver.isForbiddenWriteTarget('nft-assets'),
         isFalse,
       );
     });
@@ -93,6 +92,8 @@ void main() {
         'website-metadata',
         'app-metadata',
         'fula-metadata', // shared 5-service bucket (P6 final piece)
+        'face-metadata', // Type-B: per-key merge (write-only feature)
+        'playlists', // Type-B: LIST-merge + per-id delete tombstone
       ]) {
         expect(BucketVersionResolver.writeBucket(b), '$b-v8', reason: b);
         expect(BucketVersionResolver.isForbiddenWriteTarget(b), isTrue,

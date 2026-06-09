@@ -63,6 +63,12 @@ class BucketVersionResolver {
     // writeBucket; this single entry flips them all live at once. The portal
     // (pinning-service) is migrated separately (Part B).
     'fula-metadata',
+    // Type-B (many-objects-per-bucket) — each service does its OWN merge:
+    // face-metadata reads per-key (downloadMetadataMerged.first); playlists
+    // does a LIST-merge of [legacy, v8] + a per-id delete tombstone. Both
+    // writers are routed via writeBucket before this entry flips them live.
+    'face-metadata',
+    'playlists',
   };
 
   /// Shelf CONTENT buckets migrated to v8 (P7). Like [managedMetadataBuckets]
