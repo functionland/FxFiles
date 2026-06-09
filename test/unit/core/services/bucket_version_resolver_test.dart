@@ -51,7 +51,7 @@ void main() {
         () {
       for (final b in <String>[
         'face-metadata', 'playlists',
-        'fula-metadata', 'website-assets', 'nft-assets',
+        'website-assets', 'nft-assets',
         'integration-test', 'my-custom-folder',
       ]) {
         expect(BucketVersionResolver.writeBucket(b), b, reason: 'bucket=$b');
@@ -80,7 +80,7 @@ void main() {
         isFalse,
       );
       expect(
-        BucketVersionResolver.isForbiddenWriteTarget('fula-metadata'),
+        BucketVersionResolver.isForbiddenWriteTarget('face-metadata'),
         isFalse,
       );
     });
@@ -90,6 +90,9 @@ void main() {
         'dump-metadata',
         'tag-metadata',
         'nft-metadata',
+        'website-metadata',
+        'app-metadata',
+        'fula-metadata', // shared 5-service bucket (P6 final piece)
       ]) {
         expect(BucketVersionResolver.writeBucket(b), '$b-v8', reason: b);
         expect(BucketVersionResolver.isForbiddenWriteTarget(b), isTrue,

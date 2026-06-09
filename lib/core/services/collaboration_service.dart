@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/models/share_token.dart' show ShareMode;
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -28,7 +29,14 @@ class CollaborationService {
   static const String _acceptedCollabsKey = 'accepted_collaborations';
   static const String _metadataBucket = 'fula-metadata';
   static const String _collabPrefix = '.fula/collab/';
-  static const String _filesBucket = 'files';
+
+  /// The bucket the per-group manifest is WRITTEN to (and which the manifest
+  /// share-token + link `'b'` bind to): `fula-metadata-v8` once the shared
+  /// bucket is v8-managed (legacy forest is gc-damaged), else `fula-metadata`.
+  /// Reads MERGE both buckets via `_downloadMergedManifest`. No-op until
+  /// `fula-metadata` joins the managed set.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
 
   final _uuid = const Uuid();
   final _random = Random.secure();
@@ -210,7 +218,7 @@ class CollaborationService {
       id: groupId,
       name: name,
       ownerPublicKey: ownerPublicKeyBase64,
-      manifestBucket: _metadataBucket,
+      manifestBucket: _writeBucket,
       manifestKey: manifestKey,
       createdAt: now,
       expiresAt: expiresAt,
@@ -222,10 +230,14 @@ class CollaborationService {
     // Upload manifest (encrypted with link secret key)
     await _uploadManifest(group, linkSecretKey: privateKeyBytes);
 
-    // Create a temporal share token for the manifest itself
-    final manifestStorageKey = await _getStorageKeyForPath(_metadataBucket, manifestKey);
+    // Create a temporal share token for the manifest itself. The storage-key
+    // lookup + the token MUST bind to the SAME bucket the manifest was just
+    // written to (_writeBucket), routed HERE at the call site — never inside
+    // the dual-use `_getStorageKeyForPath` (which also serves content buckets).
+    final manifestStorageKey =
+        await _getStorageKeyForPath(_writeBucket, manifestKey);
     final manifestShareToken = await fula_service.FulaApiService.instance.createShareToken(
-      _metadataBucket,
+      _writeBucket,
       manifestStorageKey,
       publicKeyBytes,
       ShareMode.temporal,
@@ -239,7 +251,7 @@ class CollaborationService {
       'g': groupId,
       't': manifestShareToken,
       'sk': base64Encode(privateKeyBytes),
-      'b': _metadataBucket,
+      'b': _writeBucket,
       'k': manifestKey,
       'n': name,
     };
@@ -373,6 +385,40 @@ class CollaborationService {
     }
 
     return null;
+  }
+
+  /// Read the per-group manifest from BOTH the v8 and legacy S3 buckets and
+  /// MERGE them via [CollaborationGroup.mergeWith] (unions files + tombstones,
+  /// keeps the security scalars monotonic). Returns null if neither has it.
+  /// Non-throwing — a bucket miss/error is swallowed so a transient S3 failure
+  /// can't drop the caller's other merge inputs (local + the portal server-DB
+  /// manifest). This is what makes the app↔portal manifest fork impossible: an
+  /// old-link recipient drives the portal to write LEGACY S3 while the app
+  /// writes v8, and merge-both keeps both.
+  Future<CollaborationGroup?> _downloadMergedManifest(
+    String manifestKey,
+    String groupId,
+    Uint8List? linkSecretKey,
+  ) async {
+    List<Uint8List> blobs;
+    try {
+      blobs = await fula_service.FulaApiService.instance
+          .downloadObjectMerged(_metadataBucket, manifestKey);
+    } catch (e) {
+      debugPrint('[CollabService] S3 manifest merged-download failed: $e');
+      return null;
+    }
+    CollaborationGroup? merged;
+    for (final data in blobs) {
+      try {
+        final parsed = await _parseManifestData(data, groupId, linkSecretKey);
+        if (parsed == null) continue;
+        merged = merged == null ? parsed : merged.mergeWith(parsed);
+      } catch (e) {
+        debugPrint('[CollabService] manifest parse/merge skipped: $e');
+      }
+    }
+    return merged;
   }
 
   /// Fetch manifest from the server DB (manifest-sync endpoint).
@@ -542,17 +588,9 @@ class CollaborationService {
     if (outgoing != null) {
       _assertNotExpired(outgoing.group);
       try {
-        // Source 1: S3 manifest (written by Flutter)
-        CollaborationGroup? s3Manifest;
-        try {
-          final data = await fula_service.FulaApiService.instance.downloadObject(
-            _metadataBucket,
-            outgoing.group.manifestKey,
-          );
-          s3Manifest = await _parseManifestData(data, groupId, outgoing.linkSecretKey);
-        } catch (e) {
-          debugPrint('[CollabService] S3 manifest download failed: $e');
-        }
+        // Source 1: S3 manifest (written by Flutter) — MERGE both v8 + legacy.
+        final s3Manifest = await _downloadMergedManifest(
+            outgoing.group.manifestKey, groupId, outgoing.linkSecretKey);
 
         // Source 2: Server DB manifest (written by portal)
         final serverManifest = await _fetchManifestFromServer(groupId, outgoing.linkSecretKey);
@@ -584,17 +622,9 @@ class CollaborationService {
     if (accepted != null) {
       _assertNotExpired(accepted.group);
       try {
-        // Source 1: S3 manifest
-        CollaborationGroup? s3Manifest;
-        try {
-          final data = await fula_service.FulaApiService.instance.downloadObject(
-            _metadataBucket,
-            accepted.group.manifestKey,
-          );
-          s3Manifest = await _parseManifestData(data, groupId, accepted.linkSecretKey);
-        } catch (e) {
-          debugPrint('[CollabService] S3 manifest download failed: $e');
-        }
+        // Source 1: S3 manifest — MERGE both v8 + legacy.
+        final s3Manifest = await _downloadMergedManifest(
+            accepted.group.manifestKey, groupId, accepted.linkSecretKey);
 
         // Source 2: Server DB manifest
         final serverManifest = await _fetchManifestFromServer(groupId, accepted.linkSecretKey);
@@ -650,7 +680,7 @@ class CollaborationService {
       'g': collab.group.id,
       't': collab.manifestShareToken,
       'sk': base64Encode(collab.linkSecretKey!),
-      'b': _metadataBucket,
+      'b': _writeBucket,
       'k': collab.group.manifestKey,
       'n': collab.group.name,
     };
@@ -708,30 +738,22 @@ class CollaborationService {
       return existing;
     }
 
-    // Fetch the manifest
-    CollaborationGroup group;
-    try {
-      final data = await fula_service.FulaApiService.instance.downloadObject(
-        _metadataBucket,
-        manifestKey,
-      );
-      group = CollaborationGroup.fromJson(
-        jsonDecode(utf8.decode(data)) as Map<String, dynamic>,
-      );
-    } catch (e) {
-      // If we can't fetch the manifest, create a placeholder
-      group = CollaborationGroup(
-        id: groupId,
-        name: groupName,
-        ownerPublicKey: '',
-        manifestBucket: _metadataBucket,
-        manifestKey: manifestKey,
-        createdAt: DateTime.now(),
-        files: [],
-        version: 0,
-        updatedAt: DateTime.now(),
-      );
-    }
+    // Fetch the manifest — MERGE both S3 buckets (v8 + legacy). _parseManifestData
+    // (inside the helper) handles plaintext (Flutter) AND ENC1 (portal) formats.
+    final fetched = await _downloadMergedManifest(
+        manifestKey, groupId, Uint8List.fromList(linkSecretKey));
+    final CollaborationGroup group = fetched ??
+        CollaborationGroup(
+          id: groupId,
+          name: groupName,
+          ownerPublicKey: '',
+          manifestBucket: _writeBucket,
+          manifestKey: manifestKey,
+          createdAt: DateTime.now(),
+          files: [],
+          version: 0,
+          updatedAt: DateTime.now(),
+        );
 
     final accepted = AcceptedCollaboration(
       group: group,
@@ -851,7 +873,7 @@ class CollaborationService {
     final jsonString = jsonEncode(group.toJson());
     final data = Uint8List.fromList(utf8.encode(jsonString));
     await fula_service.FulaApiService.instance.uploadObject(
-      _metadataBucket,
+      _writeBucket,
       group.manifestKey,
       data,
       contentType: 'application/json',
@@ -898,9 +920,9 @@ class CollaborationService {
 
   Future<void> _ensureBucketExists() async {
     try {
-      final exists = await fula_service.FulaApiService.instance.bucketExists(_metadataBucket);
+      final exists = await fula_service.FulaApiService.instance.bucketExists(_writeBucket);
       if (!exists) {
-        await fula_service.FulaApiService.instance.createBucket(_metadataBucket);
+        await fula_service.FulaApiService.instance.createBucket(_writeBucket);
       }
     } catch (e) {
       debugPrint('CollaborationService: Could not ensure bucket exists: $e');

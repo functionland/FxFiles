@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/services/file_service.dart';
@@ -38,6 +39,14 @@ class FolderWatchService {
 
   // Cloud sync for folder configs
   static const String _metadataBucket = 'fula-metadata';
+
+  /// The bucket folder-sync configs are WRITTEN to: `fula-metadata-v8` once the
+  /// shared bucket is v8-managed (the legacy forest is gc-damaged), else
+  /// `fula-metadata`. Reads MERGE both via `downloadMetadataMerged`. No-op
+  /// until `fula-metadata` joins the managed set.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
+
   bool _cloudSyncScheduled = false;
   static const _cloudSyncDebounce = Duration(seconds: 5);
 
@@ -825,13 +834,13 @@ class FolderWatchService {
       final data = Uint8List.fromList(utf8.encode(jsonStr));
 
       try {
-        await FulaApiService.instance.createBucket(_metadataBucket);
+        await FulaApiService.instance.createBucket(_writeBucket);
       } catch (_) {
         // Ignore — bucket may already exist
       }
       final key = '.fula/folderSync/$userId.json';
       await FulaApiService.instance.encryptAndUpload(
-        _metadataBucket,
+        _writeBucket,
         key,
         data,
         encryptionKey,
@@ -854,15 +863,35 @@ class FolderWatchService {
       if (userId == null) return;
 
       final key = '.fula/folderSync/$userId.json';
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _metadataBucket,
-        key,
-        encryptionKey,
-      );
+      // MERGE legacy + v8 (additive, v8 wins a duplicate folder). Legacy holds
+      // pre-migration configs, v8 the post-migration ones; a fresh install must
+      // read BOTH or it would silently restore nothing once writes route to v8.
+      final blobs = await FulaApiService.instance
+          .downloadMetadataMerged(_metadataBucket, key, encryptionKey);
+      if (blobs.isEmpty) {
+        debugPrint('FolderWatchService: no cloud config found (new user)');
+        return;
+      }
 
-      final jsonStr = utf8.decode(data);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final configsList = json['folderSyncs'] as List<dynamic>? ?? [];
+      // Combine both manifests' configs, deduped by path (v8 first ⇒ wins).
+      final byPath = <String, FolderSync>{};
+      for (final data in blobs) {
+        try {
+          final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+          final configsList = json['folderSyncs'] as List<dynamic>? ?? [];
+          for (final configJson in configsList) {
+            try {
+              final config =
+                  FolderSync.fromJson(configJson as Map<String, dynamic>);
+              byPath.putIfAbsent(config.path, () => config);
+            } catch (e) {
+              debugPrint('FolderWatchService: error parsing config: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('FolderWatchService: error parsing manifest: $e');
+        }
+      }
 
       // Only restore if local storage has no folder syncs (fresh install)
       final existingSyncs = LocalStorageService.instance.getAllFolderSyncs();
@@ -872,9 +901,8 @@ class FolderWatchService {
       }
 
       var restored = 0;
-      for (final configJson in configsList) {
+      for (final config in byPath.values) {
         try {
-          final config = FolderSync.fromJson(configJson as Map<String, dynamic>);
           // Restore with "enabled" status so user can see them and trigger sync
           // Category syncs can always be restored; directory syncs need the path to exist
           if (config.isCategory || await Directory(config.path).exists()) {
@@ -895,7 +923,7 @@ class FolderWatchService {
       }
 
       if (restored > 0) {
-        debugPrint('FolderWatchService: restored $restored/${configsList.length} folder configs from cloud');
+        debugPrint('FolderWatchService: restored $restored folder configs from cloud (merged)');
         // Trigger sync for all restored folders
         final restoredSyncs = LocalStorageService.instance.getEnabledFolderSyncs();
         for (final sync in restoredSyncs) {

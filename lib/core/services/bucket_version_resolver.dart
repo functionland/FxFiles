@@ -57,6 +57,12 @@ class BucketVersionResolver {
     'nft-metadata', // nft (P6)
     'website-metadata', // website + ipns-pointer (P6 — BOTH writers routed)
     'app-metadata', // app store (P6)
+    // SHARED by 5 services — sync-mapping + shares + collaborations +
+    // folder-watch + per-group collab manifests. Added LAST, only once ALL
+    // five writers (and the collab manifest write-unit + link `'b'`) route via
+    // writeBucket; this single entry flips them all live at once. The portal
+    // (pinning-service) is migrated separately (Part B).
+    'fula-metadata',
   };
 
   /// Shelf CONTENT buckets migrated to v8 (P7). Like [managedMetadataBuckets]

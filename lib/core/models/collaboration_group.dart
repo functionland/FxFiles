@@ -197,9 +197,28 @@ class CollaborationGroup extends Equatable {
       files: mergedFiles.values.toList()
         ..sort((a, b) => a.addedAt.compareTo(b.addedAt)),
       removedFileIds: mergedTombstones.toList(),
+      // Revocation is monotonic: once revoked on EITHER side it stays revoked,
+      // independent of version. `revokeGroup` flips `isRevoked` without bumping
+      // `version`, so the plain higher-version pick could let a stale
+      // non-revoked copy (or version-churn from repeated merges) silently
+      // un-revoke a group. (P2)
+      isRevoked: isRevoked || other.isRevoked,
+      // Expiry can only ever SHORTEN on merge — take the earlier of the two
+      // (null = no expiry, treated as the least restrictive) so a stale
+      // higher-version copy can't extend access past a shortened expiry. (P2)
+      expiresAt: _earlierExpiry(expiresAt, other.expiresAt),
       version: (version > other.version ? version : other.version) + 1,
       updatedAt: DateTime.now(),
     );
+  }
+
+  /// The earlier (more restrictive) of two expiry instants; `null` means "no
+  /// expiry", so a non-null expiry always wins over null. Used by [mergeWith]
+  /// so a merge can only shorten access, never extend it.
+  static DateTime? _earlierExpiry(DateTime? a, DateTime? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a.isBefore(b) ? a : b;
   }
 
   Map<String, dynamic> toJson() => {

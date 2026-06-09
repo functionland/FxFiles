@@ -917,6 +917,51 @@ class FulaApiService implements FulaApi {
     return blobs;
   }
 
+  /// True if [e] looks like a "missing object/bucket" (404 / NoSuchKey /
+  /// NoSuchBucket) rather than a hard transport/server error. The merge-read
+  /// helpers use it to SKIP an absent bucket while PROPAGATING real failures.
+  static bool _isNotFoundError(Object e) {
+    final s = e.toString();
+    return s.contains('NoSuchKey') ||
+        s.contains('NoSuchBucket') ||
+        s.contains('bucket not found') ||
+        s.contains('404') ||
+        s.contains('not found');
+  }
+
+  /// P6 metadata MERGE-read — the **unencrypted** sibling of
+  /// [downloadMetadataMerged] (which decrypts). Downloads a per-user manifest
+  /// from BOTH the `-v8` sibling and the legacy bucket via the plain
+  /// [downloadObject], returning the non-empty blobs in priority order
+  /// `[v8, legacy]`. Deduped to a SINGLE read when [base] is unmanaged
+  /// (`writeBucket(base) == base`). The caller applies them ADDITIVELY (v8 wins
+  /// a conflicting id; legacy fills gaps).
+  ///
+  /// A missing object/bucket (404 / NoSuchKey / NoSuchBucket) on either bucket
+  /// is SKIPPED, but any HARD error is **rethrown** — callers that clear local
+  /// state only AFTER a successful read (e.g. [CloudSyncMappingService], hazard
+  /// H1) rely on this so a transient gateway error can't wipe a cache down to a
+  /// partial (v8-only) set. (This is the one behavioural difference from the
+  /// encrypted helper, which never throws.)
+  Future<List<Uint8List>> downloadObjectMerged(String base, String key) async {
+    final v8 = BucketVersionResolver.writeBucket(base);
+    final buckets = v8 == base ? <String>[base] : <String>[v8, base];
+    final blobs = <Uint8List>[];
+    for (final bucket in buckets) {
+      try {
+        final d = await downloadObject(bucket, key);
+        if (d.isNotEmpty) blobs.add(d);
+      } catch (e) {
+        if (_isNotFoundError(e)) {
+          debugPrint('downloadObjectMerged: $bucket absent: $e');
+          continue;
+        }
+        rethrow;
+      }
+    }
+    return blobs;
+  }
+
   /// Encrypt and upload - now just calls uploadObject with metadata
   /// The encryptionKey parameter is ignored as fula_client handles encryption internally
   Future<String> encryptAndUpload(
