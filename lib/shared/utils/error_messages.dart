@@ -26,14 +26,17 @@ class ErrorMessages {
   static String getUserFriendlyMessage(dynamic error, {String? context}) {
     final errorStr = error.toString().toLowerCase();
 
-    // v8 share (P8.3): a folder/tag has no shareable (v8) files. The sharing
-    // service throws a message containing "must be re-uploaded"; surface a clear
-    // note instead of the generic "Unable to share". Checked first so the
-    // "share"/"not found" keyword rules below don't swallow it.
+    // v8 share (P8.3): a folder/tag has nothing shareable yet — an empty v8
+    // scope (older files need re-uploading) or still-pending uploads. Surface a
+    // clear note instead of the generic "Unable to share". Checked first so the
+    // "share"/"not found"/"uploading" keyword rules below don't swallow it.
     if (errorStr.contains('must be re-uploaded') ||
-        errorStr.contains('no files here can be shared')) {
+        errorStr.contains('no files here can be shared') ||
+        errorStr.contains('has no shareable') ||
+        errorStr.contains('no cloud files yet')) {
       return 'Nothing here can be shared yet. Newly uploaded files are '
-          'shareable — older files must be re-uploaded first.';
+          'shareable — older files must be re-uploaded, and any in-progress '
+          'uploads need to finish first.';
     }
 
     // Network errors
