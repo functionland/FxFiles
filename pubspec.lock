@@ -572,13 +572,13 @@ packages:
     source: hosted
     version: "3.0.3"
   flutter_rust_bridge:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: flutter_rust_bridge
-      sha256: e87d6b9ee934dcd24a128ccb2bd91905d2d5fe5c06245d6a8f5477d4907a437a
+      sha256: "37ef40bc6f863652e865f0b2563ea07f0d3c58d8efad803cc01933a4b2ee067e"
       url: "https://pub.dev"
     source: hosted
-    version: "2.12.0"
+    version: "2.11.1"
   flutter_secure_storage:
     dependency: "direct main"
     description:
@@ -677,10 +677,9 @@ packages:
   fula_client:
     dependency: "direct main"
     description:
-      name: fula_client
-      sha256: e8830e9baff980383aa99a807bf1de8e94ff5d4a8b97db71df16207d7f6278fc
-      url: "https://pub.dev"
-    source: hosted
+      path: "E:/GitHub/fula-api/packages/fula_client"
+      relative: false
+    source: path
     version: "0.6.6"
   get_it:
     dependency: transitive
