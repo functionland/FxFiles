@@ -605,10 +605,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
             });
             return;
           }
-          Navigator.pop(
-            context,
-            ShareCreateResult._(link: link, choice: ShareChoice.password),
-          );
+          _finishWithLink(link, ShareChoice.password);
           return;
         }
 
@@ -627,10 +624,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
           });
           return;
         }
-        Navigator.pop(
-          context,
-          ShareCreateResult._(link: link, choice: ShareChoice.public),
-        );
+        _finishWithLink(link, ShareChoice.public);
         return;
       }
 
@@ -691,10 +685,7 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
           });
           return;
         }
-        Navigator.pop(
-          context,
-          ShareCreateResult._(link: link, choice: ShareChoice.password),
-        );
+        _finishWithLink(link, ShareChoice.password);
         return;
       }
 
@@ -719,16 +710,32 @@ class _CreateShareDialogState extends ConsumerState<CreateShareDialog> {
         });
         return;
       }
-      Navigator.pop(
-        context,
-        ShareCreateResult._(link: link, choice: ShareChoice.public),
-      );
+      _finishWithLink(link, ShareChoice.public);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
         _error = ErrorMessages.forShare(e);
       });
+    }
+  }
+
+  /// Pop the dialog with the created link, then (P8.3) flash a note if some
+  /// older (pre-v8) files were left OUT of a folder/tag share. The messenger is
+  /// captured before popping so the SnackBar survives the dialog route.
+  void _finishWithLink(GeneratedShareLink link, ShareChoice choice) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    Navigator.pop(context, ShareCreateResult._(link: link, choice: choice));
+    if (link.notIncludedCount > 0) {
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            '${link.notIncludedCount} older file(s) not included — '
+            're-upload them to add them to this share.',
+          ),
+          duration: const Duration(seconds: 5),
+        ),
+      );
     }
   }
 

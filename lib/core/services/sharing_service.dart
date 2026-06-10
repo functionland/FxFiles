@@ -155,6 +155,46 @@ class SharingService {
     return obj.storageKey ?? obj.key;
   }
 
+  /// v8 UX precheck for a FOLDER share (P8.3). A folder share enumerates only
+  /// the v8 bucket, so:
+  ///  - if the v8 folder is EMPTY (a purely-pre-v8 folder), refuse with a clear,
+  ///    user-facing message — the marker phrase "must be re-uploaded" is what
+  ///    `ErrorMessages` keys off to show a friendly note instead of a generic
+  ///    "Unable to share".
+  ///  - otherwise return how many OLDER (legacy) files in this folder were left
+  ///    OUT of the share, so the dialog can tell the owner. 0 when not routed
+  ///    (resolver off / unmanaged) or on a (non-fatal) legacy-listing error.
+  /// `effBucket` is the already-routed (v8) bucket; `pathScope` ends with '/'.
+  Future<int> _folderShareEmptyCheckAndNotIncluded(
+      String effBucket, String pathScope) async {
+    final v8Objects = (await fula_service.FulaApiService.instance
+            .listObjects(effBucket, prefix: pathScope))
+        .where((o) => !o.isDirectory)
+        .toList();
+    if (v8Objects.isEmpty) {
+      throw SharingException(
+        'No files here can be shared yet — newly uploaded files are shareable; '
+        'older files must be re-uploaded to share them.',
+      );
+    }
+    if (!BucketVersionResolver.isV8(effBucket)) return 0; // flag-off / unmanaged
+    try {
+      final legacy = await fula_service.FulaApiService.instance
+          .listObjects(BucketVersionResolver.baseOf(effBucket), prefix: pathScope);
+      final v8Keys = v8Objects.map((o) => o.key).toSet();
+      final n = legacy
+          .where((o) => !o.isDirectory && !v8Keys.contains(o.key))
+          .length;
+      if (n > 0) {
+        debugPrint('SharingService: folder share leaves $n pre-v8 file(s) out '
+            'of "$pathScope" (in ${BucketVersionResolver.baseOf(effBucket)})');
+      }
+      return n;
+    } catch (_) {
+      return 0; // best-effort count; never block a share on the legacy listing
+    }
+  }
+
   /// Create a share token for a recipient
   ///
   /// Process (with fula_client):
@@ -190,6 +230,11 @@ class SharingService {
     // v8: a folder/category share enumerates a bucket → target the v8 sibling;
     // a single-file share keeps the caller's bucket. Flag-off ⇒ effBucket==bucket.
     final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
+
+    // v8 (P8.3): a purely-pre-v8 folder gets a clear "re-upload" message.
+    if (pathScope.endsWith('/')) {
+      await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope);
+    }
 
     // Get storage key for the path
     final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
@@ -305,7 +350,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -404,6 +450,9 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
+      // v8: tagged files NOT in the share (legacy-only / other-category /
+      // still-pending) so the owner knows what was left out.
+      notIncludedCount: resolution.totalCount - resolution.items.length,
     );
   }
 
@@ -440,7 +489,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -562,6 +612,7 @@ class SharingService {
       token: token,
       outgoingShare: outgoingShare,
       password: password,
+      notIncludedCount: resolution.totalCount - resolution.items.length,
     );
   }
 
@@ -591,7 +642,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -865,6 +917,12 @@ class SharingService {
     // (the file's own). Flag-off / unmanaged ⇒ effBucket == bucket (no-op).
     final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
 
+    // v8 (P8.3): refuse a purely-pre-v8 folder with a clear message + count the
+    // older files left out (for the owner). No-op for single-file shares.
+    final notIncludedCount = pathScope.endsWith('/')
+        ? await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope)
+        : 0;
+
     // Get storage key (CID) for the path - needed for file fetching
     debugPrint('SharingService.createPublicLink: bucket=$effBucket, pathScope=$pathScope');
     final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
@@ -999,6 +1057,7 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
+      notIncludedCount: notIncludedCount,
     );
   }
 
@@ -1039,6 +1098,11 @@ class SharingService {
     // v8: a folder/category share enumerates a bucket → target the v8 sibling;
     // a single-file share keeps the caller's bucket. Flag-off ⇒ effBucket==bucket.
     final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
+
+    // v8 (P8.3): refuse a purely-pre-v8 folder + count older files left out.
+    final notIncludedCount = pathScope.endsWith('/')
+        ? await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope)
+        : 0;
 
     // Get storage key (CID) for the path - needed for file fetching
     final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
@@ -1178,6 +1242,7 @@ class SharingService {
       token: token,
       outgoingShare: outgoingShare,
       password: password,
+      notIncludedCount: notIncludedCount,
     );
   }
 
