@@ -1,10 +1,10 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/platform/file_length.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
@@ -36,7 +36,7 @@ export 'package:fula_files/core/services/fula_api_types.dart';
 //
 // The four cold-start fields below act as a single switch: ALL FOUR must be
 // non-empty for cold-start to engage. Leaving any one empty cleanly disables
-// it and the SDK falls back to warm-cache only — that is the current state.
+// it and the SDK falls back to warm-cache only â€” that is the current state.
 //
 // To enable cold-start in production:
 //   1. Run `setup-users-index-publisher.sh` on the master and copy the
@@ -63,20 +63,20 @@ const String kUsersIndexIpnsName =
 // to pick the highest-`sequence` record. That curated multi-gateway list
 // is the canonical source of truth; FxFiles passes empty so the SDK
 // owns the selection. Users who genuinely need a custom gateway list
-// can still set one via Settings → Fula API Config; the Settings screen
+// can still set one via Settings â†’ Fula API Config; the Settings screen
 // keeps that override path.
 //
 // Prior contents (kept commented for archaeology):
-//   'https://{name}.ipns.dget.top/'      — small fleet, less reliable
+//   'https://{name}.ipns.dget.top/'      â€” small fleet, less reliable
 //                                          uptime than the Protocol Labs
 //                                          / Filebase tier.
-//   'https://ipfs.filebase.io/ipns/{name}/' — path-style; same staleness
+//   'https://ipfs.filebase.io/ipns/{name}/' â€” path-style; same staleness
 //                                          class as dweb.link path-style
 //                                          when behind Cloudflare.
 //
-// Neither of those was `ipfs.io` — the gateway that survived the audit.
+// Neither of those was `ipfs.io` â€” the gateway that survived the audit.
 const List<String> kUsersIndexIpnsGatewayUrls = <String>[];
-// 128 MiB cap — half the SDK default. Mobile devices have tighter storage
+// 128 MiB cap â€” half the SDK default. Mobile devices have tighter storage
 // budgets; the cache is content-addressed so fills mostly stop on its own
 // once the working set is covered.
 const int kBlockCacheMaxBytes = 128 * 1024 * 1024;
@@ -136,27 +136,27 @@ class FulaApiService implements FulaApi {
     String? usersIndexAnchorAddress,
     String? usersIndexIpnsName,
     List<String>? usersIndexIpnsGatewayUrls,
-    /// E2E plan Phase 5 — 32-byte AEAD key for encrypting the
+    /// E2E plan Phase 5 â€” 32-byte AEAD key for encrypting the
     /// per-user bucketsIndex envelope (`K_index`). Pass `null` (or
     /// an empty list) for Mode A users; the SDK keeps using today's
     /// plaintext path.
     Uint8List? bucketsIndexKey,
-    /// E2E plan Phase 5 — 32-byte Ed25519 seed for signing the
+    /// E2E plan Phase 5 â€” 32-byte Ed25519 seed for signing the
     /// per-user entry (`K_entry_seed`). Pass `null` for Mode A users.
     Uint8List? userEntrySigningSeed,
   }) async {
     try {
       // Derive the per-user cold-start key. Try the JWT-sub-based
-      // derivation FIRST — it matches master's `state.rs::hash_user_id`
+      // derivation FIRST â€” it matches master's `state.rs::hash_user_id`
       // byte-for-byte and works correctly for BOTH pre-migration-011
       // users (whose JWT sub is plaintext email) and modern users
       // (whose JWT sub is `sha256(email).hex()`). The legacy
       // `deriveUserKeyFromEmail` always pre-hashes with sha256, which
-      // matches master only for modern users — for pre-migration users
+      // matches master only for modern users â€” for pre-migration users
       // it produces the wrong userKey and cold-start lookup misses
       // ("user has not written yet" error even when they have).
       //
-      // Wrap in try/catch — a derivation failure must NOT prevent
+      // Wrap in try/catch â€” a derivation failure must NOT prevent
       // client init; fall back to warm-cache-only by passing an empty
       // userKey (any one of the four usersIndex* fields being empty
       // cleanly disables cold-start in the SDK).
@@ -251,10 +251,10 @@ class FulaApiService implements FulaApi {
         // race instead of the (master-S3-only) storage_key path. The
         // SDK requires this field explicitly because flipping it to
         // false would silently downgrade newly-written buckets to
-        // legacy v7 pointers — making them offline-unreachable on
+        // legacy v7 pointers â€” making them offline-unreachable on
         // fresh devices. Cloud client = always on.
         walkableV8WriterEnabled: true,
-        // E2E plan Phase 5 — per-user encrypted bucketsIndex keys.
+        // E2E plan Phase 5 â€” per-user encrypted bucketsIndex keys.
         // Empty list signals "Mode A behavior preserved"; the SDK
         // falls back to today's plaintext `users[]` path. Non-empty
         // (32 bytes) enables the new encrypted + signed-entry path.
@@ -306,7 +306,7 @@ class FulaApiService implements FulaApi {
 
   /// Re-initialize the cloud client with [newEndpoint], preserving
   /// the currently-configured secret key + access token. **Used only
-  /// by integration tests** to simulate online ↔ offline transitions
+  /// by integration tests** to simulate online â†” offline transitions
   /// (e.g. swap to `https://s33.cloud.fx.land` to make the master
   /// DNS-fail without going through the OAuth flow).
   ///
@@ -323,7 +323,7 @@ class FulaApiService implements FulaApi {
     if (secret == null) {
       throw FulaApiException(
         'testOnlyReinitializeWithEndpoint: FulaApiService is not '
-        'initialized — sign in on the device before running '
+        'initialized â€” sign in on the device before running '
         'integration tests',
       );
     }
@@ -385,17 +385,17 @@ class FulaApiService implements FulaApi {
   /// Ensure the forest (encrypted file index) is loaded for a bucket.
   ///
   /// After the fula-client fix at `encryption.rs:2569` (Phase 2.4
-  /// offline-propagation regression — narrowed `Err(_)` to
+  /// offline-propagation regression â€” narrowed `Err(_)` to
   /// `Err(e) if e.is_not_found()`), the catch branch fires only for
   /// real errors:
   ///
-  ///   - **Master unreachable / cold-start failed / 5xx / network** —
+  ///   - **Master unreachable / cold-start failed / 5xx / network** â€”
   ///     offline or transient outage. Don't mark as loaded; rethrow so
   ///     the caller surfaces "offline; try later" instead of an empty
   ///     list (the prior `_loadedForests.add` on every catch silently
-  ///     painted offline outages as empty buckets — exactly the bug
+  ///     painted offline outages as empty buckets â€” exactly the bug
   ///     this pairs with).
-  ///   - **Auth / decrypt / sequence-regression** — real errors that
+  ///   - **Auth / decrypt / sequence-regression** â€” real errors that
   ///     also rethrow.
   ///
   /// Genuine new-bucket cases (404 / NoSuchKey from master) NEVER
@@ -411,7 +411,7 @@ class FulaApiService implements FulaApi {
       _loadedForests.add(bucket);
       debugPrint('Forest loaded for bucket: $bucket');
     } catch (e) {
-      // Don't mark `_loadedForests.add(bucket)` here — the next call
+      // Don't mark `_loadedForests.add(bucket)` here â€” the next call
       // should re-attempt the fetch (this is what the fula-client fix
       // achieves: cache stays empty so a transient outage recovers
       // automatically when master comes back). Rethrow so callers
@@ -460,7 +460,7 @@ class FulaApiService implements FulaApi {
 
   /// Same as [listBuckets] but falls back to the per-user
   /// [BucketCacheService] snapshot when the live call errors. The SDK
-  /// cannot enumerate buckets offline (privacy invariant — see
+  /// cannot enumerate buckets offline (privacy invariant â€” see
   /// fula-client docs), so the snapshot is the only way the Cloud Files
   /// screen can render anything when the master gateway is unreachable.
   ///
@@ -491,7 +491,7 @@ class FulaApiService implements FulaApi {
             fetchedAt: cached.fetchedAt,
           );
         }
-        // No cache to serve — surface the original error, not the retry one,
+        // No cache to serve â€” surface the original error, not the retry one,
         // since the first failure is the more representative diagnostic.
         throw firstErr;
       }
@@ -499,7 +499,7 @@ class FulaApiService implements FulaApi {
   }
 
   /// Read-only-legacy guard (v8 migration): refuse to WRITE to a managed
-  /// legacy content bucket — new data must go to its `-v8` sibling, never a
+  /// legacy content bucket â€” new data must go to its `-v8` sibling, never a
   /// gc-damaged bucket. Inert while v8 routing is disabled. Reads and deletes
   /// are intentionally NOT guarded (legacy content stays readable, and a user
   /// may still attempt to clean up legacy objects).
@@ -560,7 +560,7 @@ class FulaApiService implements FulaApi {
   /// forest state populated by [fula.loadForest]. For sharded forests
   /// the SDK swallows the marker error in `loadForest` and the I/O
   /// path handles sharding transparently (see forest.dart loadForest
-  /// doc). Do **not** swap this for `fula.listDecrypted` — that is a
+  /// doc). Do **not** swap this for `fula.listDecrypted` â€” that is a
   /// raw S3 LIST that returns internal `__fula_forest_v7_nodes/...`
   /// entries alongside user files and is not offline-capable.
   /// Cached, timeout-bounded variant of [listObjects].
@@ -620,7 +620,7 @@ class FulaApiService implements FulaApi {
             fetchedAt: cached.fetchedAt,
           );
         }
-        // No cache to serve — surface the original error.
+        // No cache to serve â€” surface the original error.
         throw firstErr;
       }
     }
@@ -727,13 +727,13 @@ class FulaApiService implements FulaApi {
   // ============================================================================
 
   /// Initialize a second encrypted client pointed at the local blox S3.
-  /// Used exclusively for reads — uploads always go through the cloud [_client].
+  /// Used exclusively for reads â€” uploads always go through the cloud [_client].
   Future<void> initializeLocalClient({
     required String endpoint,
     required String accessToken,
   }) async {
     if (_currentSecretKey == null) {
-      debugPrint('FulaApiService: Cannot init local client — not logged in');
+      debugPrint('FulaApiService: Cannot init local client â€” not logged in');
       return;
     }
     // Skip if already pointing at the same endpoint
@@ -749,7 +749,7 @@ class FulaApiService implements FulaApi {
         bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
         // Warm-cache: enable health gate + block cache so LAN reads also
         // populate the shared on-disk cache used by the cloud client.
-        // Gateway fallback stays OFF — when the LAN endpoint fails, the
+        // Gateway fallback stays OFF â€” when the LAN endpoint fails, the
         // upstream `downloadWithLocalFallback` falls through to the cloud
         // client which has its own gateway fallback. Public gateways
         // can't reach the local blox by design.
@@ -761,7 +761,7 @@ class FulaApiService implements FulaApi {
         gatewayFallbackEnabled: false,
         gatewayFallbackUrls: const [],
         gatewayRaceConcurrency: 3,
-        // Cold-start does not apply to the LAN client — it is configured
+        // Cold-start does not apply to the LAN client â€” it is configured
         // via a pairing secret and reaches a known LAN endpoint, not a
         // user-scoped on-chain registry.
         usersIndexChainRpcUrl: '',
@@ -772,10 +772,10 @@ class FulaApiService implements FulaApi {
         usersIndexIpfsGatewayUrls: const [],
         // Walkable-v8 default-on (see cloud-client comment). Same flag
         // value here so LAN-uploaded manifests are byte-compatible
-        // with cloud-uploaded ones — a single content-addressed
+        // with cloud-uploaded ones â€” a single content-addressed
         // forest works regardless of which client wrote it.
         walkableV8WriterEnabled: true,
-        // E2E plan Phase 5 — encrypted bucketsIndex keys are scoped
+        // E2E plan Phase 5 â€” encrypted bucketsIndex keys are scoped
         // to the cloud client (master is the entries-store host).
         // LAN/blox client does not run the signed-entry writer.
         encryptedUserBucketsIndexKey: Uint8List(0),
@@ -804,7 +804,7 @@ class FulaApiService implements FulaApi {
   Future<Uint8List> downloadWithLocalFallback(String bucket, String key) async {
     _ensureConfigured();
 
-    // Fast path: no local client → straight to cloud
+    // Fast path: no local client â†’ straight to cloud
     if (_localClient == null) {
       return downloadObject(bucket, key);
     }
@@ -896,7 +896,7 @@ class FulaApiService implements FulaApi {
   /// sibling and the legacy bucket, returning the successfully-decrypted,
   /// non-empty blobs in priority order [v8, legacy]. The caller applies them
   /// ADDITIVELY (v8 wins a conflicting id; legacy fills gaps). When v8 routing
-  /// is off / [base] is unmanaged this is just `[legacy]`. NEVER throws — a
+  /// is off / [base] is unmanaged this is just `[legacy]`. NEVER throws â€” a
   /// missing/erroring bucket is skipped, so a failed v8 read can't hide legacy.
   Future<List<Uint8List>> downloadMetadataMerged(
     String base,
@@ -929,7 +929,7 @@ class FulaApiService implements FulaApi {
         s.contains('not found');
   }
 
-  /// P6 metadata MERGE-read — the **unencrypted** sibling of
+  /// P6 metadata MERGE-read â€” the **unencrypted** sibling of
   /// [downloadMetadataMerged] (which decrypts). Downloads a per-user manifest
   /// from BOTH the `-v8` sibling and the legacy bucket via the plain
   /// [downloadObject], returning the non-empty blobs in priority order
@@ -938,7 +938,7 @@ class FulaApiService implements FulaApi {
   /// a conflicting id; legacy fills gaps).
   ///
   /// A missing object/bucket (404 / NoSuchKey / NoSuchBucket) on either bucket
-  /// is SKIPPED, but any HARD error is **rethrown** — callers that clear local
+  /// is SKIPPED, but any HARD error is **rethrown** â€” callers that clear local
   /// state only AFTER a successful read (e.g. [CloudSyncMappingService], hazard
   /// H1) rely on this so a transient gateway error can't wipe a cache down to a
   /// partial (v8-only) set. (This is the one behavioural difference from the
@@ -1036,7 +1036,7 @@ class FulaApiService implements FulaApi {
       await _ensureForestLoaded(bucket);
 
       // Get file size without reading the file
-      final fileSize = await File(filePath).length();
+      final fileSize = await fileLength(filePath);
 
       final result = await fula.putFlatFromPath(
         client: _client!,
@@ -1093,7 +1093,7 @@ class FulaApiService implements FulaApi {
     try {
       await _ensureForestLoaded(bucket);
 
-      final fileSize = await File(filePath).length();
+      final fileSize = await fileLength(filePath);
 
       final result = cancelHandle != null
           ? await fula.putFlatResumableFromPathCancellable(
@@ -1143,7 +1143,7 @@ class FulaApiService implements FulaApi {
   }) async {
     _ensureConfigured();
     try {
-      final fileSize = await File(filePath).length();
+      final fileSize = await fileLength(filePath);
 
       final result = cancelHandle != null
           ? await fula.resumeFlatUploadFromPathCancellable(
@@ -1181,7 +1181,7 @@ class FulaApiService implements FulaApi {
   }
 
   /// Trigger cancellation on a previously-created handle. Fire-and-
-  /// forget per the interface contract — `cancelHandleTrigger` is
+  /// forget per the interface contract â€” `cancelHandleTrigger` is
   /// async at the FRB layer but only flips an `Arc<AtomicBool>` in
   /// Rust, so the caller doesn't need to await it. `unawaited` keeps
   /// the analyzer's `discarded_futures` lint quiet.
@@ -1199,13 +1199,13 @@ class FulaApiService implements FulaApi {
   /// Discard a resumable upload's local state and best-effort delete its
   /// already-uploaded chunks on the storage backend (fula-api#20).
   ///
-  /// Idempotent — calling on a missing manifest returns success (the
+  /// Idempotent â€” calling on a missing manifest returns success (the
   /// "already cleaned up" case Phase C's `cancelTask` racing against
   /// the SDK's own clean-completion auto-delete may hit).
   ///
   /// Failures from the underlying `abort_upload` SDK call (malformed
   /// manifest, permission denied, etc.) are caught + logged here rather
-  /// than propagated — the caller's intent ("ensure this upload's local
+  /// than propagated â€” the caller's intent ("ensure this upload's local
   /// state is gone, best-effort") is satisfied as long as the manifest
   /// is no longer present after this call returns. The SDK's bridge
   /// wrapper also catches the missing-manifest case as Ok, so the
@@ -1220,11 +1220,11 @@ class FulaApiService implements FulaApi {
         manifestPath: manifestPath,
       );
     } catch (e) {
-      // Log but don't propagate — abort is best-effort cleanup. The
+      // Log but don't propagate â€” abort is best-effort cleanup. The
       // alternative is propagating to the UI which has no reasonable
       // recovery (a stale manifest on disk is a disk-hygiene issue,
-      // not a data-correctness one — orphan chunks are eventually
-      // collected by the future GC sweep planned in fula-api §W.8.7).
+      // not a data-correctness one â€” orphan chunks are eventually
+      // collected by the future GC sweep planned in fula-api Â§W.8.7).
       debugPrint('FulaApiService.abortResumableUpload: $e');
     }
   }
@@ -1314,7 +1314,7 @@ class FulaApiService implements FulaApi {
 
   /// Download a shared file
   ///
-  /// [originalKey] is the plaintext file path — used by fula_client to validate
+  /// [originalKey] is the plaintext file path â€” used by fula_client to validate
   /// that the request is within the share's path scope.
   Future<Uint8List> downloadSharedFile(
     String bucket,
@@ -1431,7 +1431,7 @@ class FulaApiService implements FulaApi {
   ///
   /// Used at SDK init to compute the cold-start userKey directly from
   /// the JWT sub (matches master's hashing exactly). Signature
-  /// verification is master's job — this client-side decode is purely
+  /// verification is master's job â€” this client-side decode is purely
   /// to read the sub value the master ALREADY validated when issuing
   /// the token. Returns null on any malformed input; the caller falls
   /// back to email-based derivation.
