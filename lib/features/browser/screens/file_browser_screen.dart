@@ -24,6 +24,10 @@ import 'package:fula_files/core/services/archive_service.dart';
 import 'package:fula_files/core/services/tutorial_service.dart';
 import 'package:fula_files/core/services/battery_optimization_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/category_listing.dart';
+import 'package:fula_files/core/services/legacy_listing_cache.dart';
+import 'package:fula_files/core/utils/user_id.dart';
 import 'package:fula_files/core/utils/safe_path.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fula_files/shared/widgets/master_health_banner.dart';
@@ -472,7 +476,22 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     final allSyncStates = LocalStorageService.instance.getAllSyncStates();
 
     for (final state in allSyncStates) {
-      if (state.bucket == _currentBucket && state.remoteKey == cloudObj.key) {
+      // Match on the bucket FAMILY (same base) rather than the exact bucket:
+      // a file may be linked under the legacy base (`images`) or the `-v8`
+      // sibling (`images-v8`) depending on whether it was uploaded, downloaded
+      // from the gallery, or reconciled — any of those should resolve when
+      // browsing the v8 bucket. Match either key field (remoteKey OR
+      // remotePath) to also resolve older states written before queueUpload
+      // populated remoteKey — otherwise an on-disk file is mis-shown as
+      // "cloud only".
+      final cur = _currentBucket;
+      final sb = state.bucket;
+      final bucketMatches = cur != null &&
+          sb != null &&
+          BucketVersionResolver.baseOf(sb) == BucketVersionResolver.baseOf(cur);
+      final keyMatches =
+          state.remoteKey == cloudObj.key || state.remotePath == cloudObj.key;
+      if (bucketMatches && keyMatches) {
         // Found matching sync state - check if local file exists
         final file = File(state.localPath);
         if (await file.exists()) {
@@ -554,6 +573,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     return false; // At root, allow normal back
   }
 
+  /// Pull-to-refresh for a category: drop the frozen legacy cache so the next
+  /// load re-reads the legacy bucket (the escape hatch if a frozen listing was
+  /// ever incomplete), then reload.
   Future<void> _loadCategoryFiles() async {
     if (!mounted) return;
     setState(() {
@@ -658,9 +680,25 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
           // client's outer write lock can't freeze the bucket-list view.
           // Stale results are still shown to the user; a fresh fetch will
           // run the next time _loadCategoryFiles fires.
-          final cloudResult = await FulaApiService.instance.listObjectsCached(
-            bucketName,
-          );
+          // v8 merge: legacy (loaded once, then frozen) + live v8. Falls back
+          // to a plain single-bucket read if userId is unavailable; collapses
+          // to just the legacy bucket while v8 routing is disabled.
+          // Only take the v8 cache/merge path when routing would actually
+          // split this bucket (flag on + managed); otherwise a plain
+          // single-bucket read opens no encrypted legacy-cache box, so
+          // flag-off is a true no-op.
+          final useV8 = BucketVersionResolver.enabled &&
+              BucketVersionResolver.isManagedBase(bucketName);
+          final userId = useV8 ? await deriveUserId() : null;
+          if (userId != null) await LegacyListingCache.instance.init();
+          final cloudResult = userId == null
+              ? await FulaApiService.instance.listObjectsCached(bucketName)
+              : await listCategoryCached(
+                  FulaApiService.instance,
+                  LegacyListingCache.instance,
+                  userId,
+                  bucketName,
+                );
           final cloudFiles = cloudResult.objects;
           debugPrint(
             'Cloud files in $bucketName: ${cloudFiles.length}'
@@ -685,7 +723,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   localPath: localFile.path,
                   remotePath: localFile.name,
                   remoteKey: localFile.name,
-                  bucket: bucketName,
+                  // v8: link to the bucket the object actually lives in (e.g.
+                  // images-v8) so the cloud explorer + linked-key lookups match.
+                  bucket: cloudFile.sourceBucket ?? bucketName,
                   status: SyncStatus.synced,
                   lastSyncedAt: cloudFile.lastModified ?? DateTime.now(),
                   etag: cloudFile.etag,
@@ -694,6 +734,20 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                   displayPath: Platform.isIOS && localFile.iosAssetId != null ? localFile.path : null,
                   iosAssetId: localFile.iosAssetId,
                 ));
+              } else if (currentState.status == SyncStatus.synced &&
+                  cloudFile.sourceBucket != null &&
+                  currentState.bucket != cloudFile.sourceBucket &&
+                  BucketVersionResolver.sameFamily(
+                      currentState.bucket, cloudFile.sourceBucket!)) {
+                // Heal a STALE bucket: a file recorded under 'images' that now
+                // lives in 'images-v8' (a re-upload, or a pre-fix download).
+                // Share + delete routing read the EXACT SyncState.bucket, so an
+                // un-healed stale bucket would target the wrong bucket. Only
+                // heal a synced state within the same family (never touch
+                // in-progress/error states).
+                await LocalStorageService.instance.addSyncState(
+                  currentState.copyWith(bucket: cloudFile.sourceBucket),
+                );
               }
               // Do NOT overwrite existing states (syncing, error, etc.)
             } else {
@@ -893,7 +947,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
   /// Get category from bucket name (nullable for unknown buckets)
   FileCategory? _categoryFromBucket(String bucket) {
-    switch (bucket.toLowerCase()) {
+    // A `<base>-v8` migration bucket maps to its base category (an `images-v8`
+    // object is still an image), so strip the suffix before matching.
+    switch (BucketVersionResolver.baseOf(bucket).toLowerCase()) {
       case 'images': return FileCategory.images;
       case 'videos': return FileCategory.videos;
       case 'audio': return FileCategory.audio;
@@ -3704,12 +3760,12 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       if (encryptionKey != null) {
         // Download with local blox fallback to cloud
         data = await FulaApiService.instance.downloadWithLocalFallback(
-          bucket,
+          cloudFile.sourceBucket ?? bucket, // v8: item's real bucket
           cloudFile.key,
         );
       } else {
         // Fallback to plain download if no encryption key
-        data = await FulaApiService.instance.downloadObject(bucket, cloudFile.key);
+        data = await FulaApiService.instance.downloadObject(cloudFile.sourceBucket ?? bucket, cloudFile.key);
         debugPrint('Downloaded ${cloudFile.key} without decryption (no key)');
       }
 
@@ -3726,7 +3782,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
         localPath: downloadPath,
         remotePath: cloudFile.key,
         remoteKey: cloudFile.key,
-        bucket: bucket,
+        // v8: record the bucket the file actually lives in (e.g. images-v8),
+        // not the base category bucket — otherwise the cloud explorer for the
+        // v8 bucket can't link this freshly-downloaded file and keeps showing
+        // it as "cloud only".
+        bucket: cloudFile.sourceBucket ?? bucket,
         status: SyncStatus.synced,
         lastSyncedAt: DateTime.now(),
         etag: cloudFile.etag,
@@ -3986,7 +4046,32 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     }
   }
 
+  /// P4: a managed legacy content bucket (images/videos/audio/documents) does
+  /// not support deletion while v8 is enabled — its objects are preserved so
+  /// existing share links keep working. v8-bucket files delete normally.
+  void _showLegacyDeleteBlockedMessage() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(
+          'Legacy-bucket files can\'t be deleted — they\'re preserved so '
+          'existing share links keep working. Files you add now delete normally.'),
+      backgroundColor: Colors.orange,
+      duration: Duration(seconds: 4),
+    ));
+  }
+
   Future<void> _deleteFromCloud(LocalFile file) async {
+    final category = FileCategory.fromPath(file.path);
+    // v8: delete the cloud copy from the bucket it was synced to (the SyncState
+    // records the real bucket — `-v8` for new uploads). A managed legacy bucket
+    // is delete-blocked (P4).
+    final bucket =
+        LocalStorageService.instance.getSyncState(file.path)?.bucket ??
+            category.bucketName;
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      _showLegacyDeleteBlockedMessage();
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -4004,8 +4089,6 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     if (confirmed == true) {
       try {
-        final category = FileCategory.fromPath(file.path);
-        final bucket = category.bucketName;
         await FulaApiService.instance.deleteObject(bucket, file.name);
         
         // Remove sync state since file is no longer on cloud
@@ -4033,6 +4116,11 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _deleteCloudOnlyFile(FulaObject cloudFile, String bucket) async {
+    final targetBucket = cloudFile.sourceBucket ?? bucket;
+    if (BucketVersionResolver.isForbiddenWriteTarget(targetBucket)) {
+      _showLegacyDeleteBlockedMessage();
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -4050,7 +4138,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
     if (confirmed == true) {
       try {
-        await FulaApiService.instance.deleteObject(bucket, cloudFile.key);
+        await FulaApiService.instance.deleteObject(targetBucket, cloudFile.key);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Deleted from cloud')),

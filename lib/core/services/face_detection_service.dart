@@ -31,6 +31,11 @@ class FaceDetectionService {
   // Callbacks for progress updates
   final List<void Function(String imagePath, int faceCount)> _listeners = [];
 
+  // Paths with an in-flight detection — guards against a manual "Detect"
+  // racing the background queue on the same fresh image (both would otherwise
+  // pass the already-scanned check, detect, and save duplicate face records).
+  final Set<String> _inFlightPaths = {};
+
   /// Check if face detection is enabled in settings
   bool get isEnabled {
     return LocalStorageService.instance.getSetting<bool>('faceDetectionEnabled', defaultValue: true) ?? true;
@@ -172,12 +177,42 @@ class FaceDetectionService {
     _processNextInQueue();
   }
 
-  /// Process a single image for face detection
-  Future<List<DetectedFace>> processImage(String imagePath, {String? iosAssetId}) async {
+  /// Process a single image for face detection.
+  ///
+  /// Idempotent by default: if the image was already scanned and has saved
+  /// faces, the existing faces are returned WITHOUT re-detecting. Re-detection
+  /// mints fresh face IDs for the same physical faces, which (a) creates
+  /// duplicate records and (b) re-syncs them to the cloud, while the originals —
+  /// including any manual person assignment (e.g. a face named "pirooz") —
+  /// remain. The background queue already skips processed images via
+  /// [isImageProcessed]; this closes the same gap for the direct UI "Detect"
+  /// path. Pass [forceRescan] true for an explicit re-scan (no caller today).
+  Future<List<DetectedFace>> processImage(
+    String imagePath, {
+    String? iosAssetId,
+    bool forceRescan = false,
+  }) async {
     if (!isEnabled) return [];
     if (!PlatformCapabilities.isMobile) return [];
     if (!_isInitialized) await init();
     if (_faceDetector == null) return [];
+
+    if (!forceRescan) {
+      final existing =
+          await FaceStorageService.instance.getFacesForImage(imagePath);
+      if (existing.isNotEmpty) {
+        _notifyListeners(imagePath, existing.length);
+        return existing;
+      }
+    }
+
+    // A detection for this image is already running (e.g. manual Detect racing
+    // the background queue) — don't start a second one that would duplicate;
+    // hand back whatever is already saved instead.
+    if (_inFlightPaths.contains(imagePath)) {
+      return await FaceStorageService.instance.getFacesForImage(imagePath);
+    }
+    _inFlightPaths.add(imagePath);
 
     try {
       // Update processing state
@@ -335,6 +370,8 @@ class FaceDetectionService {
         errorMessage: e.toString(),
       );
       return [];
+    } finally {
+      _inFlightPaths.remove(imagePath);
     }
   }
 

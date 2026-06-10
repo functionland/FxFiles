@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/shelf_item.dart';
 import 'package:fula_files/core/models/sync_state.dart' show SyncStatus;
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/shelf_classifier.dart';
 import 'package:fula_files/core/services/shelf_enricher.dart';
 import 'package:fula_files/core/services/shelf_notification_service.dart';
@@ -43,16 +44,13 @@ const String kShelfPendingDir = 'dump_pending';
 /// a corrupted row can't direct us to delete arbitrary files.
 const String kShelfThumbsDirName = 'dump_thumbs';
 
-/// Hive flag inside the `settings` box that records whether the dump
-/// bucket has been created (so we don't pay the network round-trip
-/// on every share).
-const String _kShelfBucketInitializedFlag = 'dump_bucket_initialized';
-
-/// Same flag, for the `dump-thumbs` bucket — without it, every
-/// post-enrichment thumbnail upload hits NoSuchBucket on a fresh
-/// account (confirmed in user logs after a clean reset).
-const String _kShelfThumbsBucketInitializedFlag =
-    'dump_thumbs_bucket_initialized';
+/// Hive `settings` key recording that a given bucket has been created, so we
+/// skip the `bucketExists`/`createBucket` round-trip on every share. The key is
+/// bucket-NAME-specific: flipping v8 routing (legacy `dump` → `dump-v8`) must
+/// not let a stale "legacy already created" flag skip creating the fresh v8
+/// bucket — that would fail the first PUT with NoSuchBucket (silently, for the
+/// fire-and-forget thumbnail upload).
+String _bucketInitializedFlag(String bucket) => '${bucket}_bucket_initialized';
 
 const int _kContentShaPrefixBytes = 1024 * 1024; // 1 MB
 
@@ -143,6 +141,7 @@ class ShelfService {
         markedAt: DateTime.now(),
         remoteKey: item.remoteKey,
         thumbnailRemoteKey: item.thumbnailRemoteKey,
+        sourceBucket: item.sourceBucket,
         // resumableManifestPath is owned by SyncService; cancelTask
         // looks it up internally so we don't need to capture it here.
         resumableManifestPath: null,
@@ -178,6 +177,7 @@ class ShelfService {
     final cloudCleanupOk = await _attemptCloudCleanup(
       remoteKey: item.remoteKey,
       thumbnailRemoteKey: item.thumbnailRemoteKey,
+      sourceBucket: item.sourceBucket,
     );
     if (cloudCleanupOk) {
       await ShelfStorageService.instance.clearPendingDelete(item.id);
@@ -215,6 +215,7 @@ class ShelfService {
       final ok = await _attemptCloudCleanup(
         remoteKey: entry.remoteKey,
         thumbnailRemoteKey: entry.thumbnailRemoteKey,
+        sourceBucket: entry.sourceBucket,
       );
       if (ok) {
         await ShelfStorageService.instance.clearPendingDelete(id);
@@ -228,19 +229,50 @@ class ShelfService {
   Future<bool> _attemptCloudCleanup({
     required String? remoteKey,
     required String? thumbnailRemoteKey,
+    required String? sourceBucket,
   }) async {
     var ok = true;
     if (remoteKey != null && remoteKey.isNotEmpty) {
-      ok = await _deleteCloudObjectIdempotent(kShelfBucket, remoteKey) && ok;
+      // Body: its recorded home (`dump` / `dump-v8`), else current routing. A
+      // v8 item deletes from its v8 bucket; a legacy item's v8-delete is a
+      // NoSuchKey no-op AND its legacy copy stays preserved (P4 policy: legacy
+      // objects are kept so existing share links keep working).
+      final bodyBucket =
+          sourceBucket ?? BucketVersionResolver.writeBucket(kShelfBucket);
+      ok = await _deleteCloudObjectIdempotent(bodyBucket, remoteKey) && ok;
     }
     if (thumbnailRemoteKey != null && thumbnailRemoteKey.isNotEmpty) {
       ok = await _deleteCloudObjectIdempotent(
-            kShelfThumbsBucket,
+            _thumbBucketFor(sourceBucket),
             thumbnailRemoteKey,
           ) &&
           ok;
     }
     return ok;
+  }
+
+  /// The thumbnail bucket matching a body's [sourceBucket] version. Body and
+  /// thumbnail are written in the same v8-flag state, so the body's recorded
+  /// bucket tells us where the thumb went: a v8 body ⇒ the `dump-thumbs-v8`
+  /// sibling; otherwise current routing (legacy when the flag is off). Keeps
+  /// thumb delete correct even after a v8-flag rollback.
+  String _thumbBucketFor(String? sourceBucket) {
+    if (sourceBucket != null && BucketVersionResolver.isV8(sourceBucket)) {
+      return '$kShelfThumbsBucket-${BucketVersionResolver.versionSuffix}';
+    }
+    return BucketVersionResolver.writeBucket(kShelfThumbsBucket);
+  }
+
+  /// Buckets to try (in order) when re-fetching a thumbnail: the item's
+  /// version bucket, plus — while v8 is enabled — the sibling, so a thumb in
+  /// either survives mixed legacy/v8 history. Flag off ⇒ the single legacy
+  /// bucket only (no wasted v8 request, preserving flag-off parity).
+  List<String> _thumbReadBuckets(String? sourceBucket) {
+    final primary = _thumbBucketFor(sourceBucket);
+    if (!BucketVersionResolver.enabled) return <String>[primary];
+    final v8 = '$kShelfThumbsBucket-${BucketVersionResolver.versionSuffix}';
+    final sibling = primary == v8 ? kShelfThumbsBucket : v8;
+    return <String>[primary, sibling];
   }
 
   Future<bool> _deleteCloudObjectIdempotent(String bucket, String key) async {
@@ -464,10 +496,16 @@ class ShelfService {
       return;
     }
     final remoteKey = _remoteKeyFor(item);
+    // The bucket the body will actually land in. `queueUpload` routes the
+    // bucket internally (its v8 chokepoint), so this mirrors what it will do —
+    // recorded on the item so delete / future cloud-download target the right
+    // bucket even if the v8 flag is toggled later.
+    final bodyBucket = BucketVersionResolver.writeBucket(kShelfBucket);
     await ShelfStorageService.instance.updateStatus(
       item.id,
       ShelfUploadStatus.uploading,
       remoteKey: remoteKey,
+      sourceBucket: bodyBucket,
     );
     try {
       await SyncService.instance.queueUpload(
@@ -554,8 +592,12 @@ class ShelfService {
       final yyyy = now.year.toString().padLeft(4, '0');
       final mm = now.month.toString().padLeft(2, '0');
       final remoteKey = '$yyyy/$mm/$dumpItemId.jpg';
+      // Route to the v8 thumbs bucket when the migration is enabled — the
+      // legacy `dump-thumbs` forest is gc-damaged and rejects writes. Unlike
+      // the body (which funnels through SyncService.queueUpload's v8
+      // chokepoint), this is a direct PUT, so it must wrap writeBucket itself.
       await FulaApiService.instance.encryptAndUpload(
-        kShelfThumbsBucket,
+        BucketVersionResolver.writeBucket(kShelfThumbsBucket),
         remoteKey,
         bytes,
         key,
@@ -594,11 +636,21 @@ class ShelfService {
       if (!FulaApiService.instance.isConfigured) return;
       final key = await AuthService.instance.getEncryptionKey();
       if (key == null) return;
-      final bytes = await FulaApiService.instance.downloadAndDecrypt(
-        kShelfThumbsBucket,
-        remoteKey,
-        key,
-      );
+      // The thumb lives in the same version-family as the body. Try that
+      // bucket first; when v8 is enabled also try the sibling so a thumb in
+      // either bucket (mixed legacy/v8 history) still rehydrates.
+      Uint8List? bytes;
+      for (final bucket in _thumbReadBuckets(item.sourceBucket)) {
+        try {
+          bytes = await FulaApiService.instance
+              .downloadAndDecrypt(bucket, remoteKey, key);
+          break;
+        } catch (e) {
+          debugPrint('ShelfService.ensureLocalThumbnail(${item.id}): '
+              '$bucket miss: $e');
+        }
+      }
+      if (bytes == null) return;
       final docs = await getApplicationDocumentsDirectory();
       final thumbsDir = Directory(p.join(docs.path, 'dump_thumbs'));
       if (!await thumbsDir.exists()) {
@@ -728,20 +780,23 @@ class ShelfService {
   /// already-exists.
   Future<void> ensureShelfBucket() async {
     if (_bucketEnsured) return;
+    // Route to the v8 sibling when enabled — the legacy `dump` forest is
+    // gc-damaged. (Bodies also get a net from SyncService._ensureBucketExists
+    // at upload, but ensuring here keeps a fresh account consistent.)
+    final bucket = BucketVersionResolver.writeBucket(kShelfBucket);
+    final flagKey = _bucketInitializedFlag(bucket);
     final flag =
-        LocalStorageService.instance.getSetting<bool>(_kShelfBucketInitializedFlag) ??
-            false;
+        LocalStorageService.instance.getSetting<bool>(flagKey) ?? false;
     if (flag) {
       _bucketEnsured = true;
       return;
     }
     try {
-      final exists = await FulaApiService.instance.bucketExists(kShelfBucket);
+      final exists = await FulaApiService.instance.bucketExists(bucket);
       if (!exists) {
-        await FulaApiService.instance.createBucket(kShelfBucket);
+        await FulaApiService.instance.createBucket(bucket);
       }
-      await LocalStorageService.instance
-          .saveSetting(_kShelfBucketInitializedFlag, true);
+      await LocalStorageService.instance.saveSetting(flagKey, true);
       _bucketEnsured = true;
     } catch (e) {
       // `createBucket` swallows "already exists" — anything else here
@@ -757,21 +812,24 @@ class ShelfService {
   /// fails with `NoSuchBucket: dump-thumbs` (visible in user logs).
   Future<bool> ensureShelfThumbsBucket() async {
     if (_thumbsBucketEnsured) return true;
-    final flag = LocalStorageService.instance
-            .getSetting<bool>(_kShelfThumbsBucketInitializedFlag) ??
-        false;
+    // Route to the v8 sibling when enabled. The thumbnail upload is a direct
+    // fire-and-forget PUT with no SyncService net, so if this skipped creating
+    // `dump-thumbs-v8` the first PUT would NoSuchBucket and silently leave
+    // `thumbnailRemoteKey` null — hence the bucket-name-specific flag key.
+    final bucket = BucketVersionResolver.writeBucket(kShelfThumbsBucket);
+    final flagKey = _bucketInitializedFlag(bucket);
+    final flag =
+        LocalStorageService.instance.getSetting<bool>(flagKey) ?? false;
     if (flag) {
       _thumbsBucketEnsured = true;
       return true;
     }
     try {
-      final exists =
-          await FulaApiService.instance.bucketExists(kShelfThumbsBucket);
+      final exists = await FulaApiService.instance.bucketExists(bucket);
       if (!exists) {
-        await FulaApiService.instance.createBucket(kShelfThumbsBucket);
+        await FulaApiService.instance.createBucket(bucket);
       }
-      await LocalStorageService.instance
-          .saveSetting(_kShelfThumbsBucketInitializedFlag, true);
+      await LocalStorageService.instance.saveSetting(flagKey, true);
       _thumbsBucketEnsured = true;
       return true;
     } catch (e) {
@@ -780,8 +838,7 @@ class ShelfService {
           s.contains('BucketAlreadyOwnedByYou') ||
           s.contains('bucket already exists')) {
         _thumbsBucketEnsured = true;
-        await LocalStorageService.instance
-            .saveSetting(_kShelfThumbsBucketInitializedFlag, true);
+        await LocalStorageService.instance.saveSetting(flagKey, true);
         return true;
       }
       debugPrint('ShelfService.ensureShelfThumbsBucket non-fatal: $e');

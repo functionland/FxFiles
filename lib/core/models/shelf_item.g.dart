@@ -211,13 +211,16 @@ class ShelfItemAdapter extends TypeAdapter<ShelfItem> {
       // Field 18 added later — legacy rows persisted before the
       // cloud-sync migration won't have it, so default to null.
       thumbnailRemoteKey: fields[18] as String?,
+      // Field 19 added in P7 (v8 shelf-content migration) — rows persisted
+      // before it default to null = the legacy `dump` body bucket.
+      sourceBucket: fields[19] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ShelfItem obj) {
     writer
-      ..writeByte(19)
+      ..writeByte(20)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -255,7 +258,9 @@ class ShelfItemAdapter extends TypeAdapter<ShelfItem> {
       ..writeByte(17)
       ..write(obj.enrichmentStatus)
       ..writeByte(18)
-      ..write(obj.thumbnailRemoteKey);
+      ..write(obj.thumbnailRemoteKey)
+      ..writeByte(19)
+      ..write(obj.sourceBucket);
   }
 
   @override

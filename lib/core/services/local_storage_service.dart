@@ -7,6 +7,7 @@ import 'package:fula_files/core/models/recent_file.dart';
 import 'package:fula_files/core/models/folder_sync.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/models/sync_task.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/shelf_storage_service.dart';
 
 class LocalStorageService {
@@ -213,6 +214,9 @@ class LocalStorageService {
     if (box == null) return null;
 
     for (final state in box.values) {
+      // Exact bucket (NOT family-aware): this returns the single authoritative
+      // state and a caller may route a download/delete on state.bucket, so it
+      // must never hand back the -v8 sibling. (Currently unused; kept exact.)
       if (state.remoteKey == remoteKey && state.bucket == bucket) {
         return state;
       }
@@ -228,7 +232,8 @@ class LocalStorageService {
 
     final keys = <String>{};
     for (final state in box.values) {
-      if (state.bucket == bucket && state.remoteKey != null) {
+      if (BucketVersionResolver.sameFamily(state.bucket, bucket) &&
+          state.remoteKey != null) {
         keys.add(state.remoteKey!);
       }
     }
@@ -242,7 +247,8 @@ class LocalStorageService {
     final map = <String, String>{};
     for (final entry in box.toMap().entries) {
       final state = entry.value;
-      if (state.bucket == bucket && state.remoteKey != null) {
+      if (BucketVersionResolver.sameFamily(state.bucket, bucket) &&
+          state.remoteKey != null) {
         map[state.remoteKey!] = entry.key as String; // key is localPath
       }
     }

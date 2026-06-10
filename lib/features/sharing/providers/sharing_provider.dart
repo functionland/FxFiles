@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/sharing_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/cloud_share_storage_service.dart';
@@ -578,7 +579,9 @@ class SharesState {
   /// Get shares for a specific path
   List<OutgoingShare> getSharesForPath(String bucket, String path) {
     return outgoingShares.where((s) =>
-      s.bucket == bucket &&
+      // v8: match the bucket FAMILY so a v8-native share is found whether the
+      // caller passes the legacy category or the `-v8` sibling (display-only).
+      BucketVersionResolver.sameFamily(s.bucket, bucket) &&
       (path.startsWith(s.pathScope) || s.pathScope.startsWith(path))
     ).toList();
   }

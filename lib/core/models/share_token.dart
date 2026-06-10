@@ -761,12 +761,19 @@ class GeneratedShareLink {
   /// Password used (for password-protected links, not stored)
   final String? password;
 
+  /// v8: how many OLDER (pre-v8) files were NOT included in this folder/tag
+  /// share, because a share only enumerates the `-v8` bucket. The UI surfaces
+  /// this so the owner knows some files need re-uploading to be shared. 0 when
+  /// nothing was left out (or the v8 resolver is off).
+  final int notIncludedCount;
+
   const GeneratedShareLink({
     required this.url,
     required this.token,
     required this.outgoingShare,
     this.payload,
     this.password,
+    this.notIncludedCount = 0,
   });
 }
 

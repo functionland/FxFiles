@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipns_name.dart';
 import 'package:fula_files/core/services/ipns_record.dart';
@@ -55,6 +56,10 @@ class IpnsPointerService {
   /// a distinct object key — reusing [FulaApiService]'s encrypted channel as-is
   /// (the encryption code itself is untouched).
   static const String _metadataBucket = 'website-metadata';
+
+  /// v8 write target for website-pointer metadata (`-v8` when enabled).
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
   static const Duration _backupDebounce = Duration(seconds: 5);
 
   Box<WebsiteGroupPointer>? _box;
@@ -280,17 +285,19 @@ class IpnsPointerService {
       // Merge with the existing cloud blob (keyed by tagId) so we never drop
       // another device's entries — or a group's only key backup.
       final merged = <String, Map<String, dynamic>>{};
-      try {
-        final existing = await FulaApiService.instance
-            .downloadAndDecrypt(_metadataBucket, objectKey, encryptionKey);
-        final ej = jsonDecode(utf8.decode(existing)) as Map<String, dynamic>;
-        for (final raw in (ej['pointers'] as List<dynamic>? ?? const [])) {
-          final m = raw as Map<String, dynamic>;
-          final tid = m['tagId'] as String?;
-          if (tid != null) merged[tid] = m;
-        }
-      } catch (_) {
-        // No existing blob / offline / unreadable — start fresh.
+      // Read the existing blob from BOTH v8 + legacy so the write to v8 never
+      // drops another device's entries (or a group's only key backup). v8 (read
+      // first) wins a duplicate tagId.
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_metadataBucket, objectKey, encryptionKey)) {
+        try {
+          final ej = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+          for (final raw in (ej['pointers'] as List<dynamic>? ?? const [])) {
+            final m = raw as Map<String, dynamic>;
+            final tid = m['tagId'] as String?;
+            if (tid != null) merged.putIfAbsent(tid, () => m);
+          }
+        } catch (_) {}
       }
 
       // Overlay this device's pointers (authoritative for the groups it has).
@@ -312,7 +319,7 @@ class IpnsPointerService {
       });
       final data = Uint8List.fromList(utf8.encode(jsonStr));
       await FulaApiService.instance.encryptAndUpload(
-        _metadataBucket,
+        _writeBucket,
         objectKey,
         data,
         encryptionKey,
@@ -337,16 +344,14 @@ class IpnsPointerService {
       final userId = await _userId();
       if (userId == null) return;
 
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _metadataBucket,
-        '.fula/website_pointers/$userId.json',
-        encryptionKey,
-      );
-      final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-      final list = json['pointers'] as List<dynamic>? ?? const [];
-
       var restored = 0;
-      for (final raw in list) {
+      // MERGE: restore pointers from BOTH v8 + legacy (additive — never clobbers
+      // a local pointer). v8 read first wins a duplicate tagId.
+      for (final blob in await FulaApiService.instance.downloadMetadataMerged(
+          _metadataBucket, '.fula/website_pointers/$userId.json', encryptionKey)) {
+        final json = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+        final list = json['pointers'] as List<dynamic>? ?? const [];
+        for (final raw in list) {
         final map = raw as Map<String, dynamic>;
         final pointer = WebsiteGroupPointer.fromJson(map);
         final keyName = SecureStorageKeys.groupIpnsPrivKeyPrefix + pointer.tagId;
@@ -380,6 +385,7 @@ class IpnsPointerService {
         }
 
         if (!hadLocalPointer) restored++;
+        }
       }
       if (restored > 0) {
         debugPrint('Restored $restored IPNS pointers from cloud');

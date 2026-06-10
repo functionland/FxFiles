@@ -21,7 +21,12 @@ import 'failure_logger.dart';
 
 /// Stable bucket name used across all integration tests on the
 /// real master. Not user-visible in normal operation.
-const String integrationTestBucket = '__integration_test__';
+///
+/// NOTE: must satisfy the gateway's bucket-name rule (lowercase
+/// letters, numbers, hyphens, periods only) — underscores are
+/// rejected with `InvalidBucketName`, which previously failed every
+/// `bootSignedIn` at `ensureBucketExists`.
+const String integrationTestBucket = 'integration-test';
 
 /// Per-test prefix manager. Construct in `setUp`, call
 /// [trackKey] after every upload, [cleanup] in `tearDown`.

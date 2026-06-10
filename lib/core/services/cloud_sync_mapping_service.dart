@@ -8,6 +8,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:fula_files/core/models/sync_state.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
 
 /// Represents a mapping between a local file and its cloud counterpart
@@ -65,6 +66,19 @@ class CloudSyncMappingService {
   static const String _metadataBucket = 'fula-metadata';
   static const String _mappingPrefix = '.fula/sync-mapping/';
 
+  /// The bucket WRITES route to: `fula-metadata-v8` once the shared bucket is
+  /// v8-managed (legacy forest is gc-damaged), else `fula-metadata`. Reads
+  /// MERGE both via `downloadObjectMerged`. No-op until `fula-metadata` joins
+  /// the managed set.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
+
+  /// Test seam: when set, [downloadMappings] returns this instead of hitting
+  /// the cloud — lets the H1 (clear-only-after-success) invariant be unit-tested
+  /// without a live FulaApiService.
+  @visibleForTesting
+  Future<List<SyncMapping>> Function()? downloadMappingsOverride;
+
   // In-memory cache of mappings
   final List<SyncMapping> _mappings = [];
   bool _isLoaded = false;
@@ -93,7 +107,8 @@ class CloudSyncMappingService {
   /// Check if a remote key has a mapping (meaning it was uploaded from a local file)
   /// This can be used to avoid showing cloud files as "cloud-only" if they have local links
   bool hasMapping(String remoteKey, String bucket) {
-    return _mappings.any((m) => m.remoteKey == remoteKey && m.bucket == bucket);
+    return _mappings.any(
+        (m) => m.remoteKey == remoteKey && BucketVersionResolver.sameFamily(m.bucket, bucket));
   }
 
   /// Look up a mapping by local file path. Used by tag-share to resolve which
@@ -118,7 +133,7 @@ class CloudSyncMappingService {
   /// Used for efficient cloud-only detection
   Set<String> getMappedRemoteKeys(String bucket) {
     return _mappings
-        .where((m) => m.bucket == bucket)
+        .where((m) => BucketVersionResolver.sameFamily(m.bucket, bucket))
         .map((m) => m.remoteKey)
         .toSet();
   }
@@ -127,7 +142,7 @@ class CloudSyncMappingService {
   Map<String, String> getMappedRemoteKeysWithPaths(String bucket) {
     final map = <String, String>{};
     for (final m in _mappings) {
-      if (m.bucket == bucket && m.localPath != null) {
+      if (BucketVersionResolver.sameFamily(m.bucket, bucket) && m.localPath != null) {
         map[m.remoteKey] = m.localPath!;
       }
     }
@@ -192,7 +207,7 @@ class CloudSyncMappingService {
       final key = '$_mappingPrefix$userId.json';
       final data = Uint8List.fromList(utf8.encode(jsonString));
       await FulaApiService.instance.uploadObject(
-        _metadataBucket,
+        _writeBucket,
         key,
         data,
         contentType: 'application/json',
@@ -204,8 +219,14 @@ class CloudSyncMappingService {
     }
   }
 
-  /// Download mappings from cloud
+  /// Download mappings from cloud, MERGED from `[v8, legacy]` (additive; v8 wins
+  /// by `identifier`). Propagates a hard (non-404) error so [ensureLoaded] /
+  /// [relinkMappings] keep the in-mem cache rather than clearing it to a partial
+  /// (v8-only) set — hazard H1.
   Future<List<SyncMapping>> downloadMappings() async {
+    final override = downloadMappingsOverride;
+    if (override != null) return override();
+
     if (!FulaApiService.instance.isConfigured) {
       debugPrint('CloudSyncMapping: Fula API not configured');
       return [];
@@ -217,61 +238,42 @@ class CloudSyncMappingService {
       return [];
     }
 
-    try {
-      // Ensure bucket exists
-      await _ensureBucketExists();
+    await _ensureBucketExists();
+    final key = '$_mappingPrefix$userId.json';
+    // downloadObjectMerged skips a 404/absent bucket but RETHROWS a hard error,
+    // which the clear-only-after-success callers rely on (H1).
+    final blobs = await FulaApiService.instance
+        .downloadObjectMerged(_metadataBucket, key);
 
-      final key = '$_mappingPrefix$userId.json';
-
-      // Download from cloud
-      final data = await FulaApiService.instance.downloadObject(
-        _metadataBucket,
-        key,
-      );
-
-      // Parse JSON defensively
-      final jsonString = utf8.decode(data);
+    final byId = <String, SyncMapping>{};
+    for (final data in blobs) {
       final Map<String, dynamic> json;
       try {
-        final decoded = jsonDecode(jsonString);
+        final decoded = jsonDecode(utf8.decode(data));
         if (decoded is! Map<String, dynamic>) {
           debugPrint('CloudSyncMapping: mappings manifest is not an object');
-          return [];
+          continue;
         }
         json = decoded;
       } catch (e) {
         debugPrint('CloudSyncMapping: mappings manifest parse failed: $e');
-        return [];
+        continue;
       }
-
       final mappingsJson = json['mappings'] as List<dynamic>? ?? <dynamic>[];
-      final mappings = <SyncMapping>[];
       for (final entry in mappingsJson) {
         if (entry is! Map<String, dynamic>) continue;
         try {
-          mappings.add(SyncMapping.fromJson(entry));
+          final m = SyncMapping.fromJson(entry);
+          byId.putIfAbsent(m.identifier, () => m); // [v8, legacy] ⇒ v8 wins
         } catch (e) {
           debugPrint('CloudSyncMapping: skipping malformed mapping: $e');
         }
       }
-
-      debugPrint('CloudSyncMapping: Downloaded ${mappings.length} mappings from cloud');
-      return mappings;
-    } on FulaApiException catch (e) {
-      if (e.message.contains('NoSuchKey') ||
-          e.message.contains('NoSuchBucket') ||
-          e.message.contains('bucket not found') ||
-          e.message.contains('404') ||
-          e.message.contains('not found')) {
-        debugPrint('CloudSyncMapping: No mappings found in cloud');
-        return [];
-      }
-      debugPrint('CloudSyncMapping: Failed to download mappings: $e');
-      rethrow;
-    } catch (e) {
-      debugPrint('CloudSyncMapping: Failed to download mappings: $e');
-      rethrow;
     }
+
+    final mappings = byId.values.toList();
+    debugPrint('CloudSyncMapping: Downloaded ${mappings.length} mappings from cloud (merged)');
+    return mappings;
   }
 
   /// Re-link mappings to local files after reinstall/clear storage
@@ -400,15 +402,36 @@ class CloudSyncMappingService {
   /// Ensure the metadata bucket exists
   Future<void> _ensureBucketExists() async {
     try {
-      final exists = await FulaApiService.instance.bucketExists(_metadataBucket);
+      final exists = await FulaApiService.instance.bucketExists(_writeBucket);
       if (!exists) {
-        await FulaApiService.instance.createBucket(_metadataBucket);
+        await FulaApiService.instance.createBucket(_writeBucket);
         debugPrint('CloudSyncMapping: Created metadata bucket');
       }
     } catch (e) {
       debugPrint('CloudSyncMapping: Could not ensure bucket exists: $e');
     }
   }
+
+  // ---- Test seams (device-free unit tests; production leaves them unused) ----
+
+  @visibleForTesting
+  void resetForTesting() {
+    _uploadDebounceTimer?.cancel();
+    _uploadDebounceTimer = null;
+    _mappings.clear();
+    _isLoaded = false;
+    downloadMappingsOverride = null;
+  }
+
+  @visibleForTesting
+  void seedMappingsForTest(List<SyncMapping> mappings) {
+    _mappings
+      ..clear()
+      ..addAll(mappings);
+  }
+
+  @visibleForTesting
+  List<SyncMapping> get cachedMappingsForTest => List.unmodifiable(_mappings);
 
   /// Clear all cached mappings (for sign out)
   void clear() {

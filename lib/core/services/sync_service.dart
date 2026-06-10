@@ -18,6 +18,7 @@ import 'package:fula_files/core/services/sync_notification_service.dart';
 import 'package:fula_files/core/services/upload_progress_manager.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/upload_queue_lock.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 // Method channel shared with MainActivity; routes startUploadService /
@@ -399,9 +400,22 @@ class SyncService {
     // upload completes normally.
     _cancelledLocalPaths.remove(localPath);
 
+    // v8 migration: route new content uploads to the fresh `<base>-v8` bucket
+    // (legacy buckets are gc-damaged and block writes). No-op while v8 is
+    // disabled or for unmanaged buckets (shelf / metadata / custom / test).
+    // Routed here — the one chokepoint every content upload funnels through —
+    // so SyncState.bucket (which drives sync-status, share-target, and download
+    // routing) reflects the real (v8) bucket.
+    final routedBucket = BucketVersionResolver.writeBucket(remoteBucket);
+    if (routedBucket != remoteBucket) {
+      debugPrint(
+        'SyncService: v8-routing upload $remoteBucket -> $routedBucket ($localPath)',
+      );
+    }
+
     final task = SyncTask(
       localPath: localPath,
-      remoteBucket: remoteBucket,
+      remoteBucket: routedBucket,
       remoteKey: remoteKey,
       direction: SyncDirection.upload,
       encrypt: encrypt,
@@ -414,7 +428,7 @@ class SyncService {
     if (!_isRestoring) {
       final persistentTask = persistent.SyncTask.upload(
         localPath: localPath,
-        remoteBucket: remoteBucket,
+        remoteBucket: routedBucket,
         remoteKey: remoteKey,
         encrypt: encrypt,
       );
@@ -426,7 +440,11 @@ class SyncService {
     final state = SyncState(
       localPath: localPath,
       remotePath: remoteKey,
-      bucket: remoteBucket,
+      // Populate remoteKey too (not just remotePath): linked-key lookups and
+      // the cloud-explorer matcher key off remoteKey, so leaving it null made
+      // freshly-uploaded files (esp. in -v8 buckets) look "cloud only".
+      remoteKey: remoteKey,
+      bucket: routedBucket,
       status: SyncStatus.notSynced,
       displayPath: displayPath, // Store virtual path for iOS UI lookup
       iosAssetId: iosAssetId, // Store iOS asset ID for stable identification
@@ -1591,10 +1609,18 @@ class SyncService {
         continue;
       }
 
-      // Add to in-memory queue
+      // Add to in-memory queue.
+      // Re-route UPLOAD tasks through the v8 resolver on restore: a task
+      // persisted to a legacy managed bucket (e.g. `images`) before the flag
+      // flipped would otherwise re-enter the queue as `images` and hit the
+      // read-only-legacy write guard. writeBucket is a no-op when the flag is
+      // off and idempotent on an already-v8 bucket. DOWNLOAD tasks keep their
+      // original bucket — the file may genuinely live in legacy.
       final task = SyncTask(
         localPath: persistentTask.localPath,
-        remoteBucket: persistentTask.remoteBucket,
+        remoteBucket: persistentTask.isUpload
+            ? BucketVersionResolver.writeBucket(persistentTask.remoteBucket)
+            : persistentTask.remoteBucket,
         remoteKey: persistentTask.remoteKey,
         direction: persistentTask.isUpload ? SyncDirection.upload : SyncDirection.download,
         encrypt: persistentTask.encrypt,

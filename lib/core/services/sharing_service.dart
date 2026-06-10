@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
 import 'package:fula_files/core/services/file_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
@@ -24,6 +25,22 @@ import 'package:fula_files/core/services/tag_storage_service.dart';
 
 /// Gateway base URL for public share links
 const String kShareGatewayBaseUrl = 'https://cloud.fx.land';
+
+/// The bucket a NEW folder / tag / category share targets.
+///
+/// These shares ENUMERATE a bucket (a folder prefix or a tag's files), so —
+/// unlike a single-file share, which carries the file's own bucket — post-v8
+/// they must be **v8-native**: list, mint per-file tokens, and freeze against
+/// `<base>-v8`, where new (post-gc) writes land. Pre-v8 files in the legacy
+/// bucket are simply not enumerated → not shared (re-upload to include them).
+///
+/// Idempotent — `writeBucket` passes an already-`-v8` bucket through unchanged
+/// (it is not a managed base), so feeding it `images-v8` returns `images-v8`,
+/// never `images-v8-v8`. Flag-off-safe: `writeBucket` returns the input
+/// unchanged when the resolver is disabled, making every call site a
+/// byte-for-byte no-op. Top-level + pure so it is unit-testable without a device.
+String shareV8Bucket(String bucket) =>
+    BucketVersionResolver.writeBucket(bucket);
 
 /// Service for secure file sharing between users
 ///
@@ -138,6 +155,46 @@ class SharingService {
     return obj.storageKey ?? obj.key;
   }
 
+  /// v8 UX precheck for a FOLDER share (P8.3). A folder share enumerates only
+  /// the v8 bucket, so:
+  ///  - if the v8 folder is EMPTY (a purely-pre-v8 folder), refuse with a clear,
+  ///    user-facing message — the marker phrase "must be re-uploaded" is what
+  ///    `ErrorMessages` keys off to show a friendly note instead of a generic
+  ///    "Unable to share".
+  ///  - otherwise return how many OLDER (legacy) files in this folder were left
+  ///    OUT of the share, so the dialog can tell the owner. 0 when not routed
+  ///    (resolver off / unmanaged) or on a (non-fatal) legacy-listing error.
+  /// `effBucket` is the already-routed (v8) bucket; `pathScope` ends with '/'.
+  Future<int> _folderShareEmptyCheckAndNotIncluded(
+      String effBucket, String pathScope) async {
+    final v8Objects = (await fula_service.FulaApiService.instance
+            .listObjects(effBucket, prefix: pathScope))
+        .where((o) => !o.isDirectory)
+        .toList();
+    if (v8Objects.isEmpty) {
+      throw SharingException(
+        'No files here can be shared yet — newly uploaded files are shareable; '
+        'older files must be re-uploaded to share them.',
+      );
+    }
+    if (!BucketVersionResolver.isV8(effBucket)) return 0; // flag-off / unmanaged
+    try {
+      final legacy = await fula_service.FulaApiService.instance
+          .listObjects(BucketVersionResolver.baseOf(effBucket), prefix: pathScope);
+      final v8Keys = v8Objects.map((o) => o.key).toSet();
+      final n = legacy
+          .where((o) => !o.isDirectory && !v8Keys.contains(o.key))
+          .length;
+      if (n > 0) {
+        debugPrint('SharingService: folder share leaves $n pre-v8 file(s) out '
+            'of "$pathScope" (in ${BucketVersionResolver.baseOf(effBucket)})');
+      }
+      return n;
+    } catch (_) {
+      return 0; // best-effort count; never block a share on the legacy listing
+    }
+  }
+
   /// Create a share token for a recipient
   ///
   /// Process (with fula_client):
@@ -170,8 +227,17 @@ class SharingService {
       throw SharingException('Fula API not configured. Please connect to cloud storage first.');
     }
 
+    // v8: a folder/category share enumerates a bucket → target the v8 sibling;
+    // a single-file share keeps the caller's bucket. Flag-off ⇒ effBucket==bucket.
+    final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
+
+    // v8 (P8.3): a purely-pre-v8 folder gets a clear "re-upload" message.
+    if (pathScope.endsWith('/')) {
+      await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope);
+    }
+
     // Get storage key for the path
-    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+    final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
 
     // Calculate expiry as Unix timestamp
     final now = DateTime.now();
@@ -184,7 +250,7 @@ class SharingService {
 
     // Create fula_client share token
     final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
-      bucket,  // Bucket name
+      effBucket,  // Bucket name (v8 sibling for folder shares)
       storageKey,
       recipientPublicKey,
       shareMode,
@@ -197,7 +263,7 @@ class SharingService {
       ownerPublicKey: ownerPublicKey,
       recipientPublicKey: recipientPublicKey,
       pathScope: pathScope,
-      bucket: bucket,
+      bucket: effBucket,
       permissions: permissions,
       createdAt: now,
       expiresAt: expiresAt,
@@ -284,7 +350,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -383,6 +450,9 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
+      // v8: tagged files NOT in the share (legacy-only / other-category /
+      // still-pending) so the owner knows what was left out.
+      notIncludedCount: resolution.totalCount - resolution.items.length,
     );
   }
 
@@ -419,7 +489,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -541,6 +612,7 @@ class SharingService {
       token: token,
       outgoingShare: outgoingShare,
       password: password,
+      notIncludedCount: resolution.totalCount - resolution.items.length,
     );
   }
 
@@ -570,7 +642,8 @@ class SharingService {
           'No cloud files yet. ${resolution.pendingCount} file(s) are uploading — try again in a moment.',
         );
       }
-      throw SharingException('Tag "${resolution.tag.name}" has no shareable files');
+      throw SharingException('Tag "${resolution.tag.name}" has no shareable '
+          'files — older files must be re-uploaded to share them.');
     }
 
     final bucket = resolution.primaryBucket!;
@@ -673,7 +746,11 @@ class SharingService {
       if (mapping != null) {
         cloudCandidates.add(_TagCloudCandidate(
           remoteKey: mapping.remoteKey,
-          bucket: mapping.bucket,
+          // v8: a tag share is v8-native — normalise to the v8 sibling so the
+          // primary-bucket vote + the listObjects pass below target it. A
+          // legacy-only tagged file maps to the v8 bucket but isn't found in
+          // it, so it falls out at the keyToObject lookup = not shared.
+          bucket: shareV8Bucket(mapping.bucket),
           fileName: tf.fileName,
         ));
       } else if (tf.remoteKey != null) {
@@ -682,7 +759,7 @@ class SharingService {
         // filename extension.
         cloudCandidates.add(_TagCloudCandidate(
           remoteKey: tf.remoteKey!,
-          bucket: FileCategory.fromPath(tf.fileName).bucketName,
+          bucket: shareV8Bucket(FileCategory.fromPath(tf.fileName).bucketName),
           fileName: tf.fileName,
         ));
       } else if (tf.localPath != null || tf.iosAssetId != null) {
@@ -835,9 +912,20 @@ class SharingService {
       throw SharingException('Fula API not configured. Please connect to cloud storage first.');
     }
 
+    // v8: a folder/category share enumerates a bucket → target the v8 sibling
+    // (new shares are v8-native); a single-file share keeps the caller's bucket
+    // (the file's own). Flag-off / unmanaged ⇒ effBucket == bucket (no-op).
+    final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
+
+    // v8 (P8.3): refuse a purely-pre-v8 folder with a clear message + count the
+    // older files left out (for the owner). No-op for single-file shares.
+    final notIncludedCount = pathScope.endsWith('/')
+        ? await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope)
+        : 0;
+
     // Get storage key (CID) for the path - needed for file fetching
-    debugPrint('SharingService.createPublicLink: bucket=$bucket, pathScope=$pathScope');
-    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+    debugPrint('SharingService.createPublicLink: bucket=$effBucket, pathScope=$pathScope');
+    final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
     debugPrint('SharingService.createPublicLink: storageKey=$storageKey');
 
     // Calculate expiry as Unix timestamp
@@ -859,11 +947,11 @@ class SharingService {
 
     // Create fula_client share token with the disposable public key
     // DEK is fetched from object metadata (x-fula-encryption), not derived from path
-    debugPrint('SharingService.createPublicLink: creating fula share token with bucket=$bucket, storageKey=$storageKey...');
+    debugPrint('SharingService.createPublicLink: creating fula share token with bucket=$effBucket, storageKey=$storageKey...');
     String fulaToken;
     try {
       fulaToken = await fula_service.FulaApiService.instance.createShareToken(
-        bucket,  // Bucket name
+        effBucket,  // Bucket name (v8 sibling for folder shares)
         storageKey,  // CID - used to fetch object and its DEK from metadata
         publicKeyBytes,  // Disposable public key for public share
         shareMode,
@@ -884,7 +972,7 @@ class SharingService {
       ownerPublicKey: ownerPublicKey,
       recipientPublicKey: publicKeyBytes,  // Store the disposable public key
       pathScope: pathScope,
-      bucket: bucket,
+      bucket: effBucket,
       permissions: SharePermissions.readOnly,
       createdAt: now,
       expiresAt: expiresAt,
@@ -899,10 +987,10 @@ class SharingService {
     // For folder shares, create per-file share tokens and include manifest
     List<Map<String, dynamic>>? folderFiles;
     if (pathScope.endsWith('/')) {
-      final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
+      final objects = await fula_service.FulaApiService.instance.listObjects(effBucket, prefix: pathScope);
       final fileObjects = objects.where((o) => !o.isDirectory).toList();
       folderFiles = await _buildManifestEntries(
-        bucket: bucket,
+        bucket: effBucket,
         publicKeyBytes: publicKeyBytes,
         shareMode: shareMode,
         expiresAtUnix: expiresAtUnix,
@@ -925,7 +1013,7 @@ class SharingService {
     final payloadMap = {
       'v': 2,  // Version 2 = fula_client format
       't': fulaToken,
-      'b': bucket,
+      'b': effBucket,
       'k': pathScope,  // Original path - used for DEK derivation
       'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
       'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
@@ -946,7 +1034,7 @@ class SharingService {
       _postManifest(
         baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
         shareId: tokenId,
-        bucket: bucket,
+        bucket: effBucket,
         pathScope: pathScope,
         fulaToken: fulaToken,
         folderFiles: folderFiles,
@@ -969,6 +1057,7 @@ class SharingService {
       url: url,
       token: token,
       outgoingShare: outgoingShare,
+      notIncludedCount: notIncludedCount,
     );
   }
 
@@ -1006,8 +1095,17 @@ class SharingService {
       throw SharingException('Fula API not configured. Please connect to cloud storage first.');
     }
 
+    // v8: a folder/category share enumerates a bucket → target the v8 sibling;
+    // a single-file share keeps the caller's bucket. Flag-off ⇒ effBucket==bucket.
+    final effBucket = pathScope.endsWith('/') ? shareV8Bucket(bucket) : bucket;
+
+    // v8 (P8.3): refuse a purely-pre-v8 folder + count older files left out.
+    final notIncludedCount = pathScope.endsWith('/')
+        ? await _folderShareEmptyCheckAndNotIncluded(effBucket, pathScope)
+        : 0;
+
     // Get storage key (CID) for the path - needed for file fetching
-    final storageKey = await _getStorageKeyForPath(bucket, pathScope);
+    final storageKey = await _getStorageKeyForPath(effBucket, pathScope);
 
     // Calculate expiry as Unix timestamp
     final now = DateTime.now();
@@ -1027,7 +1125,7 @@ class SharingService {
     // Create fula_client share token with the disposable public key
     // DEK is fetched from object metadata (x-fula-encryption), not derived from path
     final fulaToken = await fula_service.FulaApiService.instance.createShareToken(
-      bucket,  // Bucket name
+      effBucket,  // Bucket name (v8 sibling for folder shares)
       storageKey,  // CID - used to fetch object and its DEK from metadata
       publicKeyBytes,  // Disposable public key for password-protected share
       shareMode,
@@ -1042,7 +1140,7 @@ class SharingService {
       ownerPublicKey: ownerPublicKey,
       recipientPublicKey: publicKeyBytes,  // Store the disposable public key
       pathScope: pathScope,
-      bucket: bucket,
+      bucket: effBucket,
       permissions: SharePermissions.readOnly,
       createdAt: now,
       expiresAt: expiresAt,
@@ -1057,10 +1155,10 @@ class SharingService {
     // For folder shares, create per-file share tokens and include manifest
     List<Map<String, dynamic>>? folderFiles;
     if (pathScope.endsWith('/')) {
-      final objects = await fula_service.FulaApiService.instance.listObjects(bucket, prefix: pathScope);
+      final objects = await fula_service.FulaApiService.instance.listObjects(effBucket, prefix: pathScope);
       final fileObjects = objects.where((o) => !o.isDirectory).toList();
       folderFiles = await _buildManifestEntries(
-        bucket: bucket,
+        bucket: effBucket,
         publicKeyBytes: publicKeyBytes,
         shareMode: shareMode,
         expiresAtUnix: expiresAtUnix,
@@ -1079,7 +1177,7 @@ class SharingService {
     final innerPayloadMap = {
       'v': 2,
       't': fulaToken,
-      'b': bucket,
+      'b': effBucket,
       'k': pathScope,  // Original path - used for DEK derivation
       'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
       'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
@@ -1102,7 +1200,7 @@ class SharingService {
       'p': true, // password protected flag
       's': base64Encode(salt),
       'e': base64Encode(encryptedPayload),
-      'b': bucket,
+      'b': effBucket,
       'k': pathScope,
     };
 
@@ -1118,7 +1216,7 @@ class SharingService {
       _postManifest(
         baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
         shareId: tokenId,
-        bucket: bucket,
+        bucket: effBucket,
         pathScope: pathScope,
         fulaToken: fulaToken,
         folderFiles: folderFiles,
@@ -1144,6 +1242,7 @@ class SharingService {
       token: token,
       outgoingShare: outgoingShare,
       password: password,
+      notIncludedCount: notIncludedCount,
     );
   }
 
@@ -1288,8 +1387,12 @@ class SharingService {
   /// Get shares for a specific path
   Future<List<OutgoingShare>> getSharesForPath(String bucket, String path) async {
     final shares = await getOutgoingShares();
-    return shares.where((s) => 
-      s.bucket == bucket && 
+    return shares.where((s) =>
+      // v8: a NEW share is frozen on the `-v8` sibling while the caller may pass
+      // the legacy category (or vice-versa) — match the whole bucket FAMILY so
+      // the "is shared" badge finds it regardless. Display-only lookup; the
+      // recipient fetch still uses each share's own exact bucket.
+      BucketVersionResolver.sameFamily(s.bucket, bucket) &&
       (path.startsWith(s.pathScope) || s.pathScope.startsWith(path))
     ).toList();
   }

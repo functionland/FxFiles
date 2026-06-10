@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
@@ -497,7 +498,37 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Read-only-legacy guard (v8 migration): refuse to WRITE to a managed
+  /// legacy content bucket — new data must go to its `-v8` sibling, never a
+  /// gc-damaged bucket. Inert while v8 routing is disabled. Reads and deletes
+  /// are intentionally NOT guarded (legacy content stays readable, and a user
+  /// may still attempt to clean up legacy objects).
+  void _guardLegacyWrite(String bucket) {
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      throw FulaApiException(
+        'Refusing to write to legacy bucket "$bucket": it is gc-damaged and '
+        'blocks writes. Route through BucketVersionResolver.writeBucket() so '
+        'the write targets "$bucket-${BucketVersionResolver.versionSuffix}".',
+      );
+    }
+  }
+
+  /// Backstop for the P4 policy: a managed *legacy* content bucket does not
+  /// support deletion (its objects are preserved so existing share links keep
+  /// working). Only the `-v8` sibling can be deleted. The UI checks this first
+  /// and shows a friendly message; this guards any path that doesn't.
+  void _guardLegacyDelete(String bucket) {
+    if (BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
+      throw FulaApiException(
+        'Legacy bucket "$bucket" does not support deletion: its objects are '
+        'preserved so existing share links keep working. Only files in '
+        '"$bucket-${BucketVersionResolver.versionSuffix}" can be deleted.',
+      );
+    }
+  }
+
   Future<void> createBucket(String bucket) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await fula.encCreateBucket(client: _client!, name: bucket);
@@ -626,6 +657,7 @@ class FulaApiService implements FulaApi {
             ? DateTime.fromMillisecondsSinceEpoch(meta.modifiedAt! * 1000)
             : null,
         isDirectory: false,
+        sourceBucket: bucket,
         metadata: {
           'storageKey': meta.storageKey,
           'contentType': meta.contentType ?? '',
@@ -815,6 +847,7 @@ class FulaApiService implements FulaApi {
     String? contentType,
     Map<String, String>? metadata,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -833,6 +866,7 @@ class FulaApiService implements FulaApi {
 
   /// Delete a file
   Future<void> deleteObject(String bucket, String key) async {
+    _guardLegacyDelete(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -856,6 +890,76 @@ class FulaApiService implements FulaApi {
     Uint8List encryptionKey, // Ignored - kept for API compatibility
   ) async {
     return downloadObject(bucket, key);
+  }
+
+  /// P6 metadata MERGE-read: download a per-user manifest from BOTH the `-v8`
+  /// sibling and the legacy bucket, returning the successfully-decrypted,
+  /// non-empty blobs in priority order [v8, legacy]. The caller applies them
+  /// ADDITIVELY (v8 wins a conflicting id; legacy fills gaps). When v8 routing
+  /// is off / [base] is unmanaged this is just `[legacy]`. NEVER throws — a
+  /// missing/erroring bucket is skipped, so a failed v8 read can't hide legacy.
+  Future<List<Uint8List>> downloadMetadataMerged(
+    String base,
+    String key,
+    Uint8List encryptionKey,
+  ) async {
+    final v8 = BucketVersionResolver.writeBucket(base);
+    final buckets = v8 == base ? <String>[base] : <String>[v8, base];
+    final blobs = <Uint8List>[];
+    for (final bucket in buckets) {
+      try {
+        final d = await downloadAndDecrypt(bucket, key, encryptionKey);
+        if (d.isNotEmpty) blobs.add(d);
+      } catch (e) {
+        debugPrint('downloadMetadataMerged: $bucket miss: $e');
+      }
+    }
+    return blobs;
+  }
+
+  /// True if [e] looks like a "missing object/bucket" (404 / NoSuchKey /
+  /// NoSuchBucket) rather than a hard transport/server error. The merge-read
+  /// helpers use it to SKIP an absent bucket while PROPAGATING real failures.
+  static bool _isNotFoundError(Object e) {
+    final s = e.toString();
+    return s.contains('NoSuchKey') ||
+        s.contains('NoSuchBucket') ||
+        s.contains('bucket not found') ||
+        s.contains('404') ||
+        s.contains('not found');
+  }
+
+  /// P6 metadata MERGE-read — the **unencrypted** sibling of
+  /// [downloadMetadataMerged] (which decrypts). Downloads a per-user manifest
+  /// from BOTH the `-v8` sibling and the legacy bucket via the plain
+  /// [downloadObject], returning the non-empty blobs in priority order
+  /// `[v8, legacy]`. Deduped to a SINGLE read when [base] is unmanaged
+  /// (`writeBucket(base) == base`). The caller applies them ADDITIVELY (v8 wins
+  /// a conflicting id; legacy fills gaps).
+  ///
+  /// A missing object/bucket (404 / NoSuchKey / NoSuchBucket) on either bucket
+  /// is SKIPPED, but any HARD error is **rethrown** — callers that clear local
+  /// state only AFTER a successful read (e.g. [CloudSyncMappingService], hazard
+  /// H1) rely on this so a transient gateway error can't wipe a cache down to a
+  /// partial (v8-only) set. (This is the one behavioural difference from the
+  /// encrypted helper, which never throws.)
+  Future<List<Uint8List>> downloadObjectMerged(String base, String key) async {
+    final v8 = BucketVersionResolver.writeBucket(base);
+    final buckets = v8 == base ? <String>[base] : <String>[v8, base];
+    final blobs = <Uint8List>[];
+    for (final bucket in buckets) {
+      try {
+        final d = await downloadObject(bucket, key);
+        if (d.isNotEmpty) blobs.add(d);
+      } catch (e) {
+        if (_isNotFoundError(e)) {
+          debugPrint('downloadObjectMerged: $bucket absent: $e');
+          continue;
+        }
+        rethrow;
+      }
+    }
+    return blobs;
   }
 
   /// Encrypt and upload - now just calls uploadObject with metadata
@@ -887,6 +991,7 @@ class FulaApiService implements FulaApi {
     void Function(UploadProgress)? onProgress,
     Map<String, String>? metadata,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -925,6 +1030,7 @@ class FulaApiService implements FulaApi {
     String filePath, {
     void Function(UploadProgress)? onProgress,
   }) async {
+    _guardLegacyWrite(bucket);
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
@@ -982,6 +1088,7 @@ class FulaApiService implements FulaApi {
     fula.CancelHandle? cancelHandle,
     void Function(UploadProgress)? onProgress,
   }) async {
+    _guardLegacyWrite(bucket); // primary content-upload path (sync queue)
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);

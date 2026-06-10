@@ -16,6 +16,7 @@ import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/nft_contract_service.dart';
@@ -73,6 +74,10 @@ class NftService {
 
   // Cloud sync state
   static const String _nftMetadataBucket = 'nft-metadata';
+
+  /// v8 write target for nft metadata (`-v8` when enabled, else legacy).
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_nftMetadataBucket);
   bool _metaBucketChecked = false;
   bool _metaBucketExists = false;
   bool _syncScheduled = false;
@@ -1696,7 +1701,7 @@ class NftService {
 
       final key = '.fula/nfts/$userId.json';
       await FulaApiService.instance.encryptAndUpload(
-        _nftMetadataBucket,
+        _writeBucket,
         key,
         data,
         encryptionKey,
@@ -1722,15 +1727,19 @@ class NftService {
       if (userId == null) return;
 
       final key = '.fula/nfts/$userId.json';
-      final data = await FulaApiService.instance.downloadAndDecrypt(
-        _nftMetadataBucket,
-        key,
-        encryptionKey,
-      );
-
-      final jsonStr = utf8.decode(data);
-      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final collectionsList = json['collections'] as List<dynamic>? ?? [];
+      // MERGE legacy + v8: gather collections from BOTH buckets; v8 (read first)
+      // wins a duplicate id, legacy fills ids only it has. A failed/empty v8
+      // read can't drop collections — legacy is always read too.
+      final byId = <String, dynamic>{};
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_nftMetadataBucket, key, encryptionKey)) {
+        final json = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+        for (final c in (json['collections'] as List<dynamic>? ?? [])) {
+          final id = (c as Map<String, dynamic>)['id'] as String?;
+          if (id != null) byId.putIfAbsent(id, () => c);
+        }
+      }
+      final collectionsList = byId.values.toList();
 
       if (_collectionsBox.isEmpty || collectionsList.isNotEmpty) {
         // Preserve ALL local mints not found in cloud data (merge by mint ID)
@@ -1788,7 +1797,7 @@ class NftService {
     if (_metaBucketChecked && _metaBucketExists) return true;
 
     try {
-      await FulaApiService.instance.createBucket(_nftMetadataBucket);
+      await FulaApiService.instance.createBucket(_writeBucket);
       _metaBucketExists = true;
       _metaBucketChecked = true;
       return true;

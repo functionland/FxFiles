@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/models/share_token.dart';
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 
@@ -20,6 +21,13 @@ class CloudShareStorageService {
 
   static const String _metadataBucket = 'fula-metadata';
   static const String _sharesPrefix = '.fula/shares/';
+
+  /// The bucket WRITES/DELETES route to: `fula-metadata-v8` once the shared
+  /// bucket is v8-managed (legacy forest is gc-damaged), else `fula-metadata`.
+  /// Reads MERGE both via `downloadObjectMerged`. No-op until `fula-metadata`
+  /// joins the managed set.
+  String get _writeBucket =>
+      BucketVersionResolver.writeBucket(_metadataBucket);
 
   /// Upload outgoing shares to cloud
   ///
@@ -51,7 +59,7 @@ class CloudShareStorageService {
       final key = '$_sharesPrefix$userId.json';
       final data = Uint8List.fromList(utf8.encode(jsonString));
       await FulaApiService.instance.uploadObject(
-        _metadataBucket,
+        _writeBucket,
         key,
         data,
         contentType: 'application/json',
@@ -77,62 +85,44 @@ class CloudShareStorageService {
       return [];
     }
 
-    try {
-      // Ensure bucket exists (create if needed)
-      await _ensureBucketExists();
+    await _ensureBucketExists();
 
-      final key = '$_sharesPrefix$userId.json';
+    final key = '$_sharesPrefix$userId.json';
+    // MERGE legacy + v8 (additive, v8 wins a dup id). downloadObjectMerged
+    // skips a 404/absent bucket but RETHROWS a hard (non-404) error, so
+    // syncShares' catch falls back to local instead of dropping cloud state.
+    final blobs = await FulaApiService.instance
+        .downloadObjectMerged(_metadataBucket, key);
 
-      // Download and decrypt (handled by fula_client)
-      final data = await FulaApiService.instance.downloadObject(
-        _metadataBucket,
-        key,
-      );
-
-      // Parse JSON defensively — a corrupted manifest must not crash the app.
-      final jsonString = utf8.decode(data);
+    final byId = <String, OutgoingShare>{};
+    for (final data in blobs) {
       final Map<String, dynamic> json;
       try {
-        final decoded = jsonDecode(jsonString);
+        final decoded = jsonDecode(utf8.decode(data));
         if (decoded is! Map<String, dynamic>) {
           debugPrint('CloudShareStorage: shares manifest is not an object');
-          return [];
+          continue;
         }
         json = decoded;
       } catch (e) {
         debugPrint('CloudShareStorage: shares manifest parse failed: $e');
-        return [];
+        continue;
       }
-
       final sharesJson = json['shares'] as List<dynamic>? ?? <dynamic>[];
-      final shares = <OutgoingShare>[];
       for (final entry in sharesJson) {
         if (entry is! Map<String, dynamic>) continue;
         try {
-          shares.add(OutgoingShare.fromJson(entry));
+          final s = OutgoingShare.fromJson(entry);
+          byId.putIfAbsent(s.id, () => s); // [v8, legacy] order ⇒ v8 wins
         } catch (e) {
           debugPrint('CloudShareStorage: skipping malformed share entry: $e');
         }
       }
-
-      debugPrint('CloudShareStorage: Downloaded ${shares.length} shares from cloud');
-      return shares;
-    } on FulaApiException catch (e) {
-      if (e.message.contains('NoSuchKey') ||
-          e.message.contains('NoSuchBucket') ||
-          e.message.contains('bucket not found') ||
-          e.message.contains('404') ||
-          e.message.contains('not found')) {
-        // No shares stored yet or bucket doesn't exist
-        debugPrint('CloudShareStorage: No shares found in cloud (bucket may not exist yet)');
-        return [];
-      }
-      debugPrint('CloudShareStorage: Failed to download shares: $e');
-      rethrow;
-    } catch (e) {
-      debugPrint('CloudShareStorage: Failed to download shares: $e');
-      rethrow;
     }
+
+    final shares = byId.values.toList();
+    debugPrint('CloudShareStorage: Downloaded ${shares.length} shares from cloud (merged)');
+    return shares;
   }
 
   /// Sync local shares with cloud
@@ -141,9 +131,6 @@ class CloudShareStorageService {
   Future<List<OutgoingShare>> syncShares(List<OutgoingShare> localShares) async {
     try {
       final cloudShares = await downloadShares();
-
-      // Create a map of cloud shares by ID
-      final cloudShareMap = {for (var s in cloudShares) s.id: s};
 
       // Merge: local takes precedence for same ID
       final mergedMap = <String, OutgoingShare>{};
@@ -196,7 +183,7 @@ class CloudShareStorageService {
       final key = '$_sharesPrefix${userId}_accepted.json';
       final data = Uint8List.fromList(utf8.encode(jsonString));
       await FulaApiService.instance.uploadObject(
-        _metadataBucket,
+        _writeBucket,
         key,
         data,
         contentType: 'application/json',
@@ -215,55 +202,52 @@ class CloudShareStorageService {
     final userId = await _getUserId();
     if (userId == null) return [];
 
+    await _ensureBucketExists();
+
+    final key = '$_sharesPrefix${userId}_accepted.json';
+    // MERGE legacy + v8 (additive, v8 wins a dup id). Preserve the old
+    // contract: a hard (non-404) gateway error surfaces; any other failure
+    // degrades to empty.
+    final List<Uint8List> blobs;
     try {
-      await _ensureBucketExists();
-
-      final key = '$_sharesPrefix${userId}_accepted.json';
-      final data = await FulaApiService.instance.downloadObject(
-        _metadataBucket,
-        key,
-      );
-
-      final jsonString = utf8.decode(data);
-      final Map<String, dynamic> json;
-      try {
-        final decoded = jsonDecode(jsonString);
-        if (decoded is! Map<String, dynamic>) {
-          debugPrint('CloudShareStorage: accepted shares manifest is not an object');
-          return [];
-        }
-        json = decoded;
-      } catch (e) {
-        debugPrint('CloudShareStorage: accepted shares manifest parse failed: $e');
-        return [];
-      }
-
-      final sharesJson = json['acceptedShares'] as List<dynamic>? ?? <dynamic>[];
-      final shares = <AcceptedShare>[];
-      for (final entry in sharesJson) {
-        if (entry is! Map<String, dynamic>) continue;
-        try {
-          shares.add(AcceptedShare.fromJson(entry));
-        } catch (e) {
-          debugPrint('CloudShareStorage: skipping malformed accepted share: $e');
-        }
-      }
-
-      debugPrint('CloudShareStorage: Downloaded ${shares.length} accepted shares from cloud');
-      return shares;
-    } on FulaApiException catch (e) {
-      if (e.message.contains('NoSuchKey') ||
-          e.message.contains('NoSuchBucket') ||
-          e.message.contains('bucket not found') ||
-          e.message.contains('404') ||
-          e.message.contains('not found')) {
-        return [];
-      }
+      blobs = await FulaApiService.instance
+          .downloadObjectMerged(_metadataBucket, key);
+    } on FulaApiException {
       rethrow;
     } catch (e) {
       debugPrint('CloudShareStorage: Failed to download accepted shares: $e');
       return [];
     }
+
+    final byId = <String, AcceptedShare>{};
+    for (final data in blobs) {
+      final Map<String, dynamic> json;
+      try {
+        final decoded = jsonDecode(utf8.decode(data));
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudShareStorage: accepted shares manifest is not an object');
+          continue;
+        }
+        json = decoded;
+      } catch (e) {
+        debugPrint('CloudShareStorage: accepted shares manifest parse failed: $e');
+        continue;
+      }
+      final sharesJson = json['acceptedShares'] as List<dynamic>? ?? <dynamic>[];
+      for (final entry in sharesJson) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          final s = AcceptedShare.fromJson(entry);
+          byId.putIfAbsent(s.id, () => s); // [v8, legacy] order ⇒ v8 wins
+        } catch (e) {
+          debugPrint('CloudShareStorage: skipping malformed accepted share: $e');
+        }
+      }
+    }
+
+    final shares = byId.values.toList();
+    debugPrint('CloudShareStorage: Downloaded ${shares.length} accepted shares from cloud (merged)');
+    return shares;
   }
 
   /// Upload the revoked-share-ID list to cloud so that revokes propagate to
@@ -282,7 +266,7 @@ class CloudShareStorageService {
       final key = '$_sharesPrefix${userId}_revoked.json';
       final data = Uint8List.fromList(utf8.encode(jsonString));
       await FulaApiService.instance.uploadObject(
-        _metadataBucket,
+        _writeBucket,
         key,
         data,
         contentType: 'application/json',
@@ -300,45 +284,39 @@ class CloudShareStorageService {
     if (!FulaApiService.instance.isConfigured) return [];
     final userId = await _getUserId();
     if (userId == null) return [];
+    await _ensureBucketExists();
+    final key = '$_sharesPrefix${userId}_revoked.json';
+    // Fully lenient (matches old): any failure degrades to empty.
+    final List<Uint8List> blobs;
     try {
-      await _ensureBucketExists();
-      final key = '$_sharesPrefix${userId}_revoked.json';
-      final data = await FulaApiService.instance.downloadObject(
-        _metadataBucket,
-        key,
-      );
-      final jsonString = utf8.decode(data);
-      final Map<String, dynamic> json;
-      try {
-        final decoded = jsonDecode(jsonString);
-        if (decoded is! Map<String, dynamic>) {
-          debugPrint('CloudShareStorage: revoked manifest is not an object');
-          return [];
-        }
-        json = decoded;
-      } catch (e) {
-        debugPrint('CloudShareStorage: revoked manifest parse failed: $e');
-        return [];
-      }
-      final raw = json['revokedShareIds'] as List<dynamic>? ?? <dynamic>[];
-      final ids = raw.map((e) => e.toString()).toList();
-      debugPrint(
-          'CloudShareStorage: Downloaded ${ids.length} revoked IDs from cloud');
-      return ids;
-    } on FulaApiException catch (e) {
-      if (e.message.contains('NoSuchKey') ||
-          e.message.contains('NoSuchBucket') ||
-          e.message.contains('bucket not found') ||
-          e.message.contains('404') ||
-          e.message.contains('not found')) {
-        return [];
-      }
-      debugPrint('CloudShareStorage: Failed to download revoked list: $e');
-      return [];
+      blobs = await FulaApiService.instance
+          .downloadObjectMerged(_metadataBucket, key);
     } catch (e) {
       debugPrint('CloudShareStorage: Failed to download revoked list: $e');
       return [];
     }
+
+    // UNION the revoked IDs from both buckets — a revoke on either device must
+    // propagate (revokes are monotonic).
+    final ids = <String>{};
+    for (final data in blobs) {
+      try {
+        final decoded = jsonDecode(utf8.decode(data));
+        if (decoded is! Map<String, dynamic>) {
+          debugPrint('CloudShareStorage: revoked manifest is not an object');
+          continue;
+        }
+        final raw = decoded['revokedShareIds'] as List<dynamic>? ?? <dynamic>[];
+        ids.addAll(raw.map((e) => e.toString()));
+      } catch (e) {
+        debugPrint('CloudShareStorage: revoked manifest parse failed: $e');
+      }
+    }
+
+    final list = ids.toList();
+    debugPrint(
+        'CloudShareStorage: Downloaded ${list.length} revoked IDs from cloud (merged)');
+    return list;
   }
 
   /// Delete shares from cloud
@@ -350,7 +328,10 @@ class CloudShareStorageService {
 
     try {
       final key = '$_sharesPrefix$userId.json';
-      await FulaApiService.instance.deleteObject(_metadataBucket, key);
+      // Route to the v8 bucket (H2): the legacy shares manifest is preserved
+      // (a legacy delete would 410 on the gc-damaged forest anyway) and is
+      // filtered by the revoked-list on the next merge-read.
+      await FulaApiService.instance.deleteObject(_writeBucket, key);
       debugPrint('CloudShareStorage: Deleted shares from cloud');
     } on FulaApiException catch (e) {
       // Ignore if bucket/key doesn't exist
@@ -381,9 +362,9 @@ class CloudShareStorageService {
   /// Ensure the metadata bucket exists
   Future<void> _ensureBucketExists() async {
     try {
-      final exists = await FulaApiService.instance.bucketExists(_metadataBucket);
+      final exists = await FulaApiService.instance.bucketExists(_writeBucket);
       if (!exists) {
-        await FulaApiService.instance.createBucket(_metadataBucket);
+        await FulaApiService.instance.createBucket(_writeBucket);
         debugPrint('CloudShareStorage: Created metadata bucket');
       }
     } catch (e) {
