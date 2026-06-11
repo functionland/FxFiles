@@ -53,6 +53,16 @@ class WebPickedAsset {
   int? get knownSize => bytes?.length;
 
   String get type => file_utils.classifyFileType(fileName);
+
+  /// Public gateway URL for CID-backed assets (recorded URL when
+  /// present, else rebuilt from the CID via the configured template).
+  /// Null for picked-only assets.
+  String? get resolvedGatewayUrl {
+    if (gatewayUrl != null && gatewayUrl!.isNotEmpty) return gatewayUrl;
+    final c = cid;
+    if (c != null && c.isNotEmpty) return IpfsGatewayHelper.buildUrlForCid(c);
+    return null;
+  }
 }
 
 /// Web counterpart of IpnsPointerService: same per-group Ed25519 key →

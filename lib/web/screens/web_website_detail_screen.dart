@@ -12,8 +12,10 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
+import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 
 /// Mirror of lib/features/websites/screens/website_detail_screen.dart:
 /// assets section (browser-picked files + per-asset notes), the Create
@@ -487,6 +489,145 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     );
   }
 
+  /// 44×44 leading visual: real thumbnail for images (picked bytes or
+  /// the public gateway URL), a play tile for videos, a category icon
+  /// otherwise.
+  Widget _assetThumb(ThemeData theme, WebPickedAsset a) {
+    Widget fallbackIcon(IconData icon) => Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, size: 22),
+        );
+
+    if (a.type == 'image') {
+      final bytes = a.bytes;
+      final url = a.resolvedGatewayUrl;
+      Widget? img;
+      if (bytes != null) {
+        img = Image.memory(bytes, width: 44, height: 44, fit: BoxFit.cover);
+      } else if (url != null) {
+        img = Image.network(
+          url,
+          width: 44,
+          height: 44,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) =>
+              fallbackIcon(Icons.image_outlined),
+        );
+      }
+      if (img != null) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: img,
+        );
+      }
+      return fallbackIcon(Icons.image_outlined);
+    }
+    if (a.type == 'video') {
+      return Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: Colors.black87,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child:
+            const Icon(Icons.play_arrow, size: 24, color: Colors.white70),
+      );
+    }
+    return fallbackIcon(switch (a.type) {
+      'audio' => Icons.audiotrack_outlined,
+      _ => Icons.description_outlined,
+    });
+  }
+
+  /// Tap = double-check the asset: images preview in a dialog (with a
+  /// download action), picked files download directly, CID-backed
+  /// files open from the public gateway in a new tab.
+  Future<void> _openAsset(WebPickedAsset a) async {
+    final bytes = a.bytes;
+    final url = a.resolvedGatewayUrl;
+
+    if (a.type == 'image' && (bytes != null || url != null)) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => Dialog(
+          child: ConstrainedBox(
+            constraints:
+                const BoxConstraints(maxWidth: 900, maxHeight: 700),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: Text(a.fileName, overflow: TextOverflow.ellipsis),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Download',
+                        icon: const Icon(Icons.download),
+                        onPressed: () {
+                          if (bytes != null) {
+                            saveBytesAsDownload(a.fileName, bytes);
+                          } else if (url != null) {
+                            launchUrl(Uri.parse(url),
+                                webOnlyWindowName: '_blank');
+                          }
+                        },
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: InteractiveViewer(
+                    maxScale: 8,
+                    child: bytes != null
+                        ? Image.memory(bytes, fit: BoxFit.contain)
+                        : Image.network(url!, fit: BoxFit.contain),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (bytes != null) {
+      if (a.type == 'video' || a.type == 'audio') {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => MediaPreviewDialog(
+            title: a.fileName,
+            bytes: bytes,
+            mimeType: a.type == 'video' ? 'video/mp4' : 'audio/mpeg',
+            isVideo: a.type == 'video',
+          ),
+        );
+      } else {
+        saveBytesAsDownload(a.fileName, bytes);
+      }
+      return;
+    }
+    if (url != null) {
+      await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This asset has no openable copy.')));
+  }
+
   Widget _assetTile(ThemeData theme, int index) {
     final a = _assets[index];
     final size = a.knownSize;
@@ -497,34 +638,31 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
         child: Column(
           children: [
-            Row(
-              children: [
-                Icon(
-                  switch (a.type) {
-                    'image' => Icons.image_outlined,
-                    'video' => Icons.movie_outlined,
-                    'audio' => Icons.audiotrack_outlined,
-                    _ => Icons.description_outlined,
-                  },
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(a.fileName,
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                ),
-                Text(
-                  size != null
-                      ? '${(size / 1024).toStringAsFixed(0)} KB'
-                      : 'from last generation',
-                  style: theme.textTheme.bodySmall,
-                ),
-                IconButton(
-                  tooltip: 'Remove',
-                  icon: const Icon(LucideIcons.x, size: 16),
-                  onPressed: () => setState(() => _assets.removeAt(index)),
-                ),
-              ],
+            InkWell(
+              onTap: () => _openAsset(a),
+              borderRadius: BorderRadius.circular(8),
+              child: Row(
+                children: [
+                  _assetThumb(theme, a),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(a.fileName,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
+                  Text(
+                    size != null
+                        ? '${(size / 1024).toStringAsFixed(0)} KB'
+                        : 'from last generation',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  IconButton(
+                    tooltip: 'Remove',
+                    icon: const Icon(LucideIcons.x, size: 16),
+                    onPressed: () =>
+                        setState(() => _assets.removeAt(index)),
+                  ),
+                ],
+              ),
             ),
             TextFormField(
               initialValue: a.note,
