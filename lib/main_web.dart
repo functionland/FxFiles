@@ -15,13 +15,21 @@
 //   ?e2e=signin&seed=w1+w2…   open an existing vault
 //   ?e2e=restore              assert the persisted session restores
 //   ?e2e=signout              sign out + assert storage cleared
+//   ?e2e=upload               upload small (100 KB) + large (5 MB)
+//                             deterministic patterns to documents-v8
+//   ?e2e=download             download both + byte-compare vs patterns
+//   ?e2e=list                 merged documents listing, assert presence
+//   ?e2e=delete               delete both + assert absent from listing
 // Progress + results are print()ed with an [e2e] prefix.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
+import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
@@ -110,6 +118,62 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
             .read(SecureStorageKeys.encryptionKey);
         log('signout-ok credentialsCleared=${cred == null} kekCleared=${kek == null}');
         break;
+      case 'upload':
+        log('restored=$restored');
+        final target = BucketVersionResolver.writeBucket('documents');
+        try {
+          await FulaApiService.instance.createBucket(target);
+          log('bucket-created $target');
+        } catch (e) {
+          log('bucket-create tolerated: $e');
+        }
+        final small = _e2ePattern(100 * 1024, 0);
+        final large = _e2ePattern(5 * 1024 * 1024, 7);
+        final r1 = await FulaApiService.instance
+            .uploadObject(target, '/e2e/p4-small.bin', small);
+        log('upload-small-ok etag=${r1.etag.substring(0, 12)}… bytes=${small.length}');
+        final etag2 = await FulaApiService.instance.uploadLargeFile(
+          target,
+          '/e2e/p4-large.bin',
+          large,
+          onProgress: (p) {},
+        );
+        log('upload-large-ok etag=${etag2.substring(0, 12)}… bytes=${large.length}');
+        break;
+      case 'download':
+        log('restored=$restored');
+        final target = BucketVersionResolver.writeBucket('documents');
+        final small = await FulaApiService.instance
+            .downloadObject(target, '/e2e/p4-small.bin');
+        final large = await FulaApiService.instance
+            .downloadObject(target, '/e2e/p4-large.bin');
+        log('download-small bytes=${small.length} '
+            'equal=${_bytesEqual(small, _e2ePattern(100 * 1024, 0))}');
+        log('download-large bytes=${large.length} '
+            'equal=${_bytesEqual(large, _e2ePattern(5 * 1024 * 1024, 7))}');
+        break;
+      case 'list':
+        log('restored=$restored');
+        final r = await listCategoryMergedCached(
+            FulaApiService.instance, 'documents');
+        final keys = r.objects.map((o) => o.key).toSet();
+        log('list count=${r.objects.length} stale=${r.stale} '
+            'hasSmall=${keys.contains('/e2e/p4-small.bin')} '
+            'hasLarge=${keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'delete':
+        log('restored=$restored');
+        final target = BucketVersionResolver.writeBucket('documents');
+        await FulaApiService.instance
+            .deleteObject(target, '/e2e/p4-small.bin');
+        await FulaApiService.instance
+            .deleteObject(target, '/e2e/p4-large.bin');
+        final r = await listCategoryMergedCached(
+            FulaApiService.instance, 'documents');
+        final keys = r.objects.map((o) => o.key).toSet();
+        log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
+            'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
+        break;
       default:
         log('FAIL: unknown mode');
     }
@@ -117,6 +181,24 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
     log('FAIL: $e');
   }
   log('E2E DONE');
+}
+
+/// Deterministic test payload: byte i = (i * 31 + offset) % 251. The
+/// download stage regenerates the same pattern for byte-equality.
+Uint8List _e2ePattern(int length, int offset) {
+  final out = Uint8List(length);
+  for (var i = 0; i < length; i++) {
+    out[i] = (i * 31 + offset) % 251;
+  }
+  return out;
+}
+
+bool _bytesEqual(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 class _BootErrorApp extends StatelessWidget {

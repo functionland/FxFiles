@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import 'package:fula_files/web/screens/web_bucket_screen.dart';
 import 'package:fula_files/web/screens/web_home_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
 import 'package:fula_files/web/services/web_session.dart';
@@ -27,6 +28,12 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/',
         builder: (context, state) => const WebHomeScreen(),
+      ),
+      GoRoute(
+        path: '/b/:base',
+        builder: (context, state) => WebBucketScreen(
+          base: state.pathParameters['base'] ?? 'documents',
+        ),
       ),
     ],
   );
