@@ -130,12 +130,6 @@ class WebSession extends ChangeNotifier {
       await BucketCacheService.clear();
     } catch (_) {}
     await AuthCore.clearSessionStorage();
-    // Web extra: also drop the persisted per-user index keys so a
-    // different vault on this browser can't read stale ones.
-    await SecureStorageService.instance
-        .delete(SecureStorageKeys.bucketsIndexKey);
-    await SecureStorageService.instance
-        .delete(SecureStorageKeys.userEntrySigningSeed);
     _user = null;
     notifyListeners();
   }

@@ -34,6 +34,10 @@ concurrency:
 
 env:
   FLUTTER_VERSION: '3.41.9'
+  # GitHub forces Node 24 for JS actions from 2026-06-16; opt in now so
+  # every deploy already runs the post-cutover configuration instead of
+  # discovering breakage on the flag day.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   deploy:
@@ -42,7 +46,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2

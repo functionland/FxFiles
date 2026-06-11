@@ -799,6 +799,34 @@ fxfiles://nft-claim?chain=8453&contract=0x...&token=123&hash=0xabc...
 
 Replace the zero-address placeholders in `SupportedChain.nftContractAddress` with the real proxy addresses for each chain.
 
+## Web (browser) build
+
+FxFiles ships a cloud-only web app at https://files.fx.land/app/ (the
+same encrypted vaults as mobile/desktop; sign in with a Mode C
+recovery phrase). The local-file-manager features are native-only by
+design — the web compile graph never imports them.
+
+- Entrypoint: `lib/main_web.dart` (web shell under `lib/web/`); build
+  with `flutter build web --release -t lib/main_web.dart`.
+- Crypto: the same Rust SDK, compiled to WASM. The bundle lives in
+  `web/pkg/` (committed) and MUST match the `fula_client` version in
+  `pubspec.lock` — after bumping fula_client run
+  `tools\sync-wasm-pkg.ps1` and commit `web/pkg/`. The Pages deploy
+  fails fast on a mismatch.
+- Deploys: any push to `main` touching `lib/`, `web/`, `site/` or
+  pubspec redeploys GitHub Pages (`.github/workflows/deploy-pages.yml`).
+  The artifact keeps `site/` byte-identical at the domain root (the
+  `/nft-claim` forwarder and `.well-known` app-link files are
+  load-bearing for native deep links) and serves the app under `/app/`.
+- E2E harness: build with `--dart-define=E2E=true`, then drive
+  headless Chrome with `?e2e=create|signin|restore|signout|upload|`
+  `download|list|delete|share` (results print with an `[e2e]` prefix).
+  Production builds compile the hooks out.
+- Known web limitations (v1): Mode C sign-in only (Google/Apple
+  pending), 200 MB per-file upload cap, no offline reads (the SDK's
+  block cache / gateway fallback are native-only), share links can be
+  created but not revoked from the web UI, no service worker (PWA
+  caching intentionally off so deploys can't serve a stale wasm).
 ## Contributing
 
 1. Fork the repository

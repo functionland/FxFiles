@@ -1262,25 +1262,11 @@ class AuthService {
       // Note: Apple Sign-In doesn't have a disconnect API - credentials are managed by the system
       // Users can revoke access from their Apple ID settings
 
-      // Clear all stored credentials - do this regardless of provider disconnect success
-      await SecureStorageService.instance.delete(SecureStorageKeys.userCredentials);
-      await SecureStorageService.instance.delete(SecureStorageKeys.authProvider);
-      await SecureStorageService.instance.delete(SecureStorageKeys.encryptionKey);
-      await SecureStorageService.instance.delete(SecureStorageKeys.derivationEmail);
-      await SecureStorageService.instance.delete(SecureStorageKeys.userPublicKey);
-      await SecureStorageService.instance.delete(SecureStorageKeys.userPrivateKey);
-
-      // Clear API key and tokens (tied to user account)
-      await SecureStorageService.instance.delete(SecureStorageKeys.jwtToken);
-      await SecureStorageService.instance.delete(SecureStorageKeys.refreshToken);
-
-      // Clear Mode B / Mode C session state (audit F-A1 / F-A3 redesign).
-      // Safe to delete even for Mode A users — the keys are absent in their
-      // SecureStorage and `delete` is idempotent.
-      await SecureStorageService.instance.delete(SecureStorageKeys.keyDerivationVersion);
-      await SecureStorageService.instance.delete(SecureStorageKeys.effectiveUserIdHex);
-      await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthProvider);
-      await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthSub);
+      // Clear all stored credentials - do this regardless of provider
+      // disconnect success. Single-sourced with the web shell in
+      // AuthCore.clearSessionStorage (also clears the persisted Mode
+      // B/C index keys, which the old inline list here missed).
+      await AuthCore.clearSessionStorage();
 
       // Clear sync queues and cached data for the old user
       await SyncService.instance.clearAll();

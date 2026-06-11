@@ -151,6 +151,17 @@ class _WebSignInScreenState extends State<WebSignInScreen>
                           color: Theme.of(context).colorScheme.error),
                     ),
                   ],
+                  const SizedBox(height: 12),
+                  Text(
+                    'Your keys stay in this browser\'s protected storage and '
+                    'never leave your device unencrypted. Clearing site data '
+                    'signs you out — keep your recovery phrase safe.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(fontSize: 11),
+                  ),
                 ],
               ),
             ),

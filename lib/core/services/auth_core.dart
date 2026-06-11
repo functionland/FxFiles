@@ -658,8 +658,12 @@ class AuthCore {
     );
   }
 
-  /// Delete the per-session SecureStorage keys (exact parity with the
-  /// native signOut's SecureStorage deletion set).
+  /// Delete the per-session SecureStorage keys. Superset of the
+  /// pre-extraction native signOut deletion set: it also clears the
+  /// persisted Mode B/C index keys (K_index / K_entry_seed), which the
+  /// old inline list missed — without that, a different vault signing
+  /// in on the same device could observe the previous user's persisted
+  /// index keys until the next initialize overwrote them.
   static Future<void> clearSessionStorage() async {
     await SecureStorageService.instance.delete(SecureStorageKeys.userCredentials);
     await SecureStorageService.instance.delete(SecureStorageKeys.authProvider);
@@ -673,6 +677,9 @@ class AuthCore {
     await SecureStorageService.instance.delete(SecureStorageKeys.effectiveUserIdHex);
     await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthProvider);
     await SecureStorageService.instance.delete(SecureStorageKeys.modeOauthSub);
+    await SecureStorageService.instance.delete(SecureStorageKeys.bucketsIndexKey);
+    await SecureStorageService.instance
+        .delete(SecureStorageKeys.userEntrySigningSeed);
   }
 
   /// Extract the JWT-payload `sub` claim without verifying the
