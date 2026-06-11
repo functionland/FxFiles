@@ -114,19 +114,26 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   }
 
   /// Category → picker filter, so the Audio category can't pick images
-  /// etc. Documents stays open (it's the catch-all category).
+  /// etc. Documents/Downloads stay open (catch-all categories);
+  /// Archives restricts to the native archive extension set.
   FileType get _pickerType => switch (widget.base) {
         'images' => FileType.image,
         'videos' => FileType.video,
         'audio' => FileType.audio,
+        'archives' => FileType.custom,
         _ => FileType.any,
       };
+
+  List<String>? get _pickerExtensions => widget.base == 'archives'
+      ? const ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso']
+      : null;
 
   Future<void> _pickAndUpload() async {
     final picked = await FilePicker.platform.pickFiles(
       withData: true,
       allowMultiple: true,
       type: _pickerType,
+      allowedExtensions: _pickerExtensions,
     );
     if (picked == null || picked.files.isEmpty) return;
 
@@ -504,10 +511,12 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   }
 
   static const labels = {
-    'images': 'Photos',
+    'images': 'Images',
     'videos': 'Videos',
-    'documents': 'Documents',
     'audio': 'Audio',
+    'documents': 'Documents',
+    'downloads': 'Downloads',
+    'archives': 'Archives',
   };
 
   @override

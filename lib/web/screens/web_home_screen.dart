@@ -12,11 +12,17 @@ class _Category {
   const _Category(this.base, this.label, this.icon);
 }
 
+/// The native app's six default categories (home screen parity).
+/// images/videos/audio/documents route to their -v8 buckets via
+/// BucketVersionResolver; downloads/archives are unmanaged and list
+/// their plain buckets.
 const _categories = <_Category>[
-  _Category('images', 'Photos', Icons.photo_library_outlined),
+  _Category('images', 'Images', Icons.photo_library_outlined),
   _Category('videos', 'Videos', Icons.video_library_outlined),
-  _Category('documents', 'Documents', Icons.description_outlined),
   _Category('audio', 'Audio', Icons.library_music_outlined),
+  _Category('documents', 'Documents', Icons.description_outlined),
+  _Category('downloads', 'Downloads', Icons.download_outlined),
+  _Category('archives', 'Archives', Icons.archive_outlined),
 ];
 
 /// Web home: the four cloud content categories + a storage/credits
@@ -76,7 +82,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
               GridView.count(
                 shrinkWrap: true,
                 crossAxisCount:
-                    MediaQuery.of(context).size.width > 560 ? 4 : 2,
+                    MediaQuery.of(context).size.width > 560 ? 3 : 2,
                 padding: const EdgeInsets.all(24),
                 mainAxisSpacing: 16,
                 crossAxisSpacing: 16,
