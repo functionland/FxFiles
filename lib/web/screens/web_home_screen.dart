@@ -3,33 +3,18 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
-class _Category {
-  final String base;
-  final String label;
-  final IconData icon;
-  const _Category(this.base, this.label, this.icon);
-}
-
-/// The native app's six default categories (home screen parity).
-/// images/videos/audio/documents route to their -v8 buckets via
-/// BucketVersionResolver; downloads/archives are unmanaged and list
-/// their plain buckets.
-const _categories = <_Category>[
-  _Category('images', 'Images', Icons.photo_library_outlined),
-  _Category('videos', 'Videos', Icons.video_library_outlined),
-  _Category('audio', 'Audio', Icons.library_music_outlined),
-  _Category('documents', 'Documents', Icons.description_outlined),
-  _Category('downloads', 'Downloads', Icons.download_outlined),
-  _Category('archives', 'Archives', Icons.archive_outlined),
-];
-
-/// Web home: the four cloud content categories + a storage/credits
-/// summary from the billing API. Each tile opens the merged legacy+v8
-/// listing for that base bucket.
+/// Web home — mirror of the native home screen's section layout
+/// (lib/features/home/widgets/on_this_phone_section.dart,
+/// create_section.dart, more_section.dart): the category hero/small
+/// tiles under "On your cloud" (the web's files ARE the cloud, so the
+/// header changes from the app's "On this phone"), the CREATE 2×2
+/// tiles (Website / NFT / Shelf — Automate is device-bound), and the
+/// MORE rows (Tags / Playlists), plus the storage line and footer.
 class WebHomeScreen extends StatefulWidget {
   const WebHomeScreen({super.key});
 
@@ -173,112 +158,453 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           ),
         ),
       ),
-      // Scrollable so short (mobile) viewports can reach every tile;
-      // Center keeps the tall-viewport layout identical.
       body: Center(
         child: SingleChildScrollView(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                GridView.count(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisCount:
-                      MediaQuery.of(context).size.width > 560 ? 3 : 2,
-                  padding: const EdgeInsets.all(24),
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
+                const SizedBox(height: 8),
+                _onYourCloudSection(context),
+                _createSection(context),
+                _moreSection(context),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: FutureBuilder<StorageInfo>(
+                    future: _storage,
+                    builder: (ctx, snap) {
+                      if (snap.hasError) {
+                        // Quota display is best-effort — never block home.
+                        return const SizedBox.shrink();
+                      }
+                      if (!snap.hasData) {
+                        return Text('Loading storage info…',
+                            style: Theme.of(context).textTheme.bodySmall);
+                      }
+                      final s = snap.data!;
+                      final quota = s.freeTierBytes + s.paidStorageBytes;
+                      final credits = s.totalCredits - s.usedCredits;
+                      return Text(
+                        '${_fmtBytes(s.currentStorageBytes)} of '
+                        '${_fmtBytes(quota)} used'
+                        '${credits > 0 ? '  ·  ${credits.toStringAsFixed(0)} credits' : ''}',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------- "On your cloud"
+  // Mirror of OnThisPhoneSection: a 130px hero row (Images wider,
+  // primary-tinted icon; Videos; Audio) over a small-tile row
+  // (Documents / Downloads / Archives).
+
+  Widget _onYourCloudSection(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionHeader(label: 'On your cloud'),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 130,
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 14,
+                  child: _HeroTile(
+                    icon: LucideIcons.image,
+                    label: 'Images',
+                    iconColor: AppColors.primary,
+                    onTap: () => context.go('/b/images'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 10,
+                  child: _HeroTile(
+                    icon: LucideIcons.video,
+                    label: 'Videos',
+                    onTap: () => context.go('/b/videos'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 10,
+                  child: _HeroTile(
+                    icon: LucideIcons.music,
+                    label: 'Audio',
+                    onTap: () => context.go('/b/audio'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _SmallTile(
+                  icon: LucideIcons.fileText,
+                  label: 'Documents',
+                  onTap: () => context.go('/b/documents'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SmallTile(
+                  icon: LucideIcons.download,
+                  label: 'Downloads',
+                  onTap: () => context.go('/b/downloads'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SmallTile(
+                  icon: LucideIcons.archive,
+                  label: 'Archives',
+                  onTap: () => context.go('/b/archives'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ----------------------------------------------------------- CREATE
+  // Mirror of CreateSection's 2×2 badge tiles. Automate stays native
+  // (it drives device messaging apps); Websites is the web AI flow.
+
+  Widget _createSection(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionHeader(label: 'Create'),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _CreateTile(
+                  icon: LucideIcons.globe,
+                  label: 'Website',
+                  badge: 'beta',
+                  onTap: () => context.go('/websites'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _CreateTile(
+                  icon: LucideIcons.gem,
+                  label: 'NFT',
+                  badge: 'mint & share',
+                  onTap: () => context.go('/nfts'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _CreateTile(
+                  icon: LucideIcons.inbox,
+                  label: 'Shelf',
+                  badge: 'share to FxFiles',
+                  onTap: () => context.go('/shelf'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(child: SizedBox.shrink()),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- MORE
+  // Mirror of MoreSection's rows (Apps and Trash stay native).
+
+  Widget _moreSection(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionHeader(label: 'More'),
+          const SizedBox(height: 4),
+          _MoreRow(
+            icon: LucideIcons.tags,
+            label: 'Tags',
+            subtitle: 'Organize by label',
+            onTap: () => context.go('/tags'),
+          ),
+          _MoreRow(
+            icon: LucideIcons.listMusic,
+            label: 'Playlists',
+            subtitle: 'Audio collections',
+            onTap: () => context.go('/playlists'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Mirrored support widgets — same metrics as the native home widgets.
+
+class _SectionHeader extends StatelessWidget {
+  final String label;
+  const _SectionHeader({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      label.toUpperCase(),
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 1,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}
+
+class _HeroTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color? iconColor;
+  final VoidCallback onTap;
+  const _HeroTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = iconColor ?? theme.colorScheme.onSurfaceVariant;
+    return Material(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: color, size: 22),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SmallTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _SmallTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon,
+                  color: theme.colorScheme.onSurfaceVariant, size: 18),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CreateTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String badge;
+  final VoidCallback onTap;
+
+  const _CreateTile({
+    required this.icon,
+    required this.label,
+    required this.badge,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final borderColor = theme.dividerColor.withValues(alpha: 0.4);
+    return Material(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: borderColor),
+          ),
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(icon, color: AppColors.primary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                  for (final c in _categories)
-                    Card(
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => context.go('/b/${c.base}'),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(c.icon, size: 44),
-                            const SizedBox(height: 12),
-                            Text(c.label,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium),
-                          ],
-                        ),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurface,
                       ),
                     ),
-                ],
-              ),
-              // Feature tiles: same card shape as the category tiles,
-              // at half their height and 3/4 their width (category
-              // cells are ~213 px squares inside the 720 px column).
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-                child: Wrap(
-                  spacing: 16,
-                  runSpacing: 16,
-                  alignment: WrapAlignment.center,
-                  children: [
-                    for (final f in const [
-                      ('/shelf', 'Shelf', Icons.inbox_outlined),
-                      ('/websites', 'Websites', Icons.public),
-                      ('/tags', 'Tags', Icons.sell_outlined),
-                      ('/playlists', 'Playlists', Icons.queue_music),
-                      ('/nfts', 'NFTs', Icons.diamond_outlined),
-                    ])
-                      SizedBox(
-                        width: 160,
-                        height: 106,
-                        child: Card(
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => context.go(f.$1),
-                            child: Column(
-                              mainAxisAlignment:
-                                  MainAxisAlignment.center,
-                              children: [
-                                Icon(f.$3, size: 30),
-                                const SizedBox(height: 8),
-                                Text(f.$2,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall),
-                              ],
-                            ),
-                          ),
-                        ),
+                    Text(
+                      badge,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
+                    ),
                   ],
                 ),
               ),
-              FutureBuilder<StorageInfo>(
-                future: _storage,
-                builder: (ctx, snap) {
-                  if (snap.hasError) {
-                    // Quota display is best-effort — never block the home.
-                    return const SizedBox.shrink();
-                  }
-                  if (!snap.hasData) {
-                    return Text('Loading storage info…',
-                        style: Theme.of(context).textTheme.bodySmall);
-                  }
-                  final s = snap.data!;
-                  final quota = s.freeTierBytes + s.paidStorageBytes;
-                  final credits = s.totalCredits - s.usedCredits;
-                  return Text(
-                    '${_fmtBytes(s.currentStorageBytes)} of '
-                    '${_fmtBytes(quota)} used'
-                    '${credits > 0 ? '  ·  ${credits.toStringAsFixed(0)} credits' : ''}',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
             ],
           ),
-          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MoreRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _MoreRow({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: theme.cardColor,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              alignment: Alignment.center,
+              child: Icon(icon,
+                  color: theme.colorScheme.onSurfaceVariant, size: 16),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(LucideIcons.chevronRight,
+                size: 14, color: theme.colorScheme.onSurfaceVariant),
+          ],
         ),
       ),
     );
