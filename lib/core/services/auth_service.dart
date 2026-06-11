@@ -1,20 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
-import 'package:http/http.dart' as http;
 import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart' show ExternalLibrary;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_client/fula_client.dart' as fula;
-import 'package:fula_client/fula_client.dart' show RustLib;
+import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
+import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
-import 'package:fula_files/core/utils/canonical_kek_input.dart';
 import 'package:fula_files/core/utils/seed_signing_input.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -298,7 +295,7 @@ class AuthService {
     // sees a configured access token on first sign-in (previously
     // null on Mode A mobile until the browser /get-key dance ran).
     if (idToken != null && idToken.isNotEmpty) {
-      final jwt = await _exchangeOAuthIdTokenForJwt(
+      final jwt = await AuthCore.exchangeOAuthIdTokenForJwt(
         path: '/auth/google',
         body: {'credential': idToken},
       );
@@ -456,7 +453,7 @@ class AuthService {
       if (firstSignInUser.isNotEmpty) {
         body['user'] = firstSignInUser;
       }
-      final jwt = await _exchangeOAuthIdTokenForJwt(
+      final jwt = await AuthCore.exchangeOAuthIdTokenForJwt(
         path: '/auth/apple',
         body: body,
       );
@@ -536,58 +533,16 @@ class AuthService {
     }
   }
 
-  /// Track whether RustLib has been successfully initialized.
-  /// Set to true in main.dart after successful init, or by lazy init here.
-  static bool _rustLibInitialized = false;
+  /// Mark RustLib as initialized (called from main.dart / background
+  /// isolate entrypoints after a successful external init). Delegates to
+  /// the platform seam in lib/core/platform/rust_lib_init.dart.
+  static void markRustLibInitialized() => rust_lib.markRustLibInitialized();
 
-  /// Mark RustLib as initialized (called from main.dart after successful init)
-  static void markRustLibInitialized() => _rustLibInitialized = true;
-
-  /// Ensure RustLib (flutter_rust_bridge) is initialized.
-  /// RustLib.init() may fail at startup (e.g. timeout, linking issues) but succeed
-  /// on retry. This method allows lazy re-initialization before any fula_client call.
-  static Future<void> ensureRustLibInitialized() async {
-    if (_rustLibInitialized) return;
-
-    debugPrint('AuthService: RustLib not initialized, attempting lazy init...');
-    try {
-      // Platform-conditional pattern: iOS uses `ExternalLibrary.process`
-      // because the bridge is statically linked into the app binary;
-      // Android uses bare `RustLib.init()` which internally opens the
-      // dylib by name (dlopen returns the existing handle if already
-      // loaded). Using `ExternalLibrary.process` on Android fails
-      // because Android's `System.loadLibrary` defaults to RTLD_LOCAL,
-      // so the symbols aren't visible via `DynamicLibrary.process()`.
-      if (Platform.isIOS) {
-        await RustLib.init(
-          externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
-        );
-      } else {
-        await RustLib.init();
-      }
-      _rustLibInitialized = true;
-      debugPrint('AuthService: RustLib initialized successfully on retry');
-    } catch (e) {
-      // FRB throws `Bad state: Should not initialize flutter_rust_bridge
-      // twice` when a SECOND init runs in the SAME isolate. That can
-      // happen if some other code path (background entrypoint, plugin
-      // init order) called `RustLib.init` before us in this isolate but
-      // didn't call `markRustLibInitialized()`. The library IS usable
-      // either way, so treat the duplicate-init signal as success.
-      final msg = e.toString().toLowerCase();
-      if (msg.contains('should not initialize flutter_rust_bridge twice') ||
-          msg.contains('already initialized')) {
-        debugPrint(
-          'AuthService: RustLib already initialized in this isolate; '
-          'flipping flag and continuing',
-        );
-        _rustLibInitialized = true;
-        return;
-      }
-      debugPrint('AuthService: RustLib init retry failed: $e');
-      rethrow;
-    }
-  }
+  /// Ensure RustLib (flutter_rust_bridge) is initialized. The
+  /// iOS/Android/web loading differences and the duplicate-init
+  /// tolerance live in lib/core/platform/rust_lib_init.dart.
+  static Future<void> ensureRustLibInitialized() =>
+      rust_lib.ensureRustLibInitialized();
 
   /// Derive encryption key using Argon2id (memory-hard KDF) via fula_client
   ///
@@ -624,13 +579,14 @@ class AuthService {
       );
     }
 
-    // Combined input: "google:{userId}:{email}"
-    final input = '${_currentUser!.provider.name}:${_currentUser!.id}:$email';
-
-    // Use Argon2id via fula_client for cross-platform consistency and brute-force resistance
-    // This produces identical keys on Flutter (native) and WebUI (WASM)
-    _encryptionKey = Uint8List.fromList(
-      await fula.deriveKey(context: 'fula-files-v1', input: utf8.encode(input)),
+    // Argon2id via fula_client for cross-platform consistency and
+    // brute-force resistance — produces identical keys on native (FFI)
+    // and web (WASM). AuthCore single-sources the "provider:userId:email"
+    // input assembly and the v1 context.
+    _encryptionKey = await AuthCore.deriveKekModeA(
+      providerName: _currentUser!.provider.name,
+      userId: _currentUser!.id,
+      email: email,
     );
 
     debugPrint('AuthService: Derived encryption key via Argon2id');
@@ -733,18 +689,10 @@ class AuthService {
             (modeVersion.contains('mode_B') || modeVersion.contains('mode_C'));
         if (isModeBC) {
           try {
-            bucketsIndexKey = Uint8List.fromList(
-              await fula.blake3DeriveKey(
-                context: 'fula:user-buckets-index:v1',
-                input: _encryptionKey!,
-              ),
-            );
-            userEntrySigningSeed = Uint8List.fromList(
-              await fula.blake3DeriveKey(
-                context: 'fula:user-entry-signing:v1',
-                input: _encryptionKey!,
-              ),
-            );
+            final indexKeys =
+                await AuthCore.deriveBucketsIndexKeys(_encryptionKey!);
+            bucketsIndexKey = indexKeys.bucketsIndexKey;
+            userEntrySigningSeed = indexKeys.userEntrySigningSeed;
             // Persist for fast re-load on next cold start. Same pattern
             // as encryptionKey above.
             await SecureStorageService.instance.write(
@@ -999,7 +947,7 @@ class AuthService {
       final jwt = await SecureStorageService.instance.read(
         SecureStorageKeys.jwtToken,
       );
-      final jwtSub = _extractJwtSubLocal(jwt);
+      final jwtSub = AuthCore.extractJwtSub(jwt);
       if (jwtSub != null && jwtSub.isNotEmpty) {
         usersIndexUserKey =
             await fula.deriveUserKeyFromJwtSub(jwtSub: jwtSub);
@@ -1074,27 +1022,8 @@ class AuthService {
     );
   }
 
-  /// Local copy of the JWT-payload `sub` extractor (mirror of
-  /// `FulaApiService._extractJwtSub`). Kept private here to avoid a
-  /// dependency loop between `AuthService` and `FulaApiService`.
-  static String? _extractJwtSubLocal(String? jwt) {
-    if (jwt == null || jwt.isEmpty) return null;
-    try {
-      final parts = jwt.split('.');
-      if (parts.length != 3) return null;
-      var payload = parts[1];
-      final pad = (4 - payload.length % 4) % 4;
-      payload = payload + ('=' * pad);
-      final decoded = utf8.decode(base64Url.decode(payload));
-      final json = jsonDecode(decoded);
-      if (json is! Map) return null;
-      final sub = json['sub'];
-      if (sub is! String) return null;
-      return sub.isEmpty ? null : sub;
-    } catch (_) {
-      return null;
-    }
-  }
+  // JWT-payload `sub` extraction moved to AuthCore.extractJwtSub
+  // (platform-neutral; also used by the web shell).
 
   String? _cachedShareId;
 
@@ -1177,122 +1106,13 @@ class AuthService {
     return validateBip39Mnemonic(mnemonic.trim());
   }
 
-  /// Resolve the issuer base URL (the pinning-service that mints JWTs).
-  /// Pulled from SecureStorage if the user customized it; otherwise the
-  /// default `https://cloud.fx.land`.
-  Future<String> _issuerBaseUrl() async {
-    final stored = await SecureStorageService.instance.read(
-      SecureStorageKeys.billingServerUrl,
-    );
-    if (stored != null && stored.isNotEmpty) return stored;
-    return 'https://cloud.fx.land';
-  }
+  // Issuer base-URL resolution and the OAuth-token→JWT exchange moved to
+  // AuthCore (platform-neutral; shared with the web shell).
 
-  /// Mode A in-app JWT-bearer fetch: POST the OAuth ID token to the
-  /// pinning-service `/auth/google` or `/auth/apple` endpoint and read
-  /// the minted JWT from the response. Returns `null` on any transport
-  /// or non-2xx error — sign-in still succeeds with the local-only
-  /// encryption key, and the legacy browser /get-key fallback in the
-  /// setup sheet remains available.
-  ///
-  /// Without this helper, Mode A on mobile relied on a browser round-trip
-  /// to fetch the cloud-gateway JWT (the `/get-key` deep-link dance).
-  /// Mode B/C never needed it because their `/auth/register-mode-{b,c}`
-  /// endpoints return the JWT directly.
-  Future<String?> _exchangeOAuthIdTokenForJwt({
-    required String path,
-    required Map<String, dynamic> body,
-  }) async {
-    try {
-      final baseUrl = await _issuerBaseUrl();
-      final uri = Uri.parse('$baseUrl$path');
-      final res = await http
-          .post(
-            uri,
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 15));
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final jwt = data['jwt'];
-        if (jwt is String && jwt.isNotEmpty) return jwt;
-        debugPrint(
-            'AuthService: $path returned 2xx but no jwt field — server may need updating');
-        return null;
-      }
-      debugPrint(
-          'AuthService: $path failed ${res.statusCode}: ${res.body}');
-      return null;
-    } catch (e) {
-      debugPrint('AuthService: $path exchange error: $e');
-      return null;
-    }
-  }
-
-  /// Build the byte sequence the client signs with its seed-derived
-  /// Ed25519 private key. MUST match exactly what the issuer
-  /// reconstructs in `pinning-service/server/services/seedAuth.ts`'s
-  /// `buildSignedTranscript`.
-  ///
-  /// Layout:
-  ///   "fula.seed-auth.v1\0" || purpose || 0x00 ||
-  ///   effective_user_id_hex_ascii || 0x00 || challenge
-  Uint8List _buildSignedTranscript(
-    String purpose,
-    String effectiveUserIdHex,
-    Uint8List challenge,
-  ) {
-    final out = BytesBuilder();
-    out.add(utf8.encode('fula.seed-auth.v1 '));
-    out.add(utf8.encode(purpose));
-    out.add([0]);
-    out.add(ascii.encode(effectiveUserIdHex));
-    out.add([0]);
-    out.add(challenge);
-    return out.toBytes();
-  }
-
-  /// Derive the Ed25519 signing keypair from the user's seed.
-  /// Pure deterministic: same seed → same keypair on any device.
-  Future<SimpleKeyPair> _deriveSigningKeypair(String seed) async {
-    await ensureRustLibInitialized();
-    // The FFI handles NFKC + domain-separation; we just consume the
-    // 32-byte signing seed it returns.
-    final signingSeed = await fula.deriveSigningSeed(seed: seed);
-    final algorithm = Ed25519();
-    return algorithm.newKeyPairFromSeed(signingSeed);
-  }
-
-  /// 16-byte effective_user_id (hex) for Mode B users.
-  Future<String> _computeEffectiveUserIdModeB({
-    required String provider,
-    required String oauthSub,
-    required String seed,
-  }) async {
-    await ensureRustLibInitialized();
-    final bytes = await fula.computeEffectiveUserIdModeB(
-      provider: provider,
-      oauthSub: oauthSub,
-      seed: seed,
-    );
-    return _toHex(bytes);
-  }
-
-  /// 16-byte effective_user_id (hex) for Mode C users.
-  Future<String> _computeEffectiveUserIdModeC(String seed) async {
-    await ensureRustLibInitialized();
-    final bytes = await fula.computeEffectiveUserIdModeC(seed: seed);
-    return _toHex(bytes);
-  }
-
-  String _toHex(List<int> bytes) {
-    final sb = StringBuffer();
-    for (final b in bytes) {
-      sb.write(b.toRadixString(16).padLeft(2, '0'));
-    }
-    return sb.toString();
-  }
+  // Transcript building, signing-keypair derivation, effective-user-id
+  // computation and hex encoding moved to AuthCore (platform-neutral;
+  // shared with the web shell). The transcript domain separator carries
+  // a protocol-relevant NUL byte - see AuthCore.seedAuthDomainSeparator.
 
   /// Mode B sign-in / sign-up (idempotent at the issuer): user supplies
   /// `(provider, oauthToken, sub, email, password)`. The seed is the
@@ -1319,7 +1139,7 @@ class AuthService {
     }
 
     // 1. Derive identity locally.
-    final effectiveUserIdHex = await _computeEffectiveUserIdModeB(
+    final effectiveUserIdHex = await AuthCore.computeEffectiveUserIdModeBHex(
       provider: provider,
       oauthSub: oauthSub,
       seed: password,
@@ -1330,7 +1150,7 @@ class AuthService {
     // different OAuth identities would share an Ed25519 keypair —
     // either could sign in to the other's vault by reading the
     // effective_user_id from the public users-index CBOR.
-    final keyPair = await _deriveSigningKeypair(
+    final keyPair = await AuthCore.deriveSigningKeypair(
       modeBSigningInput(provider, oauthSub, password),
     );
     final pubKey = await keyPair.extractPublicKey();
@@ -1340,12 +1160,12 @@ class AuthService {
     //    server-issued nonce to defeat capture-and-replay of registration
     //    bodies. JWTs we mint have no `exp` (DT-1) so a replay would
     //    otherwise produce a perpetually-valid token.
-    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final issuer = IssuerClient(baseUrl: await AuthCore.issuerBaseUrl());
     final challenge =
         await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-b');
 
     // 3. Sign the register-mode-b transcript over the server's challenge.
-    final transcript = _buildSignedTranscript(
+    final transcript = AuthCore.buildSignedTranscript(
       'register-mode-b',
       effectiveUserIdHex,
       challenge,
@@ -1364,11 +1184,12 @@ class AuthService {
       signature: Uint8List.fromList(signature.bytes),
     );
 
-    // 4. Derive the master encryption key (Argon2id, Mode B context).
-    final kekInput = canonicalKekInputModeB(provider, oauthSub, password);
-    final kekBytes = await fula.deriveKey(
-      context: 'fula-files-v2-mode-b',
-      input: kekInput,
+    // 4. Derive the master encryption key (Argon2id, Mode B context —
+    // canonical input assembly single-sourced in AuthCore).
+    final kekBytes = await AuthCore.deriveKekModeB(
+      provider: provider,
+      oauthSub: oauthSub,
+      seed: password,
     );
 
     // 5. Persist the new session.
@@ -1403,17 +1224,18 @@ class AuthService {
       throw ArgumentError('Mode C seed must not be empty');
     }
 
-    final effectiveUserIdHex = await _computeEffectiveUserIdModeC(seed);
-    final keyPair = await _deriveSigningKeypair(seed);
+    final effectiveUserIdHex =
+        await AuthCore.computeEffectiveUserIdModeCHex(seed);
+    final keyPair = await AuthCore.deriveSigningKeypair(seed);
     final pubKey = await keyPair.extractPublicKey();
 
     // Audit finding #1 fix — server-issued single-use challenge before
     // registration. See the matching block in `signInModeB` for rationale.
-    final issuer = IssuerClient(baseUrl: await _issuerBaseUrl());
+    final issuer = IssuerClient(baseUrl: await AuthCore.issuerBaseUrl());
     final challenge =
         await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-c');
 
-    final transcript = _buildSignedTranscript(
+    final transcript = AuthCore.buildSignedTranscript(
       'register-mode-c',
       effectiveUserIdHex,
       challenge,
@@ -1427,12 +1249,9 @@ class AuthService {
       signature: Uint8List.fromList(signature.bytes),
     );
 
-    // Master KEK from the seed. Mode C context.
-    final kekInput = canonicalKekInputModeC(seed);
-    final kekBytes = await fula.deriveKey(
-      context: 'fula-files-v2-mode-c',
-      input: kekInput,
-    );
+    // Master KEK from the seed (Argon2id, Mode C context — canonical
+    // input assembly single-sourced in AuthCore).
+    final kekBytes = await AuthCore.deriveKekModeC(seed);
 
     // Mode C has no OAuth identity; persist with synthetic fields.
     await _persistSeedAuthSession(
