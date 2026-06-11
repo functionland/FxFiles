@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/services/auth_service.dart';
 
 /// Service for syncing share data to cloud storage
 ///
@@ -348,15 +347,28 @@ class CloudShareStorageService {
     }
   }
 
-  /// Get user ID for storage key
+  /// Get user ID for storage key.
+  ///
+  /// Hashes the BASE64 STRING of the public key (utf8 bytes), not the
+  /// raw key — that's the historical input every per-user manifest key
+  /// was derived with, so it can never change. Sourced directly from
+  /// FulaApiService (platform-neutral) rather than AuthService
+  /// (dart:io-tainted): every public method of this service guards on
+  /// `isConfigured` before calling this, which is exactly the state in
+  /// which AuthService.getPublicKeyString() returned the same bytes.
   Future<String?> _getUserId() async {
-    final publicKey = await AuthService.instance.getPublicKeyString();
-    if (publicKey == null) return null;
+    try {
+      final publicKey =
+          base64Encode(await FulaApiService.instance.getPublicKey());
 
-    // Use first 16 chars of SHA256 hash of public key as user ID
-    final bytes = utf8.encode(publicKey);
-    final hash = sha256.convert(bytes);
-    return hash.toString().substring(0, 16);
+      // Use first 16 chars of SHA256 hash of public key as user ID
+      final bytes = utf8.encode(publicKey);
+      final hash = sha256.convert(bytes);
+      return hash.toString().substring(0, 16);
+    } catch (e) {
+      debugPrint('CloudShareStorage: could not derive user ID: $e');
+      return null;
+    }
   }
 
   /// Ensure the metadata bucket exists

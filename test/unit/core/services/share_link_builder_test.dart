@@ -78,4 +78,41 @@ void main() {
       );
     });
   });
+
+  group('FULA share-ID codec', () {
+    test('encode → decode round-trips a 32-byte key', () {
+      final key = Uint8List.fromList(List.generate(32, (i) => i * 7 % 256));
+      final id = encodeFulaShareId(key);
+      expect(id, startsWith('FULA-'));
+      expect(id.contains('='), isFalse); // padding stripped
+      expect(decodeFulaShareId(id), key);
+    });
+
+    test('accepts lowercase prefix, surrounding whitespace and bare '
+        'base64url without the prefix', () {
+      final key = Uint8List.fromList(List.generate(32, (i) => 255 - i));
+      final id = encodeFulaShareId(key);
+      expect(decodeFulaShareId('  $id  '), key);
+      expect(decodeFulaShareId('fula-${id.substring(5)}'), key);
+      expect(decodeFulaShareId(id.substring(5)), key);
+    });
+
+    test('accepts standard base64 with padding (legacy paste)', () {
+      final key = Uint8List.fromList(List.generate(32, (i) => i + 1));
+      expect(decodeFulaShareId(base64Encode(key)), key);
+    });
+
+    test('throws on garbage input', () {
+      expect(() => decodeFulaShareId('FULA-???not-base64???'),
+          throwsA(isA<FormatException>()));
+    });
+  });
+
+  group('recipient share link', () {
+    test('uses the fxblox deep-link base by default', () {
+      expect(buildRecipientShareUrl('TOKEN'), 'fxblox://share/TOKEN');
+      expect(buildRecipientShareUrl('TOKEN', baseUrl: 'app://s'),
+          'app://s/TOKEN');
+    });
+  });
 }

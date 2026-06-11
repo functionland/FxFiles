@@ -56,17 +56,22 @@ class SharesNotifier extends Notifier<SharesState> {
       var outgoing = await _sharingService.getOutgoingShares();
       var accepted = await _sharingService.getValidAcceptedShares();
 
-      // Auto-restore from cloud if local is empty
-      if (outgoing.isEmpty) {
-        try {
-          final cloudShares = await CloudShareStorageService.instance.downloadShares();
-          if (cloudShares.isNotEmpty) {
-            await _sharingService.importOutgoingShares(cloudShares);
-            outgoing = cloudShares;
-          }
-        } catch (e) {
-          // Ignore errors - cloud sync is optional
+      // Merge cloud-recorded shares into local — not only when local is
+      // empty: shares created on another device or on the web app land
+      // in the cloud manifest and must show up here (and be revocable
+      // here). syncShares is local-wins per id and additive, so a stale
+      // cloud copy can't clobber local state; the count compare is
+      // exact for "anything new?" because local-wins means the merge
+      // can only ever ADD cloud-only entries.
+      try {
+        final merged =
+            await CloudShareStorageService.instance.syncShares(outgoing);
+        if (merged.length != outgoing.length) {
+          await _sharingService.importOutgoingShares(merged);
+          outgoing = merged;
         }
+      } catch (e) {
+        // Ignore errors - cloud sync is optional
       }
 
       // Auto-restore accepted shares from cloud if local is empty
@@ -379,8 +384,38 @@ class SharesNotifier extends Notifier<SharesState> {
   /// Sync shares to cloud storage
   Future<void> _syncToCloud() async {
     try {
-      final shares = await _sharingService.getOutgoingShares();
-      await CloudShareStorageService.instance.uploadShares(shares);
+      var shares = await _sharingService.getOutgoingShares();
+      // uploadShares REPLACES the whole cloud manifest, so it must
+      // never run against an unmerged view: a blind overwrite would
+      // erase a share recorded by another device or the web app (which
+      // keeps no other copy). Download+merge first; if the download
+      // fails, SKIP the manifest upload this round — revokes still
+      // propagate via the monotonic revoked-ids list, and the next
+      // successful sync uploads everything.
+      List<OutgoingShare>? cloud;
+      try {
+        cloud = await CloudShareStorageService.instance.downloadShares();
+      } catch (_) {
+        cloud = null;
+      }
+      if (cloud != null) {
+        final byId = <String, OutgoingShare>{
+          for (final s in cloud) s.id: s,
+        };
+        for (final s in shares) {
+          byId[s.id] = s; // local wins its own ids
+        }
+        final merged = byId.values.toList()
+          ..sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
+        if (merged.length != shares.length) {
+          await _sharingService.importOutgoingShares(merged);
+          shares = merged;
+        }
+        // Unconditional upload after a successful merge: content-only
+        // changes (a revoke flips a flag without changing the count)
+        // must still reach the cloud.
+        await CloudShareStorageService.instance.uploadShares(shares);
+      }
       final accepted = await _sharingService.getAcceptedShares();
       await CloudShareStorageService.instance.uploadAcceptedShares(accepted);
     } catch (e) {

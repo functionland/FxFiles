@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -932,32 +933,13 @@ class AuthService {
     return _cachedShareId;
   }
 
-  static String encodeShareId(Uint8List publicKey) {
-    final encoded = base64UrlEncode(publicKey).replaceAll('=', '');
-    return 'FULA-$encoded';
-  }
+  // Share-ID codec moved to share_link_builder.dart (platform-neutral;
+  // the web shell needs it for recipient shares). Static wrappers keep
+  // the existing call sites unchanged.
+  static String encodeShareId(Uint8List publicKey) =>
+      encodeFulaShareId(publicKey);
 
-  static Uint8List decodeShareId(String input) {
-    String keyStr = input.trim();
-
-    if (keyStr.toUpperCase().startsWith('FULA-')) {
-      keyStr = keyStr.substring(5);
-    }
-
-    try {
-      final padded = _addBase64Padding(keyStr);
-      final standard = padded.replaceAll('-', '+').replaceAll('_', '/');
-      return base64Decode(standard);
-    } catch (_) {
-      return base64Decode(_addBase64Padding(keyStr));
-    }
-  }
-
-  static String _addBase64Padding(String input) {
-    final remainder = input.length % 4;
-    if (remainder == 0) return input;
-    return input + '=' * (4 - remainder);
-  }
+  static Uint8List decodeShareId(String input) => decodeFulaShareId(input);
 
   Uint8List parsePublicKey(String input) {
     return decodeShareId(input);

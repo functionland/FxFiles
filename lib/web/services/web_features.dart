@@ -30,11 +30,16 @@ class WebFeatures {
     return Uint8List.fromList(base64Decode(b64));
   }
 
-  /// Same per-user manifest scoping as the native services:
-  /// sha256(publicKey) hex, first 16 chars.
+  /// Same per-user manifest scoping as the native services
+  /// (ShelfStorageService / TagStorageService / WebsiteService):
+  /// sha256 over the utf8 bytes of the BASE64 STRING of the public key
+  /// — NOT the raw key bytes — hex, first 16 chars. The base64-string
+  /// input is the historical derivation every existing manifest key
+  /// was written with.
   static Future<String> _userId() async {
     final pub = await FulaApiService.instance.getPublicKey();
-    return sha256.convert(pub).toString().substring(0, 16);
+    final b64 = base64Encode(pub);
+    return sha256.convert(utf8.encode(b64)).toString().substring(0, 16);
   }
 
   // ------------------------------------------------------------------ shelf

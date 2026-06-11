@@ -1670,10 +1670,9 @@ class SharingService {
       return '$gatewayBase/view/${token.id}#${payload.encode()}';
     }
 
-    // For recipient-specific shares, use app deep link
-    final encoded = token.encode();
-    final base = baseUrl ?? 'fxblox://share';
-    return '$base/$encoded';
+    // For recipient-specific shares, use the app deep link (format
+    // single-sourced with the web shell in share_link_builder.dart)
+    return buildRecipientShareUrl(token.encode(), baseUrl: baseUrl);
   }
 
   /// Generate share link from OutgoingShare (handles all types)

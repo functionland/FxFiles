@@ -1,21 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:fula_client/fula_client.dart' as fula;
 import 'package:go_router/go_router.dart';
-import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/services/web_save.dart';
+import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 
 /// Hard per-file upload cap for web v1: picked files are held fully in
 /// browser memory before the encrypted upload, so bound the worst case.
@@ -235,194 +233,44 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
   }
 
-  /// Create a 7-day share link for a single file — public, or private
-  /// (password-protected: the v2 payload is AES-GCM-encrypted under a
-  /// PBKDF2 key; recipient needs link AND password). Mirrors the native
-  /// SharingService paths via the shared builders. (v1 web limitation:
-  /// links are not recorded locally, so revoke-before-expiry isn't
-  /// available from the web UI.)
-  Future<void> _share(FulaObject o) async {
-    const expiryDays = 7;
+  String? _contentTypeOf(FulaObject o) {
+    final ct = o.metadata?['contentType'] ?? '';
+    if (ct.isNotEmpty && ct != 'application/octet-stream') return ct;
+    return null;
+  }
 
-    var private = false;
-    final passwordController = TextEditingController();
-    final opts = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: const Text('Share file'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SegmentedButton<bool>(
-                segments: const [
-                  ButtonSegment(
-                    value: false,
-                    label: Text('Public'),
-                    icon: Icon(Icons.public),
-                  ),
-                  ButtonSegment(
-                    value: true,
-                    label: Text('Private'),
-                    icon: Icon(Icons.lock_outline),
-                  ),
-                ],
-                selected: {private},
-                onSelectionChanged: (s) =>
-                    setLocal(() => private = s.first),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                private
-                    ? 'Recipients need the link AND a password.'
-                    : 'Anyone with the link can download.',
-                style: Theme.of(ctx).textTheme.bodySmall,
-              ),
-              if (private)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: TextField(
-                    controller: passwordController,
-                    obscureText: true,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: 'Link password',
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Create link'),
-            ),
-          ],
-        ),
-      ),
+  /// Share a single file via the app's share sheet (mirrored in
+  /// web_create_share_dialog.dart): Specific Person / Protected link /
+  /// Anyone with the link, latest-vs-snapshot mode and expiry. The
+  /// created share is recorded in the cloud shares manifest, so it
+  /// shows up in the native app's Sharing tab and can be revoked there.
+  Future<void> _shareFile(FulaObject o, {WebShareChoice? lockedChoice}) async {
+    final bucket =
+        o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
+    final storageKey = o.storageKey ?? o.key;
+    final fileName = _displayName(o).split('/').last;
+
+    // Web files are cloud objects, so the snapshot metadata comes from
+    // the listing (native derives it from local sync state instead).
+    final binding = share_model.SnapshotBinding(
+      contentHash: o.etag ?? storageKey,
+      size: o.size,
+      modifiedAt: (o.lastModified ?? DateTime.now()).millisecondsSinceEpoch,
+      storageKey: storageKey,
     );
-    if (opts != true) return;
-    final linkPassword = passwordController.text;
-    if (private && linkPassword.isEmpty) {
-      _snack('Private links need a password.');
-      return;
-    }
 
-    _snack('Creating link…');
-    try {
-      final bucket = o.sourceBucket ?? widget.base;
-      final storageKey = o.storageKey ?? o.key;
-      final expiresAtUnix = DateTime.now()
-              .add(const Duration(days: expiryDays))
-              .millisecondsSinceEpoch ~/
-          1000;
-
-      final random = Random.secure();
-      final privateKeyBytes = Uint8List(32);
-      for (var i = 0; i < 32; i++) {
-        privateKeyBytes[i] = random.nextInt(256);
-      }
-      final publicKeyBytes = Uint8List.fromList(
-        await fula.derivePublicKeyFromSecret(
-            secretKeyBytes: privateKeyBytes.toList()),
-      );
-
-      final fulaToken = await FulaApiService.instance.createShareToken(
-        bucket,
-        storageKey,
-        publicKeyBytes,
-        share_model.ShareMode.temporal,
-        expiresAtUnix,
-      );
-
-      final fileName = _displayName(o).split('/').last;
-      final String url;
-      if (private) {
-        final built = await buildPasswordProtectedShareUrl(
-          baseUrl: kShareGatewayBaseUrl,
-          tokenId: const Uuid().v4(),
-          fulaToken: fulaToken,
-          bucket: bucket,
-          pathScope: o.key,
-          storageKey: storageKey,
-          linkSecretKey: privateKeyBytes,
-          password: linkPassword,
-          fileName: fileName,
-        );
-        url = built.url;
-      } else {
-        url = buildPublicShareUrl(
-          baseUrl: kShareGatewayBaseUrl,
-          tokenId: const Uuid().v4(),
-          fulaToken: fulaToken,
-          bucket: bucket,
-          pathScope: o.key,
-          storageKey: storageKey,
-          linkSecretKey: privateKeyBytes,
-          fileName: fileName,
-        );
-      }
-
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text(private ? 'Private link' : 'Public link'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(private
-                    ? 'This link opens "$fileName" for $expiryDays days '
-                        'ONLY together with the password — share them '
-                        'through different channels.'
-                    : 'Anyone with this link can download '
-                        '"$fileName" for $expiryDays days.'),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                        color: Theme.of(ctx).colorScheme.outline),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: SelectableText(
-                    url,
-                    maxLines: 3,
-                    style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 11),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Close'),
-            ),
-            FilledButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: url));
-                if (ctx.mounted) Navigator.pop(ctx);
-                _snack('Link copied');
-              },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy link'),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      _snack('Could not create link: $e');
+    final result = await showWebCreateShareDialog(
+      context: context,
+      bucket: bucket,
+      pathScope: o.key,
+      storageKey: storageKey,
+      fileName: fileName,
+      contentType: _contentTypeOf(o),
+      snapshotBinding: binding,
+      lockedChoice: lockedChoice,
+    );
+    if (result != null && mounted) {
+      await showWebShareCreatedDialog(context: context, result: result);
     }
   }
 
@@ -729,17 +577,28 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                     trailing: PopupMenuButton<String>(
                       onSelected: (v) {
                         if (v == 'download') _download(o);
-                        if (v == 'share') _share(o);
+                        if (v == 'link') {
+                          _shareFile(o,
+                              lockedChoice: WebShareChoice.public);
+                        }
+                        if (v == 'share') _shareFile(o);
                         if (v == 'delete') _delete(o);
                       },
+                      // Same share entry points as the app's file menu:
+                      // a quick public link, and the private share sheet
+                      // with its three options.
                       itemBuilder: (ctx) => const [
                         PopupMenuItem(
                           value: 'download',
                           child: Text('Download'),
                         ),
                         PopupMenuItem(
+                          value: 'link',
+                          child: Text('Create Link'),
+                        ),
+                        PopupMenuItem(
                           value: 'share',
-                          child: Text('Copy public link'),
+                          child: Text('Share Private…'),
                         ),
                         PopupMenuItem(
                           value: 'delete',

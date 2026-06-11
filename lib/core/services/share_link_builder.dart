@@ -14,6 +14,55 @@ import 'package:cryptography/cryptography.dart';
 /// Base URL of the share portal (the pinning-service web UI).
 const String kShareGatewayBaseUrl = 'https://cloud.fx.land';
 
+/// Deep-link base for recipient-specific shares — these open in the
+/// native app (which holds the recipient's private key), so the link is
+/// an app scheme, not an https URL.
+const String kRecipientShareLinkBase = 'fxblox://share';
+
+/// Recipient-share deep link: `fxblox://share/<ShareToken.encode()>`.
+/// Same shape on every platform — the native deep-link handler parses
+/// the encoded token straight off the path.
+String buildRecipientShareUrl(String encodedToken, {String? baseUrl}) =>
+    '${baseUrl ?? kRecipientShareLinkBase}/$encodedToken';
+
+// ============================================================================
+// FULA share IDs. A user's share ID is their X25519 public key, base64url
+// without padding, prefixed "FULA-". Owners paste a recipient's share ID
+// to create a recipient-specific share, so encode/decode must agree
+// across native and web (moved here from AuthService, which is
+// dart:io-tainted; AuthService delegates to these).
+// ============================================================================
+
+/// Public key → "FULA-…" share ID (base64url, padding stripped).
+String encodeFulaShareId(Uint8List publicKey) {
+  final encoded = base64UrlEncode(publicKey).replaceAll('=', '');
+  return 'FULA-$encoded';
+}
+
+/// "FULA-…" share ID (or bare base64/base64url key) → public key bytes.
+/// Throws [FormatException] on undecodable input.
+Uint8List decodeFulaShareId(String input) {
+  String keyStr = input.trim();
+
+  if (keyStr.toUpperCase().startsWith('FULA-')) {
+    keyStr = keyStr.substring(5);
+  }
+
+  try {
+    final padded = _addBase64Padding(keyStr);
+    final standard = padded.replaceAll('-', '+').replaceAll('_', '/');
+    return base64Decode(standard);
+  } catch (_) {
+    return base64Decode(_addBase64Padding(keyStr));
+  }
+}
+
+String _addBase64Padding(String input) {
+  final remainder = input.length % 4;
+  if (remainder == 0) return input;
+  return input + '=' * (4 - remainder);
+}
+
 /// Assemble the v2 public-link URL.
 ///
 /// The fragment carries the fula share token plus the DISPOSABLE link
