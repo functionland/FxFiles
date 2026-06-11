@@ -87,6 +87,32 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
     final bytes = file?.bytes;
     if (file == null || bytes == null || !mounted) return;
 
+    // Encryption copies the buffer, so a big file spikes tab memory at
+    // 2×+ its size on the main thread. Confirm before committing.
+    if (bytes.length > 100 * 1024 * 1024) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Large file'),
+          content: Text(
+              '"${file.name}" is ${_fmtSize(bytes.length)}. Encrypting '
+              'and uploading a file this size can freeze this browser '
+              'tab for a while. Continue?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+    }
+
     setState(() => _busy = true);
     _snack('Uploading "${file.name}"…');
     try {

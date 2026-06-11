@@ -534,6 +534,11 @@ class _WebAutomateTaskDetailScreenState
         _csvText = text;
         _headers = tabular.headers;
       });
+      if (text.contains('�')) {
+        _snack('Some characters in this CSV are not UTF-8 and were '
+            'replaced with "�". Re-export it as UTF-8 if names '
+            'look wrong.');
+      }
     } catch (e) {
       _snack('Failed to import file: $e');
     }

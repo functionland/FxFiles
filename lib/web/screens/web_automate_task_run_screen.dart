@@ -72,7 +72,23 @@ class _WebAutomateTaskRunScreenState
 
   Widget _buildBody(AutomateTask? task) {
     if (task == null) {
-      return const Center(child: Text('Task not found'));
+      // Task configs are per-browser (Hive/IndexedDB) — a deep link
+      // from another device lands here with the tag but no local
+      // config. Route to setup instead of dead-ending.
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('This task has no send plan on this browser yet.'),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: () =>
+                  context.go('/automate-tasks/${widget.tagId}'),
+              child: const Text('Open task setup'),
+            ),
+          ],
+        ),
+      );
     }
     if (task.rows.isEmpty) {
       return const Center(
@@ -138,12 +154,16 @@ class _WebAutomateTaskRunScreenState
     }
     bool launched;
     try {
-      // New tab so the send plan stays open; the wa.me / t.me / mailto
-      // page (or its app handoff) loads there.
+      // wa.me / t.me are pages → new tab so the send plan stays open.
+      // mailto: / sms: are protocol handlers → '_self', which hands off
+      // to the OS app without unloading this page (a '_blank' there
+      // would leave an empty about:blank tab behind on every row).
+      final uri = result.uri!;
+      final isWebPage = uri.scheme == 'http' || uri.scheme == 'https';
       launched = await launchUrl(
-        result.uri!,
+        uri,
         mode: LaunchMode.externalApplication,
-        webOnlyWindowName: '_blank',
+        webOnlyWindowName: isWebPage ? '_blank' : '_self',
       );
     } catch (e) {
       launched = false;
