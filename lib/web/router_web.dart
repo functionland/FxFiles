@@ -2,7 +2,11 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/web/screens/web_bucket_screen.dart';
 import 'package:fula_files/web/screens/web_home_screen.dart';
+import 'package:fula_files/web/screens/web_playlists_screen.dart';
+import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
+import 'package:fula_files/web/screens/web_tags_screen.dart';
+import 'package:fula_files/web/screens/web_websites_screen.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// Web-shell router. Deliberately defines ONLY the cloud routes — the
@@ -33,6 +37,34 @@ GoRouter buildWebRouter() {
         path: '/b/:base',
         builder: (context, state) => WebBucketScreen(
           base: state.pathParameters['base'] ?? 'documents',
+        ),
+      ),
+      GoRoute(
+        path: '/shelf',
+        builder: (context, state) => const WebShelfScreen(),
+      ),
+      GoRoute(
+        path: '/websites',
+        builder: (context, state) => const WebWebsitesScreen(),
+      ),
+      GoRoute(
+        path: '/tags',
+        builder: (context, state) => const WebTagsScreen(),
+      ),
+      GoRoute(
+        path: '/tags/:id',
+        builder: (context, state) => WebTaggedFilesScreen(
+          tagId: state.pathParameters['id'] ?? '',
+        ),
+      ),
+      GoRoute(
+        path: '/playlists',
+        builder: (context, state) => const WebPlaylistsScreen(),
+      ),
+      GoRoute(
+        path: '/playlist/:id',
+        builder: (context, state) => WebPlaylistDetailScreen(
+          playlistId: state.pathParameters['id'] ?? '',
         ),
       ),
     ],

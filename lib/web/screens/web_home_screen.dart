@@ -113,6 +113,27 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                     ),
                 ],
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    for (final f in const [
+                      ('/shelf', 'Shelf', Icons.inbox_outlined),
+                      ('/websites', 'Websites', Icons.public),
+                      ('/tags', 'Tags', Icons.sell_outlined),
+                      ('/playlists', 'Playlists', Icons.queue_music),
+                    ])
+                      ActionChip(
+                        avatar: Icon(f.$3, size: 18),
+                        label: Text(f.$2),
+                        onPressed: () => context.go(f.$1),
+                      ),
+                  ],
+                ),
+              ),
               FutureBuilder<StorageInfo>(
                 future: _storage,
                 builder: (ctx, snap) {
