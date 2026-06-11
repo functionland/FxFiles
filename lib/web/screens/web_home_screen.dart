@@ -226,6 +226,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                       ('/websites', 'Websites', Icons.public),
                       ('/tags', 'Tags', Icons.sell_outlined),
                       ('/playlists', 'Playlists', Icons.queue_music),
+                      ('/nfts', 'NFTs', Icons.diamond_outlined),
                     ])
                       SizedBox(
                         width: 160,

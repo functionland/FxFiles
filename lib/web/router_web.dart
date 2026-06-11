@@ -2,6 +2,9 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/web/screens/web_bucket_screen.dart';
 import 'package:fula_files/web/screens/web_home_screen.dart';
+import 'package:fula_files/web/screens/web_nft_claim_screen.dart';
+import 'package:fula_files/web/screens/web_nft_detail_screen.dart';
+import 'package:fula_files/web/screens/web_nfts_screen.dart';
 import 'package:fula_files/web/screens/web_playlists_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
@@ -67,6 +70,28 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/playlists',
         builder: (context, state) => const WebPlaylistsScreen(),
+      ),
+      GoRoute(
+        path: '/nfts',
+        builder: (context, state) => const WebNftsScreen(),
+      ),
+      GoRoute(
+        path: '/nfts/:id',
+        builder: (context, state) => WebNftDetailScreen(
+          tagId: state.pathParameters['id'] ?? '',
+        ),
+      ),
+      GoRoute(
+        path: '/nft-claim',
+        builder: (context, state) {
+          final q = state.uri.queryParameters;
+          return WebNftClaimScreen(
+            chainId: int.tryParse(q['chain'] ?? ''),
+            contractAddress: q['contract'],
+            tokenId: int.tryParse(q['token'] ?? ''),
+            secret: q['hash'] ?? q['secret'],
+          );
+        },
       ),
       GoRoute(
         path: '/playlist/:id',
