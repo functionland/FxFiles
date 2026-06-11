@@ -1,19 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
+import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 
 /// Hard per-file upload cap for web v1: picked files are held fully in
 /// browser memory before the encrypted upload, so bound the worst case.
@@ -34,6 +40,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   bool _stale = false;
   String? _error;
   bool _loading = true;
+
+  /// objectKey → tags, refreshed after each listing (native parity:
+  /// file rows show compact tag chips).
+  Map<String, List<FileTag>> _fileTags = const {};
 
   // Upload state (single in-flight batch).
   bool _uploading = false;
@@ -74,6 +84,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         _stale = r.stale;
         _loading = false;
       });
+      _refreshTags(bucket, objects);
     } catch (e) {
       // A category nobody has uploaded to yet has no -v8 bucket at all:
       // that's the empty state, not an error.
@@ -90,6 +101,17 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         _error = msg;
         _loading = false;
       });
+    }
+  }
+
+  /// Best-effort tag chip data — never blocks or fails the listing.
+  Future<void> _refreshTags(String bucket, List<FulaObject> objects) async {
+    try {
+      await WebTagService.instance.load();
+      final tags = WebTagService.instance.tagsForObjects(bucket, objects);
+      if (mounted) setState(() => _fileTags = tags);
+    } catch (e) {
+      debugPrint('WebBucketScreen: tag load skipped: $e');
     }
   }
 
@@ -272,6 +294,157 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     if (result != null && mounted) {
       await showWebShareCreatedDialog(context: context, result: result);
     }
+  }
+
+  /// Tag selector for one file (native tag_selector_dialog parity).
+  /// remoteKey uses the same `bucket/objectKey` form the native cloud
+  /// explorer looks up, so tags round-trip between platforms.
+  Future<void> _editTags(FulaObject o) async {
+    final bucket =
+        o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
+    try {
+      await WebTagService.instance.load();
+    } catch (e) {
+      _snack('Could not load tags: $e');
+      return;
+    }
+    if (!mounted) return;
+    final initial =
+        (_fileTags[o.key] ?? const <FileTag>[]).map((t) => t.id).toSet();
+    final changed = await showWebTagSelectorDialog(
+      context: context,
+      remoteKey: '$bucket/${o.key}',
+      fileName: _displayName(o).split('/').last,
+      initialTagIds: initial,
+    );
+    if (changed && mounted && _objects != null) {
+      await _refreshTags(bucket, _objects!);
+    }
+  }
+
+  /// Mirror of the app's Share Publicly flow (_sharePubliclyViaIpfs):
+  /// explicit consent dialog, then download+decrypt the object and pin
+  /// the plaintext to IPFS, then the public gateway link dialog.
+  Future<void> _sharePublicly(FulaObject o) async {
+    final fileName = _displayName(o).split('/').last;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Share Publicly?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will upload the file to IPFS without any encryption. '
+              'Anyone with the link will be able to access it.',
+            ),
+            const SizedBox(height: 16),
+            Text('File: $fileName',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('Size: ${_fmtSize(o.size)}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Share Publicly'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    _snack('Uploading $fileName to IPFS...');
+    try {
+      final bucket =
+          o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
+      final bytes =
+          await FulaApiService.instance.downloadObject(bucket, o.key);
+      final result = await IpfsPublicService.instance.pinBytes(
+        bytes,
+        fileName,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      await _showPublicIpfsLinkDialog(result.gatewayUrl, fileName);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      final msg =
+          e is Exception ? e.toString().replaceFirst('Exception: ', '') : '$e';
+      _snack(msg);
+    }
+  }
+
+  Future<void> _showPublicIpfsLinkDialog(
+      String gatewayUrl, String fileName) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.green, size: 24),
+            SizedBox(width: 8),
+            Text('Shared Publicly'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$fileName is now publicly accessible via IPFS.'),
+            const SizedBox(height: 8),
+            const Text(
+              'Anyone with this link can access the file:',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                gatewayUrl,
+                style:
+                    const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: const Text('Open'),
+            onPressed: () => launchUrl(
+              Uri.parse(gatewayUrl),
+              webOnlyWindowName: '_blank',
+            ),
+          ),
+          FilledButton.icon(
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('Copy URL'),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: gatewayUrl));
+              Navigator.pop(ctx);
+              _snack('IPFS URL copied to clipboard');
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   bool _isVideo(FulaObject o) {
@@ -556,6 +729,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                 itemCount: _objects!.length,
                 itemBuilder: (ctx, i) {
                   final o = _objects![i];
+                  final tags = _fileTags[o.key] ?? const <FileTag>[];
                   return ListTile(
                     leading: Icon(_isImage(o)
                         ? Icons.image_outlined
@@ -568,37 +742,52 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                                     : Icons.insert_drive_file_outlined),
                     title: Text(_displayName(o),
                         overflow: TextOverflow.ellipsis),
-                    subtitle: Text([
-                      _fmtSize(o.size),
-                      if (o.lastModified != null)
-                        '${o.lastModified!.toLocal()}'.split('.').first,
-                    ].join('  ·  ')),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text([
+                          _fmtSize(o.size),
+                          if (o.lastModified != null)
+                            '${o.lastModified!.toLocal()}'
+                                .split('.')
+                                .first,
+                        ].join('  ·  ')),
+                        if (tags.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: _TagChipRow(tags: tags),
+                          ),
+                      ],
+                    ),
                     onTap: () => _preview(o),
                     trailing: PopupMenuButton<String>(
                       onSelected: (v) {
                         if (v == 'download') _download(o);
-                        if (v == 'link') {
-                          _shareFile(o,
-                              lockedChoice: WebShareChoice.public);
-                        }
+                        if (v == 'tags') _editTags(o);
                         if (v == 'share') _shareFile(o);
+                        if (v == 'public') _sharePublicly(o);
                         if (v == 'delete') _delete(o);
                       },
-                      // Same share entry points as the app's file menu:
-                      // a quick public link, and the private share sheet
-                      // with its three options.
+                      // Same entry points as the app's file menu: the
+                      // private share sheet (its three options cover
+                      // public-gateway links too) and the unencrypted
+                      // IPFS Share Publicly path.
                       itemBuilder: (ctx) => const [
                         PopupMenuItem(
                           value: 'download',
                           child: Text('Download'),
                         ),
                         PopupMenuItem(
-                          value: 'link',
-                          child: Text('Create Link'),
+                          value: 'tags',
+                          child: Text('Tags'),
                         ),
                         PopupMenuItem(
                           value: 'share',
                           child: Text('Share Private…'),
+                        ),
+                        PopupMenuItem(
+                          value: 'public',
+                          child: Text('Share Publicly'),
                         ),
                         PopupMenuItem(
                           value: 'delete',
@@ -612,6 +801,59 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Compact tag chips under a file row — mirror of the native
+/// TagChipRow(compact: true) in lib/features/tags/widgets/tag_chip.dart:
+/// up to two solid mini-chips plus a "+N" overflow marker.
+class _TagChipRow extends StatelessWidget {
+  final List<FileTag> tags;
+  static const int _maxVisible = 2;
+
+  const _TagChipRow({required this.tags});
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = tags.take(_maxVisible).toList();
+    final rest = tags.length - visible.length;
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      children: [
+        for (final t in visible)
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Color(t.colorValue).withValues(alpha: 0.8),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              t.name,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        if (rest > 0)
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '+$rest',
+              style: const TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.bold),
+            ),
+          ),
+      ],
     );
   }
 }

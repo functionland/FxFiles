@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 
+import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
+import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 
-/// Mirror of lib/features/tags/screens/tags_browser_screen.dart
-/// (view-only): search bar, color-dot rows with file counts, native
-/// empty-state copy. Tag creation/editing stays native.
+/// Mirror of lib/features/tags/screens/tags_browser_screen.dart:
+/// search bar, color rows with file counts, create-tag FAB/dialog, and
+/// the per-tag Share / Edit / Delete menu (share opens the tag-mode
+/// share sheet, same as the app).
 class WebTagsScreen extends StatefulWidget {
   const WebTagsScreen({super.key});
 
@@ -15,8 +20,7 @@ class WebTagsScreen extends StatefulWidget {
 }
 
 class _WebTagsScreenState extends State<WebTagsScreen> {
-  List<FileTag>? _tags;
-  List<TaggedFile> _files = const [];
+  bool _loading = true;
   String _query = '';
   String? _error;
 
@@ -26,29 +30,83 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool force = true}) async {
     setState(() {
-      _tags = null;
+      _loading = true;
       _error = null;
     });
     try {
-      final r = await WebFeatures.loadTags();
-      setState(() {
-        _tags = r.tags;
-        _files = r.files;
-      });
+      await WebTagService.instance.load(force: force);
+      if (mounted) setState(() => _loading = false);
     } catch (e) {
-      setState(() => _error = '$e');
+      if (mounted) {
+        setState(() {
+          _error = '$e';
+          _loading = false;
+        });
+      }
     }
   }
 
-  int _countFor(FileTag tag) =>
-      _files.where((f) => f.tagId == tag.id).length;
+  Future<void> _createTag() async {
+    final created = await showWebCreateTagDialog(context: context);
+    if (created != null && mounted) setState(() {});
+  }
+
+  Future<void> _editTag(FileTag tag) async {
+    final changed = await showWebEditTagDialog(context: context, tag: tag);
+    if (changed && mounted) setState(() {});
+  }
+
+  Future<void> _deleteTag(FileTag tag) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Tag'),
+        content: Text(
+            'Delete "${tag.name}"? Files keep their other tags; this only '
+            'removes the tag and its associations.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await WebTagService.instance.deleteTag(tag.id);
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _shareTag(FileTag tag) async {
+    final result = await showWebCreateTagShareDialog(
+      context: context,
+      tagId: tag.id,
+      tagName: tag.name,
+    );
+    if (result != null && mounted) {
+      await showWebShareCreatedDialog(context: context, result: result);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final tags = (_tags ?? const <FileTag>[])
+    final allTags = WebTagService.instance.tags;
+    final tags = allTags
         .where((t) =>
             _query.isEmpty ||
             t.name.toLowerCase().contains(_query.toLowerCase()))
@@ -63,15 +121,24 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
         title: const Text('Tags'),
         actions: [
           IconButton(
+            tooltip: 'Create tag',
+            icon: const Icon(LucideIcons.plus),
+            onPressed: _createTag,
+          ),
+          IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
             onPressed: _load,
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _createTag,
+        child: const Icon(LucideIcons.plus),
+      ),
       body: _error != null
           ? Center(child: Text('Could not load tags.\n$_error'))
-          : _tags == null
+          : _loading
               ? const Center(child: CircularProgressIndicator())
               : Column(
                   children: [
@@ -81,9 +148,12 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
                         onChanged: (v) => setState(() => _query = v),
                         decoration: InputDecoration(
                           isDense: true,
-                          prefixIcon: const Icon(Icons.search, size: 20),
+                          prefixIcon:
+                              const Icon(LucideIcons.search, size: 20),
                           hintText: 'Search tags...',
                           filled: true,
+                          contentPadding:
+                              const EdgeInsets.symmetric(vertical: 10),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                             borderSide: BorderSide.none,
@@ -92,75 +162,113 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
                       ),
                     ),
                     Expanded(
-                      child: _tags!.isEmpty
+                      child: allTags.isEmpty
                           ? Center(
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.sell_outlined, size: 64),
+                                  const Icon(LucideIcons.tag, size: 64),
                                   const SizedBox(height: 12),
                                   Text('No tags yet',
                                       style: theme.textTheme.titleMedium),
                                   const SizedBox(height: 6),
                                   Text(
-                                      'Create tags to organize your files '
-                                      'in the FxFiles app',
+                                      'Create tags to organize your files',
                                       style: theme.textTheme.bodySmall),
+                                  const SizedBox(height: 16),
+                                  FilledButton(
+                                    onPressed: _createTag,
+                                    child: const Text('Create Tag'),
+                                  ),
                                 ],
                               ),
                             )
                           : tags.isEmpty
                               ? Center(
-                                  child: Text('No tags matching "$_query"'))
+                                  child:
+                                      Text('No tags matching "$_query"'))
                               : ListView.builder(
                                   itemCount: tags.length,
-                                  itemBuilder: (ctx, i) {
-                                    final tag = tags[i];
-                                    final color = Color(tag.colorValue);
-                                    final n = _countFor(tag);
-                                    return ListTile(
-                                      leading: Container(
-                                        width: 40,
-                                        height: 40,
-                                        decoration: BoxDecoration(
-                                          color: color.withValues(
-                                              alpha: 0.15),
-                                          borderRadius:
-                                              BorderRadius.circular(10),
-                                        ),
-                                        child: Center(
-                                          child: Container(
-                                            width: 16,
-                                            height: 16,
-                                            decoration: BoxDecoration(
-                                              color: color,
-                                              shape: BoxShape.circle,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      title: Text(tag.name),
-                                      subtitle: Text(
-                                        '$n file${n == 1 ? '' : 's'}',
-                                        style:
-                                            const TextStyle(fontSize: 12),
-                                      ),
-                                      onTap: () =>
-                                          context.go('/tags/${tag.id}'),
-                                    );
-                                  },
+                                  itemBuilder: (ctx, i) =>
+                                      _tagTile(ctx, tags[i]),
                                 ),
                     ),
                   ],
                 ),
     );
   }
+
+  Widget _tagTile(BuildContext context, FileTag tag) {
+    final color = Color(tag.colorValue);
+    final n = tag.fileCount;
+    return ListTile(
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+        ),
+      ),
+      title: Text(tag.name),
+      subtitle: Text(
+        '$n file${n == 1 ? '' : 's'}',
+        style: TextStyle(
+            fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+      trailing: PopupMenuButton<String>(
+        onSelected: (v) {
+          if (v == 'share') _shareTag(tag);
+          if (v == 'edit') _editTag(tag);
+          if (v == 'delete') _deleteTag(tag);
+        },
+        itemBuilder: (ctx) => const [
+          PopupMenuItem(
+            value: 'share',
+            child: ListTile(
+              leading: Icon(LucideIcons.share2, size: 18),
+              title: Text('Share'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+          ),
+          PopupMenuItem(
+            value: 'edit',
+            child: ListTile(
+              leading: Icon(LucideIcons.edit, size: 18),
+              title: Text('Edit'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+          ),
+          PopupMenuItem(
+            value: 'delete',
+            child: ListTile(
+              leading:
+                  Icon(LucideIcons.trash2, size: 18, color: AppColors.error),
+              title:
+                  Text('Delete', style: TextStyle(color: AppColors.error)),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+          ),
+        ],
+      ),
+      onTap: () => context.go('/tags/${tag.id}'),
+    );
+  }
 }
 
-/// Mirror of lib/features/tags/screens/tagged_files_screen.dart
-/// (view-only): color dot + tag name app bar, file rows with relative
-/// "Tagged …" times. Web note: tagged-file CONTENT opening is limited
-/// to items with a cloud copy; device-local tags show as info rows.
+/// Mirror of lib/features/tags/screens/tagged_files_screen.dart: color
+/// dot + tag name app bar with a Share action, file rows with relative
+/// "Tagged …" times and a remove (X) affordance.
 class WebTaggedFilesScreen extends StatefulWidget {
   final String tagId;
   const WebTaggedFilesScreen({super.key, required this.tagId});
@@ -170,8 +278,7 @@ class WebTaggedFilesScreen extends StatefulWidget {
 }
 
 class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
-  FileTag? _tag;
-  List<TaggedFile> _files = const [];
+  bool _loading = true;
   String? _error;
 
   @override
@@ -182,14 +289,15 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
 
   Future<void> _load() async {
     try {
-      final r = await WebFeatures.loadTags();
-      setState(() {
-        _tag = r.tags.where((t) => t.id == widget.tagId).firstOrNull;
-        _files = r.files.where((f) => f.tagId == widget.tagId).toList()
-          ..sort((a, b) => b.taggedAt.compareTo(a.taggedAt));
-      });
+      await WebTagService.instance.load(force: true);
+      if (mounted) setState(() => _loading = false);
     } catch (e) {
-      setState(() => _error = '$e');
+      if (mounted) {
+        setState(() {
+          _error = '$e';
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -202,10 +310,53 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
   }
 
+  Future<void> _shareTag(FileTag tag) async {
+    final result = await showWebCreateTagShareDialog(
+      context: context,
+      tagId: tag.id,
+      tagName: tag.name,
+    );
+    if (result != null && mounted) {
+      await showWebShareCreatedDialog(context: context, result: result);
+    }
+  }
+
+  Future<void> _removeTag(TaggedFile f) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Tag'),
+        content: Text('Remove tag from "${f.fileName}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await WebTagService.instance.removeTaggedFile(f.id);
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Remove failed: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = _tag != null ? Color(_tag!.colorValue) : null;
+    final tag = WebTagService.instance.tagById(widget.tagId);
+    final files = WebTagService.instance.filesWithTag(widget.tagId);
+    final color = tag != null ? Color(tag.colorValue) : null;
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -224,58 +375,75 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
               ),
               const SizedBox(width: 8),
             ],
-            Text(_tag?.name ?? 'Tag'),
+            Text(tag?.name ?? 'Tag'),
           ],
         ),
+        actions: [
+          if (tag != null)
+            IconButton(
+              tooltip: 'Share tag',
+              icon: const Icon(LucideIcons.share2),
+              onPressed: () => _shareTag(tag),
+            ),
+        ],
       ),
       body: _error != null
           ? Center(child: Text('Could not load tag.\n$_error'))
-          : _files.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.find_in_page_outlined, size: 64),
-                      const SizedBox(height: 12),
-                      Text('No files with this tag',
-                          style: theme.textTheme.titleMedium),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Files tagged with "${_tag?.name ?? ''}" will '
-                        'appear here',
-                        style: theme.textTheme.bodySmall,
+          : _loading
+              ? const Center(child: CircularProgressIndicator())
+              : files.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.find_in_page_outlined, size: 64),
+                          const SizedBox(height: 12),
+                          Text('No files with this tag',
+                              style: theme.textTheme.titleMedium),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Files tagged with "${tag?.name ?? ''}" will '
+                            'appear here',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: _files.length,
-                  itemBuilder: (ctx, i) {
-                    final f = _files[i];
-                    final cloud =
-                        f.remoteKey != null && f.remoteKey!.isNotEmpty;
-                    return ListTile(
-                      leading: Icon(cloud
-                          ? Icons.cloud_done_outlined
-                          : Icons.smartphone),
-                      title: Text(f.fileName,
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text(
-                        '${_relative(f.taggedAt)}'
-                        '${cloud ? '' : '  ·  on a device'}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      onTap: () => ScaffoldMessenger.of(ctx).showSnackBar(
-                        SnackBar(
-                          content: Text(cloud
-                              ? 'Find "${f.fileName}" in its category to open it.'
-                              : 'This file lives on a device — open it in the app.'),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: files.length,
+                      itemBuilder: (ctx, i) {
+                        final f = files[i];
+                        final cloud =
+                            f.remoteKey != null && f.remoteKey!.isNotEmpty;
+                        return ListTile(
+                          leading: Icon(cloud
+                              ? Icons.cloud_done_outlined
+                              : Icons.smartphone),
+                          title: Text(f.fileName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                          subtitle: Text(
+                            '${_relative(f.taggedAt)}'
+                            '${cloud ? '' : '  ·  on a device'}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          trailing: IconButton(
+                            tooltip: 'Remove tag',
+                            icon: const Icon(LucideIcons.x, size: 18),
+                            onPressed: () => _removeTag(f),
+                          ),
+                          onTap: () =>
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                            SnackBar(
+                              content: Text(cloud
+                                  ? 'Find "${f.fileName}" in its category to open it.'
+                                  : 'This file lives on a device — open it in the app.'),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
     );
   }
 }

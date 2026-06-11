@@ -115,4 +115,27 @@ void main() {
           'app://s/TOKEN');
     });
   });
+
+  group('ENC1 manifest envelope', () {
+    test('encrypt → decrypt round-trips and is scope-bound', () async {
+      final secret = Uint8List.fromList(List.generate(32, (i) => i));
+      final manifest = {
+        'bucket': 'images-v8',
+        'files': [
+          {'n': 'a.jpg', 'c': 'bafyA', 's': 10, 't': 'tokA'},
+        ],
+        'shareMode': 'temporal',
+      };
+      final blob = await shareManifestEncrypt(manifest, secret, 'share-1');
+      expect(blob, startsWith('ENC1:'));
+      expect(await shareManifestDecrypt(blob, secret, 'share-1'), manifest);
+
+      // A different scopeId derives a different key → must not decrypt.
+      expect(() => shareManifestDecrypt(blob, secret, 'share-2'),
+          throwsA(anything));
+      // Missing prefix is rejected.
+      expect(() => shareManifestDecrypt('nope', secret, 'share-1'),
+          throwsA(isA<ArgumentError>()));
+    });
+  });
 }

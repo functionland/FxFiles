@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -12,6 +11,7 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/share_link_builder.dart';
 
 /// Gateway base URL for collaboration links
 const String kCollabGatewayBaseUrl = 'https://cloud.fx.land';
@@ -71,55 +71,30 @@ class CollaborationService {
     return Uint8List.fromList(await derived.extractBytes());
   }
 
+  // The AES-GCM envelope (nonce||ct||mac) and the 'ENC1:' manifest wire
+  // format are single-sourced in share_link_builder.dart — the web
+  // shell posts the same encrypted tag/folder manifests, so a drifted
+  // copy here would produce manifests the portal can't decrypt. These
+  // wrappers keep the original call sites unchanged.
+
   /// Encrypt file bytes with AES-256-GCM using a collab-derived key
   ///
   /// Output format: [12-byte nonce][ciphertext][16-byte tag]
-  Future<Uint8List> encryptCollabFile(Uint8List data, Uint8List key) async {
-    final aesGcm = AesGcm.with256bits();
-    final secretKey = SecretKey(key);
-    final nonce = aesGcm.newNonce();
-    final secretBox = await aesGcm.encrypt(data, secretKey: secretKey, nonce: nonce);
-    return Uint8List.fromList([
-      ...nonce,
-      ...secretBox.cipherText,
-      ...secretBox.mac.bytes,
-    ]);
-  }
+  Future<Uint8List> encryptCollabFile(Uint8List data, Uint8List key) =>
+      sharePasswordEncrypt(data, key);
 
   /// Decrypt file bytes encrypted with collab key
-  Future<Uint8List> decryptCollabFile(Uint8List encrypted, Uint8List key) async {
-    final aesGcm = AesGcm.with256bits();
-    final nonceLength = aesGcm.nonceLength;
-    final macLength = aesGcm.macAlgorithm.macLength;
-
-    final nonce = encrypted.sublist(0, nonceLength);
-    final cipherText = encrypted.sublist(nonceLength, encrypted.length - macLength);
-    final mac = encrypted.sublist(encrypted.length - macLength);
-
-    final secretKey = SecretKey(key);
-    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
-    final decrypted = await aesGcm.decrypt(secretBox, secretKey: secretKey);
-    return Uint8List.fromList(decrypted);
-  }
+  Future<Uint8List> decryptCollabFile(Uint8List encrypted, Uint8List key) =>
+      sharePasswordDecrypt(encrypted, key);
 
   /// Derive AES-256 key for manifest encryption (domain-separated from file keys)
-  Future<Uint8List> _deriveManifestKey(Uint8List linkSecret, String scopeId) async {
-    final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
-    final derived = await hkdf.deriveKey(
-      secretKey: SecretKey(linkSecret),
-      info: utf8.encode('manifest-enc-v1:$scopeId'),
-      nonce: Uint8List(0),
-    );
-    return Uint8List.fromList(await derived.extractBytes());
-  }
+  Future<Uint8List> _deriveManifestKey(Uint8List linkSecret, String scopeId) =>
+      shareManifestDeriveKey(linkSecret, scopeId);
 
   /// Encrypt manifest JSON → "ENC1:{base64}" wire format
-  Future<String> encryptManifestPayload(Map<String, dynamic> manifest, Uint8List linkSecret, String scopeId) async {
-    final key = await _deriveManifestKey(linkSecret, scopeId);
-    final plaintext = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
-    final encrypted = await encryptCollabFile(plaintext, key);
-    return 'ENC1:${base64Encode(encrypted)}';
-  }
+  Future<String> encryptManifestPayload(Map<String, dynamic> manifest,
+          Uint8List linkSecret, String scopeId) =>
+      shareManifestEncrypt(manifest, linkSecret, scopeId);
 
   /// Reverse of [encryptManifestPayload]: decrypt an "ENC1:{base64}"
   /// blob back to its JSON map. Returns the original manifest map.
@@ -133,16 +108,8 @@ class CollaborationService {
     String enc1Blob,
     Uint8List linkSecret,
     String scopeId,
-  ) async {
-    if (!enc1Blob.startsWith('ENC1:')) {
-      throw ArgumentError('Expected "ENC1:" prefix, got: ${enc1Blob.length > 16 ? "${enc1Blob.substring(0, 16)}..." : enc1Blob}');
-    }
-    final encoded = enc1Blob.substring(5);
-    final encrypted = base64Decode(encoded);
-    final key = await _deriveManifestKey(linkSecret, scopeId);
-    final decrypted = await decryptCollabFile(Uint8List.fromList(encrypted), key);
-    return jsonDecode(utf8.decode(decrypted)) as Map<String, dynamic>;
-  }
+  ) =>
+      shareManifestDecrypt(enc1Blob, linkSecret, scopeId);
 
   // ============================================================================
   // GROUP CREATION & MANAGEMENT

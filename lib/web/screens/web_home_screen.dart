@@ -207,11 +207,14 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                     ),
                 ],
               ),
+              // Feature tiles: same card shape as the category tiles,
+              // at half their height and 3/4 their width (category
+              // cells are ~213 px squares inside the 720 px column).
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
                 child: Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
+                  spacing: 16,
+                  runSpacing: 16,
                   alignment: WrapAlignment.center,
                   children: [
                     for (final f in const [
@@ -220,10 +223,27 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                       ('/tags', 'Tags', Icons.sell_outlined),
                       ('/playlists', 'Playlists', Icons.queue_music),
                     ])
-                      ActionChip(
-                        avatar: Icon(f.$3, size: 18),
-                        label: Text(f.$2),
-                        onPressed: () => context.go(f.$1),
+                      SizedBox(
+                        width: 160,
+                        height: 106,
+                        child: Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: InkWell(
+                            onTap: () => context.go(f.$1),
+                            child: Column(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.center,
+                              children: [
+                                Icon(f.$3, size: 30),
+                                const SizedBox(height: 8),
+                                Text(f.$2,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                   ],
                 ),

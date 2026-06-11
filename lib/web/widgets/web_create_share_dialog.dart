@@ -20,6 +20,12 @@ class WebCreateShareDialog extends StatefulWidget {
   final SnapshotBinding? snapshotBinding;
   final WebShareChoice? lockedChoice;
 
+  /// When set, this dialog creates a TAG share instead of a file share
+  /// (native parity: temporal-only, password choice hidden, header
+  /// shows the tag chip).
+  final String? tagId;
+  final String? tagName;
+
   const WebCreateShareDialog({
     super.key,
     required this.bucket,
@@ -29,6 +35,8 @@ class WebCreateShareDialog extends StatefulWidget {
     this.contentType,
     this.snapshotBinding,
     this.lockedChoice,
+    this.tagId,
+    this.tagName,
   });
 
   @override
@@ -48,13 +56,21 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
   bool _isLoading = false;
   String? _error;
 
+  bool get _isTagShare => widget.tagId != null;
+
   @override
   void initState() {
     super.initState();
     _choice = widget.lockedChoice ?? WebShareChoice.recipient;
-    // Default label = file name (native parity).
-    final name = widget.fileName ?? widget.pathScope.split('/').last;
-    _labelController.text = name;
+    if (_isTagShare) {
+      // Tag shares are always latest mode (snapshot doesn't apply).
+      _shareMode = ShareMode.temporal;
+      _labelController.text = widget.tagName ?? 'Tag share';
+    } else {
+      // Default label = file name (native parity).
+      final name = widget.fileName ?? widget.pathScope.split('/').last;
+      _labelController.text = name;
+    }
   }
 
   @override
@@ -135,18 +151,22 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
                     icon: LucideIcons.userCheck,
                   ),
                   if (_choice == WebShareChoice.recipient) _recipientInputs(),
-                  const SizedBox(height: 8),
-                  _ShareChoiceCard(
-                    title: 'Protected link',
-                    subtitle: 'Protect the link with a password.',
-                    selected: _choice == WebShareChoice.password,
-                    disabled: _choiceLocked &&
-                        widget.lockedChoice != WebShareChoice.password,
-                    onTap: () =>
-                        setState(() => _choice = WebShareChoice.password),
-                    icon: LucideIcons.lock,
-                  ),
-                  if (_choice == WebShareChoice.password) _passwordInput(),
+                  // Native parity: the password choice is hidden for
+                  // tag shares (reachable via lockedChoice only).
+                  if (!_isTagShare) ...[
+                    const SizedBox(height: 8),
+                    _ShareChoiceCard(
+                      title: 'Protected link',
+                      subtitle: 'Protect the link with a password.',
+                      selected: _choice == WebShareChoice.password,
+                      disabled: _choiceLocked &&
+                          widget.lockedChoice != WebShareChoice.password,
+                      onTap: () =>
+                          setState(() => _choice = WebShareChoice.password),
+                      icon: LucideIcons.lock,
+                    ),
+                    if (_choice == WebShareChoice.password) _passwordInput(),
+                  ],
                   const SizedBox(height: 8),
                   _ShareChoiceCard(
                     title: 'Anyone with the link',
@@ -159,8 +179,11 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
                         setState(() => _choice = WebShareChoice.public),
                     icon: LucideIcons.link,
                   ),
-                  const SizedBox(height: 16),
-                  _whatTheySeeSelector(context),
+                  // Tag shares are always "latest" — no mode selector.
+                  if (!_isTagShare) ...[
+                    const SizedBox(height: 16),
+                    _whatTheySeeSelector(context),
+                  ],
                   const SizedBox(height: 12),
                   _expirySelector(context),
                   if (_error != null) ...[
@@ -178,6 +201,9 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
   }
 
   Widget _header(BuildContext context) {
+    final chipLabel =
+        _isTagShare ? (widget.tagName ?? 'Tag') : widget.pathScope;
+    final chipIcon = _isTagShare ? LucideIcons.tag : LucideIcons.folder;
     return Row(
       children: [
         Expanded(
@@ -191,12 +217,11 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(LucideIcons.folder,
-                    size: 14, color: AppColors.primary),
+                Icon(chipIcon, size: 14, color: AppColors.primary),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
-                    widget.pathScope,
+                    chipLabel,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 12,
@@ -504,46 +529,73 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
 
     try {
       final WebShareResult result;
-      switch (_choice) {
-        case WebShareChoice.recipient:
-          result = await WebShareService.createRecipientShare(
-            bucket: widget.bucket,
-            pathScope: widget.pathScope,
-            storageKey: widget.storageKey,
-            recipientShareId: _recipientKeyController.text.trim(),
-            recipientName: _recipientNameController.text.trim(),
-            expiryDays: _expiryDays,
-            label: label,
-            shareMode: _shareMode,
-            snapshotBinding: widget.snapshotBinding,
-            fileName: widget.fileName,
-            contentType: widget.contentType,
-          );
-        case WebShareChoice.password:
-          result = await WebShareService.createPasswordProtectedLink(
-            bucket: widget.bucket,
-            pathScope: widget.pathScope,
-            storageKey: widget.storageKey,
-            expiryDays: _expiryDays ?? 7,
-            password: _passwordController.text,
-            label: label,
-            shareMode: _shareMode,
-            snapshotBinding: widget.snapshotBinding,
-            fileName: widget.fileName,
-            contentType: widget.contentType,
-          );
-        case WebShareChoice.public:
-          result = await WebShareService.createPublicLink(
-            bucket: widget.bucket,
-            pathScope: widget.pathScope,
-            storageKey: widget.storageKey,
-            expiryDays: _expiryDays ?? 7,
-            label: label,
-            shareMode: _shareMode,
-            snapshotBinding: widget.snapshotBinding,
-            fileName: widget.fileName,
-            contentType: widget.contentType,
-          );
+      if (_isTagShare) {
+        final tagId = widget.tagId!;
+        switch (_choice) {
+          case WebShareChoice.recipient:
+            result = await WebShareService.createTagRecipientShare(
+              tagId: tagId,
+              recipientShareId: _recipientKeyController.text.trim(),
+              recipientName: _recipientNameController.text.trim(),
+              expiryDays: _expiryDays,
+              label: label,
+            );
+          case WebShareChoice.password:
+            result = await WebShareService.createTagPasswordLink(
+              tagId: tagId,
+              expiryDays: _expiryDays ?? 7,
+              password: _passwordController.text,
+              label: label,
+            );
+          case WebShareChoice.public:
+            result = await WebShareService.createTagPublicLink(
+              tagId: tagId,
+              expiryDays: _expiryDays ?? 7,
+              label: label,
+            );
+        }
+      } else {
+        switch (_choice) {
+          case WebShareChoice.recipient:
+            result = await WebShareService.createRecipientShare(
+              bucket: widget.bucket,
+              pathScope: widget.pathScope,
+              storageKey: widget.storageKey,
+              recipientShareId: _recipientKeyController.text.trim(),
+              recipientName: _recipientNameController.text.trim(),
+              expiryDays: _expiryDays,
+              label: label,
+              shareMode: _shareMode,
+              snapshotBinding: widget.snapshotBinding,
+              fileName: widget.fileName,
+              contentType: widget.contentType,
+            );
+          case WebShareChoice.password:
+            result = await WebShareService.createPasswordProtectedLink(
+              bucket: widget.bucket,
+              pathScope: widget.pathScope,
+              storageKey: widget.storageKey,
+              expiryDays: _expiryDays ?? 7,
+              password: _passwordController.text,
+              label: label,
+              shareMode: _shareMode,
+              snapshotBinding: widget.snapshotBinding,
+              fileName: widget.fileName,
+              contentType: widget.contentType,
+            );
+          case WebShareChoice.public:
+            result = await WebShareService.createPublicLink(
+              bucket: widget.bucket,
+              pathScope: widget.pathScope,
+              storageKey: widget.storageKey,
+              expiryDays: _expiryDays ?? 7,
+              label: label,
+              shareMode: _shareMode,
+              snapshotBinding: widget.snapshotBinding,
+              fileName: widget.fileName,
+              contentType: widget.contentType,
+            );
+        }
       }
       if (!mounted) return;
       Navigator.pop(context, result);
@@ -772,6 +824,29 @@ Future<WebShareResult?> showWebCreateShareDialog({
   );
 }
 
+/// Open the share sheet for a TAG (native showCreateTagShareDialog
+/// parity: recipient/public choices, temporal-only).
+Future<WebShareResult?> showWebCreateTagShareDialog({
+  required BuildContext context,
+  required String tagId,
+  required String tagName,
+}) {
+  return showModalBottomSheet<WebShareResult>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    constraints: const BoxConstraints(maxWidth: 560),
+    builder: (_) => WebCreateShareDialog(
+      bucket: '',
+      pathScope: '',
+      storageKey: '',
+      tagId: tagId,
+      tagName: tagName,
+    ),
+  );
+}
+
 /// Confirmation dialog shown after a share/link has been created —
 /// mirror of the native showShareCreatedDialog (same titles, info rows
 /// and explicit Copy Link button), plus a warning row when the share
@@ -879,6 +954,27 @@ Future<void> showWebShareCreatedDialog({
                       'Expires: ${_formatRelativeExpiry(token.expiresAt!)}',
                       style: TextStyle(
                           fontSize: 13, color: Colors.grey[700]),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (result.notIncludedCount > 0) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(LucideIcons.info,
+                      size: 16, color: AppColors.warning),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${result.notIncludedCount} older file(s) not '
+                      'included — re-upload them to add them to this '
+                      'share.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],

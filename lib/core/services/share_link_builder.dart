@@ -153,6 +153,51 @@ Future<Uint8List> sharePasswordDecrypt(
 Uint8List generateShareSalt(int length) =>
     Uint8List.fromList(List.generate(length, (_) => _shareRandom.nextInt(256)));
 
+// ============================================================================
+// Share/collab manifest envelope ("ENC1"). Folder, tag and collaboration
+// shares store their file manifest server-side at
+// /api/share/v2/manifest/<shareId>; when the share has a link secret the
+// manifest is encrypted client-side: HKDF-SHA256(linkSecret,
+// info='manifest-enc-v1:<scopeId>') → AES-GCM-256 nonce||ct||mac →
+// 'ENC1:'+base64. Wire format shared by native (CollaborationService
+// delegates here), the web shell and the portal.
+// ============================================================================
+
+/// HKDF-SHA256 32-byte manifest key, domain-separated per scope.
+Future<Uint8List> shareManifestDeriveKey(
+    Uint8List linkSecret, String scopeId) async {
+  final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+  final derived = await hkdf.deriveKey(
+    secretKey: SecretKey(linkSecret),
+    info: utf8.encode('manifest-enc-v1:$scopeId'),
+    nonce: Uint8List(0),
+  );
+  return Uint8List.fromList(await derived.extractBytes());
+}
+
+/// Manifest JSON → 'ENC1:{base64(nonce||ct||mac)}'.
+Future<String> shareManifestEncrypt(
+    Map<String, dynamic> manifest, Uint8List linkSecret, String scopeId) async {
+  final key = await shareManifestDeriveKey(linkSecret, scopeId);
+  final plaintext = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
+  final encrypted = await sharePasswordEncrypt(plaintext, key);
+  return 'ENC1:${base64Encode(encrypted)}';
+}
+
+/// Inverse of [shareManifestEncrypt].
+Future<Map<String, dynamic>> shareManifestDecrypt(
+    String enc1Blob, Uint8List linkSecret, String scopeId) async {
+  if (!enc1Blob.startsWith('ENC1:')) {
+    throw ArgumentError(
+        'Expected "ENC1:" prefix, got: ${enc1Blob.length > 16 ? "${enc1Blob.substring(0, 16)}..." : enc1Blob}');
+  }
+  final encrypted = base64Decode(enc1Blob.substring(5));
+  final key = await shareManifestDeriveKey(linkSecret, scopeId);
+  final decrypted =
+      await sharePasswordDecrypt(Uint8List.fromList(encrypted), key);
+  return jsonDecode(utf8.decode(decrypted)) as Map<String, dynamic>;
+}
+
 /// Assemble a password-protected share URL: the standard v2 inner
 /// payload is AES-GCM-encrypted under the password-derived key and
 /// wrapped in the outer `{v:2, p:true, s, e, b, k}` envelope. Returns

@@ -22,6 +22,29 @@ class IpfsPublicService {
     String localPath,
     String fileName,
   ) async {
+    return _pin(
+      await http.MultipartFile.fromPath('file', localPath,
+          filename: fileName),
+      fileName,
+    );
+  }
+
+  /// Same flow for in-memory bytes — the web shell has no file paths
+  /// (it downloads the decrypted object first, then pins the plaintext).
+  Future<({String cid, String gatewayUrl})> pinBytes(
+    Uint8List bytes,
+    String fileName,
+  ) {
+    return _pin(
+      http.MultipartFile.fromBytes('file', bytes, filename: fileName),
+      fileName,
+    );
+  }
+
+  Future<({String cid, String gatewayUrl})> _pin(
+    http.MultipartFile part,
+    String fileName,
+  ) async {
     final ipfsEndpoint = await SecureStorageService.instance
             .read(SecureStorageKeys.ipfsEndpointUrl) ??
         _defaultIpfsEndpoint;
@@ -41,9 +64,7 @@ class IpfsPublicService {
     debugPrint('IPFS upload: starting');
     final request = http.MultipartRequest('POST', uploadUri)
       ..headers['Authorization'] = 'Bearer $jwt'
-      ..files.add(
-          await http.MultipartFile.fromPath('file', localPath,
-              filename: fileName));
+      ..files.add(part);
 
     final streamed = await request.send().timeout(const Duration(minutes: 5));
     final body = await streamed.stream

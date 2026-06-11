@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Read-only cloud loaders for the four feature areas the web shell
 /// mirrors from native (Shelf / Websites / Tags / Playlists). Each
@@ -126,8 +127,10 @@ class WebFeatures {
 
     final pointers = <String, WebsiteGroupPointer>{};
     try {
+      // NOTE: underscore, not hyphen — IpnsPointerService writes
+      // `.fula/website_pointers/…` (ipns_pointer_service.dart:283).
       for (final blob in await FulaApiService.instance.downloadMetadataMerged(
-          'website-metadata', '.fula/website-pointers/$userId.json', kek)) {
+          'website-metadata', '.fula/website_pointers/$userId.json', kek)) {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw
             in (j['pointers'] as List<dynamic>? ?? j.values.toList())) {
@@ -150,32 +153,15 @@ class WebFeatures {
 
   // ------------------------------------------------------------------- tags
 
-  /// Tags + tagged-file associations. Mirrors
-  /// TagStorageService.restoreFromCloud (additive, first/v8 wins).
+  /// Tags + tagged-file associations. Single-sourced through
+  /// WebTagService (which owns the manifest read AND write paths).
   static Future<({List<FileTag> tags, List<TaggedFile> files})>
       loadTags() async {
-    final kek = await _kek();
-    final userId = await _userId();
-    final tagsById = <String, FileTag>{};
-    final filesById = <String, TaggedFile>{};
-    for (final blob in await FulaApiService.instance.downloadMetadataMerged(
-        'tag-metadata', '.fula/tags/$userId.json', kek)) {
-      try {
-        final meta = TagCloudMetadata.fromJson(
-            jsonDecode(utf8.decode(blob)) as Map<String, dynamic>);
-        for (final t in meta.tags) {
-          tagsById.putIfAbsent(t.id, () => t);
-        }
-        for (final f in meta.taggedFiles) {
-          filesById.putIfAbsent(f.id, () => f);
-        }
-      } catch (e) {
-        debugPrint('WebFeatures.loadTags: parse skipped: $e');
-      }
-    }
-    final tags = tagsById.values.toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return (tags: tags, files: filesById.values.toList());
+    await WebTagService.instance.load(force: true);
+    return (
+      tags: WebTagService.instance.tags,
+      files: WebTagService.instance.taggedFiles,
+    );
   }
 
   // -------------------------------------------------------------- playlists
