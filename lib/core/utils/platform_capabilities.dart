@@ -66,6 +66,10 @@ class PlatformCapabilities {
   /// Check if running on mobile (iOS or Android)
   static bool get isMobile => _isIOS || _isAndroid;
 
+  /// Native iOS (false on web, including mobile Safari) — for callers
+  /// that branch on iOS URI conventions (e.g. the sms: separator).
+  static bool get isIOS => _isIOS;
+
   /// Check if running on desktop
   static bool get isDesktop =>
       !kIsWeb &&

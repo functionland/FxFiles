@@ -13,8 +13,8 @@ import 'package:fula_files/web/services/web_session.dart';
 /// create_section.dart, more_section.dart): the category hero/small
 /// tiles under "On your cloud" (the web's files ARE the cloud, so the
 /// header changes from the app's "On this phone"), the CREATE 2×2
-/// tiles (Website / NFT / Shelf — Automate is device-bound), and the
-/// MORE rows (Tags / Playlists), plus the storage line and footer.
+/// tiles (Website / NFT / Shelf / Automate), and the MORE rows
+/// (Shared / Tags / Playlists), plus the storage line and footer.
 class WebHomeScreen extends StatefulWidget {
   const WebHomeScreen({super.key});
 
@@ -285,8 +285,8 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
   }
 
   // ----------------------------------------------------------- CREATE
-  // Mirror of CreateSection's 2×2 badge tiles. Automate stays native
-  // (it drives device messaging apps); Websites is the web AI flow.
+  // Mirror of CreateSection's 2×2 badge tiles. On the web, Automate's
+  // sends go through universal links (wa.me / t.me / mailto: / sms:).
 
   Widget _createSection(BuildContext context) {
     return Padding(
@@ -329,7 +329,14 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              const Expanded(child: SizedBox.shrink()),
+              Expanded(
+                child: _CreateTile(
+                  icon: LucideIcons.zap,
+                  label: 'Automate',
+                  badge: 'CSV → bulk send',
+                  onTap: () => context.go('/automate-tasks'),
+                ),
+              ),
             ],
           ),
         ],
@@ -348,6 +355,12 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
         children: [
           const _SectionHeader(label: 'More'),
           const SizedBox(height: 4),
+          _MoreRow(
+            icon: LucideIcons.share2,
+            label: 'Shared',
+            subtitle: 'Shares & collaborations',
+            onTap: () => context.go('/shared'),
+          ),
           _MoreRow(
             icon: LucideIcons.tags,
             label: 'Tags',

@@ -16,7 +16,7 @@ import 'package:fula_files/core/models/messaging_target.dart';
 import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
-import 'package:fula_files/core/services/tabular_parser.dart';
+import 'package:fula_files/core/services/tabular_parser_io.dart';
 import 'package:fula_files/core/utils/contacts_csv_writer.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
@@ -148,7 +148,7 @@ class _AutomateTaskDetailScreenState
         if (mounted) setState(() => _headers = const []);
         return;
       }
-      final tabular = await TabularParser.parse(file);
+      final tabular = await parseTabularFile(file);
       if (mounted) setState(() => _headers = tabular.headers);
     } catch (e) {
       // Non-fatal — leave headers empty; the chip bar shows a hint
@@ -1025,7 +1025,7 @@ class _AutomateTaskDetailScreenState
         throw Exception('Attached CSV not found on disk');
       }
 
-      final tabular = await TabularParser.parse(file);
+      final tabular = await parseTabularFile(file);
       if (tabular.isEmpty) {
         throw Exception('CSV has no data rows.');
       }

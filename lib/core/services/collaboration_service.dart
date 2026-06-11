@@ -6,7 +6,6 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/models/share_token.dart' show ShareMode;
-import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
@@ -126,12 +125,15 @@ class CollaborationService {
     required List<CollabFileInput> files,
     int expiryDays = 365,
   }) async {
-    final ownerPublicKey = await AuthService.instance.getPublicKey();
-    if (ownerPublicKey == null) {
-      throw CollaborationException('Not signed in. Please sign in first.');
-    }
     if (!fula_service.FulaApiService.instance.isConfigured) {
       throw CollaborationException('Cloud storage not configured.');
+    }
+    final Uint8List ownerPublicKey;
+    try {
+      ownerPublicKey =
+          await fula_service.FulaApiService.instance.getPublicKey();
+    } catch (_) {
+      throw CollaborationException('Not signed in. Please sign in first.');
     }
 
     final ownerPublicKeyBase64 = base64Encode(ownerPublicKey);
@@ -250,8 +252,11 @@ class CollaborationService {
     String? contentType,
   }) async {
     debugPrint('[CollabService] addFileToGroup: groupId=$groupId, bucket=$bucket, pathScope=$pathScope, fileName=$fileName');
-    final ownerPublicKey = await AuthService.instance.getPublicKey();
-    if (ownerPublicKey == null) {
+    final Uint8List ownerPublicKey;
+    try {
+      ownerPublicKey =
+          await fula_service.FulaApiService.instance.getPublicKey();
+    } catch (_) {
       throw CollaborationException('Not signed in.');
     }
 
@@ -1028,7 +1033,13 @@ class CollaborationService {
     }
 
     final result = jsonDecode(response.body) as Map<String, dynamic>;
-    final publicKey = await AuthService.instance.getPublicKeyString();
+    String? publicKey;
+    try {
+      publicKey = base64Encode(
+          await fula_service.FulaApiService.instance.getPublicKey());
+    } catch (_) {
+      publicKey = null;
+    }
 
     final file = CollaborationFile(
       id: fileId,

@@ -26,11 +26,13 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:web/web.dart' as web;
 
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
+import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -60,6 +62,12 @@ Future<void> main() async {
 
     await SecureStorageService.instance.init();
     await IpfsGatewayHelper.init();
+
+    // Hive → IndexedDB. Automate task configs persist locally per
+    // browser, same as the app persists them locally per device (the
+    // task's tag still syncs through the cloud tag manifest).
+    await Hive.initFlutter();
+    await AutomateTaskService.instance.init();
 
     restored = await WebSession.instance.restore();
   } catch (e) {

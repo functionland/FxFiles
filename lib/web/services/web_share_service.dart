@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/cloud_share_storage_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -685,5 +686,281 @@ class WebShareService {
       debugPrint('WebShareService: share created but not recorded: $e');
       return false;
     }
+  }
+
+  // ===========================================================  Shared tab
+  // Web counterparts of the SharingService owner/recipient flows the
+  // Shared screen needs. Outgoing shares live in the cloud manifest
+  // (the web has no Hive copy); accepted shares persist in (web)
+  // SecureStorage under the SAME key the native service uses, plus the
+  // cloud accepted-shares manifest for cross-device restore.
+
+  static const String _acceptedSharesKey = 'accepted_shares';
+
+  /// Outgoing shares straight from the cloud manifest (newest first).
+  static Future<List<OutgoingShare>> listOutgoingShares() async {
+    final shares = await CloudShareStorageService.instance.downloadShares();
+    shares.sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
+    return shares;
+  }
+
+  /// Revoke an outgoing share: flip the token in the cloud manifest and
+  /// append the id to the monotonic revoked-ids list (mirrors the
+  /// native revokeShare + revoked-list propagation).
+  static Future<void> revokeShare(String shareId) async {
+    final shares = await CloudShareStorageService.instance.downloadShares();
+    final index = shares.indexWhere((s) => s.id == shareId);
+    if (index == -1) {
+      throw StateError('Share not found');
+    }
+    final share = shares[index];
+    shares[index] = OutgoingShare(
+      token: share.token.revoke(),
+      recipientName: share.recipientName,
+      sharedAt: share.sharedAt,
+    );
+    await CloudShareStorageService.instance.uploadShares(shares);
+    final revoked =
+        await CloudShareStorageService.instance.downloadRevokedList();
+    if (!revoked.contains(shareId)) {
+      await CloudShareStorageService.instance
+          .uploadRevokedList([...revoked, shareId]);
+    }
+  }
+
+  /// Delete an outgoing share record from the cloud manifest.
+  static Future<void> deleteOutgoingShare(String shareId) async {
+    final shares = await CloudShareStorageService.instance.downloadShares();
+    shares.removeWhere((s) => s.id == shareId);
+    await CloudShareStorageService.instance.uploadShares(shares);
+  }
+
+  /// Rebuild the share URL for an outgoing share (native
+  /// generateShareLinkFromOutgoing semantics).
+  static String shareUrlFor(OutgoingShare share) {
+    final token = share.token;
+    if (token.shareType == ShareType.passwordProtected &&
+        share.encryptedFragment != null) {
+      return '$kShareGatewayBaseUrl/view/${token.id}#${share.encryptedFragment}';
+    }
+    if (token.shareType == ShareType.publicLink &&
+        share.linkSecretKey != null) {
+      return buildPublicShareUrl(
+        baseUrl: kShareGatewayBaseUrl,
+        tokenId: token.id,
+        fulaToken: token.fulaShareToken ?? '',
+        bucket: token.bucket,
+        pathScope: token.pathScope,
+        storageKey: share.storageKey ?? token.pathScope,
+        linkSecretKey: share.linkSecretKey!,
+        label: token.label,
+        fileName: token.fileName,
+      );
+    }
+    return buildRecipientShareUrl(token.encode());
+  }
+
+  // --------------------------------------------------- accepted shares
+
+  static Future<List<AcceptedShare>> listAcceptedShares() async {
+    final local = <String, AcceptedShare>{};
+    try {
+      final json =
+          await SecureStorageService.instance.read(_acceptedSharesKey);
+      if (json != null) {
+        for (final e in (jsonDecode(json) as List)) {
+          try {
+            final s = AcceptedShare.fromJson(e as Map<String, dynamic>);
+            local[s.id] = s;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    // Merge the cloud accepted-shares manifest (additive; local wins).
+    try {
+      for (final s in await CloudShareStorageService.instance
+          .downloadAcceptedShares()) {
+        local.putIfAbsent(s.id, () => s);
+      }
+    } catch (_) {}
+    final list = local.values.toList()
+      ..sort((a, b) => b.acceptedAt.compareTo(a.acceptedAt));
+    return list;
+  }
+
+  static Future<void> _saveAcceptedShares(List<AcceptedShare> shares) async {
+    await SecureStorageService.instance.write(
+      _acceptedSharesKey,
+      jsonEncode(shares.map((s) => s.toJson()).toList()),
+    );
+    try {
+      await CloudShareStorageService.instance.uploadAcceptedShares(shares);
+    } catch (e) {
+      debugPrint('WebShareService: accepted-shares cloud sync skipped: $e');
+    }
+  }
+
+  /// Accept a pasted share link or raw token. Handles fxblox://share/…
+  /// deep links, raw encoded tokens and v1 public-link payloads (v2
+  /// public/password links open in the share portal, like native).
+  static Future<AcceptedShare> acceptFromInput(String input) async {
+    final trimmed = input.trim();
+
+    // Public-link payload form (v1 fragments carry the full token).
+    if (trimmed.contains('#')) {
+      try {
+        final fragment = Uri.parse(trimmed).fragment;
+        if (fragment.isNotEmpty) {
+          final payload = PublicLinkPayload.decode(fragment);
+          if (!payload.isPasswordProtected) {
+            return acceptShare(payload.token,
+                linkSecretKey: payload.linkSecretKey);
+          }
+        }
+      } catch (_) {
+        // Not a v1 payload — fall through to the token forms.
+      }
+    }
+
+    var encoded = trimmed;
+    if (encoded.startsWith('fxblox://share/')) {
+      encoded = encoded.substring('fxblox://share/'.length);
+    }
+    final ShareToken token;
+    try {
+      token = ShareToken.decode(encoded);
+    } catch (e) {
+      throw StateError('Invalid share link');
+    }
+    return acceptShare(token);
+  }
+
+  /// Mirror of SharingService.acceptShare (validation order, error
+  /// strings and persisted fields).
+  static Future<AcceptedShare> acceptShare(
+    ShareToken token, {
+    Uint8List? linkSecretKey,
+  }) async {
+    if (token.isExpired) {
+      throw StateError('Share has expired');
+    }
+    if (token.isRevoked) {
+      throw StateError('Share has been revoked');
+    }
+    try {
+      final revoked =
+          await CloudShareStorageService.instance.downloadRevokedList();
+      if (revoked.contains(token.id)) {
+        throw StateError('Share has been revoked by owner');
+      }
+    } on StateError {
+      rethrow;
+    } catch (_) {}
+
+    if (token.shareType == ShareType.recipient) {
+      final myPublicKey = await FulaApiService.instance.getPublicKey();
+      final mine = myPublicKey;
+      final theirs = token.recipientPublicKey;
+      var match = mine.length == theirs.length;
+      if (match) {
+        for (var i = 0; i < mine.length; i++) {
+          if (mine[i] != theirs[i]) {
+            match = false;
+            break;
+          }
+        }
+      }
+      if (!match) {
+        throw StateError('This share was not intended for you');
+      }
+    }
+
+    final fulaToken = token.fulaShareToken;
+    if (fulaToken == null) {
+      throw StateError('Invalid share token format - missing fula token');
+    }
+    try {
+      await FulaApiService.instance.acceptShareToken(fulaToken);
+    } catch (e) {
+      throw StateError('Failed to validate share token: $e');
+    }
+
+    final accepted = AcceptedShare(
+      token: token,
+      fulaShareToken: fulaToken,
+      linkSecretKey: linkSecretKey,
+    );
+    final shares = await listAcceptedShares();
+    await _saveAcceptedShares([accepted, ...shares]);
+    return accepted;
+  }
+
+  static Future<void> removeAcceptedShare(String shareId) async {
+    final shares = await listAcceptedShares();
+    shares.removeWhere((s) => s.id == shareId);
+    await _saveAcceptedShares(shares);
+  }
+
+  /// Download an accepted share's file — mirror of
+  /// SharingService.downloadSharedFile: an ephemeral fula client (the
+  /// recipient's encryption key) pointed at the share-gateway proxy,
+  /// fetching by token in one shot.
+  static Future<Uint8List> downloadSharedFile(AcceptedShare share) async {
+    final fulaToken = share.fulaShareToken ?? share.token.fulaShareToken;
+    if (fulaToken == null) {
+      throw StateError('Invalid share - no fula token available');
+    }
+    final storageKey = share.token.pathScope;
+
+    final kekB64 = await SecureStorageService.instance
+        .read(SecureStorageKeys.encryptionKey);
+    if (kekB64 == null || kekB64.isEmpty) {
+      throw StateError(
+          'Cannot download shared file: signed-in user has no encryption '
+          'key. Please sign in.');
+    }
+    final encryptionKey = Uint8List.fromList(base64Decode(kekB64));
+
+    final proxyEndpoint = '$kShareGatewayBaseUrl/api/share/v2/fetch';
+    final config = fula.FulaConfig(
+      endpoint: proxyEndpoint,
+      timeoutSeconds: BigInt.from(120),
+      maxRetries: 3,
+      perChunkDownloadTimeoutSeconds: BigInt.from(300),
+      bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+      healthGateEnabled: true,
+      healthGateTtlSeconds: BigInt.from(30),
+      blockCacheEnabled: false,
+      blockCachePath: '',
+      blockCacheMaxBytes: BigInt.from(256 * 1024 * 1024),
+      gatewayFallbackEnabled: false,
+      gatewayFallbackUrls: const [],
+      gatewayRaceConcurrency: 3,
+      usersIndexChainRpcUrl: '',
+      usersIndexAnchorAddress: '',
+      usersIndexIpnsName: '',
+      usersIndexUserKey: '',
+      usersIndexIpnsGatewayUrls: const [],
+      usersIndexIpfsGatewayUrls: const [],
+      walkableV8WriterEnabled: true,
+      encryptedUserBucketsIndexKey: Uint8List(0),
+      userEntrySigningSeed: Uint8List(0),
+    );
+    final encConfig = fula.EncryptionConfig(
+      secretKey: encryptionKey,
+      enableMetadataPrivacy: true,
+      obfuscationMode: fula.ObfuscationMode.flatNamespace,
+    );
+    final shareClient = await fula.createEncryptedClient(
+      config: config,
+      encryption: encConfig,
+    );
+    return fula.getWithToken(
+      client: shareClient,
+      bucket: share.token.bucket,
+      storageKey: storageKey,
+      originalKey: storageKey,
+      tokenJson: fulaToken,
+    );
   }
 }

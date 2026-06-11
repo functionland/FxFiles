@@ -19,7 +19,7 @@ import 'package:fula_files/core/services/ai_model_service.dart';
 import 'package:fula_files/core/services/ai_task_service.dart';
 import 'package:fula_files/core/services/device_memory_service.dart';
 import 'package:fula_files/core/services/local_llm_service.dart';
-import 'package:fula_files/core/services/tabular_parser.dart';
+import 'package:fula_files/core/services/tabular_parser_io.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
 import 'package:fula_files/features/ai_tasks/providers/ai_model_provider.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
@@ -361,7 +361,7 @@ class _AiTaskDetailScreenState extends ConsumerState<AiTaskDetailScreen> {
       }
 
       // 4. Parse the CSV.
-      final tabular = await TabularParser.parse(file);
+      final tabular = await parseTabularFile(file);
       if (tabular.isEmpty) {
         throw Exception('CSV has no data rows.');
       }

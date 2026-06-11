@@ -1,7 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:csv/csv.dart';
+
+// Web-safe: the File-based entry point lives in tabular_parser_io.dart
+// (the web shell parses picked bytes via [TabularParser.parseBytes]).
 
 /// Result of parsing a tabular file (CSV in v1; xlsx is deferred to v1.1 —
 /// see pubspec comment about the archive-version conflict that blocks the
@@ -37,28 +39,32 @@ class TabularParser {
 
   static const _maxFileBytes = 10 * 1024 * 1024; // 10 MB hard cap
 
-  static Future<TabularData> parse(File file) async {
-    if (!await file.exists()) {
-      throw TabularParseException('File not found: ${file.path}');
-    }
-    final size = await file.length();
-    if (size == 0) {
+  /// Parse already-read bytes (web file picker / in-memory sources).
+  /// [fileName] drives the same size/extension validation as the
+  /// File-based entry point in tabular_parser_io.dart.
+  static TabularData parseBytes(List<int> bytes, {required String fileName}) {
+    if (bytes.isEmpty) {
       throw TabularParseException('File is empty');
     }
-    if (size > _maxFileBytes) {
+    if (bytes.length > _maxFileBytes) {
       throw TabularParseException(
-          'File is too large (${(size / 1024 / 1024).toStringAsFixed(1)} MB). '
+          'File is too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)} MB). '
           'CSV imports are capped at 10 MB in v1.');
     }
-    final ext = _extOf(file.path);
+    final ext = _extOf(fileName);
     if (ext != 'csv') {
       throw TabularParseException(
         'Unsupported file type: .$ext. v1 only reads CSV; export your '
         'spreadsheet as CSV from Excel/Numbers/Sheets first.',
       );
     }
-    return _parseCsv(await file.readAsBytes());
+    return _parseCsv(bytes);
   }
+
+  /// Validation caps shared with the io entry point.
+  static int get maxFileBytes => _maxFileBytes;
+
+  static String extOf(String path) => _extOf(path);
 
   static TabularData _parseCsv(List<int> bytes) {
     // Strip UTF-8 BOM if present.

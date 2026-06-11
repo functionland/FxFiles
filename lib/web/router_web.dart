@@ -1,11 +1,16 @@
 import 'package:go_router/go_router.dart';
 
+import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
+import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
+import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
 import 'package:fula_files/web/screens/web_bucket_screen.dart';
+import 'package:fula_files/web/screens/web_collab_detail_screen.dart';
 import 'package:fula_files/web/screens/web_home_screen.dart';
 import 'package:fula_files/web/screens/web_nft_claim_screen.dart';
 import 'package:fula_files/web/screens/web_nft_detail_screen.dart';
 import 'package:fula_files/web/screens/web_nfts_screen.dart';
 import 'package:fula_files/web/screens/web_playlists_screen.dart';
+import 'package:fula_files/web/screens/web_shared_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
 import 'package:fula_files/web/screens/web_tags_screen.dart';
@@ -97,6 +102,32 @@ GoRouter buildWebRouter() {
         path: '/playlist/:id',
         builder: (context, state) => WebPlaylistDetailScreen(
           playlistId: state.pathParameters['id'] ?? '',
+        ),
+      ),
+      GoRoute(
+        path: '/shared',
+        builder: (context, state) => const WebSharedScreen(),
+      ),
+      GoRoute(
+        path: '/collab/:id',
+        builder: (context, state) => WebCollabDetailScreen(
+          groupId: state.pathParameters['id'] ?? '',
+        ),
+      ),
+      GoRoute(
+        path: '/automate-tasks',
+        builder: (context, state) => const WebAutomateTasksScreen(),
+      ),
+      GoRoute(
+        path: '/automate-tasks/:id',
+        builder: (context, state) => WebAutomateTaskDetailScreen(
+          tagId: state.pathParameters['id'] ?? '',
+        ),
+      ),
+      GoRoute(
+        path: '/automate-tasks/:id/run',
+        builder: (context, state) => WebAutomateTaskRunScreen(
+          tagId: state.pathParameters['id'] ?? '',
         ),
       ),
     ],

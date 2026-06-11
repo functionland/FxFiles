@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:fula_files/core/models/messaging_target.dart';
+import 'package:fula_files/core/utils/platform_capabilities.dart';
 
 /// Build per-target URIs for bulk-send tasks (Automate feature, and the
 /// hidden AI Automation feature when it's re-enabled).
@@ -84,7 +83,9 @@ class TargetUriBuilder {
       return const TargetUriResult.fail('Phone number is invalid');
     }
     final body = Uri.encodeComponent(message);
-    final separator = Platform.isIOS ? '&' : '?';
+    // PlatformCapabilities (kIsWeb-safe) instead of dart:io Platform so
+    // the web shell can import this builder.
+    final separator = PlatformCapabilities.isIOS ? '&' : '?';
     return TargetUriResult.ok(Uri.parse('sms:$normalized${separator}body=$body'));
   }
 

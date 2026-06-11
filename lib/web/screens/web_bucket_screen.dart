@@ -8,10 +8,12 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_save.dart';
@@ -379,6 +381,63 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       final msg =
           e is Exception ? e.toString().replaceFirst('Exception: ', '') : '$e';
       _snack(msg);
+    }
+  }
+
+  /// Mirror of the app's Add to Collaboration flow: pick one of the
+  /// user's owned groups, then add this cloud file to it.
+  Future<void> _addToCollaboration(FulaObject o) async {
+    final List<OutgoingCollaboration> ownedGroups;
+    try {
+      final all =
+          await CollaborationService.instance.getOutgoingCollaborations();
+      ownedGroups = all.where((g) => g.isValid).toList();
+    } catch (e) {
+      _snack('Could not load collaboration groups: $e');
+      return;
+    }
+    if (!mounted) return;
+    if (ownedGroups.isEmpty) {
+      _snack('No active collaboration groups. Create one from the '
+          'Shared tab first.');
+      return;
+    }
+
+    final selected = await showDialog<OutgoingCollaboration>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Add to Collaboration Group'),
+        children: ownedGroups
+            .map((g) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, g),
+                  child: ListTile(
+                    leading:
+                        const Icon(Icons.group_outlined, color: Colors.purple),
+                    title: Text(g.name),
+                    subtitle: Text(
+                        '${g.group.fileCount} file${g.group.fileCount == 1 ? '' : 's'}'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ))
+            .toList(),
+      ),
+    );
+    if (selected == null || !mounted) return;
+
+    final bucket =
+        o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
+    try {
+      await CollaborationService.instance.addFileToGroup(
+        groupId: selected.id,
+        pathScope: o.key,
+        bucket: bucket,
+        fileName: _displayName(o).split('/').last,
+        fileSize: o.size,
+        contentType: _contentTypeOf(o),
+      );
+      _snack('Added "${_displayName(o).split('/').last}" to "${selected.name}"');
+    } catch (e) {
+      _snack('Failed: $e');
     }
   }
 
@@ -766,6 +825,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                         if (v == 'tags') _editTags(o);
                         if (v == 'share') _shareFile(o);
                         if (v == 'public') _sharePublicly(o);
+                        if (v == 'collab') _addToCollaboration(o);
                         if (v == 'delete') _delete(o);
                       },
                       // Same entry points as the app's file menu: the
@@ -788,6 +848,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                         PopupMenuItem(
                           value: 'public',
                           child: Text('Share Publicly'),
+                        ),
+                        PopupMenuItem(
+                          value: 'collab',
+                          child: Text('Add to Collaborate'),
                         ),
                         PopupMenuItem(
                           value: 'delete',
