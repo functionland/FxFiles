@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:cryptography/cryptography.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -12,7 +11,6 @@ import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
-import 'package:fula_files/core/utils/seed_signing_input.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/sync_service.dart';
@@ -613,132 +611,31 @@ class AuthService {
     await ensureRustLibInitialized();
 
     try {
-      // Get stored endpoint and token
-      var endpoint = await SecureStorageService.instance.read(
-        SecureStorageKeys.apiGatewayUrl,
-      );
-      final accessToken = await SecureStorageService.instance.read(
-        SecureStorageKeys.jwtToken,
-      );
+      // Parameter assembly + FulaApiService.initialize moved to
+      // AuthCore.initializeFulaFromStorage (platform-neutral; shared
+      // with the web shell). Native keeps the side effects below.
+      final init =
+          await AuthCore.initializeFulaFromStorage(kek: _encryptionKey!);
 
-      // Migration for users who signed in under the pre-fix in-app flow:
-      // the JWT was persisted but the gateway/IPFS endpoint defaults
-      // were never written, so this method used to bail with
-      // "endpoint configured = false" on every cold launch even though
-      // the user was authenticated. Seed the deep-link defaults here so
-      // a single re-launch repairs the state without a sign-out.
-      if ((endpoint == null || endpoint.isEmpty) &&
-          accessToken != null &&
-          accessToken.isNotEmpty) {
-        debugPrint('AuthService: JWT present but endpoint missing — '
-            'seeding default gateway/IPFS URLs');
-        await DeepLinkService.instance.notifyApiKeyConfigured(accessToken);
-        endpoint = await SecureStorageService.instance.read(
-          SecureStorageKeys.apiGatewayUrl,
+      if (init.seededEndpoints &&
+          init.accessToken != null &&
+          init.accessToken!.isNotEmpty) {
+        // Preserve the legacy-repair UI event the old inline path fired
+        // via notifyApiKeyConfigured (its endpoint seeding is idempotent
+        // here - AuthCore already wrote the defaults).
+        await DeepLinkService.instance.notifyApiKeyConfigured(
+          init.accessToken!,
         );
       }
 
-      debugPrint('AuthService: endpoint configured = ${endpoint != null && endpoint.isNotEmpty}');
-      debugPrint('AuthService: accessToken present = ${accessToken != null && accessToken.isNotEmpty}');
-
-      if (endpoint != null && endpoint.isNotEmpty) {
-        // Read the pinned derivation email — same value used by
-        // _deriveEncryptionKey above, persisted at first sign-in. The
-        // FulaApiService uses it (when set) to derive a per-user
-        // cold-start key so the on-chain registry resolver can locate
-        // this user's anchor.
-        final derivationEmail = await SecureStorageService.instance.read(
-          SecureStorageKeys.derivationEmail,
-        );
-
-        // User-editable cold-start resolver overrides (Settings > Fula API
-        // Configuration). Empty/null values fall back to the build-in
-        // defaults inside FulaApiService.initialize.
-        final baseRpcUrl = await SecureStorageService.instance.read(
-          SecureStorageKeys.baseRpcUrl,
-        );
-        final usersIndexAnchor = await SecureStorageService.instance.read(
-          SecureStorageKeys.usersIndexAnchorAddress,
-        );
-        final usersIndexIpns = await SecureStorageService.instance.read(
-          SecureStorageKeys.usersIndexIpnsName,
-        );
-        final usersIndexIpnsGatewayRaw = await SecureStorageService.instance
-            .read(SecureStorageKeys.usersIndexIpnsGatewayUrls);
-        final usersIndexIpnsGateways = usersIndexIpnsGatewayRaw == null
-            ? null
-            : usersIndexIpnsGatewayRaw
-                .split(RegExp(r'[\n,]'))
-                .map((s) => s.trim())
-                .where((s) => s.isNotEmpty)
-                .toList(growable: false);
-
-        // E2E plan Phase 5 — derive K_index + K_entry_seed for Mode
-        // B/C users so the fula-client SDK can encrypt + sign the
-        // per-user bucketsIndex envelope. Mode A users skip this:
-        // their KEK is derivable from public OAuth attributes so
-        // encrypting under it would not be privacy-preserving — the
-        // SDK falls back to today's legacy `users[]` plaintext path
-        // when these keys are absent.
-        Uint8List? bucketsIndexKey;
-        Uint8List? userEntrySigningSeed;
-        final modeVersion = await SecureStorageService.instance.read(
-          SecureStorageKeys.keyDerivationVersion,
-        );
-        final isModeBC = modeVersion != null &&
-            (modeVersion.contains('mode_B') || modeVersion.contains('mode_C'));
-        if (isModeBC) {
-          try {
-            final indexKeys =
-                await AuthCore.deriveBucketsIndexKeys(_encryptionKey!);
-            bucketsIndexKey = indexKeys.bucketsIndexKey;
-            userEntrySigningSeed = indexKeys.userEntrySigningSeed;
-            // Persist for fast re-load on next cold start. Same pattern
-            // as encryptionKey above.
-            await SecureStorageService.instance.write(
-              SecureStorageKeys.bucketsIndexKey,
-              base64Encode(bucketsIndexKey),
-            );
-            await SecureStorageService.instance.write(
-              SecureStorageKeys.userEntrySigningSeed,
-              base64Encode(userEntrySigningSeed),
-            );
-            debugPrint('AuthService: derived K_index + K_entry_seed for Mode B/C user');
-          } catch (e) {
-            debugPrint('AuthService: blake3DeriveKey failed: $e; '
-                'falling back to legacy users[] path');
-            bucketsIndexKey = null;
-            userEntrySigningSeed = null;
-          }
-        }
-
-        await FulaApiService.instance.initialize(
-          endpoint: endpoint,
-          secretKey: _encryptionKey!,
-          accessToken: accessToken,
-          userEmail: derivationEmail,
-          chainRpcUrl: baseRpcUrl,
-          usersIndexAnchorAddress: usersIndexAnchor,
-          usersIndexIpnsName: usersIndexIpns,
-          usersIndexIpnsGatewayUrls: usersIndexIpnsGateways,
-          bucketsIndexKey: bucketsIndexKey,
-          userEntrySigningSeed: userEntrySigningSeed,
-        );
-        debugPrint('FulaApiService initialized successfully');
-        debugPrint('AuthService: FulaApiService.isConfigured = ${FulaApiService.instance.isConfigured}');
-
-        // Start polling the SDK's Phase 19 health channel so the UI can
-        // render an offline banner when the master gateway goes down.
-        // No-op if already started (re-init via settings save just keeps
-        // the existing poller alive against the new client handle).
+      if (init.configured) {
+        // Start polling the SDK health channel so the UI can render an
+        // offline banner when the master gateway goes down. No-op if
+        // already started.
         unawaited(MasterHealthService.instance.start());
 
-        // Dump feature (R10 / Session 5): pending-auth retry hook —
-        // every time the encryption key + Fula client become
-        // available we ask ShelfService to re-run any items the user
-        // staged while signed out. Idempotent + key-gated, so it's
-        // safe to call from every _initializeFulaClient site (cold
-        // restore, new sign-in, gateway switch, reinit).
+        // Dump feature (R10 / Session 5): pending-auth retry hook -
+        // idempotent + key-gated, safe to call from every init site.
         unawaited(ShelfService.instance.retryPending());
 
         // Verify public key is available (don't log key material)
@@ -748,8 +645,6 @@ class AuthService {
         } catch (e) {
           debugPrint('AuthService: Could not get public key: $e');
         }
-      } else {
-        debugPrint('FulaApiService not initialized: no endpoint configured');
       }
     } catch (e, stack) {
       debugPrint('Failed to initialize FulaApiService: $e');
@@ -1134,70 +1029,23 @@ class AuthService {
     String? photoUrl,
     required String password,
   }) async {
-    if (password.isEmpty) {
-      throw ArgumentError('Mode B password must not be empty');
-    }
-
-    // 1. Derive identity locally.
-    final effectiveUserIdHex = await AuthCore.computeEffectiveUserIdModeBHex(
-      provider: provider,
-      oauthSub: oauthSub,
-      seed: password,
-    );
-    // Audit fix #3 (2026-05-18): bind the Mode B signing key to the full
-    // (provider, oauth_sub, password) tuple, not just the password.
-    // Without this, two Mode B users with the same password under
-    // different OAuth identities would share an Ed25519 keypair —
-    // either could sign in to the other's vault by reading the
-    // effective_user_id from the public users-index CBOR.
-    final keyPair = await AuthCore.deriveSigningKeypair(
-      modeBSigningInput(provider, oauthSub, password),
-    );
-    final pubKey = await keyPair.extractPublicKey();
-
-    // 2. Fetch a server-issued single-use challenge for register-mode-b.
-    //    Audit finding #1 (2026-05-18): the server requires a fresh
-    //    server-issued nonce to defeat capture-and-replay of registration
-    //    bodies. JWTs we mint have no `exp` (DT-1) so a replay would
-    //    otherwise produce a perpetually-valid token.
-    final issuer = IssuerClient(baseUrl: await AuthCore.issuerBaseUrl());
-    final challenge =
-        await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-b');
-
-    // 3. Sign the register-mode-b transcript over the server's challenge.
-    final transcript = AuthCore.buildSignedTranscript(
-      'register-mode-b',
-      effectiveUserIdHex,
-      challenge,
-    );
-    final signature = await Ed25519().sign(transcript, keyPair: keyPair);
-
-    // 4. POST register-mode-b. The server re-consumes the same nonce
-    //    from its store and verifies the signature; replay returns 401
-    //    CHALLENGE_INVALID.
-    final result = await issuer.registerModeB(
+    // Derivation, challenge/register round-trip, KEK derivation and
+    // session-storage persistence are single-sourced in AuthCore
+    // (shared with the web shell). Audit fixes #1/#2/#3 live there.
+    final r = await AuthCore.performModeBRegistration(
       provider: provider,
       oauthToken: oauthToken,
-      effectiveUserIdHex: effectiveUserIdHex,
-      publicKey: Uint8List.fromList(pubKey.bytes),
-      challenge: challenge,
-      signature: Uint8List.fromList(signature.bytes),
-    );
-
-    // 4. Derive the master encryption key (Argon2id, Mode B context —
-    // canonical input assembly single-sourced in AuthCore).
-    final kekBytes = await AuthCore.deriveKekModeB(
-      provider: provider,
       oauthSub: oauthSub,
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
       seed: password,
     );
 
-    // 5. Persist the new session.
-    await _persistSeedAuthSession(
-      result: result,
-      kek: kekBytes,
+    await _applySeedSession(
+      result: r.result,
+      kek: r.kek,
       provider: provider,
-      oauthSub: oauthSub,
       email: email,
       displayName: displayName,
       photoUrl: photoUrl,
@@ -1209,7 +1057,7 @@ class AuthService {
     // default when the issuer can't determine it (e.g., Apple's
     // private-relay flow that doesn't return email after first
     // sign-in).
-    return (user: _currentUser!, hasModeA: result.hasModeA ?? false);
+    return (user: _currentUser!, hasModeA: r.result.hasModeA ?? false);
   }
 
   /// Mode C sign-in / sign-up (idempotent at the issuer). No OAuth.
@@ -1220,46 +1068,19 @@ class AuthService {
     required String seed,
     String? displayName,
   }) async {
-    if (seed.trim().isEmpty) {
-      throw ArgumentError('Mode C seed must not be empty');
-    }
-
-    final effectiveUserIdHex =
-        await AuthCore.computeEffectiveUserIdModeCHex(seed);
-    final keyPair = await AuthCore.deriveSigningKeypair(seed);
-    final pubKey = await keyPair.extractPublicKey();
-
-    // Audit finding #1 fix — server-issued single-use challenge before
-    // registration. See the matching block in `signInModeB` for rationale.
-    final issuer = IssuerClient(baseUrl: await AuthCore.issuerBaseUrl());
-    final challenge =
-        await issuer.challenge(effectiveUserIdHex, purpose: 'register-mode-c');
-
-    final transcript = AuthCore.buildSignedTranscript(
-      'register-mode-c',
-      effectiveUserIdHex,
-      challenge,
-    );
-    final signature = await Ed25519().sign(transcript, keyPair: keyPair);
-
-    final result = await issuer.registerModeC(
-      effectiveUserIdHex: effectiveUserIdHex,
-      publicKey: Uint8List.fromList(pubKey.bytes),
-      challenge: challenge,
-      signature: Uint8List.fromList(signature.bytes),
+    // Full orchestration (derive → challenge → sign → register → KEK →
+    // persist storage) single-sourced in AuthCore, shared with the web
+    // shell. Audit fixes #1/#2 live there.
+    final r = await AuthCore.performModeCRegistration(
+      seed: seed,
+      displayName: displayName,
     );
 
-    // Master KEK from the seed (Argon2id, Mode C context — canonical
-    // input assembly single-sourced in AuthCore).
-    final kekBytes = await AuthCore.deriveKekModeC(seed);
-
-    // Mode C has no OAuth identity; persist with synthetic fields.
-    await _persistSeedAuthSession(
-      result: result,
-      kek: kekBytes,
+    await _applySeedSession(
+      result: r.result,
+      kek: r.kek,
       provider: null,
-      oauthSub: null,
-      email: '$effectiveUserIdHex@seed.fxfiles.local',
+      email: r.email,
       displayName: displayName ?? 'Passphrase Vault',
       photoUrl: null,
     );
@@ -1267,66 +1088,18 @@ class AuthService {
     return _currentUser!;
   }
 
-  /// Persist the seed-auth session state. Sets `_currentUser`, caches
-  /// the master KEK in SecureStorage, stores the JWT, persists the
-  /// mode flag.
-  Future<void> _persistSeedAuthSession({
+  /// Apply a seed-auth session to native in-memory state + UI events.
+  /// All SecureStorage persistence (mode tag, euid, JWT, KEK, pinned
+  /// email, userCredentials JSON, endpoint seeding, sentinel clear)
+  /// already happened inside AuthCore.persistSeedSession.
+  Future<void> _applySeedSession({
     required SeedAuthResult result,
     required List<int> kek,
     required String? provider,
-    required String? oauthSub,
     required String email,
     required String displayName,
     String? photoUrl,
   }) async {
-    final modeTag = result.mode == SeedAuthMode.b ? '2_mode_B' : '2_mode_C';
-
-    // SecureStorage writes.
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.keyDerivationVersion,
-      modeTag,
-    );
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.effectiveUserIdHex,
-      result.effectiveUserIdHex,
-    );
-    if (provider != null) {
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.modeOauthProvider,
-        provider,
-      );
-    }
-    if (oauthSub != null) {
-      await SecureStorageService.instance.write(
-        SecureStorageKeys.modeOauthSub,
-        oauthSub,
-      );
-    }
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.jwtToken,
-      result.jwt,
-    );
-    // Tell home_screen / setup_unlock_sheet that the JWT is now in
-    // place so they auto-complete the "Connect cloud storage" step
-    // instead of pushing the user through a now-redundant browser
-    // /get-key dance (which ends with a "switch account?" prompt
-    // because that JWT differs in `jti` from the one written above).
-    // Mode B/C JWTs are already valid storage-gateway API keys — the
-    // server signs both `/auth/register-mode-{b,c}` and
-    // `/api/keys/active` outputs with the same secret + sub.
-    // Await so the gateway/IPFS endpoint defaults are seeded BEFORE the
-    // subsequent _initializeFulaClient call reads them; without this, the
-    // app stays authenticated-but-offline ("endpoint configured = false").
-    await DeepLinkService.instance.notifyApiKeyConfigured(result.jwt);
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.encryptionKey,
-      base64Encode(kek),
-    );
-    await SecureStorageService.instance.write(
-      SecureStorageKeys.derivationEmail,
-      email,
-    );
-
     // Update in-memory user.
     _setCurrentUser(AuthUser(
       // The `id` field is the JWT sub for routing the gateway's
@@ -1342,23 +1115,17 @@ class AuthService {
       // to distinguish vault types.
       provider: provider == 'apple' ? AuthProvider.apple : AuthProvider.google,
     ));
-    await SecureStorageService.instance.writeJson(
-      SecureStorageKeys.userCredentials,
-      _currentUser!.toJson(),
-    );
 
     // Cache the master encryption key in memory so the rest of the
     // app can use it without re-deriving.
     _encryptionKey = Uint8List.fromList(kek);
 
-    // Clear the sign-out sentinel.
-    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
-
-    debugPrint(
-      'AuthService: persisted Mode ${result.mode.name.toUpperCase()} session '
-      '(effective_user_id=${result.effectiveUserIdHex.substring(0, 8)}…, '
-      'created=${result.created})',
-    );
+    // Tell home_screen / setup_unlock_sheet that the JWT is now in
+    // place so they auto-complete the "Connect cloud storage" step
+    // instead of pushing the user through a now-redundant browser
+    // /get-key dance. (Endpoint seeding inside is idempotent — AuthCore
+    // already wrote the defaults before any storage reader could run.)
+    await DeepLinkService.instance.notifyApiKeyConfigured(result.jwt);
   }
 
   /// True if the currently-stored session is Mode B or Mode C.

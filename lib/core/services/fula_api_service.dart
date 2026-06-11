@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/platform/file_length.dart';
+import 'package:fula_files/core/platform/frb_u64.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
@@ -654,7 +655,9 @@ class FulaApiService implements FulaApi {
         key: meta.originalKey,
         size: meta.size.toInt(),
         lastModified: meta.modifiedAt != null
-            ? DateTime.fromMillisecondsSinceEpoch(meta.modifiedAt! * 1000)
+            // u64 via FRB: int natively, BigInt on web — normalize.
+            ? DateTime.fromMillisecondsSinceEpoch(
+                frbU64ToInt(meta.modifiedAt)! * 1000)
             : null,
         isDirectory: false,
         sourceBucket: bucket,
@@ -697,7 +700,9 @@ class FulaApiService implements FulaApi {
       return FulaObjectMetadata(
         size: file.size.toInt(),
         lastModified: file.modifiedAt != null
-            ? DateTime.fromMillisecondsSinceEpoch(file.modifiedAt! * 1000)
+            // u64 via FRB: int natively, BigInt on web — normalize.
+            ? DateTime.fromMillisecondsSinceEpoch(
+                frbU64ToInt(file.modifiedAt)! * 1000)
             : null,
         contentType: file.contentType,
         isEncrypted: file.isEncrypted,
@@ -1302,7 +1307,8 @@ class FulaApiService implements FulaApi {
       storageKey: storageKey,
       recipientPublicKey: recipientPublicKey.toList(),
       mode: _convertShareMode(mode),
-      expiresAt: expiresAt,
+      // u64 via FRB: int natively, BigInt on web.
+      expiresAt: intToFrbU64(expiresAt),
     );
   }
 

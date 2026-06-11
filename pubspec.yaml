@@ -16,6 +16,11 @@ dependencies:
   
   # Navigation
   go_router: ^17.0.1
+
+  # Web-only entrypoint/shell (page reload, URL params). Compiled into
+  # native builds' dependency graph but only imported from lib/web +
+  # lib/main_web.dart.
+  web: ^1.0.0
   
   # Storage & Files (with Encryption)
   fula_client: ^0.6.7
