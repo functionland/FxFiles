@@ -63,6 +63,11 @@ class WebIpnsService {
   final Map<String, WebsiteGroupPointer> _pointers = {};
   bool _loaded = false;
 
+  /// Single-flight guard for [load] and serialization chain for
+  /// [_backup] — concurrent UI callers must not race the blob.
+  Future<void>? _loadFuture;
+  Future<void> _backupChain = Future.value();
+
   Map<String, WebsiteGroupPointer> get pointersByTag =>
       Map.unmodifiable(_pointers);
 
@@ -82,11 +87,23 @@ class WebIpnsService {
 
   /// Load pointers from the cloud blob; entries carrying a `privKey`
   /// seed are stashed into SecureStorage (validated against the IPNS
-  /// name first, same rule as the native restore).
-  Future<void> load({bool force = false}) async {
-    if (_loaded && !force) return;
+  /// name first, same rule as the native restore). Single-flight:
+  /// concurrent callers await the same download.
+  Future<void> load({bool force = false}) {
+    if (_loaded && !force) return Future.value();
+    final inFlight = _loadFuture;
+    if (inFlight != null) return inFlight;
+    final f = _doLoad().whenComplete(() => _loadFuture = null);
+    _loadFuture = f;
+    return f;
+  }
+
+  Future<void> _doLoad() async {
     final kek = await _kek();
     final uid = await _userId();
+    // First pass: collect entries first-wins by tagId ([v8, legacy]
+    // order — v8 wins), keeping each winner's privKey alongside it.
+    final winners = <String, ({WebsiteGroupPointer pointer, String? privKey})>{};
     for (final blob in await FulaApiService.instance
         .downloadMetadataMerged(_metadataBucket, _pointerObjectKey(uid), kek)) {
       try {
@@ -95,32 +112,44 @@ class WebIpnsService {
           if (raw is! Map<String, dynamic>) continue;
           try {
             final pointer = WebsiteGroupPointer.fromJson(raw);
-            _pointers.putIfAbsent(pointer.tagId, () => pointer);
-            final privKey = raw['privKey'] as String?;
-            if (privKey != null && privKey.isNotEmpty) {
-              // Validate the seed actually derives this pointer's name
-              // before trusting it (prevents key/name mismatches).
-              final seed = base64Decode(privKey);
-              final kp = await _ed25519.newKeyPairFromSeed(seed);
-              final pub = await kp.extractPublicKey();
-              final derived = IpnsName.fromEd25519PublicKey(
-                  Uint8List.fromList(pub.bytes));
-              if (derived == pointer.ipnsName) {
-                await SecureStorageService.instance.write(
-                  SecureStorageKeys.groupIpnsPrivKeyPrefix + pointer.tagId,
-                  privKey,
-                );
-              } else {
-                debugPrint('WebIpnsService: seed/name mismatch for '
-                    '${pointer.tagId} — seed ignored');
-              }
-            }
+            winners.putIfAbsent(pointer.tagId,
+                () => (pointer: pointer, privKey: raw['privKey'] as String?));
           } catch (e) {
             debugPrint('WebIpnsService: pointer entry skipped: $e');
           }
         }
       } catch (e) {
         debugPrint('WebIpnsService: pointer blob skipped: $e');
+      }
+    }
+
+    // Second pass: adopt winners and store ONLY the seed that derives
+    // the WINNING pointer's name. A losing (e.g. legacy) entry's seed
+    // must never overwrite the winner's — signing with it would fail
+    // self-verification forever and strand the link.
+    for (final entry in winners.values) {
+      final pointer = entry.pointer;
+      _pointers.putIfAbsent(pointer.tagId, () => pointer);
+      final privKey = entry.privKey;
+      if (privKey == null || privKey.isEmpty) continue;
+      try {
+        final seed = base64Decode(privKey);
+        final kp = await _ed25519.newKeyPairFromSeed(seed);
+        final pub = await kp.extractPublicKey();
+        final derived =
+            IpnsName.fromEd25519PublicKey(Uint8List.fromList(pub.bytes));
+        final winningName = _pointers[pointer.tagId]!.ipnsName;
+        if (derived == winningName) {
+          await SecureStorageService.instance.write(
+            SecureStorageKeys.groupIpnsPrivKeyPrefix + pointer.tagId,
+            privKey,
+          );
+        } else {
+          debugPrint('WebIpnsService: seed/name mismatch for '
+              '${pointer.tagId} — seed ignored');
+        }
+      } catch (e) {
+        debugPrint('WebIpnsService: seed restore skipped: $e');
       }
     }
     _loaded = true;
@@ -132,7 +161,14 @@ class WebIpnsService {
   /// a group never gets a second name).
   Future<WebsiteGroupPointer> getOrCreate(String tagId) async {
     await load();
-    final existing = _pointers[tagId];
+    var existing = _pointers[tagId];
+    if (existing != null) return existing;
+
+    // About to mint a NEW permanent name: re-pull the blob once more so
+    // a name minted seconds ago by another device/tab is adopted
+    // instead of diverging (same narrow race as native, not wider).
+    await load(force: true);
+    existing = _pointers[tagId];
     if (existing != null) return existing;
 
     final keyPair = await _ed25519.newKeyPair();
@@ -218,8 +254,17 @@ class WebIpnsService {
 
   /// Merge-preserving cloud backup, same blob shape as native
   /// (`{pointers:[{...pointer, privKey?}], updatedAt}`) — entries from
-  /// other devices (and their seeds) are never dropped.
-  Future<void> _backup() async {
+  /// other devices (and their seeds) are never dropped. Serialized:
+  /// overlapping backups would download the same base blob and the
+  /// loser's upload would erase the winner's changes.
+  Future<void> _backup() {
+    final next = _backupChain.then((_) => _doBackup());
+    // Keep the chain alive even when a backup fails.
+    _backupChain = next.catchError((_) {});
+    return next;
+  }
+
+  Future<void> _doBackup() async {
     try {
       final kek = await _kek();
       final uid = await _userId();
