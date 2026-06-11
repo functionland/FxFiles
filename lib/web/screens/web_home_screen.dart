@@ -173,20 +173,24 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           ),
         ),
       ),
+      // Scrollable so short (mobile) viewports can reach every tile;
+      // Center keeps the tall-viewport layout identical.
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              GridView.count(
-                shrinkWrap: true,
-                crossAxisCount:
-                    MediaQuery.of(context).size.width > 560 ? 3 : 2,
-                padding: const EdgeInsets.all(24),
-                mainAxisSpacing: 16,
-                crossAxisSpacing: 16,
-                children: [
+        child: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GridView.count(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisCount:
+                      MediaQuery.of(context).size.width > 560 ? 3 : 2,
+                  padding: const EdgeInsets.all(24),
+                  mainAxisSpacing: 16,
+                  crossAxisSpacing: 16,
+                  children: [
                   for (final c in _categories)
                     Card(
                       clipBehavior: Clip.antiAlias,
@@ -270,7 +274,9 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   );
                 },
               ),
+              const SizedBox(height: 16),
             ],
+          ),
           ),
         ),
       ),

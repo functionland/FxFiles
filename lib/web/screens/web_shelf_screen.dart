@@ -1,7 +1,9 @@
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:fula_files/core/models/shelf_item.dart';
 import 'package:fula_files/web/services/web_features.dart';
@@ -63,8 +65,16 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
   }
 
   Future<void> _open(ShelfItem item) async {
-    // Notes carry their text in the manifest itself.
-    if ((item.textPayload ?? '').isNotEmpty) {
+    // Notes and links carry their text in the manifest itself. URLs in
+    // the payload are clickable (native opens link items directly via
+    // launchUrl — the web keeps the details popup but makes the link
+    // tappable, plus an explicit Open Link action for link items).
+    final text = (item.textPayload ?? '').trim();
+    if (text.isNotEmpty) {
+      final linkUri =
+          item.category == ShelfCategory.link ? Uri.tryParse(text) : null;
+      final openableLink = linkUri != null &&
+          (linkUri.scheme == 'http' || linkUri.scheme == 'https');
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -73,7 +83,7 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 560, maxHeight: 480),
             child: SingleChildScrollView(
-              child: SelectableText(item.textPayload!),
+              child: _LinkifiedText(text),
             ),
           ),
           actions: [
@@ -81,6 +91,15 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Close'),
             ),
+            if (openableLink)
+              FilledButton.icon(
+                onPressed: () => launchUrl(
+                  linkUri,
+                  webOnlyWindowName: '_blank',
+                ),
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: const Text('Open Link'),
+              ),
           ],
         ),
       );
@@ -273,6 +292,67 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
                         );
                       },
                     ),
+    );
+  }
+}
+
+/// Selectable text whose http(s) URLs are tappable — each opens in a
+/// new tab. Used by the shelf details popup so captured links and
+/// note-embedded links behave like links.
+class _LinkifiedText extends StatefulWidget {
+  final String text;
+  const _LinkifiedText(this.text);
+
+  @override
+  State<_LinkifiedText> createState() => _LinkifiedTextState();
+}
+
+class _LinkifiedTextState extends State<_LinkifiedText> {
+  static final RegExp _urlPattern = RegExp(r'https?://[^\s]+');
+  final List<TapGestureRecognizer> _recognizers = [];
+
+  @override
+  void dispose() {
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    for (final r in _recognizers) {
+      r.dispose();
+    }
+    _recognizers.clear();
+
+    final spans = <TextSpan>[];
+    var last = 0;
+    for (final m in _urlPattern.allMatches(widget.text)) {
+      if (m.start > last) {
+        spans.add(TextSpan(text: widget.text.substring(last, m.start)));
+      }
+      final url = m.group(0)!;
+      final recognizer = TapGestureRecognizer()
+        ..onTap =
+            () => launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
+      _recognizers.add(recognizer);
+      spans.add(TextSpan(
+        text: url,
+        style: TextStyle(
+          color: theme.colorScheme.primary,
+          decoration: TextDecoration.underline,
+        ),
+        recognizer: recognizer,
+      ));
+      last = m.end;
+    }
+    if (last < widget.text.length) {
+      spans.add(TextSpan(text: widget.text.substring(last)));
+    }
+    return SelectableText.rich(
+      TextSpan(style: theme.textTheme.bodyMedium, children: spans),
     );
   }
 }
