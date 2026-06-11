@@ -12,6 +12,7 @@ import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
+import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
@@ -692,24 +693,16 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     required String palette,
     required String body,
     ContactFormConfig? contactForm,
-  }) {
-    final buffer = StringBuffer()
-      ..writeln('Website Name: $websiteName')
-      ..writeln('Category: $category');
-    if (styles.isNotEmpty) {
-      buffer.writeln('Styles: ${styles.join(', ')}');
-    }
-    if (palette.isNotEmpty) {
-      buffer.writeln('Palette: $palette');
-    }
-    if (contactForm != null && contactForm.enabled) {
-      buffer.writeln('ContactForm: ${contactForm.encode()}');
-    }
-    buffer
-      ..writeln()
-      ..write(body);
-    return buffer.toString().trim();
-  }
+  }) =>
+      // Single-sourced with the web shell in website_prompt_builder.dart.
+      composeEnrichedWebsitePrompt(
+        websiteName: websiteName,
+        category: category,
+        styles: styles,
+        palette: palette,
+        body: body,
+        contactForm: contactForm,
+      );
 
   Future<GenerateWebsitePromptResult?> _openGenerateScreen(
     BuildContext context,

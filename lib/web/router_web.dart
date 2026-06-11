@@ -6,6 +6,7 @@ import 'package:fula_files/web/screens/web_playlists_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
 import 'package:fula_files/web/screens/web_tags_screen.dart';
+import 'package:fula_files/web/screens/web_website_detail_screen.dart';
 import 'package:fula_files/web/screens/web_websites_screen.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
@@ -46,6 +47,12 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/websites',
         builder: (context, state) => const WebWebsitesScreen(),
+      ),
+      GoRoute(
+        path: '/websites/:id',
+        builder: (context, state) => WebWebsiteDetailScreen(
+          tagId: state.pathParameters['id'] ?? '',
+        ),
       ),
       GoRoute(
         path: '/tags',
