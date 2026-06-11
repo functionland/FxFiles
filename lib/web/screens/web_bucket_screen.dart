@@ -15,7 +15,6 @@ import 'package:video_player/video_player.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
-import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/services/web_save.dart';
@@ -51,29 +50,48 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     _load();
   }
 
+  /// Web lists ONLY the category's -v8 bucket (owner decision,
+  /// 2026-06-11): the legacy buckets carry the gc-damaged forest whose
+  /// repair paths (404 forest-walk, forest backups) are native-only —
+  /// touching them from wasm produces 404 floods, 410 write-guard hits
+  /// and corrupt legacy reads. The fresh v8 sibling is the write target
+  /// for every platform and is fully healthy. Pre-migration files stay
+  /// reachable from the mobile/desktop apps.
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _error = null;
     });
+    final bucket = BucketVersionResolver.writeBucket(widget.base);
     try {
-      final r = await listCategoryMergedCached(
-        FulaApiService.instance,
-        widget.base,
-      );
-      r.objects.sort((a, b) {
-        final at = a.lastModified?.millisecondsSinceEpoch ?? 0;
-        final bt = b.lastModified?.millisecondsSinceEpoch ?? 0;
-        return bt.compareTo(at);
-      });
+      final r = await FulaApiService.instance.listObjectsCached(bucket);
+      final objects = r.objects
+          .map((o) => o.withSourceBucket(bucket))
+          .toList()
+        ..sort((a, b) {
+          final at = a.lastModified?.millisecondsSinceEpoch ?? 0;
+          final bt = b.lastModified?.millisecondsSinceEpoch ?? 0;
+          return bt.compareTo(at);
+        });
       setState(() {
-        _objects = r.objects;
+        _objects = objects;
         _stale = r.stale;
         _loading = false;
       });
     } catch (e) {
+      // A category nobody has uploaded to yet has no -v8 bucket at all:
+      // that's the empty state, not an error.
+      final msg = '$e';
+      if (msg.contains('NoSuchBucket') || msg.contains('bucket not found')) {
+        setState(() {
+          _objects = const [];
+          _stale = false;
+          _loading = false;
+        });
+        return;
+      }
       setState(() {
-        _error = '$e';
+        _error = msg;
         _loading = false;
       });
     }
@@ -95,10 +113,20 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     return '$bytes B';
   }
 
+  /// Category → picker filter, so the Audio category can't pick images
+  /// etc. Documents stays open (it's the catch-all category).
+  FileType get _pickerType => switch (widget.base) {
+        'images' => FileType.image,
+        'videos' => FileType.video,
+        'audio' => FileType.audio,
+        _ => FileType.any,
+      };
+
   Future<void> _pickAndUpload() async {
     final picked = await FilePicker.platform.pickFiles(
       withData: true,
       allowMultiple: true,
+      type: _pickerType,
     );
     if (picked == null || picked.files.isEmpty) return;
 
@@ -564,7 +592,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                     const Text('Nothing here yet'),
                     const SizedBox(height: 4),
                     Text(
-                      'Use Upload to add files from this device.',
+                      'Use Upload to add files from this device.\n'
+                      'Files uploaded before the June 2026 storage upgrade '
+                      'are available in the mobile and desktop apps.',
+                      textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
