@@ -1,10 +1,25 @@
 name: Deploy GitHub Pages
 
+# One Pages site, two payloads:
+#   /        -> site/ verbatim (landing page, /nft-claim forwarder,
+#               .well-known app-link files, CNAME, .nojekyll). These are
+#               LOAD-BEARING for the native apps' deep links — the
+#               artifact must carry them byte-identical at the root.
+#   /app/    -> Flutter web build of lib/main_web.dart (the FxFiles web
+#               app). Hash URL strategy, so no 404 rewrites needed.
+#               --pwa-strategy=none: no service worker, so a deploy can
+#               never serve a stale fula_flutter_bg.wasm against new
+#               Dart (the classic FRB-on-web footgun).
 on:
   push:
     branches: [main]
     paths:
       - 'site/**'
+      - 'lib/**'
+      - 'web/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -17,6 +32,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  FLUTTER_VERSION: '3.41.9'
+
 jobs:
   deploy:
     environment:
@@ -26,13 +44,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Verify committed wasm bundle matches pinned fula_client
+        # web/pkg/ is committed (built by fula-api's release CI from the
+        # same codegen run that published the pub package). If someone
+        # bumps fula_client without re-running tools/sync-wasm-pkg.ps1,
+        # RustLib.init() would reject the stale wasm at runtime — fail
+        # the deploy instead.
+        run: |
+          test -f web/pkg/fula_flutter.js
+          test -f web/pkg/fula_flutter_bg.wasm
+          test -f web/pkg/VERSION
+          LOCK_VER=$(awk '/^  fula_client:/{f=1} f && /version:/{gsub(/[ "version:]/,""); print; exit}' pubspec.lock)
+          PKG_VER=$(tr -d ' \r\n' < web/pkg/VERSION)
+          echo "fula_client in pubspec.lock: $LOCK_VER ; web/pkg/VERSION: $PKG_VER"
+          if [ "$LOCK_VER" != "$PKG_VER" ]; then
+            echo "::error::web/pkg ($PKG_VER) does not match fula_client ($LOCK_VER) - run tools/sync-wasm-pkg.ps1 and commit web/pkg/"
+            exit 1
+          fi
+
+      - name: Build Flutter web app
+        run: flutter build web --release -t lib/main_web.dart --base-href /app/ --pwa-strategy=none --no-wasm-dry-run
+
+      - name: Assemble Pages artifact (site/ at root, app under /app/)
+        run: |
+          mkdir -p out
+          cp -r site/. out/
+          mkdir -p out/app
+          cp -r build/web/. out/app/
+          echo "Artifact layout:"
+          find out -maxdepth 2 -type f | head -40
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: out
 
       - name: Deploy to GitHub Pages
         id: deployment
