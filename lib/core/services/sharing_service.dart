@@ -20,11 +20,16 @@ import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/cloud_share_storage_service.dart';
 import 'package:fula_files/core/services/media_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/tag_storage_service.dart';
 
-/// Gateway base URL for public share links
-const String kShareGatewayBaseUrl = 'https://cloud.fx.land';
+// kShareGatewayBaseUrl and the v2 payload/URL assembly now live in
+// share_link_builder.dart (pure, shared with the web shell). Re-export
+// for the services that consumed the const transitively through this
+// file (e.g. share_folder_sync_service).
+export 'package:fula_files/core/services/share_link_builder.dart'
+    show kShareGatewayBaseUrl, buildPublicShareUrl;
 
 /// The bucket a NEW folder / tag / category share targets.
 ///
@@ -1005,29 +1010,24 @@ class SharingService {
       debugPrint('SharingService.createPublicLink: folder share with ${folderFiles.length} files (per-file tokens)');
     }
 
-    // Build payload with fula token and private key (v2 format)
-    // The private key is needed by the recipient to decrypt the share token
-    // For folder shares, file manifest is stored server-side (not in URL) to
-    // keep URLs short and enable temporal updates. The 'folder' flag tells the
-    // portal to fetch the manifest from /api/share/v2/manifest/:shareId.
-    final payloadMap = {
-      'v': 2,  // Version 2 = fula_client format
-      't': fulaToken,
-      'b': effBucket,
-      'k': pathScope,  // Original path - used for DEK derivation
-      'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
-      'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
-      if (label != null) 'l': label,
-      if (fileName != null) 'f': fileName,
-      if (folderFiles != null) 'folder': true,
-      // File manifest stored server-side only (not in URL fragment) to avoid
-      // URL length limits and to support temporal updates for folder shares.
-    };
-    final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
-
-    // Build the URL
-    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
-    final url = '$baseUrl/view/$tokenId#$fragment';
+    // Build the v2 payload + URL via the shared pure builder (single-
+    // sourced with the web shell — see share_link_builder.dart). For
+    // folder shares the file manifest is stored server-side only (not in
+    // the URL fragment) to avoid URL length limits and support temporal
+    // updates; the 'folder' flag tells the portal to fetch it from
+    // /api/share/v2/manifest/:shareId.
+    final url = buildPublicShareUrl(
+      baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
+      tokenId: tokenId,
+      fulaToken: fulaToken,
+      bucket: effBucket,
+      pathScope: pathScope,
+      storageKey: storageKey,
+      linkSecretKey: privateKeyBytes,
+      label: label,
+      fileName: fileName,
+      folder: folderFiles != null,
+    );
 
     // Post manifest to server for folder shares (enables temporal updates)
     if (folderFiles != null) {

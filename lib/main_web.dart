@@ -22,17 +22,21 @@
 //   ?e2e=delete               delete both + assert absent from listing
 // Progress + results are print()ed with an [e2e] prefix.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
+import 'package:fula_client/fula_client.dart' as fula;
+import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
@@ -160,6 +164,60 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         log('list count=${r.objects.length} stale=${r.stale} '
             'hasSmall=${keys.contains('/e2e/p4-small.bin')} '
             'hasLarge=${keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'share':
+        log('restored=$restored');
+        final target = BucketVersionResolver.writeBucket('documents');
+        try {
+          await FulaApiService.instance.createBucket(target);
+        } catch (_) {}
+        final data = _e2ePattern(64 * 1024, 3);
+        const key = '/e2e/p8-share.bin';
+        final up = await FulaApiService.instance.uploadObject(
+            target, key, data);
+        log('share-upload-ok etag=${up.etag.substring(0, 12)}…');
+
+        // Mirror the web UI's _share flow exactly.
+        final objects =
+            await FulaApiService.instance.listObjects(target, prefix: key);
+        final obj = objects.firstWhere((o) => o.key == key);
+        final storageKey = obj.storageKey ?? obj.key;
+        final priv = Uint8List.fromList(
+            List<int>.generate(32, (i) => (i * 13 + 5) % 251));
+        final pub = Uint8List.fromList(await fula.derivePublicKeyFromSecret(
+            secretKeyBytes: priv.toList()));
+        final expiresAtUnix = DateTime.now()
+                .add(const Duration(days: 7))
+                .millisecondsSinceEpoch ~/
+            1000;
+        final token = await FulaApiService.instance.createShareToken(
+          target,
+          storageKey,
+          pub,
+          share_model.ShareMode.temporal,
+          expiresAtUnix,
+        );
+        final url = buildPublicShareUrl(
+          baseUrl: kShareGatewayBaseUrl,
+          tokenId: 'e2e-share-id',
+          fulaToken: token,
+          bucket: target,
+          pathScope: key,
+          storageKey: storageKey,
+          linkSecretKey: priv,
+          fileName: 'p8-share.bin',
+        );
+        // Parse back the fragment and assert the v2 payload integrity.
+        final frag = Uri.parse(url).fragment;
+        final payload =
+            jsonDecode(utf8.decode(base64Url.decode(frag))) as Map;
+        final skRoundtrip = base64Decode(payload['sk'] as String);
+        log('share-url-ok host=${Uri.parse(url).host} len=${url.length} '
+            'v=${payload['v']} hasToken=${(payload['t'] as String).isNotEmpty} '
+            'bucket=${payload['b']} cid-match=${payload['cid'] == storageKey} '
+            'sk-roundtrip=${_bytesEqual(Uint8List.fromList(skRoundtrip), priv)}');
+        await FulaApiService.instance.deleteObject(target, key);
+        log('share-cleanup-ok');
         break;
       case 'delete':
         log('restored=$restored');

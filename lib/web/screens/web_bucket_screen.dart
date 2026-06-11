@@ -1,14 +1,23 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:math';
 
+import 'package:chewie/chewie.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:go_router/go_router.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:uuid/uuid.dart';
+import 'package:video_player/video_player.dart';
 
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/services/web_save.dart';
 
 /// Hard per-file upload cap for web v1: picked files are held fully in
@@ -193,6 +202,141 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
   }
 
+  /// Create a 7-day public link for a single file. Mirrors the native
+  /// SharingService.createPublicLink single-file path: disposable
+  /// X25519 keypair, fula share token, v2 payload via the shared
+  /// buildPublicShareUrl. (v1 web limitation: the link is not recorded
+  /// locally, so revoke-before-expiry isn't available from the web UI.)
+  Future<void> _share(FulaObject o) async {
+    const expiryDays = 7;
+    _snack('Creating public link…');
+    try {
+      final bucket = o.sourceBucket ?? widget.base;
+      final storageKey = o.storageKey ?? o.key;
+      final expiresAtUnix = DateTime.now()
+              .add(const Duration(days: expiryDays))
+              .millisecondsSinceEpoch ~/
+          1000;
+
+      final random = Random.secure();
+      final privateKeyBytes = Uint8List(32);
+      for (var i = 0; i < 32; i++) {
+        privateKeyBytes[i] = random.nextInt(256);
+      }
+      final publicKeyBytes = Uint8List.fromList(
+        await fula.derivePublicKeyFromSecret(
+            secretKeyBytes: privateKeyBytes.toList()),
+      );
+
+      final fulaToken = await FulaApiService.instance.createShareToken(
+        bucket,
+        storageKey,
+        publicKeyBytes,
+        share_model.ShareMode.temporal,
+        expiresAtUnix,
+      );
+
+      final fileName = _displayName(o).split('/').last;
+      final url = buildPublicShareUrl(
+        baseUrl: kShareGatewayBaseUrl,
+        tokenId: const Uuid().v4(),
+        fulaToken: fulaToken,
+        bucket: bucket,
+        pathScope: o.key,
+        storageKey: storageKey,
+        linkSecretKey: privateKeyBytes,
+        fileName: fileName,
+      );
+
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Public link'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Anyone with this link can download '
+                    '"$fileName" for $expiryDays days.'),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                        color: Theme.of(ctx).colorScheme.outline),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: SelectableText(
+                    url,
+                    maxLines: 3,
+                    style: const TextStyle(
+                        fontFamily: 'monospace', fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: url));
+                if (ctx.mounted) Navigator.pop(ctx);
+                _snack('Link copied');
+              },
+              icon: const Icon(Icons.copy, size: 16),
+              label: const Text('Copy link'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _snack('Could not create link: $e');
+    }
+  }
+
+  bool _isVideo(FulaObject o) {
+    final ct = o.metadata?['contentType'] ?? '';
+    if (ct.startsWith('video/')) return true;
+    final n = o.key.toLowerCase();
+    return n.endsWith('.mp4') ||
+        n.endsWith('.webm') ||
+        n.endsWith('.mov') ||
+        n.endsWith('.m4v');
+  }
+
+  bool _isAudio(FulaObject o) {
+    final ct = o.metadata?['contentType'] ?? '';
+    if (ct.startsWith('audio/')) return true;
+    final n = o.key.toLowerCase();
+    return n.endsWith('.mp3') ||
+        n.endsWith('.m4a') ||
+        n.endsWith('.wav') ||
+        n.endsWith('.ogg') ||
+        n.endsWith('.flac');
+  }
+
+  String _mediaMime(FulaObject o) {
+    final ct = o.metadata?['contentType'] ?? '';
+    if (ct.isNotEmpty && ct != 'application/octet-stream') return ct;
+    final n = o.key.toLowerCase();
+    if (n.endsWith('.mp4') || n.endsWith('.m4v')) return 'video/mp4';
+    if (n.endsWith('.webm')) return 'video/webm';
+    if (n.endsWith('.mov')) return 'video/quicktime';
+    if (n.endsWith('.mp3')) return 'audio/mpeg';
+    if (n.endsWith('.m4a')) return 'audio/mp4';
+    if (n.endsWith('.wav')) return 'audio/wav';
+    if (n.endsWith('.ogg')) return 'audio/ogg';
+    if (n.endsWith('.flac')) return 'audio/flac';
+    return 'application/octet-stream';
+  }
+
   bool _isImage(FulaObject o) {
     final ct = o.metadata?['contentType'] ?? '';
     if (ct.startsWith('image/')) return true;
@@ -216,6 +360,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   }
 
   Future<void> _preview(FulaObject o) async {
+    if (_isVideo(o) || _isAudio(o)) {
+      await _previewMedia(o);
+      return;
+    }
     if (!_isImage(o) && !_isText(o)) {
       await _download(o);
       return;
@@ -295,20 +443,47 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
   }
 
+  /// Download + decrypt, then play via a blob URL fed to the HTML5
+  /// media element (video_player / just_audio on web). Best-effort:
+  /// codec support depends on the browser; the dialog offers Download
+  /// as the fallback.
+  Future<void> _previewMedia(FulaObject o) async {
+    _snack('Loading "${_displayName(o)}"…');
+    try {
+      final bytes = await FulaApiService.instance.downloadObject(
+        o.sourceBucket ?? widget.base,
+        o.key,
+      );
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => _MediaPreviewDialog(
+          title: _displayName(o),
+          bytes: bytes,
+          mimeType: _mediaMime(o),
+          isVideo: _isVideo(o),
+        ),
+      );
+    } catch (e) {
+      _snack('Playback failed: $e');
+    }
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  static const labels = {
+    'images': 'Photos',
+    'videos': 'Videos',
+    'documents': 'Documents',
+    'audio': 'Audio',
+  };
+
   @override
   Widget build(BuildContext context) {
-    final labels = {
-      'images': 'Photos',
-      'videos': 'Videos',
-      'documents': 'Documents',
-      'audio': 'Audio',
-    };
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -406,9 +581,13 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                   return ListTile(
                     leading: Icon(_isImage(o)
                         ? Icons.image_outlined
-                        : _isText(o)
-                            ? Icons.article_outlined
-                            : Icons.insert_drive_file_outlined),
+                        : _isVideo(o)
+                            ? Icons.movie_outlined
+                            : _isAudio(o)
+                                ? Icons.audiotrack_outlined
+                                : _isText(o)
+                                    ? Icons.article_outlined
+                                    : Icons.insert_drive_file_outlined),
                     title: Text(_displayName(o),
                         overflow: TextOverflow.ellipsis),
                     subtitle: Text([
@@ -420,12 +599,17 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                     trailing: PopupMenuButton<String>(
                       onSelected: (v) {
                         if (v == 'download') _download(o);
+                        if (v == 'share') _share(o);
                         if (v == 'delete') _delete(o);
                       },
                       itemBuilder: (ctx) => const [
                         PopupMenuItem(
                           value: 'download',
                           child: Text('Download'),
+                        ),
+                        PopupMenuItem(
+                          value: 'share',
+                          child: Text('Copy public link'),
                         ),
                         PopupMenuItem(
                           value: 'delete',
@@ -438,6 +622,172 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Plays decrypted bytes through the browser media stack: bytes -> Blob
+/// object URL -> HTML5 <video>/<audio> (via video_player / just_audio).
+/// Codec support is the browser's own; Download stays one click away.
+class _MediaPreviewDialog extends StatefulWidget {
+  final String title;
+  final Uint8List bytes;
+  final String mimeType;
+  final bool isVideo;
+
+  const _MediaPreviewDialog({
+    required this.title,
+    required this.bytes,
+    required this.mimeType,
+    required this.isVideo,
+  });
+
+  @override
+  State<_MediaPreviewDialog> createState() => _MediaPreviewDialogState();
+}
+
+class _MediaPreviewDialogState extends State<_MediaPreviewDialog> {
+  late final String _blobUrl =
+      createBlobUrl(widget.bytes, mimeType: widget.mimeType);
+  VideoPlayerController? _video;
+  ChewieController? _chewie;
+  AudioPlayer? _audio;
+  bool _ready = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      if (widget.isVideo) {
+        final video = VideoPlayerController.networkUrl(Uri.parse(_blobUrl));
+        await video.initialize();
+        _video = video;
+        _chewie = ChewieController(
+          videoPlayerController: video,
+          autoPlay: true,
+          looping: false,
+        );
+      } else {
+        final audio = AudioPlayer();
+        await audio.setUrl(_blobUrl);
+        _audio = audio;
+        unawaited(audio.play());
+      }
+      if (mounted) setState(() => _ready = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _chewie?.dispose();
+    _video?.dispose();
+    _audio?.dispose();
+    revokeBlobUrl(_blobUrl);
+    super.dispose();
+  }
+
+  String _fmtDur(Duration d) {
+    final m = d.inMinutes;
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 900, maxHeight: 700),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(widget.title, overflow: TextOverflow.ellipsis),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Download',
+                    icon: const Icon(Icons.download),
+                    onPressed: () => saveBytesAsDownload(
+                      widget.title.split('/').last,
+                      widget.bytes,
+                      mimeType: widget.mimeType,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'This browser could not play the file '
+                  '(${widget.mimeType}). Use Download instead.\n$_error',
+                  textAlign: TextAlign.center,
+                ),
+              )
+            else if (!_ready)
+              const Padding(
+                padding: EdgeInsets.all(48),
+                child: CircularProgressIndicator(),
+              )
+            else if (widget.isVideo)
+              Flexible(
+                child: AspectRatio(
+                  aspectRatio: _video!.value.aspectRatio == 0
+                      ? 16 / 9
+                      : _video!.value.aspectRatio,
+                  child: Chewie(controller: _chewie!),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    StreamBuilder<PlayerState>(
+                      stream: _audio!.playerStateStream,
+                      builder: (ctx, snap) {
+                        final playing = snap.data?.playing ?? false;
+                        return IconButton.filled(
+                          iconSize: 36,
+                          icon: Icon(
+                              playing ? Icons.pause : Icons.play_arrow),
+                          onPressed: () =>
+                              playing ? _audio!.pause() : _audio!.play(),
+                        );
+                      },
+                    ),
+                    const SizedBox(width: 16),
+                    StreamBuilder<Duration>(
+                      stream: _audio!.positionStream,
+                      builder: (ctx, snap) {
+                        final pos = snap.data ?? Duration.zero;
+                        final total = _audio!.duration ?? Duration.zero;
+                        return Text(
+                            '${_fmtDur(pos)} / ${_fmtDur(total)}');
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
