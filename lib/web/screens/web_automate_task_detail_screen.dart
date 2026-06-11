@@ -520,15 +520,18 @@ class _WebAutomateTaskDetailScreenState
       // Validates size + extension and parses — same messages as native.
       final tabular =
           TabularParser.parseBytes(bytes, fileName: picked.name);
+      // allowMalformed mirrors the parser's own decode, so a CSV with a
+      // few non-UTF-8 bytes imports instead of throwing here.
+      final text = utf8.decode(bytes, allowMalformed: true);
       await WebAutomateCsvStore.instance.saveCsv(
         tagId: widget.tagId,
         fileName: picked.name,
-        csvText: utf8.decode(bytes),
+        csvText: text,
       );
       if (!mounted) return;
       setState(() {
         _csvFileName = picked.name;
-        _csvText = utf8.decode(bytes);
+        _csvText = text;
         _headers = tabular.headers;
       });
     } catch (e) {
