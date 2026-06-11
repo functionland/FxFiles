@@ -66,6 +66,26 @@ class AuthCore {
   /// Default issuer (pinning-service that mints JWTs).
   static const String defaultIssuerBaseUrl = 'https://cloud.fx.land';
 
+  /// Google OAuth WEB client ID. Single-sourced: native uses it as the
+  /// serverClientId (to mint idTokens the issuer accepts) and the web
+  /// shell signs in with it directly — both produce tokens with the
+  /// same `aud`, so the issuer's /auth/google verifier needs no
+  /// per-platform configuration. Public identifier, safe to ship.
+  static const String googleWebClientId =
+      '1095513138272-ctte75q6u17pjusvk9nj607qhecd03qn.apps.googleusercontent.com';
+
+  /// Apple Services ID used by the WEB popup flow (Sign in with Apple
+  /// JS). Grouped under the primary App ID land.fx.files, so Apple
+  /// returns the SAME stable user identifier as the native iOS flow —
+  /// existing Apple vaults open identically on web. The issuer accepts
+  /// this as an additional audience via APPLE_ADDITIONAL_AUDIENCES.
+  static const String appleWebServicesId = 'land.fx.files.web';
+
+  /// Return URL registered on the Services ID (exact match required by
+  /// Apple; the popup flow returns the credential via postMessage, so
+  /// no handler exists at this path — it only has to be registered).
+  static const String appleWebRedirectUri = 'https://files.fx.land/app/';
+
   /// Challenge purposes (must match the issuer's purpose tags).
   static const String purposeRegisterModeB = 'register-mode-b';
   static const String purposeRegisterModeC = 'register-mode-c';
@@ -685,7 +705,14 @@ class AuthCore {
   /// Extract the JWT-payload `sub` claim without verifying the
   /// signature (display/derivation use only — the gateway is the
   /// authority on validity).
-  static String? extractJwtSub(String? jwt) {
+  static String? extractJwtSub(String? jwt) => extractJwtClaim(jwt, 'sub');
+
+  /// Extract any string claim from an UNVERIFIED JWT payload. Used for
+  /// `sub` and for Apple's `email` claim (Apple only surfaces the email
+  /// on the credential object at FIRST consent; the identity token's
+  /// claim keeps carrying it on later sign-ins, which cross-device
+  /// Mode A derivation depends on).
+  static String? extractJwtClaim(String? jwt, String claim) {
     if (jwt == null || jwt.isEmpty) return null;
     try {
       final parts = jwt.split('.');
@@ -696,11 +723,99 @@ class AuthCore {
       final decoded = utf8.decode(base64Url.decode(payload));
       final json = jsonDecode(decoded);
       if (json is! Map) return null;
-      final sub = json['sub'];
-      if (sub is! String) return null;
-      return sub.isEmpty ? null : sub;
+      final value = json[claim];
+      if (value is! String) return null;
+      return value.isEmpty ? null : value;
     } catch (_) {
       return null;
     }
+  }
+
+  // ==========================================================================
+  // Mode A (legacy OAuth) sign-in — shared storage flow.
+  // ==========================================================================
+
+  /// Mode A OAuth sign-in storage flow, shared by the web shell (and
+  /// available to native refactors): persists the user JSON, exchanges
+  /// the provider idToken for a gateway JWT at /auth/{google|apple},
+  /// pins the derivation email (first writer wins — Apple relay drift
+  /// protection), derives the v1 KEK, and persists it. Caller follows
+  /// up with [initializeFulaFromStorage].
+  ///
+  /// Returns the derived KEK and the pinned email actually used.
+  static Future<({Uint8List kek, String pinnedEmail, String? jwt})>
+      performOAuthModeASignIn({
+    required String providerName, // 'google' | 'apple'
+    required String userId,
+    required String email,
+    String? displayName,
+    String? photoUrl,
+    required String? idToken,
+    Map<String, dynamic>? extraExchangeBody,
+  }) async {
+    // Persist identity + provider; clear the explicit-sign-out sentinel.
+    await SecureStorageService.instance.writeJson(
+      SecureStorageKeys.userCredentials,
+      <String, dynamic>{
+        'id': userId,
+        'email': email,
+        'displayName': displayName,
+        'photoUrl': photoUrl,
+        'provider': providerName,
+      },
+    );
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.authProvider,
+      providerName,
+    );
+    await SecureStorageService.instance.delete(SecureStorageKeys.authSignedOut);
+
+    // Exchange the OAuth idToken for a gateway JWT (best-effort: the
+    // local-only key still derives without it).
+    String? jwt;
+    if (idToken != null && idToken.isNotEmpty) {
+      final body = <String, dynamic>{
+        if (providerName == 'google') 'credential': idToken,
+        if (providerName == 'apple') 'identityToken': idToken,
+        ...?extraExchangeBody,
+      };
+      jwt = await exchangeOAuthIdTokenForJwt(
+        path: '/auth/$providerName',
+        body: body,
+      );
+      if (jwt != null && jwt.isNotEmpty) {
+        await SecureStorageService.instance
+            .write(SecureStorageKeys.jwtToken, jwt);
+        await seedDefaultEndpoints();
+      }
+    }
+
+    // Pin the derivation email (same rule as native _deriveEncryptionKey:
+    // the FIRST email this identity signed in with on this install wins).
+    String pinnedEmail;
+    final storedEmail = await SecureStorageService.instance.read(
+      SecureStorageKeys.derivationEmail,
+    );
+    if (storedEmail != null && storedEmail.isNotEmpty) {
+      pinnedEmail = storedEmail;
+    } else {
+      pinnedEmail = email;
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.derivationEmail,
+        pinnedEmail,
+      );
+    }
+
+    final kek = await deriveKekModeA(
+      providerName: providerName,
+      userId: userId,
+      email: pinnedEmail,
+    );
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.encryptionKey,
+      base64Encode(kek),
+    );
+
+    return (kek: kek, pinnedEmail: pinnedEmail, jwt: jwt);
   }
 }

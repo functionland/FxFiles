@@ -40,7 +40,9 @@ enum AuthProvider { google, apple }
 //
 // Note: For Android, clientId is auto-detected from the signing config
 const String _googleClientIdIOS = '1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com'; // iOS OAuth Client ID
-const String _googleServerClientId = '1095513138272-ctte75q6u17pjusvk9nj607qhecd03qn.apps.googleusercontent.com'; // Web Client ID - leave empty if you don't need idToken
+// Web Client ID (used as serverClientId to mint idTokens the issuer
+// accepts). Single-sourced with the web shell in AuthCore.
+const String _googleServerClientId = AuthCore.googleWebClientId;
 
 class AuthUser {
   final String id;

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_sign_in_web/web_only.dart' as gsi_web;
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import 'package:fula_files/core/services/issuer_client.dart';
 import 'package:fula_files/web/services/web_session.dart';
@@ -16,7 +18,15 @@ class WebSignInScreen extends StatefulWidget {
 
 class _WebSignInScreenState extends State<WebSignInScreen>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
+  late final TabController _tabs = TabController(length: 3, vsync: this);
+  final _oauthPassController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // GIS button events are the only Google sign-in trigger on web.
+    WebSession.instance.initGoogleWeb();
+  }
 
   // Create-vault state
   String? _generatedPhrase;
@@ -33,6 +43,7 @@ class _WebSignInScreenState extends State<WebSignInScreen>
   void dispose() {
     _tabs.dispose();
     _restoreController.dispose();
+    _oauthPassController.dispose();
     super.dispose();
   }
 
@@ -131,6 +142,7 @@ class _WebSignInScreenState extends State<WebSignInScreen>
                     tabs: const [
                       Tab(text: 'Open vault'),
                       Tab(text: 'Create vault'),
+                      Tab(text: 'Google / Apple'),
                     ],
                   ),
                   SizedBox(
@@ -140,6 +152,7 @@ class _WebSignInScreenState extends State<WebSignInScreen>
                       children: [
                         _buildRestoreTab(context),
                         _buildCreateTab(context),
+                        _buildOAuthTab(context),
                       ],
                     ),
                   ),
@@ -206,6 +219,63 @@ class _WebSignInScreenState extends State<WebSignInScreen>
                 : const Text('Open vault'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildOAuthTab(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: AnimatedBuilder(
+        animation: WebSession.instance,
+        builder: (context, _) {
+          final session = WebSession.instance;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Sign in with the same account you use in the FxFiles app. '
+                'Leave the passphrase empty for a standard account; enter '
+                'your vault passphrase if your vault was created with one '
+                '(Mode B).',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _oauthPassController,
+                obscureText: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                onChanged: (v) =>
+                    WebSession.instance.pendingOAuthPassphrase = v,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: 'Vault passphrase (optional, Mode B)',
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (session.busy)
+                const Center(child: CircularProgressIndicator())
+              else ...[
+                Center(child: gsi_web.renderButton()),
+                const SizedBox(height: 10),
+                SignInWithAppleButton(
+                  onPressed: () => WebSession.instance.signInWithAppleWeb(),
+                  style: SignInWithAppleButtonStyle.whiteOutlined,
+                ),
+              ],
+              if (session.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  session.lastError!,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }

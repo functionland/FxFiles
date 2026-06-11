@@ -21,6 +21,10 @@ dependencies:
   # native builds' dependency graph but only imported from lib/web +
   # lib/main_web.dart.
   web: ^1.0.0
+  # Direct dep so the web sign-in screen can import
+  # google_sign_in_web/web_only.dart (renderButton) — the GIS button is
+  # the only supported web sign-in trigger in google_sign_in v7.
+  google_sign_in_web: ^1.0.0
   
   # Storage & Files (with Encryption)
   fula_client: ^0.6.7

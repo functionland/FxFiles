@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
@@ -116,6 +118,215 @@ class WebSession extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
+  }
+
+  // ==========================================================================
+  // OAuth sign-in (web): Google via GIS button events, Apple via popup.
+  // An optional passphrase set by the sign-in screen upgrades either
+  // provider to Mode B (OAuth + seed); empty means legacy Mode A.
+  // ==========================================================================
+
+  bool _googleInited = false;
+
+  /// Passphrase the user typed before clicking the Google button (the
+  /// GIS button is the only sign-in trigger on web, so the choice has
+  /// to be parked here until the credential event arrives).
+  String pendingOAuthPassphrase = '';
+
+  /// Initialize google_sign_in for web and start consuming credential
+  /// events. Idempotent; call from the sign-in screen.
+  Future<void> initGoogleWeb() async {
+    if (_googleInited) return;
+    await GoogleSignIn.instance.initialize(
+      clientId: AuthCore.googleWebClientId,
+    );
+    // Lifetime subscription — WebSession is a singleton that lives as
+    // long as the page, so the stream is never cancelled.
+    GoogleSignIn.instance.authenticationEvents.listen((event) {
+      if (event is GoogleSignInAuthenticationEventSignIn) {
+        unawaited(_onGoogleCredential(event.user));
+      }
+    });
+    _googleInited = true;
+  }
+
+  Future<void> _onGoogleCredential(GoogleSignInAccount account) async {
+    _busy = true;
+    _lastError = null;
+    notifyListeners();
+    try {
+      final idToken = account.authentication.idToken;
+      if (idToken == null || idToken.isEmpty) {
+        throw Exception('Google did not return an ID token');
+      }
+      final passphrase = pendingOAuthPassphrase.trim();
+      if (passphrase.isNotEmpty) {
+        // Mode B (Google + seed).
+        final r = await AuthCore.performModeBRegistration(
+          provider: 'google',
+          oauthToken: idToken,
+          oauthSub: account.id,
+          email: account.email,
+          displayName: account.displayName ?? '',
+          photoUrl: account.photoUrl,
+          seed: passphrase,
+        );
+        await _finishSignIn(
+          kek: r.kek,
+          user: WebUser(
+            id: r.result.effectiveUserIdHex,
+            email: account.email,
+            displayName: account.displayName,
+          ),
+        );
+      } else {
+        // Mode A (legacy OAuth-only).
+        final r = await AuthCore.performOAuthModeASignIn(
+          providerName: 'google',
+          userId: account.id,
+          email: account.email,
+          displayName: account.displayName,
+          photoUrl: account.photoUrl,
+          idToken: idToken,
+        );
+        await _finishSignIn(
+          kek: r.kek,
+          user: WebUser(
+            id: account.id,
+            email: r.pinnedEmail,
+            displayName: account.displayName,
+          ),
+        );
+      }
+    } catch (e) {
+      _lastError = 'Google sign-in failed: $e';
+      debugPrint('WebSession: $_lastError');
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Apple sign-in via the Services-ID popup flow. Same passphrase
+  /// upgrade rule as Google.
+  Future<void> signInWithAppleWeb() async {
+    _busy = true;
+    _lastError = null;
+    notifyListeners();
+    try {
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: const [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+        webAuthenticationOptions: WebAuthenticationOptions(
+          clientId: AuthCore.appleWebServicesId,
+          redirectUri: Uri.parse(AuthCore.appleWebRedirectUri),
+        ),
+      );
+      final identityToken = credential.identityToken;
+      if (identityToken == null || identityToken.isEmpty) {
+        throw Exception('Apple did not return an identity token');
+      }
+      final sub = credential.userIdentifier ??
+          AuthCore.extractJwtSub(identityToken);
+      if (sub == null || sub.isEmpty) {
+        throw Exception('Apple sign-in returned no user identifier');
+      }
+      // Apple surfaces the email on the credential only at FIRST consent;
+      // afterwards the identity token's claim still carries it. Fall back
+      // to the relay-style placeholder only when both are absent (same
+      // rule as native).
+      final email = credential.email ??
+          AuthCore.extractJwtClaim(identityToken, 'email') ??
+          '$sub@privaterelay.appleid.com';
+      String? displayName;
+      if (credential.givenName != null || credential.familyName != null) {
+        final dn = [credential.givenName, credential.familyName]
+            .where((n) => n != null && n.isNotEmpty)
+            .join(' ');
+        displayName = dn.isEmpty ? null : dn;
+      }
+
+      final passphrase = pendingOAuthPassphrase.trim();
+      if (passphrase.isNotEmpty) {
+        final r = await AuthCore.performModeBRegistration(
+          provider: 'apple',
+          oauthToken: identityToken,
+          oauthSub: sub,
+          email: email,
+          displayName: displayName ?? '',
+          photoUrl: null,
+          seed: passphrase,
+        );
+        await _finishSignIn(
+          kek: r.kek,
+          user: WebUser(
+            id: r.result.effectiveUserIdHex,
+            email: email,
+            displayName: displayName,
+          ),
+        );
+      } else {
+        // First-consent extras for the issuer (mirrors the native body).
+        final firstSignInUser = <String, dynamic>{};
+        if (credential.email != null &&
+            credential.email!.isNotEmpty &&
+            !credential.email!.endsWith('@privaterelay.appleid.com')) {
+          firstSignInUser['email'] = credential.email;
+        }
+        if ((credential.givenName ?? '').isNotEmpty ||
+            (credential.familyName ?? '').isNotEmpty) {
+          firstSignInUser['name'] = <String, dynamic>{
+            if ((credential.givenName ?? '').isNotEmpty)
+              'firstName': credential.givenName,
+            if ((credential.familyName ?? '').isNotEmpty)
+              'lastName': credential.familyName,
+          };
+        }
+        final r = await AuthCore.performOAuthModeASignIn(
+          providerName: 'apple',
+          userId: sub,
+          email: email,
+          displayName: displayName,
+          photoUrl: null,
+          idToken: identityToken,
+          extraExchangeBody:
+              firstSignInUser.isEmpty ? null : {'user': firstSignInUser},
+        );
+        await _finishSignIn(
+          kek: r.kek,
+          user: WebUser(
+            id: sub,
+            email: r.pinnedEmail,
+            displayName: displayName,
+          ),
+        );
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code != AuthorizationErrorCode.canceled) {
+        _lastError = 'Apple sign-in failed: ${e.message}';
+      }
+    } catch (e) {
+      _lastError = 'Apple sign-in failed: $e';
+      debugPrint('WebSession: $_lastError');
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _finishSignIn({
+    required Uint8List kek,
+    required WebUser user,
+  }) async {
+    final init = await AuthCore.initializeFulaFromStorage(kek: kek);
+    if (init.configured) {
+      unawaited(MasterHealthService.instance.start());
+    }
+    _user = user;
+    debugPrint('WebSession: signed in ${user.id.length >= 8 ? user.id.substring(0, 8) : user.id}… '
+        '(fula configured=${init.configured})');
   }
 
   /// Sign out: stop pollers, reset the Fula client, clear all session
