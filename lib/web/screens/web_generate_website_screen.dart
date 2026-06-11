@@ -97,10 +97,18 @@ const List<String> _categoryOptions = [
 
 /// Mutable per-row state for one contact-form field.
 class _ContactFieldRow {
-  final TextEditingController label = TextEditingController();
-  ContactFormFieldType type = ContactFormFieldType.text;
-  bool required = false;
-  final TextEditingController options = TextEditingController();
+  final TextEditingController label;
+  ContactFormFieldType type;
+  bool required;
+  final TextEditingController options;
+
+  _ContactFieldRow({
+    String label = '',
+    this.type = ContactFormFieldType.text,
+    this.required = false,
+    String options = '',
+  })  : label = TextEditingController(text: label),
+        options = TextEditingController(text: options);
 
   void dispose() {
     label.dispose();
@@ -128,10 +136,27 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
   final String defaultName;
   final List<AssetNote> assetNotes;
 
+  // Recreate prefills (native parity): seed every field from a prior
+  // generation's parsed prompt.
+  final String? initialName;
+  final String? initialCategory;
+  final List<String>? initialStyles;
+  final String? initialPalette;
+  final String? initialPrompt;
+  final bool initialEnableTracking;
+  final ContactFormConfig? initialContactForm;
+
   const WebGenerateWebsiteScreen({
     super.key,
     required this.defaultName,
     this.assetNotes = const [],
+    this.initialName,
+    this.initialCategory,
+    this.initialStyles,
+    this.initialPalette,
+    this.initialPrompt,
+    this.initialEnableTracking = false,
+    this.initialContactForm,
   });
 
   @override
@@ -140,21 +165,48 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
 }
 
 class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
-  late final TextEditingController _nameController =
-      TextEditingController(text: widget.defaultName);
-  final TextEditingController _promptController = TextEditingController();
-  String _category = _categoryOptions.first;
-  String _selectedStyle = _styleOptions.first.label;
-  String _palette = _paletteOptions.first.label;
-  bool _enableTracking = false;
+  late final TextEditingController _nameController = TextEditingController(
+      text: (widget.initialName?.isNotEmpty ?? false)
+          ? widget.initialName!
+          : widget.defaultName);
+  late final TextEditingController _promptController =
+      TextEditingController(text: widget.initialPrompt ?? '');
+  late String _category = _categoryOptions.contains(widget.initialCategory)
+      ? widget.initialCategory!
+      : _categoryOptions.first;
+  late String _selectedStyle = () {
+    final first = widget.initialStyles?.firstOrNull;
+    return _styleOptions.any((o) => o.label == first)
+        ? first!
+        : _styleOptions.first.label;
+  }();
+  late String _palette =
+      _paletteOptions.any((o) => o.label == widget.initialPalette)
+          ? widget.initialPalette!
+          : _paletteOptions.first.label;
+  late bool _enableTracking = widget.initialEnableTracking;
 
-  bool _contactFormEnabled = false;
-  ContactFormChannel _channel = ContactFormChannel.whatsapp;
-  final TextEditingController _destinationController =
-      TextEditingController();
-  final TextEditingController _emailSubjectController =
-      TextEditingController();
-  final List<_ContactFieldRow> _fields = [_ContactFieldRow()];
+  late bool _contactFormEnabled = widget.initialContactForm?.enabled ?? false;
+  late ContactFormChannel _channel =
+      widget.initialContactForm?.channel ?? ContactFormChannel.whatsapp;
+  late final TextEditingController _destinationController =
+      TextEditingController(text: widget.initialContactForm?.destination ?? '');
+  late final TextEditingController _emailSubjectController =
+      TextEditingController(
+          text: widget.initialContactForm?.emailSubject ?? '');
+  late final List<_ContactFieldRow> _fields = () {
+    final initial = widget.initialContactForm?.fields ?? const [];
+    if (initial.isEmpty) return [_ContactFieldRow()];
+    return [
+      for (final f in initial)
+        _ContactFieldRow(
+          label: f.label,
+          type: f.type,
+          required: f.required,
+          options: f.options.join(', '),
+        ),
+    ];
+  }();
 
   ({int costFula, int costFulaWithTracking})? _pricing;
 

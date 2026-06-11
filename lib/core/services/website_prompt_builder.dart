@@ -283,6 +283,65 @@ ContactFormConfig? parseWebsiteContactFormLine(String storedPrompt) {
       : null;
 }
 
+final RegExp _nameLinePattern =
+    RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
+
+/// Inverse of [composeEnrichedWebsitePrompt]: parse a stored prompt
+/// back into its components (Recreate flows). Tolerates older records
+/// that lack the enriched prefix by returning empty name/category/
+/// styles/palette and the original string as the user body.
+({
+  String websiteName,
+  String category,
+  List<String> styles,
+  String palette,
+  String userBody,
+  ContactFormConfig? contactForm,
+}) parseStoredWebsitePrompt(String stored) {
+  final nameMatch = _nameLinePattern.firstMatch(stored);
+  final categoryMatch = _categoryLinePattern.firstMatch(stored);
+  final contactForm = parseWebsiteContactFormLine(stored);
+
+  if (nameMatch == null || categoryMatch == null) {
+    return (
+      websiteName: '',
+      category: '',
+      styles: const <String>[],
+      palette: '',
+      userBody: stored.trim(),
+      contactForm: contactForm,
+    );
+  }
+
+  final stylesMatch = _stylesLinePattern.firstMatch(stored);
+  final styles = <String>[];
+  if (stylesMatch != null) {
+    final raw = stylesMatch.group(1)?.trim() ?? '';
+    if (raw.isNotEmpty) {
+      styles.addAll(
+        raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty),
+      );
+    }
+  }
+
+  final paletteMatch = _paletteLinePattern.firstMatch(stored);
+  final palette = paletteMatch?.group(1)?.trim() ?? '';
+
+  // User body is everything after the first blank line.
+  final blankLineIdx = stored.indexOf('\n\n');
+  final body =
+      blankLineIdx >= 0 ? stored.substring(blankLineIdx + 2).trim() : '';
+
+  return (
+    websiteName: nameMatch.group(1)?.trim() ?? '',
+    category: categoryMatch.group(1)?.trim() ?? '',
+    styles: styles,
+    palette: palette,
+    userBody: body,
+    contactForm: contactForm,
+  );
+}
+
 /// Compose the prompt stored on a generation record: header lines
 /// (Website Name / Category / optional Styles / Palette / ContactForm)
 /// followed by a blank line and the user's body. Hidden instruction

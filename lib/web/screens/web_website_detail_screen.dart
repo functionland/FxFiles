@@ -34,6 +34,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   List<WebsiteGeneration> _cloudGenerations = const [];
   WebsiteGroupPointer? _pointer;
   final List<WebPickedAsset> _assets = [];
+
+  /// Group assets that exist only on a device (tagged files with no
+  /// uploaded copy in any generation) — listed for awareness, but only
+  /// the app can include them.
+  List<String> _appOnlyAssets = const [];
+  bool _assetsSeeded = false;
   bool _loading = true;
   String? _error;
 
@@ -67,6 +73,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
             .toList();
         _pointer = WebIpnsService.instance.pointerFor(widget.tagId) ??
             r.pointersByTag[widget.tagId];
+        _seedAssetsFromGroup();
         _loading = false;
       });
     } catch (e) {
@@ -77,6 +84,42 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         });
       }
     }
+  }
+
+  /// App parity: the group's existing assets show up and get REUSED by
+  /// the next generation. The web sources them from the latest
+  /// generation's uploaded assets (CID-backed — content is public on
+  /// IPFS); group files that never uploaded are listed as app-only.
+  void _seedAssetsFromGroup() {
+    if (_assetsSeeded) return;
+    _assetsSeeded = true;
+
+    final latest = _generations
+        .where((g) =>
+            g.status == WebsiteGenStatus.completed && g.assets.isNotEmpty)
+        .firstOrNull;
+    final seededNames = <String>{};
+    if (latest != null) {
+      for (final a in latest.assets) {
+        if (!a.uploaded || a.cid == null || a.cid!.isEmpty) continue;
+        if (!seededNames.add(a.fileName)) continue;
+        _assets.add(WebPickedAsset(
+          fileName: a.fileName,
+          cid: a.cid,
+          gatewayUrl: a.gatewayUrl,
+          note: a.comment ?? '',
+        ));
+      }
+    }
+
+    // Tagged files of this group with no uploaded counterpart =
+    // device-local assets only the app can include.
+    _appOnlyAssets = [
+      for (final tf in WebTagService.instance.filesWithTag(widget.tagId))
+        if (!seededNames.contains(tf.fileName) &&
+            (tf.remoteKey == null || tf.remoteKey!.isEmpty))
+          tf.fileName,
+    ];
   }
 
   String get _displayName {
@@ -122,29 +165,13 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     });
   }
 
-  Future<void> _createWebsite() async {
-    if (_assets.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content:
-              Text('Import images, videos, or documents first')));
-      return;
-    }
-    final assetNotes = <AssetNote>[
-      for (final a in _assets)
-        if (a.note.trim().isNotEmpty)
-          (fileName: a.fileName, cid: null, comment: a.note.trim()),
-    ];
-    final result =
-        await Navigator.of(context).push<WebGeneratePromptResult>(
-      MaterialPageRoute(
-        builder: (_) => WebGenerateWebsiteScreen(
-          defaultName: _displayName,
-          assetNotes: assetNotes,
-        ),
-      ),
-    );
-    if (result == null || !mounted) return;
+  List<AssetNote> get _assetNotes => [
+        for (final a in _assets)
+          if (a.note.trim().isNotEmpty)
+            (fileName: a.fileName, cid: a.cid, comment: a.note.trim()),
+      ];
 
+  Future<void> _publishFromResult(WebGeneratePromptResult result) async {
     final enrichedPrompt = composeEnrichedWebsitePrompt(
       websiteName: result.websiteName,
       category: result.category,
@@ -165,6 +192,65 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         const SnackBar(content: Text('Website generation started')),
       );
     }
+  }
+
+  Future<void> _createWebsite() async {
+    if (_assets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Import images, videos, or documents first')));
+      return;
+    }
+    final result =
+        await Navigator.of(context).push<WebGeneratePromptResult>(
+      MaterialPageRoute(
+        builder: (_) => WebGenerateWebsiteScreen(
+          defaultName: _displayName,
+          assetNotes: _assetNotes,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    await _publishFromResult(result);
+  }
+
+  /// Native Recreate parity: reopen the generator prefilled from the
+  /// generation's parsed prompt, with the prior-site reference seeded
+  /// into the creative direction; the group's current assets are
+  /// reused on publish.
+  Future<void> _recreate(WebsiteGeneration gen) async {
+    final parsed = parseStoredWebsitePrompt(gen.prompt);
+    final priorUrl = gen.gatewayUrl ?? '';
+    final priorPromptForRef =
+        parsed.userBody.isNotEmpty ? parsed.userBody : gen.prompt.trim();
+    final seededPrompt =
+        'The website "$priorUrl" was created for prompt: "$priorPromptForRef"\n\n'
+        '[Describe what to change or add for the new version]';
+
+    final result =
+        await Navigator.of(context).push<WebGeneratePromptResult>(
+      MaterialPageRoute(
+        builder: (_) => WebGenerateWebsiteScreen(
+          defaultName: _displayName,
+          assetNotes: _assetNotes,
+          initialName: parsed.websiteName,
+          initialCategory: parsed.category,
+          initialStyles: parsed.styles,
+          initialPalette: parsed.palette,
+          initialPrompt: seededPrompt,
+          initialEnableTracking: gen.trackingEnabled,
+          initialContactForm: parsed.contactForm,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (_assets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'No reusable assets in this group — import files first')));
+      return;
+    }
+    await _publishFromResult(result);
   }
 
   @override
@@ -233,7 +319,14 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                                   ?.copyWith(fontWeight: FontWeight.w600)),
                           const SizedBox(height: 8),
                           for (final g in _generations)
-                            _GenerationCard(generation: g),
+                            _GenerationCard(
+                              generation: g,
+                              onRecreate: g.status ==
+                                          WebsiteGenStatus.completed &&
+                                      !_isGenerating
+                                  ? () => _recreate(g)
+                                  : null,
+                            ),
                         ],
                       ],
                     ),
@@ -367,13 +460,38 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         else
           for (var i = 0; i < _assets.length; i++)
             _assetTile(theme, i),
+        if (_appOnlyAssets.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          for (final name in _appOnlyAssets)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Icon(Icons.smartphone,
+                      size: 16,
+                      color: theme.colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$name  ·  on a device — include it from the app',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ],
     );
   }
 
   Widget _assetTile(ThemeData theme, int index) {
     final a = _assets[index];
+    final size = a.knownSize;
     return Card(
+      key: ValueKey('${a.fileName}|${a.cid ?? 'picked-$index'}'),
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
@@ -396,7 +514,9 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                       maxLines: 1, overflow: TextOverflow.ellipsis),
                 ),
                 Text(
-                  '${(a.bytes.length / 1024).toStringAsFixed(0)} KB',
+                  size != null
+                      ? '${(size / 1024).toStringAsFixed(0)} KB'
+                      : 'from last generation',
                   style: theme.textTheme.bodySmall,
                 ),
                 IconButton(
@@ -406,7 +526,8 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                 ),
               ],
             ),
-            TextField(
+            TextFormField(
+              initialValue: a.note,
               decoration: const InputDecoration(
                 hintText: 'Add a note (optional)',
                 isDense: true,
@@ -423,11 +544,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
 }
 
 /// Mirror of the native GenerationStatusCard (web subset: status header,
-/// message, upload progress, completed URL + actions, error block,
-/// relative timestamp).
+/// message, upload progress, completed URL + actions + Recreate,
+/// analytics for tracked generations, error block, relative timestamp).
 class _GenerationCard extends StatelessWidget {
   final WebsiteGeneration generation;
-  const _GenerationCard({required this.generation});
+  final VoidCallback? onRecreate;
+  const _GenerationCard({required this.generation, this.onRecreate});
 
   @override
   Widget build(BuildContext context) {
@@ -531,7 +653,9 @@ class _GenerationCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   OutlinedButton.icon(
                     icon: const Icon(LucideIcons.externalLink, size: 14),
@@ -539,7 +663,6 @@ class _GenerationCard extends StatelessWidget {
                     onPressed: () => launchUrl(Uri.parse(url),
                         webOnlyWindowName: '_blank'),
                   ),
-                  const SizedBox(width: 8),
                   OutlinedButton.icon(
                     icon: const Icon(LucideIcons.copy, size: 14),
                     label: const Text('Copy URL'),
@@ -551,8 +674,22 @@ class _GenerationCard extends StatelessWidget {
                                   Text('Link copied to clipboard')));
                     },
                   ),
+                  if (onRecreate != null)
+                    OutlinedButton.icon(
+                      icon: const Icon(LucideIcons.refreshCw, size: 14),
+                      label: const Text('Recreate'),
+                      onPressed: onRecreate,
+                    ),
                 ],
               ),
+              // Click-tracking stats below the link (native parity:
+              // shown only for generations created with tracking on).
+              if (g.trackingEnabled &&
+                  g.resultCid != null &&
+                  g.resultCid!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _AnalyticsRow(cid: g.resultCid!),
+              ],
             ],
             if (g.status == WebsiteGenStatus.error &&
                 g.errorMessage != null) ...[
@@ -586,5 +723,90 @@ class _GenerationCard extends StatelessWidget {
     if (d.inDays < 30) return '${d.inDays}d ago';
     return '${t.day.toString().padLeft(2, '0')}/'
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+}
+
+/// Click-tracking stats line for one generation — mirror of the native
+/// card's analytics block: 'Loading analytics…' → 'X views · Y
+/// visitors' (or 'Analytics unavailable'), with a refresh button.
+class _AnalyticsRow extends StatefulWidget {
+  final String cid;
+  const _AnalyticsRow({required this.cid});
+
+  @override
+  State<_AnalyticsRow> createState() => _AnalyticsRowState();
+}
+
+class _AnalyticsRowState extends State<_AnalyticsRow> {
+  ({int pageviews, int uniqueVisitors})? _stats;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    setState(() => _loading = true);
+    final stats =
+        await WebWebsiteService.instance.fetchAnalytics(widget.cid);
+    if (mounted) {
+      setState(() {
+        _stats = stats;
+        _loading = false;
+      });
+    }
+  }
+
+  String _formatCount(int n) {
+    if (n < 1000) return '$n';
+    if (n < 1000000) {
+      return '${(n / 1000).toStringAsFixed(n < 10000 ? 1 : 0)}k';
+    }
+    return '${(n / 1000000).toStringAsFixed(n < 10000000 ? 1 : 0)}M';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    final Widget content;
+    if (_loading) {
+      content = Row(
+        children: [
+          const SizedBox(
+            width: 10,
+            height: 10,
+            child: CircularProgressIndicator(strokeWidth: 1.5),
+          ),
+          const SizedBox(width: 8),
+          Text('Loading analytics…',
+              style: TextStyle(fontSize: 12, color: muted)),
+        ],
+      );
+    } else if (_stats == null) {
+      content = Text('Analytics unavailable',
+          style: TextStyle(fontSize: 12, color: muted));
+    } else {
+      content = Text(
+        '${_formatCount(_stats!.pageviews)} views · '
+        '${_formatCount(_stats!.uniqueVisitors)} visitors',
+        style: TextStyle(fontSize: 12, color: muted),
+      );
+    }
+    return Row(
+      children: [
+        Icon(LucideIcons.barChart3, size: 14, color: muted),
+        const SizedBox(width: 6),
+        Expanded(child: content),
+        IconButton(
+          tooltip: 'Refresh analytics',
+          iconSize: 14,
+          visualDensity: VisualDensity.compact,
+          icon: Icon(LucideIcons.refreshCw, size: 14, color: muted),
+          onPressed: _loading ? null : _fetch,
+        ),
+      ],
+    );
   }
 }

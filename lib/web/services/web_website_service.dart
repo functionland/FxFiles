@@ -22,18 +22,35 @@ import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_tag_service.dart';
 
-/// One picked (in-browser) asset for a website generation. The web has
-/// no file paths — bytes are held in memory until upload.
+/// One asset for a website generation: either picked in-browser
+/// (bytes in memory) or carried over from a previous generation
+/// (CID-backed — bytes are fetched from the IPFS gateway at upload
+/// time, so Recreate / re-generate reuses the group's existing assets
+/// exactly like the app).
 class WebPickedAsset {
   final String fileName;
-  final Uint8List bytes;
+
+  /// Picked-file content; for CID-backed assets this starts null and is
+  /// filled by the upload phase after the gateway fetch (so the parse
+  /// phase can read text content either way).
+  Uint8List? bytes;
+  final String? cid;
+  final String? gatewayUrl;
   String note;
 
   WebPickedAsset({
     required this.fileName,
-    required this.bytes,
+    this.bytes,
+    this.cid,
+    this.gatewayUrl,
     this.note = '',
-  });
+  }) : assert(bytes != null || cid != null);
+
+  bool get isCidBacked => bytes == null;
+
+  /// Size when known up front (picked files); CID-backed assets report
+  /// null until fetched.
+  int? get knownSize => bytes?.length;
 
   String get type => file_utils.classifyFileType(fileName);
 }
@@ -346,6 +363,40 @@ class WebWebsiteService extends ChangeNotifier {
         colorValue: TagColors.getRandomColor(),
       );
 
+  /// Web default routes through the cloud.fx.land passthrough — the
+  /// analytics host itself serves no CORS headers, so a direct browser
+  /// read would be blocked (native reads it directly, no CORS there).
+  static const String _defaultAnalyticsEndpoint =
+      'https://cloud.fx.land/analytics';
+
+  /// Same contract as WebsiteService.fetchAnalytics: stats keyed by the
+  /// site's CID; 404 → zero counts; transport error → null
+  /// ("unavailable" in the card).
+  Future<({int pageviews, int uniqueVisitors})?> fetchAnalytics(
+      String cid) async {
+    if (cid.isEmpty) return null;
+    final analyticsEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.analyticsEndpointUrl) ??
+        _defaultAnalyticsEndpoint;
+    try {
+      final response = await http
+          .get(Uri.parse('$analyticsEndpoint/api/v1/stats/$cid'))
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 404) {
+        return (pageviews: 0, uniqueVisitors: 0);
+      }
+      if (response.statusCode != 200) return null;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return (
+        pageviews: (body['pageviews'] as num?)?.toInt() ?? 0,
+        uniqueVisitors: (body['uniqueVisitors'] as num?)?.toInt() ?? 0,
+      );
+    } catch (e) {
+      debugPrint('fetchAnalytics($cid) error: $e');
+      return null;
+    }
+  }
+
   Future<({int costFula, int costFulaWithTracking})?> fetchPricing() async {
     try {
       final response = await http
@@ -456,7 +507,6 @@ class WebWebsiteService extends ChangeNotifier {
 
     for (var i = 0; i < generation.assets.length; i++) {
       final asset = generation.assets[i];
-      final bytes = picked[i].bytes;
       final dot = asset.fileName.lastIndexOf('.');
       final ext = dot >= 0 ? asset.fileName.substring(dot) : '';
       final perTypeCap = websiteMaxFileSizeBytesForExt(ext);
@@ -472,6 +522,36 @@ class WebWebsiteService extends ChangeNotifier {
         failedCount++;
         skipReasons.add('${asset.fileName}: 10-file cap reached');
         continue;
+      }
+
+      // CID-backed assets (carried over from a previous generation)
+      // fetch their plaintext from the IPFS gateway first — website
+      // assets are public, so this needs no keys.
+      var bytes = picked[i].bytes;
+      if (bytes == null) {
+        generation.statusMessage =
+            'Fetching asset ${i + 1}/${generation.totalAssets}...';
+        generation.updatedAt = DateTime.now();
+        _notify(generation);
+        try {
+          final url = (picked[i].gatewayUrl?.isNotEmpty ?? false)
+              ? picked[i].gatewayUrl!
+              : IpfsGatewayHelper.buildUrlForCid(picked[i].cid!);
+          final resp = await http
+              .get(Uri.parse(url))
+              .timeout(const Duration(minutes: 2));
+          if (resp.statusCode != 200) {
+            throw Exception('HTTP ${resp.statusCode}');
+          }
+          bytes = resp.bodyBytes;
+          picked[i].bytes = bytes; // parse phase reads text from here
+        } catch (e) {
+          debugPrint('Asset fetch failed for ${asset.fileName}: $e');
+          asset.uploaded = false;
+          failedCount++;
+          skipReasons.add('${asset.fileName}: fetch failed');
+          continue;
+        }
       }
       if (bytes.length > perTypeCap) {
         final mb = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
@@ -574,9 +654,9 @@ class WebWebsiteService extends ChangeNotifier {
                 'Audio file: ${asset.fileName} (format: ${ext.replaceAll('.', '')})';
             break;
           default: // document
-            if (textExts.contains(ext)) {
-              final text =
-                  utf8.decode(picked[i].bytes, allowMalformed: true);
+            final raw = picked[i].bytes;
+            if (raw != null && textExts.contains(ext)) {
+              final text = utf8.decode(raw, allowMalformed: true);
               content =
                   text.length > 2000 ? '${text.substring(0, 2000)}...' : text;
             } else if (ext == '.pdf') {

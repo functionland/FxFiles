@@ -4,6 +4,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/services/website_service.dart';
 
 /// Card showing the status of a website generation job
@@ -452,11 +453,9 @@ String extractUserPrompt(String stored) {
   return parsed.userBody;
 }
 
-/// Parse a stored prompt back into its components. Tolerates older records
-/// that lack the enriched prefix by returning empty name/category/styles/
-/// palette and the original string as the user body. The `Styles:` and
-/// `Palette:` lines are optional — `styles` returns an empty list and
-/// `palette` returns an empty string when absent.
+/// Parse a stored prompt back into its components. Single-sourced with
+/// the web shell in website_prompt_builder.dart (the Recreate flows on
+/// both platforms must parse identically).
 ({
   String websiteName,
   String category,
@@ -464,58 +463,4 @@ String extractUserPrompt(String stored) {
   String palette,
   String userBody,
   ContactFormConfig? contactForm,
-}) parseStoredPrompt(String stored) {
-  final namePattern = RegExp(r'^Website Name:\s*(.*)$', multiLine: true);
-  final categoryPattern = RegExp(r'^Category:\s*(.*)$', multiLine: true);
-  final stylesPattern = RegExp(r'^Styles:\s*(.*)$', multiLine: true);
-  final palettePattern = RegExp(r'^Palette:\s*(.*)$', multiLine: true);
-  final contactFormPattern =
-      RegExp(r'^ContactForm:\s*(.*)$', multiLine: true);
-
-  final nameMatch = namePattern.firstMatch(stored);
-  final categoryMatch = categoryPattern.firstMatch(stored);
-  final contactFormMatch = contactFormPattern.firstMatch(stored);
-  final contactForm = contactFormMatch != null
-      ? ContactFormConfig.tryParse(contactFormMatch.group(1) ?? '')
-      : null;
-
-  if (nameMatch == null || categoryMatch == null) {
-    return (
-      websiteName: '',
-      category: '',
-      styles: const <String>[],
-      palette: '',
-      userBody: stored.trim(),
-      contactForm: contactForm,
-    );
-  }
-
-  final stylesMatch = stylesPattern.firstMatch(stored);
-  final styles = <String>[];
-  if (stylesMatch != null) {
-    final raw = stylesMatch.group(1)?.trim() ?? '';
-    if (raw.isNotEmpty) {
-      styles.addAll(
-        raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty),
-      );
-    }
-  }
-
-  final paletteMatch = palettePattern.firstMatch(stored);
-  final palette = paletteMatch?.group(1)?.trim() ?? '';
-
-  // User body is everything after the first blank line.
-  final blankLineIdx = stored.indexOf('\n\n');
-  final body = blankLineIdx >= 0
-      ? stored.substring(blankLineIdx + 2).trim()
-      : '';
-
-  return (
-    websiteName: nameMatch.group(1)?.trim() ?? '',
-    category: categoryMatch.group(1)?.trim() ?? '',
-    styles: styles,
-    palette: palette,
-    userBody: body,
-    contactForm: contactForm,
-  );
-}
+}) parseStoredPrompt(String stored) => parseStoredWebsitePrompt(stored);
