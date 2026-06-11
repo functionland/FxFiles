@@ -7,6 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/nft_token.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -75,7 +76,36 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
     return mints;
   }
 
+  /// Creator transactions go through the connected wallet; open the
+  /// AppKit modal when none is connected yet. Returns false when the
+  /// user closed it without connecting.
+  Future<bool> _ensureWalletConnected() async {
+    if (WalletService.instance.isConnected) return true;
+    try {
+      if (!WalletService.instance.isInitialized) {
+        await WalletService.instance.initialize(context);
+      }
+      if (!mounted) return false;
+      await WalletService.instance.connectWallet(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Wallet connection failed: $e')));
+      }
+      return false;
+    }
+    if (!WalletService.instance.isConnected) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Connect a wallet to continue')));
+      }
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _startMintFlow() async {
+    if (!await _ensureWalletConnected() || !mounted) return;
     final picked = await FilePicker.platform.pickFiles(
       withData: true,
       type: FileType.image,
@@ -306,6 +336,7 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
   }
 
   Future<void> _shareClaim(NftMintRecord mint) async {
+    if (!await _ensureWalletConnected() || !mounted) return;
     final expiryDays = await showModalBottomSheet<int>(
       context: context,
       builder: (ctx) => SafeArea(

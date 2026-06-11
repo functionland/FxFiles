@@ -43,6 +43,7 @@ import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/device_memory_service.dart';
 import 'package:fula_files/core/services/nft_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/core/services/app_store_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/core/services/folder_watch_service.dart';
@@ -279,6 +280,11 @@ Future<ProviderContainer> _initializeApp() async {
   // Initialize NFT service and wallet (non-blocking)
   NftService.instance.init();
   NftWalletService.instance.getAddress();
+  // Wallet-link messages need the signed-in email; WalletService is
+  // platform-neutral (web shell imports it), so the AuthService hookup
+  // happens here instead of inside the service.
+  WalletService.linkEmailProvider =
+      () => AuthService.instance.currentUser?.email;
 
   // Initialize app store service (non-blocking)
   AppStoreService.instance.init();

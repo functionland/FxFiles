@@ -1,10 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/app/theme/app_colors.dart';
-import 'package:fula_files/core/services/nft_wallet_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -24,18 +26,29 @@ class WebNftsScreen extends StatefulWidget {
 class _WebNftsScreenState extends State<WebNftsScreen> {
   bool _loading = true;
   String? _error;
-  String? _walletAddress;
+  StreamSubscription<WalletConnectionEvent>? _walletSub;
 
   @override
   void initState() {
     super.initState();
     WebNftService.instance.addListener(_onTick);
+    _walletSub =
+        WalletService.instance.onConnectionChange.listen((_) => _onTick());
+    // AppKit needs a context once; idempotent.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        WalletService.instance.initialize(context).catchError((e) {
+          debugPrint('Wallet init note: $e');
+        });
+      }
+    });
     _load();
   }
 
   @override
   void dispose() {
     WebNftService.instance.removeListener(_onTick);
+    _walletSub?.cancel();
     super.dispose();
   }
 
@@ -51,19 +64,28 @@ class _WebNftsScreenState extends State<WebNftsScreen> {
     try {
       await WebTagService.instance.load(force: true);
       await WebNftService.instance.load(force: true);
-      final address = await NftWalletService.instance.getAddress();
-      if (mounted) {
-        setState(() {
-          _walletAddress = address;
-          _loading = false;
-        });
-      }
+      if (mounted) setState(() => _loading = false);
     } catch (e) {
       if (mounted) {
         setState(() {
           _error = '$e';
           _loading = false;
         });
+      }
+    }
+  }
+
+  Future<void> _connectWallet() async {
+    try {
+      if (!WalletService.instance.isInitialized) {
+        await WalletService.instance.initialize(context);
+      }
+      if (!mounted) return;
+      await WalletService.instance.connectWallet(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Wallet connection failed: $e')));
       }
     }
   }
@@ -152,22 +174,39 @@ class _WebNftsScreenState extends State<WebNftsScreen> {
           ),
           title: const Text('NFTs'),
           actions: [
-            if (_walletAddress != null)
+            // Creator transactions (mint, claim offers) run through the
+            // CONNECTED wallet — same AppKit modal as the app.
+            if (WalletService.instance.isConnected &&
+                WalletService.instance.connectedAddress != null)
               Tooltip(
-                message: 'Internal wallet — tap to copy address',
+                message: 'Connected wallet — tap to copy address',
                 child: TextButton.icon(
                   onPressed: () {
-                    Clipboard.setData(ClipboardData(text: _walletAddress!));
+                    final address =
+                        WalletService.instance.connectedAddress!;
+                    Clipboard.setData(ClipboardData(text: address));
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Wallet address copied')));
                   },
-                  icon: const Icon(LucideIcons.wallet, size: 16),
-                  label: Text(
-                    '${_walletAddress!.substring(0, 6)}…${_walletAddress!.substring(_walletAddress!.length - 4)}',
-                    style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 12),
-                  ),
+                  icon: const Icon(LucideIcons.wallet,
+                      size: 16, color: AppColors.primary),
+                  label: Builder(builder: (context) {
+                    final address =
+                        WalletService.instance.connectedAddress!;
+                    return Text(
+                      '${address.substring(0, 6)}…${address.substring(address.length - 4)}',
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 12),
+                    );
+                  }),
                 ),
+              )
+            else
+              TextButton.icon(
+                onPressed: _connectWallet,
+                icon: const Icon(LucideIcons.wallet, size: 16),
+                label: const Text('Connect Wallet',
+                    style: TextStyle(fontSize: 12)),
               ),
             IconButton(
               tooltip: 'Refresh',

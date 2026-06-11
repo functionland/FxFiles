@@ -7,7 +7,6 @@ import 'package:http/http.dart' as http;
 import 'package:reown_appkit/reown_appkit.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/billing/billing_models.dart';
-import 'package:fula_files/core/services/auth_service.dart';
 
 /// Global navigator key for wallet service to use a stable context
 final GlobalKey<NavigatorState> walletNavigatorKey = GlobalKey<NavigatorState>();
@@ -15,6 +14,12 @@ final GlobalKey<NavigatorState> walletNavigatorKey = GlobalKey<NavigatorState>()
 class WalletService {
   static final WalletService instance = WalletService._();
   WalletService._();
+
+  /// Supplies the signed-in email for wallet-link messages. Late-bound
+  /// so this file stays importable from the web shell (AuthService is
+  /// dart:io-tainted): native main.dart wires it to AuthService, the
+  /// web shell wires its session. Falls back to 'unknown' when unset.
+  static String? Function()? linkEmailProvider;
 
   ReownAppKitModal? _appKitModal;
   bool _isInitialized = false;
@@ -257,7 +262,7 @@ class WalletService {
 
   /// Generate message for wallet linking
   String generateLinkMessage(String address) {
-    final email = AuthService.instance.currentUser?.email ?? 'unknown';
+    final email = linkEmailProvider?.call() ?? 'unknown';
     // Backend stores only the SHA-256 hash of the lowercased email (no plaintext PII);
     // it verifies the signed message contains that hash. Matches server/utils/hash.ts
     // emailToUserId: sha256(email.toLowerCase()).digest('hex').

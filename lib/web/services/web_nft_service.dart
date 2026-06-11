@@ -17,6 +17,7 @@ import 'package:fula_files/core/services/meta_tx_relay_service.dart';
 import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Web counterpart of the native NftService — same recipes for the
@@ -28,9 +29,12 @@ import 'package:fula_files/web/services/web_tag_service.dart';
 /// updatedAt}`) instead of the Hive box — the same manifest the app
 /// syncs, so collections and mints round-trip between platforms.
 ///
-/// Web v1 uses the INTERNAL wallet only (derived from the encryption
-/// key — the same address as in the app). External wallets (MetaMask
-/// via AppKit) stay native for now.
+/// Wallet model (matches the economics): CREATOR-side transactions
+/// (approve, mint, claim offers) go through a CONNECTED wallet via
+/// Reown AppKit — the same modal stack the app uses, and it must hold
+/// the gas + FULA. The internal derived wallet (same address as in the
+/// app) is used only for CLAIMING, where the gasless relay / free-gas
+/// chains mean the recipient needs no funds.
 class WebNftService extends ChangeNotifier {
   WebNftService._();
   static final WebNftService instance = WebNftService._();
@@ -178,7 +182,8 @@ class WebNftService extends ChangeNotifier {
       name: name,
       createdAt: DateTime.now(),
       mints: [],
-      creatorWalletAddress: await NftWalletService.instance.getAddress(),
+      creatorWalletAddress: WalletService.instance.connectedAddress ??
+          await NftWalletService.instance.getAddress(),
     );
     _collections = [collection, ..._collections];
     notifyListeners();
@@ -206,6 +211,25 @@ class WebNftService extends ChangeNotifier {
       throw Exception('Internal wallet not available — sign in first');
     }
     return address;
+  }
+
+  /// The connected (external) wallet address — creator-side
+  /// transactions require it.
+  String connectedWalletAddress() {
+    final address = WalletService.instance.connectedAddress;
+    if (address == null) {
+      throw Exception('Connect a wallet first to mint NFTs');
+    }
+    return address;
+  }
+
+  Future<void> _ensureCorrectChain(SupportedChain chain) async {
+    try {
+      await WalletService.instance.switchChain(chain.chainId);
+    } catch (e) {
+      debugPrint('WebNftService: chain switch note: $e');
+      // Non-fatal — the wallet may already be on the correct chain.
+    }
   }
 
   /// ERC20 balanceOf via eth_call (the native path goes through the
@@ -364,9 +388,9 @@ class WebNftService extends ChangeNotifier {
 
   // ---------------------------------------------------------------- mint
 
-  /// Full mint flow (internal wallet): upload image → metadata →
+  /// Full mint flow (CONNECTED wallet): upload image → metadata →
   /// approve FULA → mintWithFula → poll → parse tokenId. Mirrors the
-  /// native startMint step-for-step.
+  /// native startMint external-wallet path step-for-step.
   Future<NftMintRecord> startMint({
     required String tagId,
     required Uint8List bytes,
@@ -387,8 +411,10 @@ class WebNftService extends ChangeNotifier {
 
     final collection =
         await ensureCollection(tagId: tagId, name: collectionName);
-    final creatorAddress = await internalWalletAddress();
+    final creatorAddress = connectedWalletAddress();
     final contract = NftContractService.instance;
+
+    await _ensureCorrectChain(chain);
 
     final fulaPerNftBigInt = parseToWei(fulaPerNft);
     final totalFula = fulaPerNftBigInt * BigInt.from(count);
@@ -456,13 +482,14 @@ class WebNftService extends ChangeNotifier {
       _putMint(collection, record);
 
       if (totalFula > BigInt.zero) {
-        onStatus?.call('Approving FULA...');
+        onStatus?.call('Approve FULA in your wallet...');
+        final approveData =
+            contract.encodeApprove(nftContractAddress, totalFula);
         final approvalTxHash =
-            await NftWalletService.instance.sendApproveTransaction(
+            await WalletService.instance.sendContractTransaction(
           chain: chain,
-          tokenAddress: chain.tokenAddress,
-          spender: nftContractAddress,
-          amount: totalFula,
+          contractAddress: chain.tokenAddress,
+          encodedData: approveData,
         );
         record.approvalTxHash = approvalTxHash;
         _putMint(collection, record);
@@ -477,7 +504,7 @@ class WebNftService extends ChangeNotifier {
       record.status = NftMintStatus.minting;
       _putMint(collection, record);
 
-      onStatus?.call('Minting...');
+      onStatus?.call('Confirm mint in your wallet...');
       final mintData = contract.encodeMintWithFula(
         eventName,
         metadataCid,
@@ -486,9 +513,9 @@ class WebNftService extends ChangeNotifier {
         royaltyBps: royaltyBps,
       );
       final mintTxHash =
-          await NftWalletService.instance.sendSignedTransaction(
+          await WalletService.instance.sendContractTransaction(
         chain: chain,
-        to: nftContractAddress,
+        contractAddress: nftContractAddress,
         encodedData: mintData,
       );
       record.txHash = mintTxHash;
@@ -540,7 +567,9 @@ class WebNftService extends ChangeNotifier {
     final tokenId = mint.tokenId;
     if (tokenId == null) throw Exception('Mint has no token ID');
 
-    await internalWalletAddress();
+    // Creator-side tx — needs the connected wallet (it escrows the NFT).
+    connectedWalletAddress();
+    await _ensureCorrectChain(chain);
     final contract = NftContractService.instance;
 
     final expiresAt = BigInt.from(
@@ -559,9 +588,9 @@ class WebNftService extends ChangeNotifier {
 
     final data = contract.encodeCreateClaimOffer(
         tokenId, claimerAddress, expiresAt, claimKey);
-    final txHash = await NftWalletService.instance.sendSignedTransaction(
+    final txHash = await WalletService.instance.sendContractTransaction(
       chain: chain,
-      to: nftContractAddress,
+      contractAddress: nftContractAddress,
       encodedData: data,
     );
     await contract.pollForReceipt(chainId: chain.chainId, txHash: txHash);
