@@ -17,8 +17,20 @@ class WebUser {
   final String id; // effective_user_id hex (JWT sub)
   final String email;
   final String? displayName;
+  final String? photoUrl;
 
-  const WebUser({required this.id, required this.email, this.displayName});
+  const WebUser({
+    required this.id,
+    required this.email,
+    this.displayName,
+    this.photoUrl,
+  });
+
+  /// Passphrase-only vaults (Mode C) have no OAuth identity — their
+  /// stored email is the synthetic `…@seed.fxfiles.local` placeholder,
+  /// so the UI shows the vault id instead of an email.
+  bool get isVault =>
+      email.isEmpty || email.endsWith('@seed.fxfiles.local');
 }
 
 /// Web-shell session controller. The browser counterpart of the native
@@ -74,6 +86,7 @@ class WebSession extends ChangeNotifier {
         id: (userJson['id'] as String?) ?? '',
         email: (userJson['email'] as String?) ?? '',
         displayName: userJson['displayName'] as String?,
+        photoUrl: userJson['photoUrl'] as String?,
       );
       _lastError = null;
       notifyListeners();
@@ -176,6 +189,7 @@ class WebSession extends ChangeNotifier {
             id: r.result.effectiveUserIdHex,
             email: account.email,
             displayName: account.displayName,
+            photoUrl: account.photoUrl,
           ),
         );
       } else {
@@ -194,6 +208,7 @@ class WebSession extends ChangeNotifier {
             id: account.id,
             email: r.pinnedEmail,
             displayName: account.displayName,
+            photoUrl: account.photoUrl,
           ),
         );
       }

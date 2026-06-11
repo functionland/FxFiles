@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:fula_files/core/models/billing/storage_info.dart';
@@ -54,21 +55,54 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final user = WebSession.instance.user;
+    final isVault = user?.isVault ?? true;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('FxFiles'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset('assets/icons/icon.png', width: 26, height: 26),
+            const SizedBox(width: 8),
+            const Text('FxFiles'),
+          ],
+        ),
         actions: [
           // Profile / settings: account management lives in the cloud
           // portal (billing, wallets, API keys), so this hands off there.
+          // OAuth accounts show email + avatar (same CircleAvatar rules
+          // as the native home screen); passphrase vaults have no OAuth
+          // identity, so they keep the vault-id chip.
           TextButton.icon(
             onPressed: () => launchUrl(
               Uri.parse('https://cloud.fx.land'),
               webOnlyWindowName: '_blank',
             ),
-            icon: const Icon(Icons.manage_accounts_outlined, size: 20),
+            icon: isVault
+                ? const Icon(Icons.manage_accounts_outlined, size: 20)
+                : CircleAvatar(
+                    radius: 12,
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    backgroundImage: user?.photoUrl != null
+                        ? NetworkImage(user!.photoUrl!)
+                        : null,
+                    child: user?.photoUrl == null
+                        ? Text(
+                            user != null && user.email.isNotEmpty
+                                ? user.email.substring(0, 1).toUpperCase()
+                                : 'U',
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.white),
+                          )
+                        : null,
+                  ),
             label: Text(
-              'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…',
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              isVault
+                  ? 'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…'
+                  : user!.email,
+              style: isVault
+                  ? const TextStyle(fontFamily: 'monospace', fontSize: 12)
+                  : const TextStyle(fontSize: 12),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
           IconButton(
@@ -78,6 +112,66 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           ),
           const SizedBox(width: 4),
         ],
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => launchUrl(
+                  Uri.parse('https://fx.land'),
+                  webOnlyWindowName: '_blank',
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Made with ',
+                          style: Theme.of(context).textTheme.bodySmall),
+                      const Icon(Icons.favorite,
+                          size: 13, color: Colors.redAccent),
+                      Text(' by Functionland',
+                          style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('·', style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(width: 8),
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => launchUrl(
+                  Uri.parse('https://github.com/functionland/FxFiles'),
+                  webOnlyWindowName: '_blank',
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(LucideIcons.github,
+                          size: 13,
+                          color: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.color),
+                      const SizedBox(width: 4),
+                      Text('GitHub',
+                          style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
       body: Center(
         child: ConstrainedBox(
