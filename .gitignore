@@ -45,3 +45,6 @@ app.*.map.json
 /android/app/release
 .claude/settings.local.json
 screen_test.err
+
+# Internal audit reports - never publish (repo is public)
+docs/security-durability-audit-*.md
