@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
@@ -71,63 +70,24 @@ class SharingService {
   final _uuid = const Uuid();
   final _random = Random.secure();
 
-  // Cryptographic algorithm for password encryption
-  static final _aesGcm = AesGcm.with256bits();
 
   // ============================================================================
   // CRYPTOGRAPHIC HELPERS (for password-protected links)
   // ============================================================================
 
-  /// Derive encryption key from password using PBKDF2
-  Future<Uint8List> _deriveKeyFromPassword(String password, Uint8List salt) async {
-    final pbkdf2 = Pbkdf2(
-      macAlgorithm: Hmac.sha256(),
-      iterations: 100000,
-      bits: 256,
-    );
+  // Password-link crypto now lives in share_link_builder.dart (shared
+  // wire format with the web shell). These wrappers keep the original
+  // private call sites unchanged.
+  Future<Uint8List> _deriveKeyFromPassword(String password, Uint8List salt) =>
+      sharePasswordDeriveKey(password, salt);
 
-    final secretKey = await pbkdf2.deriveKey(
-      secretKey: SecretKey(utf8.encode(password)),
-      nonce: salt,
-    );
+  Future<Uint8List> _encrypt(Uint8List data, Uint8List key) =>
+      sharePasswordEncrypt(data, key);
 
-    return Uint8List.fromList(await secretKey.extractBytes());
-  }
+  Future<Uint8List> _decrypt(Uint8List encryptedData, Uint8List key) =>
+      sharePasswordDecrypt(encryptedData, key);
 
-  /// Encrypt data using AES-GCM
-  Future<Uint8List> _encrypt(Uint8List data, Uint8List key) async {
-    final secretKey = SecretKey(key);
-    final nonce = _aesGcm.newNonce();
-    final secretBox = await _aesGcm.encrypt(data, secretKey: secretKey, nonce: nonce);
-
-    // Return nonce + ciphertext + mac
-    return Uint8List.fromList([
-      ...nonce,
-      ...secretBox.cipherText,
-      ...secretBox.mac.bytes,
-    ]);
-  }
-
-  /// Decrypt data using AES-GCM
-  Future<Uint8List> _decrypt(Uint8List encryptedData, Uint8List key) async {
-    final nonceLength = _aesGcm.nonceLength;
-    final macLength = _aesGcm.macAlgorithm.macLength;
-
-    final nonce = encryptedData.sublist(0, nonceLength);
-    final cipherText = encryptedData.sublist(nonceLength, encryptedData.length - macLength);
-    final mac = encryptedData.sublist(encryptedData.length - macLength);
-
-    final secretKey = SecretKey(key);
-    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
-    final decrypted = await _aesGcm.decrypt(secretBox, secretKey: secretKey);
-
-    return Uint8List.fromList(decrypted);
-  }
-
-  /// Generate random salt
-  Uint8List _generateSalt(int length) {
-    return Uint8List.fromList(List.generate(length, (_) => _random.nextInt(256)));
-  }
+  Uint8List _generateSalt(int length) => generateShareSalt(length);
 
   // ============================================================================
   // OWNER SIDE - Creating and managing shares
@@ -1172,44 +1132,25 @@ class SharingService {
       );
     }
 
-    // Build inner payload with fula token and secret key (v2 format)
-    // File manifest stored server-side only for folder shares.
-    final innerPayloadMap = {
-      'v': 2,
-      't': fulaToken,
-      'b': effBucket,
-      'k': pathScope,  // Original path - used for DEK derivation
-      'cid': storageKey,  // Storage key/CID - used for fetching file from IPFS
-      'sk': base64Encode(privateKeyBytes),  // Secret key for decryption
-      if (label != null) 'l': label,
-      if (fileName != null) 'f': fileName,
-      if (folderFiles != null) 'folder': true,
-    };
-
-    // Encrypt the inner payload with password-derived key
-    final salt = _generateSalt(16);
-    final passwordKey = await _deriveKeyFromPassword(password, salt);
-    final encryptedPayload = await _encrypt(
-      Uint8List.fromList(utf8.encode(jsonEncode(innerPayloadMap))),
-      passwordKey,
+    // Inner v2 payload + password envelope + URL via the shared builder
+    // (single-sourced wire format with the web shell). File manifest
+    // stored server-side only for folder shares.
+    final built = await buildPasswordProtectedShareUrl(
+      baseUrl: gatewayBaseUrl ?? kShareGatewayBaseUrl,
+      tokenId: tokenId,
+      fulaToken: fulaToken,
+      bucket: effBucket,
+      pathScope: pathScope,
+      storageKey: storageKey,
+      linkSecretKey: privateKeyBytes,
+      password: password,
+      label: label,
+      fileName: fileName,
+      folder: folderFiles != null,
     );
-
-    // Create outer wrapper with salt and encrypted inner payload
-    final outerPayload = {
-      'v': 2,  // Version 2 = fula_client format
-      'p': true, // password protected flag
-      's': base64Encode(salt),
-      'e': base64Encode(encryptedPayload),
-      'b': effBucket,
-      'k': pathScope,
-    };
-
-    // Encode outer payload for URL
-    final fragment = base64UrlEncode(utf8.encode(jsonEncode(outerPayload)));
-
-    // Build the URL
-    final baseUrl = gatewayBaseUrl ?? kShareGatewayBaseUrl;
-    final url = '$baseUrl/view/$tokenId#$fragment';
+    final url = built.url;
+    final salt = built.salt;
+    final fragment = built.fragment;
 
     // Post manifest to server for folder shares (enables temporal updates)
     if (folderFiles != null) {

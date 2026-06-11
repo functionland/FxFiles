@@ -1,11 +1,11 @@
 {
-    "name": "fula_files",
-    "short_name": "fula_files",
+    "name": "FxFiles",
+    "short_name": "FxFiles",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0A0A0A",
+    "theme_color": "#0A0A0A",
+    "description": "FxFiles - your encrypted cloud storage, in the browser.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

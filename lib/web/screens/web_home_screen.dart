@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
@@ -57,13 +58,17 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
       appBar: AppBar(
         title: const Text('FxFiles'),
         actions: [
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Text(
-                'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…',
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-              ),
+          // Profile / settings: account management lives in the cloud
+          // portal (billing, wallets, API keys), so this hands off there.
+          TextButton.icon(
+            onPressed: () => launchUrl(
+              Uri.parse('https://cloud.fx.land'),
+              webOnlyWindowName: '_blank',
+            ),
+            icon: const Icon(Icons.manage_accounts_outlined, size: 20),
+            label: Text(
+              'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…',
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             ),
           ),
           IconButton(
@@ -71,6 +76,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
             icon: const Icon(Icons.logout),
             onPressed: () => WebSession.instance.signOut(),
           ),
+          const SizedBox(width: 4),
         ],
       ),
       body: Center(

@@ -237,14 +237,86 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
   }
 
-  /// Create a 7-day public link for a single file. Mirrors the native
-  /// SharingService.createPublicLink single-file path: disposable
-  /// X25519 keypair, fula share token, v2 payload via the shared
-  /// buildPublicShareUrl. (v1 web limitation: the link is not recorded
-  /// locally, so revoke-before-expiry isn't available from the web UI.)
+  /// Create a 7-day share link for a single file — public, or private
+  /// (password-protected: the v2 payload is AES-GCM-encrypted under a
+  /// PBKDF2 key; recipient needs link AND password). Mirrors the native
+  /// SharingService paths via the shared builders. (v1 web limitation:
+  /// links are not recorded locally, so revoke-before-expiry isn't
+  /// available from the web UI.)
   Future<void> _share(FulaObject o) async {
     const expiryDays = 7;
-    _snack('Creating public link…');
+
+    var private = false;
+    final passwordController = TextEditingController();
+    final opts = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Share file'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: false,
+                    label: Text('Public'),
+                    icon: Icon(Icons.public),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    label: Text('Private'),
+                    icon: Icon(Icons.lock_outline),
+                  ),
+                ],
+                selected: {private},
+                onSelectionChanged: (s) =>
+                    setLocal(() => private = s.first),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                private
+                    ? 'Recipients need the link AND a password.'
+                    : 'Anyone with the link can download.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+              if (private)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: 'Link password',
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Create link'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (opts != true) return;
+    final linkPassword = passwordController.text;
+    if (private && linkPassword.isEmpty) {
+      _snack('Private links need a password.');
+      return;
+    }
+
+    _snack('Creating link…');
     try {
       final bucket = o.sourceBucket ?? widget.base;
       final storageKey = o.storageKey ?? o.key;
@@ -272,30 +344,50 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       );
 
       final fileName = _displayName(o).split('/').last;
-      final url = buildPublicShareUrl(
-        baseUrl: kShareGatewayBaseUrl,
-        tokenId: const Uuid().v4(),
-        fulaToken: fulaToken,
-        bucket: bucket,
-        pathScope: o.key,
-        storageKey: storageKey,
-        linkSecretKey: privateKeyBytes,
-        fileName: fileName,
-      );
+      final String url;
+      if (private) {
+        final built = await buildPasswordProtectedShareUrl(
+          baseUrl: kShareGatewayBaseUrl,
+          tokenId: const Uuid().v4(),
+          fulaToken: fulaToken,
+          bucket: bucket,
+          pathScope: o.key,
+          storageKey: storageKey,
+          linkSecretKey: privateKeyBytes,
+          password: linkPassword,
+          fileName: fileName,
+        );
+        url = built.url;
+      } else {
+        url = buildPublicShareUrl(
+          baseUrl: kShareGatewayBaseUrl,
+          tokenId: const Uuid().v4(),
+          fulaToken: fulaToken,
+          bucket: bucket,
+          pathScope: o.key,
+          storageKey: storageKey,
+          linkSecretKey: privateKeyBytes,
+          fileName: fileName,
+        );
+      }
 
       if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Public link'),
+          title: Text(private ? 'Private link' : 'Public link'),
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Anyone with this link can download '
-                    '"$fileName" for $expiryDays days.'),
+                Text(private
+                    ? 'This link opens "$fileName" for $expiryDays days '
+                        'ONLY together with the password — share them '
+                        'through different channels.'
+                    : 'Anyone with this link can download '
+                        '"$fileName" for $expiryDays days.'),
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(8),

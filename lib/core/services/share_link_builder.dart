@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
+
+import 'package:cryptography/cryptography.dart';
 
 // Pure construction of public-share URLs. Platform-neutral and free of
 // service dependencies so the native SharingService and the web shell
@@ -45,4 +48,112 @@ String buildPublicShareUrl({
   };
   final fragment = base64UrlEncode(utf8.encode(jsonEncode(payloadMap)));
   return '$baseUrl/view/$tokenId#$fragment';
+}
+
+// ============================================================================
+// Password-protected links. The portal decrypts the inner v2 payload
+// with a key derived from the user-supplied password; these parameters
+// (PBKDF2-HMAC-SHA256 / 100k / 256-bit, AES-GCM-256, nonce||ct||mac
+// layout, outer {v,p,s,e,b,k} shape) are wire format — native, web and
+// the portal must agree byte-for-byte.
+// ============================================================================
+
+final _shareAesGcm = AesGcm.with256bits();
+final _shareRandom = Random.secure();
+
+/// PBKDF2-HMAC-SHA256, 100k iterations, 256-bit output.
+Future<Uint8List> sharePasswordDeriveKey(
+    String password, Uint8List salt) async {
+  final pbkdf2 = Pbkdf2(
+    macAlgorithm: Hmac.sha256(),
+    iterations: 100000,
+    bits: 256,
+  );
+  final secretKey = await pbkdf2.deriveKey(
+    secretKey: SecretKey(utf8.encode(password)),
+    nonce: salt,
+  );
+  return Uint8List.fromList(await secretKey.extractBytes());
+}
+
+/// AES-GCM-256; output layout: nonce || ciphertext || mac.
+Future<Uint8List> sharePasswordEncrypt(Uint8List data, Uint8List key) async {
+  final secretKey = SecretKey(key);
+  final nonce = _shareAesGcm.newNonce();
+  final secretBox =
+      await _shareAesGcm.encrypt(data, secretKey: secretKey, nonce: nonce);
+  return Uint8List.fromList(
+      [...nonce, ...secretBox.cipherText, ...secretBox.mac.bytes]);
+}
+
+/// Inverse of [sharePasswordEncrypt].
+Future<Uint8List> sharePasswordDecrypt(
+    Uint8List encryptedData, Uint8List key) async {
+  final nonceLength = _shareAesGcm.nonceLength;
+  final macLength = _shareAesGcm.macAlgorithm.macLength;
+  final nonce = encryptedData.sublist(0, nonceLength);
+  final cipherText =
+      encryptedData.sublist(nonceLength, encryptedData.length - macLength);
+  final mac = encryptedData.sublist(encryptedData.length - macLength);
+  final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
+  final decrypted =
+      await _shareAesGcm.decrypt(secretBox, secretKey: SecretKey(key));
+  return Uint8List.fromList(decrypted);
+}
+
+Uint8List generateShareSalt(int length) =>
+    Uint8List.fromList(List.generate(length, (_) => _shareRandom.nextInt(256)));
+
+/// Assemble a password-protected share URL: the standard v2 inner
+/// payload is AES-GCM-encrypted under the password-derived key and
+/// wrapped in the outer `{v:2, p:true, s, e, b, k}` envelope. Returns
+/// the URL plus the fragment and salt (native persists both for URL
+/// regeneration).
+Future<({String url, String fragment, Uint8List salt})>
+    buildPasswordProtectedShareUrl({
+  required String baseUrl,
+  required String tokenId,
+  required String fulaToken,
+  required String bucket,
+  required String pathScope,
+  required String storageKey,
+  required Uint8List linkSecretKey,
+  required String password,
+  String? label,
+  String? fileName,
+  bool folder = false,
+}) async {
+  final innerPayloadMap = {
+    'v': 2,
+    't': fulaToken,
+    'b': bucket,
+    'k': pathScope,
+    'cid': storageKey,
+    'sk': base64Encode(linkSecretKey),
+    if (label != null) 'l': label,
+    if (fileName != null) 'f': fileName,
+    if (folder) 'folder': true,
+  };
+
+  final salt = generateShareSalt(16);
+  final passwordKey = await sharePasswordDeriveKey(password, salt);
+  final encryptedPayload = await sharePasswordEncrypt(
+    Uint8List.fromList(utf8.encode(jsonEncode(innerPayloadMap))),
+    passwordKey,
+  );
+
+  final outerPayload = {
+    'v': 2,
+    'p': true, // password protected flag
+    's': base64Encode(salt),
+    'e': base64Encode(encryptedPayload),
+    'b': bucket,
+    'k': pathScope,
+  };
+  final fragment = base64UrlEncode(utf8.encode(jsonEncode(outerPayload)));
+  return (
+    url: '$baseUrl/view/$tokenId#$fragment',
+    fragment: fragment,
+    salt: salt,
+  );
 }
