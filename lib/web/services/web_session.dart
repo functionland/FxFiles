@@ -87,9 +87,18 @@ class WebSession extends ChangeNotifier {
 
       final kek = Uint8List.fromList(base64Decode(kekB64));
       final init = await AuthCore.initializeFulaFromStorage(kek: kek);
-      if (init.configured) {
-        unawaited(MasterHealthService.instance.start());
+      if (!init.configured) {
+        // Partial/legacy storage (e.g. the browser evicted the JWT or
+        // endpoint keys but kept credentials): entering the app with
+        // an UNCONFIGURED client makes every screen throw
+        // "FulaApiService is not configured" (real user report,
+        // 2026-06-12). Show the sign-in screen instead — a fresh
+        // sign-in rewrites the full set.
+        debugPrint('WebSession: stored session unusable '
+            '(client unconfigured) — routing to sign-in');
+        return false;
       }
+      unawaited(MasterHealthService.instance.start());
 
       _user = WebUser(
         id: (userJson['id'] as String?) ?? '',

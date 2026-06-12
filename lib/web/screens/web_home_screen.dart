@@ -49,63 +49,97 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     return '$bytes B';
   }
 
-  @override
-  Widget build(BuildContext context) {
+  /// Same CircleAvatar rules as the native home screen: OAuth photo →
+  /// image; else email initial; passphrase vaults get a person glyph.
+  Widget _profileAvatar(BuildContext context, {double radius = 14}) {
     final user = WebSession.instance.user;
     final isVault = user?.isVault ?? true;
-    return Scaffold(
-      appBar: AppBar(
-        title: Row(
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: Theme.of(context).colorScheme.primary,
+      backgroundImage: !isVault && user?.photoUrl != null
+          ? NetworkImage(user!.photoUrl!)
+          : null,
+      child: !isVault && user?.photoUrl != null
+          ? null
+          : isVault
+              ? Icon(Icons.person_outline,
+                  size: radius + 2, color: Colors.white)
+              : Text(
+                  user != null && user.email.isNotEmpty
+                      ? user.email.substring(0, 1).toUpperCase()
+                      : 'U',
+                  style: TextStyle(
+                      fontSize: radius - 3, color: Colors.white),
+                ),
+    );
+  }
+
+  /// Native-parity profile sheet: identity on top, sign out below.
+  void _showProfileSheet() {
+    final user = WebSession.instance.user;
+    final isVault = user?.isVault ?? true;
+    final identity = isVault
+        ? 'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…'
+        : (user?.email ?? '');
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Image.asset('assets/icons/icon.png', width: 26, height: 26),
-            const SizedBox(width: 8),
-            const Text('FxFiles'),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: _profileAvatar(ctx, radius: 20),
+              title: Text(
+                identity,
+                style: isVault
+                    ? const TextStyle(fontFamily: 'monospace')
+                    : null,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: !isVault &&
+                      (user?.displayName?.isNotEmpty ?? false)
+                  ? Text(user!.displayName!)
+                  : null,
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign out'),
+              onTap: () {
+                Navigator.pop(ctx);
+                WebSession.instance.signOut();
+              },
+            ),
+            const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      // Native-parity header that survives narrow phones: profile
+      // avatar (left, opens the identity/sign-out sheet), plain
+      // "FxFiles" title (no logo), settings (right → cloud portal).
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Profile',
+          onPressed: _showProfileSheet,
+          icon: _profileAvatar(context),
+        ),
+        title: const Text('FxFiles'),
         actions: [
-          // Profile / settings: account management lives in the cloud
-          // portal (billing, wallets, API keys), so this hands off there.
-          // OAuth accounts show email + avatar (same CircleAvatar rules
-          // as the native home screen); passphrase vaults have no OAuth
-          // identity, so they keep the vault-id chip.
-          TextButton.icon(
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
             onPressed: () => launchUrl(
               Uri.parse('https://cloud.fx.land'),
               webOnlyWindowName: '_blank',
             ),
-            icon: isVault
-                ? const Icon(Icons.manage_accounts_outlined, size: 20)
-                : CircleAvatar(
-                    radius: 12,
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    backgroundImage: user?.photoUrl != null
-                        ? NetworkImage(user!.photoUrl!)
-                        : null,
-                    child: user?.photoUrl == null
-                        ? Text(
-                            user != null && user.email.isNotEmpty
-                                ? user.email.substring(0, 1).toUpperCase()
-                                : 'U',
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.white),
-                          )
-                        : null,
-                  ),
-            label: Text(
-              isVault
-                  ? 'Vault ${user != null && user.id.length >= 8 ? user.id.substring(0, 8) : '—'}…'
-                  : user!.email,
-              style: isVault
-                  ? const TextStyle(fontFamily: 'monospace', fontSize: 12)
-                  : const TextStyle(fontSize: 12),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          IconButton(
-            tooltip: 'Sign out',
-            icon: const Icon(Icons.logout),
-            onPressed: () => WebSession.instance.signOut(),
           ),
           const SizedBox(width: 4),
         ],
