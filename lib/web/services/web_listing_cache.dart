@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
@@ -11,6 +12,7 @@ import 'package:web/web.dart' as web;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_cache_hkdf.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
 
 /// L1/L2 cache behind the web SWR read path
 /// (docs/web-listing-prefetch-cache-plan.md §5).
@@ -37,6 +39,18 @@ class WebListingCache {
 
   static const String boxName = 'web_listing_cache_v1';
   static const int schemaVersion = 1;
+
+  /// §8 size policy. Budgets count ciphertext bytes of cat|man entries
+  /// per owner; eviction runs BEFORE an insert so the budget is never
+  /// transiently exceeded.
+  static const int budgetBytesDesktop = 25 * 1024 * 1024;
+  static const int budgetBytesLowEnd = 10 * 1024 * 1024;
+
+  /// Listings beyond this are not cached at all on desktop (log only);
+  /// low-end truncates to its cap (newest by mtime) so the open still
+  /// paints instantly and the live fetch completes the view.
+  static const int maxObjectsDesktop = 20000;
+  static const int maxObjectsLowEnd = 5000;
 
   Box<Uint8List>? _box;
   web.CryptoKey? _aesKey;
@@ -175,6 +189,7 @@ class WebListingCache {
           .toList(growable: false);
       final entry = (objects: objects, fetchedAt: fetchedAt);
       _l1Listings[k] = entry;
+      unawaited(_touchLru(owner, k));
       return entry;
     } catch (e) {
       debugPrint('WebListingCache.readListing($bucket) miss: $e');
@@ -204,16 +219,42 @@ class WebListingCache {
           return;
         }
       }
+
+      // §8 per-entry object caps.
+      var toStore = objects;
+      final lowEnd = WebDeviceClass.lowEnd;
+      final maxObjects = lowEnd ? maxObjectsLowEnd : maxObjectsDesktop;
+      if (objects.length > maxObjects) {
+        if (!lowEnd) {
+          debugPrint('WebListingCache.writeListing($bucket): '
+              '${objects.length} objects exceeds $maxObjects — not cached');
+          return;
+        }
+        // Low-end: keep the newest slice so the open paints instantly;
+        // the live fetch completes the view.
+        toStore = [...objects]..sort((a, b) {
+            final am = a.lastModified?.millisecondsSinceEpoch ?? 0;
+            final bm = b.lastModified?.millisecondsSinceEpoch ?? 0;
+            return bm.compareTo(am);
+          });
+        toStore = toStore.take(maxObjects).toList();
+        debugPrint('WebListingCache.writeListing($bucket): truncated '
+            '${objects.length} → $maxObjects (low-end)');
+      }
+
       final k = listingKey(owner, bucket);
       final plain = utf8.encode(jsonEncode({
         'v': schemaVersion,
         'kind': 'listing',
         'fetchedAt': at.toIso8601String(),
-        'objects': objects.map(objectToJson).toList(),
+        if (!identical(toStore, objects)) 'truncated': true,
+        'objects': toStore.map(objectToJson).toList(),
       }));
       final value = await _encrypt(key, k, Uint8List.fromList(plain));
+      await _evictForInsert(owner, k, value.length);
       await (await _openBox()).put(k, value);
-      _l1Listings[k] = (objects: List.unmodifiable(objects), fetchedAt: at);
+      _l1Listings[k] = (objects: List.unmodifiable(toStore), fetchedAt: at);
+      await _touchLru(owner, k);
     } catch (e) {
       debugPrint('WebListingCache.writeListing($bucket) skipped: $e');
     }
@@ -247,6 +288,7 @@ class WebListingCache {
           present ? base64Decode(json['blob'] as String? ?? '') : null;
       final entry = (blob: blob, fetchedAt: fetchedAt);
       _l1Manifests[k] = entry;
+      unawaited(_touchLru(owner, k));
       return entry;
     } catch (e) {
       debugPrint('WebListingCache.readManifest($bucket/$objectKey) miss: $e');
@@ -282,11 +324,163 @@ class WebListingCache {
         if (blob != null) 'blob': base64Encode(blob),
       }));
       final value = await _encrypt(key, k, Uint8List.fromList(plain));
+      await _evictForInsert(owner, k, value.length);
       await (await _openBox()).put(k, value);
       _l1Manifests[k] = (blob: blob, fetchedAt: at);
+      await _touchLru(owner, k);
     } catch (e) {
       debugPrint(
           'WebListingCache.writeManifest($bucket/$objectKey) skipped: $e');
+    }
+  }
+
+  // -------------------------------------------------- drops / patches
+
+  /// Cross-tab invalidation target: remove L1 + L2 so the next view
+  /// revalidates live.
+  Future<void> dropListing(String bucket) async {
+    try {
+      final owner = await ownerHash();
+      if (owner == null) return;
+      final k = listingKey(owner, bucket);
+      _l1Listings.remove(k);
+      await (await _openBox()).delete(k);
+    } catch (e) {
+      debugPrint('WebListingCache.dropListing($bucket): $e');
+    }
+  }
+
+  Future<void> dropManifest(String bucket, String objectKey) async {
+    try {
+      final owner = await ownerHash();
+      if (owner == null) return;
+      final k = manifestKey(owner, bucket, objectKey);
+      _l1Manifests.remove(k);
+      await (await _openBox()).delete(k);
+    } catch (e) {
+      debugPrint('WebListingCache.dropManifest($bucket/$objectKey): $e');
+    }
+  }
+
+  /// In-place delete write-through (plan §7): remove [objectKey] from
+  /// the cached listing, PRESERVING the entry's fetchedAt — the forced
+  /// live reload that follows every mutation carries a newer stamp and
+  /// must win the monotonic guard. Deliberately NOT allowOlder: with an
+  /// equal stamp the guard admits the patch, but if a fresher write
+  /// already landed (reload finished first), the patch is correctly
+  /// rejected instead of regressing it (Gemini P3 round). No-op when
+  /// nothing is cached.
+  Future<void> patchListingRemove(String bucket, String objectKey) async {
+    try {
+      final existing = await readListing(bucket);
+      if (existing == null) return;
+      final next =
+          existing.objects.where((o) => o.key != objectKey).toList();
+      if (next.length == existing.objects.length) return;
+      await writeListing(bucket, next, fetchedAt: existing.fetchedAt);
+    } catch (e) {
+      debugPrint('WebListingCache.patchListingRemove($bucket): $e');
+    }
+  }
+
+  /// Sign-in hygiene: delete every entry belonging to a DIFFERENT
+  /// owner (correctness never depended on this — foreign entries fail
+  /// AES-GCM auth — but the box stays single-tenant and bounded).
+  Future<void> purgeOtherOwners() async {
+    try {
+      final owner = await ownerHash();
+      if (owner == null) return;
+      final box = await _openBox();
+      final foreign = <String>[
+        for (final key in box.keys)
+          if (key is String && !key.startsWith('$owner|')) key,
+      ];
+      for (final k in foreign) {
+        await box.delete(k);
+      }
+      if (foreign.isNotEmpty) {
+        debugPrint(
+            'WebListingCache.purgeOtherOwners: removed ${foreign.length}');
+      }
+    } catch (e) {
+      debugPrint('WebListingCache.purgeOtherOwners: $e');
+    }
+  }
+
+  // ------------------------------------------------------ LRU / budget
+
+  String _lruKey(String owner) => '$owner|lru';
+
+  bool _isDataKey(String owner, String key) =>
+      key.startsWith('$owner|cat|') || key.startsWith('$owner|man|');
+
+  /// Plaintext lastAccess sidecar (epoch ms per entry key) — the
+  /// ciphertext can't be read cheaply for LRU ordering, and the keys
+  /// it names are already visible. Updated on writes and L2 reads.
+  Future<void> _touchLru(String owner, String entryKey) async {
+    try {
+      final box = await _openBox();
+      final k = _lruKey(owner);
+      Map<String, dynamic> lru = {};
+      final raw = box.get(k);
+      if (raw != null) {
+        try {
+          lru = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+        } catch (_) {}
+      }
+      lru[entryKey] = DateTime.now().millisecondsSinceEpoch;
+      await box.put(k, Uint8List.fromList(utf8.encode(jsonEncode(lru))));
+    } catch (_) {}
+  }
+
+  /// Evict least-recently-accessed entries until [incomingBytes] fits
+  /// the owner's budget — BEFORE the insert, so the budget is never
+  /// transiently exceeded (quota failure mid-write must be
+  /// unreachable). The key being (re)written never evicts itself.
+  Future<void> _evictForInsert(
+      String owner, String insertKey, int incomingBytes) async {
+    try {
+      final budget = WebDeviceClass.lowEnd
+          ? budgetBytesLowEnd
+          : budgetBytesDesktop;
+      final box = await _openBox();
+
+      var total = incomingBytes;
+      final sizes = <String, int>{};
+      for (final key in box.keys) {
+        if (key is! String || !_isDataKey(owner, key)) continue;
+        if (key == insertKey) continue; // replaced, not added
+        final v = box.get(key);
+        if (v == null) continue;
+        sizes[key] = v.length;
+        total += v.length;
+      }
+      if (total <= budget) return;
+
+      Map<String, dynamic> lru = {};
+      final rawLru = box.get(_lruKey(owner));
+      if (rawLru != null) {
+        try {
+          lru = jsonDecode(utf8.decode(rawLru)) as Map<String, dynamic>;
+        } catch (_) {}
+      }
+      final candidates = sizes.keys.toList()
+        ..sort((a, b) => ((lru[a] as num?) ?? 0)
+            .compareTo((lru[b] as num?) ?? 0)); // oldest access first
+
+      for (final key in candidates) {
+        if (total <= budget) break;
+        await box.delete(key);
+        _l1Listings.remove(key);
+        _l1Manifests.remove(key);
+        lru.remove(key);
+        total -= sizes[key]!;
+        debugPrint('WebListingCache: evicted $key (${sizes[key]} B)');
+      }
+      await box.put(_lruKey(owner),
+          Uint8List.fromList(utf8.encode(jsonEncode(lru))));
+    } catch (e) {
+      debugPrint('WebListingCache._evictForInsert: $e');
     }
   }
 
@@ -360,6 +554,28 @@ class WebListingCache {
   }
 
   // ------------------------------------------------------- lifecycle
+
+  /// Remote-sign-out receiver: drop L1 + the derived key AND CLOSE the
+  /// box handle. An open IndexedDB connection in this tab would BLOCK
+  /// the originating tab's deleteFromDisk, and an in-flight write here
+  /// could leak stale data back into a "deleted" box (Gemini P3
+  /// round). Post-sign-out reads can't reopen it: ownerHash() is null
+  /// once credentials are cleared, so every cache call exits first.
+  Future<void> deactivate() async {
+    _l1Listings.clear();
+    _l1Manifests.clear();
+    _aesKey = null;
+    _aesKeyOwner = null;
+    try {
+      final box = _box;
+      _box = null;
+      if (box != null && box.isOpen) {
+        await box.close();
+      }
+    } catch (e) {
+      debugPrint('WebListingCache.deactivate: $e');
+    }
+  }
 
   /// Drop everything (sign-out wiring lands in P3; provided now so the
   /// e2e harness and early callers have it).

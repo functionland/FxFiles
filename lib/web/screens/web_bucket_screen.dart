@@ -16,7 +16,9 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
+import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
@@ -250,6 +252,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         }
       }
       _snack('Upload complete');
+      // Other tabs drop their cached copy of this bucket; our own
+      // forced reload below refreshes this tab + the cache.
+      WebCacheSync.instance.sendInvalidateListing(target);
     } catch (e) {
       _snack('Upload failed: $e');
     } finally {
@@ -308,6 +313,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       final bucket = o.sourceBucket ?? widget.base;
       await WebForegroundActivity.instance
           .run(() => FulaApiService.instance.deleteObject(bucket, o.key));
+      // Write-through: the cached listing drops the row instantly
+      // (preserving its stamp so the forced reload below still wins),
+      // and other tabs revalidate on their next view.
+      await WebListingCache.instance.patchListingRemove(bucket, o.key);
+      WebCacheSync.instance.sendInvalidateListing(bucket);
       _snack('Deleted');
       await _load(force: true);
     } catch (e) {

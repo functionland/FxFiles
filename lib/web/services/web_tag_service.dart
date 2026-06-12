@@ -9,6 +9,7 @@ import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 
@@ -141,8 +142,11 @@ class WebTagService {
     );
     // Write-through: the SWR cache must reflect the manifest we just
     // uploaded, or the next open would serve the pre-mutation copy.
+    // Other tabs drop their copy and revalidate on next view.
     await WebListingCache.instance
         .writeManifest(_writeBucket, '$_keyPrefix$uid.json', data);
+    WebCacheSync.instance
+        .sendInvalidateManifest(_writeBucket, '$_keyPrefix$uid.json');
     debugPrint('WebTagService: synced ${_tags.length} tags, '
         '${_taggedFiles.length} associations');
   }

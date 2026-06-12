@@ -1,10 +1,10 @@
 # Web Listing Cache + Background Prefetch — Design Plan
 
-Status: P0 measured (§11) + **P1 SHIPPED** (§11.1) + **P2 SHIPPED** (§11.2, 2026-06-12)
-— SWR + background prefetch live; next: P3 lifecycle (write-through listing patches,
-cross-user wipe-at-sign-in, size caps/LRU, cross-tab invalidation broadcasts). Advisor
-rounds: design (Gemini + Copilot, §10/§12), P1 impl (Gemini, §11.1), P2 impl (Gemini,
-§11.2). Two-client write-safety analysis: §7.1.
+Status: **ALL v1 PHASES SHIPPED** — P0 measured (§11), P1 SWR (§11.1), P2 prefetch
+(§11.2), P3 lifecycle (§11.3, 2026-06-12). Remaining: P4 optional V2 seams (hover
+prefetch, forest pruning, server forest-root probe — separate approval). Advisor
+rounds: design (Gemini + Copilot, §10/§12), P1/P2/P3 impl (Gemini, §11.1–§11.3).
+Two-client write-safety analysis: §7.1.
 Scope: web shell only (`lib/web/**` + additive core seams). Native screens keep their
 existing flows; any shared-file change must be behavior-identical natively.
 
@@ -508,6 +508,40 @@ timer wakeups; instant resume); BroadcastChannel same-window tiebreak (random to
 lower wins; plus the fix for both-tabs-politely-standing-down); storage quota re-checked
 every 3rd task. Accepted as-is: manifest failures don't count toward the 3-strike stop
 (self-heal via SWR); flat 5-min poison (queue passes once per session).
+
+### 11.3 P3 results (shipped 2026-06-12)
+
+Built as designed (§7/§8) with these notes:
+- Delete write-through patches the cached listing in place (stamp preserved, NOT
+  allowOlder — equal stamps pass the monotonic guard, a fresher concurrent write
+  correctly rejects the patch). Upload deliberately does NOT optimistically add (a
+  constructed entry would carry fake metadata; the awaited forced reload lands ~0.7 s
+  later) — it broadcasts the invalidation only.
+- Cross-tab messages on the shared 'fxfiles-cache' channel: `inv-listing` /
+  `inv-manifest` (receivers drop L1+L2, revalidate on next view; receivers never
+  re-broadcast) and `signed-out` (receivers **deactivate** — close their box handle so
+  the originator's deleteFromDisk isn't blocked and no in-flight write leaks into the
+  deleted box — then drop the in-memory session; router redirects).
+- Cross-user purge runs at every prefetch-scheduler start (cheap key scan); correctness
+  never depended on it (foreign entries fail AES-GCM auth + AAD) — hygiene + space.
+- Size policy live: 25 MB desktop / 10 MB low-end ciphertext budgets, LRU
+  evict-BEFORE-insert from a plaintext lastAccess sidecar, per-entry caps (desktop
+  > 20 k objects not cached; low-end truncates to newest 5 k, self-heals via tiers).
+- wasm handle audit (sign-out): `FulaApiService.reset()` drops all Dart references and
+  clears the forest memo; Rust memory frees at GC via the FRB finalizer (not
+  deterministic, no cross-user reuse path). Accepted, documented.
+- Accepted residual: LRU sidecar phantom keys after drops (bounded < 1 MB, self-clears
+  on re-add/evict cycles); bfcache restores stay cancelled.
+
+Gates (e2e=lifecycle, live): patch-remove 135→134 with stamp preserved ✓; cross-tab
+invalidate drops the entry ✓; planted foreign-owner entry purged, own entries intact ✓;
+quota torture 30 MB synthetic → 24.0 MB kept (≤ 25 MB budget), 7 oldest evicted ✓;
+remote sign-out clears the receiving tab's session ✓. SWR + prefetch e2e gates re-pass.
+
+Gemini adversarial round (both fixed pre-ship): `allowOlder` on the delete patch could
+regress a faster-finishing forced reload → dropped (equal-stamp admission suffices);
+remote sign-out receivers now CLOSE their box handle (an open IndexedDB connection
+blocks the originator's delete and could leak an in-flight write back).
 
 ## 12. Advisor round summary
 

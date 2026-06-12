@@ -120,6 +120,10 @@ class WebPrefetchScheduler {
     _started = true;
     _startedAt = DateTime.now();
 
+    // Sign-in hygiene before anything else touches the box: drop any
+    // other account's entries (cheap key scan, no network — P3).
+    await WebListingCache.instance.purgeOtherOwners();
+
     final wait = delay ??
         (WebDeviceClass.lowEnd
             ? const Duration(seconds: 5)

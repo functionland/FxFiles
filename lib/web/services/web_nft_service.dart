@@ -18,6 +18,7 @@ import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -158,6 +159,7 @@ class WebNftService extends ChangeNotifier {
       );
       // Write-through so the next SWR read serves this manifest.
       await WebListingCache.instance.writeManifest(writeBucket, key, data);
+      WebCacheSync.instance.sendInvalidateManifest(writeBucket, key);
       debugPrint('WebNftService: manifest synced (${byId.length})');
     } catch (e) {
       debugPrint('WebNftService: manifest sync failed (non-fatal): $e');

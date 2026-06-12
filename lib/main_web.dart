@@ -32,6 +32,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:web/web.dart' as web;
 
 import 'package:fula_client/fula_client.dart' as fula;
+import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
 import 'package:fula_files/core/services/automate_task_service.dart';
@@ -250,6 +251,84 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         final keys = r.objects.map((o) => o.key).toSet();
         log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
             'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'lifecycle':
+        // P3 gates: delete write-through patch, cross-tab invalidate,
+        // cross-user purge, quota-torture eviction, remote sign-out.
+        // A RAW second BroadcastChannel in this page simulates "the
+        // other tab" (same-origin instances receive each other's
+        // posts; never their own).
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: lifecycle mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        final lcBucket = BucketVersionResolver.writeBucket('documents');
+
+        // Prime the cache with the real listing.
+        final primed0 =
+            await WebListingSwr.instance.getListing(lcBucket);
+        log('primed n=${primed0.objects.length}');
+
+        // (1) Delete write-through: row drops, stamp preserved.
+        final before =
+            await WebListingCache.instance.readListing(lcBucket);
+        final victim = before!.objects.first.key;
+        await WebListingCache.instance
+            .patchListingRemove(lcBucket, victim);
+        final after =
+            await WebListingCache.instance.readListing(lcBucket);
+        log('patch-remove n=${after?.objects.length} '
+            'stampPreserved=${after?.fetchedAt == before.fetchedAt} '
+            'victimGone=${!(after?.objects.any((o) => o.key == victim) ?? true)}');
+
+        // (2) Cross-tab invalidate via a raw channel.
+        final raw = web.BroadcastChannel('fxfiles-cache');
+        raw.postMessage('inv-listing:$lcBucket'.toJS);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        final dropped =
+            await WebListingCache.instance.readListing(lcBucket);
+        log('cross-tab-invalidate dropped=${dropped == null}');
+
+        // (3) Cross-user purge: plant a foreign-owner entry.
+        final lcBox =
+            await Hive.openBox<Uint8List>(WebListingCache.boxName);
+        await lcBox.put('deadbeef00000000|cat|fake',
+            Uint8List.fromList(const [1, 2, 3]));
+        await WebListingCache.instance.purgeOtherOwners();
+        final ownKeys = lcBox.keys.whereType<String>().length;
+        log('purge foreignGone=${lcBox.get('deadbeef00000000|cat|fake') == null} '
+            'keysLeft=$ownKeys');
+
+        // (4) Quota torture: ~30 MB of synthetic listings must evict
+        //     down to the 25 MB budget, never exceed it.
+        final fatKey = 'k'.padRight(250, 'x');
+        final fatObjects = List<FulaObject>.generate(
+          3000,
+          (i) => FulaObject(key: '/$fatKey$i', size: i),
+        );
+        for (var i = 0; i < 30; i++) {
+          await WebListingCache.instance
+              .writeListing('fake-bucket-$i', fatObjects);
+        }
+        var totalBytes = 0;
+        var fakeCount = 0;
+        for (final key in lcBox.keys) {
+          if (key is! String) continue;
+          if (key.contains('|cat|') || key.contains('|man|')) {
+            totalBytes += lcBox.get(key)?.length ?? 0;
+            if (key.contains('fake-bucket-')) fakeCount++;
+          }
+        }
+        log('quota totalMB=${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} '
+            'underBudget=${totalBytes <= 25 * 1024 * 1024} '
+            'fakesKept=$fakeCount/30 evicted=${fakeCount < 30}');
+
+        // (5) Remote sign-out LAST (kills the session).
+        raw.postMessage('signed-out'.toJS);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        log('remote-signout userCleared=${WebSession.instance.user == null}');
         break;
       case 'prefetch':
         // P2 gates (plan §9): cold sign-in → categories warm within

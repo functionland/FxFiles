@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
+import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 
@@ -66,6 +67,12 @@ class WebSession extends ChangeNotifier {
   /// Restore a persisted session (page load / refresh). Returns true if
   /// a session was restored and the Fula client is configured.
   Future<bool> restore() async {
+    // Cross-tab coherence is live from boot in every tab: remote
+    // invalidations drop cache entries here, and a remote sign-out
+    // drops this tab's in-memory session too (its storage was already
+    // cleared by the originating tab).
+    WebCacheSync.onRemoteSignOut = _onRemoteSignOut;
+    WebCacheSync.instance.ensureStarted();
     try {
       final userJson = await SecureStorageService.instance.readJson(
         SecureStorageKeys.userCredentials,
@@ -365,7 +372,18 @@ class WebSession extends ChangeNotifier {
     } catch (_) {}
     WebPrefetchScheduler.instance.reset();
     await AuthCore.clearSessionStorage();
+    WebCacheSync.instance.sendSignedOut();
     _user = null;
     notifyListeners();
+  }
+
+  /// Another tab signed out: shared storage is already cleared; this
+  /// tab must stop trusting its in-memory session (cache L1 +
+  /// scheduler were reset by WebCacheSync before this hook fires).
+  void _onRemoteSignOut() {
+    if (_user == null) return;
+    FulaApiService.instance.reset();
+    _user = null;
+    notifyListeners(); // router redirects to /signin
   }
 }
