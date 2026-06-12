@@ -1,5 +1,7 @@
 import 'package:go_router/go_router.dart';
 
+import 'package:fula_files/core/services/wallet_service.dart'
+    show walletNavigatorKey;
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
 import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
@@ -24,6 +26,13 @@ import 'package:fula_files/web/services/web_session.dart';
 /// default) keeps GitHub Pages happy without 404 rewrites.
 GoRouter buildWebRouter() {
   return GoRouter(
+    // Root navigator anchored to walletNavigatorKey — same as the
+    // native router (lib/app/router.dart). Reown AppKit's modal keeps
+    // the context it was initialized with; anchoring it to the
+    // app-lifetime root navigator (instead of a screen that the next
+    // context.go() disposes) is what keeps Connect Wallet / Mint
+    // working after any navigation.
+    navigatorKey: walletNavigatorKey,
     initialLocation: '/',
     refreshListenable: WebSession.instance,
     redirect: (context, state) {

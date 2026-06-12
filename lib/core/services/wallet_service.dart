@@ -23,7 +23,7 @@ class WalletService {
 
   ReownAppKitModal? _appKitModal;
   bool _isInitialized = false;
-  bool _isInitializing = false;
+  Future<void>? _initInFlight;
   String? _connectedAddress;
   int? _connectedChainId;
 
@@ -43,10 +43,21 @@ class WalletService {
   /// Uses the global walletNavigatorKey context if available, otherwise falls back to provided context
   Future<void> initialize(BuildContext context) async {
     if (_isInitialized) return;
-    if (_isInitializing) return; // Prevent concurrent initialization
+    // A concurrent caller awaits the SAME in-flight init instead of
+    // returning early uninitialized (a tap during the post-frame init
+    // used to fall through to _ensureInitialized and fail).
+    final inFlight = _initInFlight;
+    if (inFlight != null) return inFlight;
+    final future = _doInitialize(context);
+    _initInFlight = future;
+    try {
+      await future;
+    } finally {
+      _initInFlight = null;
+    }
+  }
 
-    _isInitializing = true;
-
+  Future<void> _doInitialize(BuildContext context) async {
     try {
       // Prefer using the global navigator context for stability
       final effectiveContext = walletNavigatorKey.currentContext ?? context;
@@ -96,8 +107,6 @@ class WalletService {
     } catch (e) {
       debugPrint('WalletService: Failed to initialize: $e');
       throw WalletServiceException('Failed to initialize wallet service: $e');
-    } finally {
-      _isInitializing = false;
     }
   }
 
@@ -151,6 +160,17 @@ class WalletService {
   /// Connect wallet using AppKit modal
   Future<String?> connectWallet(BuildContext context) async {
     _ensureInitialized();
+
+    // AppKit keeps the BuildContext it was constructed with. If that
+    // widget has since been disposed (e.g. the modal was initialized on
+    // a screen the router later replaced), openModalView() returns
+    // WITHOUT showing anything — and leaves its internal isOpen flag
+    // stuck, so every later call no-ops too. modalContext goes null in
+    // exactly that case: rebuild the modal on a live context first.
+    if (_appKitModal!.modalContext == null) {
+      debugPrint('WalletService: modal context unmounted — reinitializing');
+      await reinitialize(context);
+    }
 
     try {
       debugPrint('WalletService: Opening modal view...');
