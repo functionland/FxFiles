@@ -34,6 +34,7 @@ import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
 import 'package:fula_files/core/services/automate_task_service.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/core/services/category_listing.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
@@ -239,6 +240,40 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         final keys = r.objects.map((o) => o.key).toSet();
         log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
             'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'wallet':
+        // Regression probe for the AppKit modal: in the broken state
+        // (dead context) openModalView() resolved INSTANTLY with no
+        // UI; when the modal is actually showing, its future stays
+        // pending (it awaits dismissal) and the root navigator gains
+        // a poppable route.
+        if (_e2eSeed.isNotEmpty) {
+          await WebSession.instance.signInModeC(seed: _e2eSeed);
+          log('signin-ok euid=${WebSession.instance.user?.id}');
+        }
+        // Give runApp + the router a frame to mount.
+        await Future<void>.delayed(const Duration(seconds: 2));
+        final navState = walletNavigatorKey.currentState;
+        log('navigator-attached=${navState != null}');
+        final ctx = walletNavigatorKey.currentContext;
+        if (ctx == null) {
+          log('FAIL: walletNavigatorKey has no context');
+          break;
+        }
+        await WalletService.instance.initialize(ctx);
+        log('wallet-initialized=${WalletService.instance.isInitialized}');
+        var connectResolved = false;
+        unawaited(WalletService.instance
+            .connectWallet(ctx)
+            .then((_) => connectResolved = true)
+            .catchError((Object e) {
+          connectResolved = true;
+          log('connect-error: $e');
+          return null;
+        }));
+        await Future<void>.delayed(const Duration(seconds: 4));
+        log('modal-open-pending=${!connectResolved} '
+            'navigator-canPop=${walletNavigatorKey.currentState?.canPop()}');
         break;
       default:
         log('FAIL: unknown mode');
