@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:js_interop';
 
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_swr_policy.dart';
@@ -61,21 +64,83 @@ class WebListingSwr extends ChangeNotifier {
   final Map<String, Future<void>> _manifestRefreshes = {};
 
   bool _onlineHooked = false;
+  DateTime? _hiddenAt;
 
-  /// Notifies listeners when the browser regains connectivity —
-  /// screens respond with a silent forced revalidate (Copilot's
-  /// connection-regain pick: cross-device changes are most likely
-  /// exactly then).
+  /// How long a tab must have been hidden before its resume triggers a
+  /// forced revalidate (short app switches shouldn't re-list).
+  static const Duration kResumeRefreshAfter = Duration(minutes: 5);
+
+  /// Notifies listeners when the browser regains connectivity, OR when
+  /// the tab resumes after being hidden ≥ [kResumeRefreshAfter] —
+  /// screens respond with a silent forced revalidate. The resume
+  /// trigger is what heals a LONG-LIVED mobile tab: cross-device
+  /// changes accumulate exactly while it sleeps (real two-client bug,
+  /// 2026-06-12).
   void ensureOnlineHook() {
     if (_onlineHooked) return;
     _onlineHooked = true;
     web.window.addEventListener(
       'online',
       ((web.Event _) {
-        debugPrint('WebListingSwr: online again — notifying screens');
-        notifyListeners();
+        debugPrint('WebListingSwr: online again — refreshing');
+        unawaited(_hardRefreshThenNotify());
       }).toJS,
     );
+    web.document.addEventListener(
+      'visibilitychange',
+      ((web.Event _) {
+        if (web.document.visibilityState == 'visible') {
+          final hiddenAt = _hiddenAt;
+          _hiddenAt = null;
+          if (hiddenAt != null &&
+              DateTime.now().difference(hiddenAt) > kResumeRefreshAfter) {
+            debugPrint('WebListingSwr: tab resumed after long sleep — '
+                'refreshing');
+            unawaited(_hardRefreshThenNotify());
+          }
+        } else {
+          _hiddenAt = DateTime.now();
+        }
+      }).toJS,
+    );
+  }
+
+  Future<void> _hardRefreshThenNotify() async {
+    await hardRefreshSession();
+    notifyListeners();
+  }
+
+  /// INTERIM cross-device freshness (until fula_client 0.6.8 exposes
+  /// the Rust client's per-bucket `invalidate_forest_cache`): the wasm
+  /// client caches each bucket's forest for its LIFETIME — `loadForest`
+  /// is a no-op once cached — so a long-lived tab can never see another
+  /// device's uploads, and our revalidations would re-stamp the stale
+  /// listing as fresh (real two-client bug, 2026-06-12: phone tab stuck
+  /// at 2 files while incognito showed 3). Rebuilding the client from
+  /// stored credentials drops every cached forest — a fresh client is
+  /// exactly why incognito was correct.
+  ///
+  /// Skipped (returns false) while foreground work is in flight: an
+  /// upload's forest save must not race a client swap. Never throws.
+  Future<bool> hardRefreshSession() async {
+    if (!WebForegroundActivity.instance.idle) {
+      debugPrint('WebListingSwr: hard refresh skipped (foreground busy)');
+      return false;
+    }
+    try {
+      final kekB64 = await SecureStorageService.instance
+          .read(SecureStorageKeys.encryptionKey);
+      if (kekB64 == null || kekB64.isEmpty) return false;
+      final init = await AuthCore.initializeFulaFromStorage(
+        kek: Uint8List.fromList(base64Decode(kekB64)),
+      );
+      debugPrint('WebListingSwr: hard refresh — fresh wasm client '
+          '(configured=${init.configured})');
+      return init.configured;
+    } catch (e) {
+      debugPrint('WebListingSwr: hard refresh failed: $e');
+      return false;
+    }
   }
 
   // ------------------------------------------------------- listings
@@ -98,7 +163,12 @@ class WebListingSwr extends ChangeNotifier {
     if (!force) {
       final cached = await WebListingCache.instance.readListing(bucket);
       if (cached != null) {
-        final age = DateTime.now().difference(cached.fetchedAt);
+        var age = DateTime.now().difference(cached.fetchedAt);
+        // A FUTURE stamp (device clock moved back after the write)
+        // would otherwise pin the entry in the fresh tier forever and
+        // make the monotonic write guard reject every update. Treat
+        // it as maximally stale instead.
+        if (age.isNegative) age = const Duration(days: 365);
         final tier = swrTierForAge(age);
         return SwrListing(
           objects: cached.objects,
@@ -133,6 +203,12 @@ class WebListingSwr extends ChangeNotifier {
 
     // Miss (or force): live-first — same semantics the screen had
     // before SWR, including listObjectsCached's offline fallback.
+    // force additionally drops the session's forest memo: a refresh is
+    // the user asking for OTHER devices' writes, which live only in a
+    // re-fetched forest.
+    if (force) {
+      FulaApiService.instance.invalidateForestCache(bucket);
+    }
     final r = await FulaApiService.instance.listObjectsCached(bucket);
     if (!r.stale) {
       await WebListingCache.instance
@@ -182,6 +258,12 @@ class WebListingSwr extends ChangeNotifier {
       // result is discarded by the monotonic guard.
       final started = DateTime.now();
       try {
+        // Revalidation MUST be fresh-from-server: without dropping the
+        // forest memo, a long-lived session lists its stale in-memory
+        // forest and re-stamps pre-existing data as fresh — the cache
+        // could then never pick up another device's uploads (real
+        // two-client bug, 2026-06-12).
+        FulaApiService.instance.invalidateForestCache(bucket);
         final objects = await FulaApiService.instance
             .listObjects(bucket)
             .timeout(const Duration(seconds: 30));
@@ -291,7 +373,8 @@ class WebListingSwr extends ChangeNotifier {
 
     if (cached != null && !force) {
       if (!frozen) {
-        final age = DateTime.now().difference(cached.fetchedAt);
+        var age = DateTime.now().difference(cached.fetchedAt);
+        if (age.isNegative) age = const Duration(days: 365);
         if (swrTierForAge(age) != SwrTier.fresh) {
           _refreshManifestBehind(bucket, key, encryptionKey);
         }
@@ -299,9 +382,12 @@ class WebListingSwr extends ChangeNotifier {
       return cached.blob;
     }
 
-    // Miss, or force on the mutable half: live fetch.
+    // Miss, or force on the mutable half: live fetch. Drop the forest
+    // memo first — manifests are read THROUGH the bucket's forest, so
+    // a long-lived session would otherwise re-serve the old blob.
     final started = DateTime.now();
     try {
+      FulaApiService.instance.invalidateForestCache(bucket);
       final blob = await FulaApiService.instance
           .downloadAndDecrypt(bucket, key, encryptionKey)
           .timeout(const Duration(seconds: 30));
@@ -344,6 +430,7 @@ class WebListingSwr extends ChangeNotifier {
     final future = () async {
       final started = DateTime.now();
       try {
+        FulaApiService.instance.invalidateForestCache(bucket);
         final blob = await FulaApiService.instance
             .downloadAndDecrypt(bucket, key, encryptionKey)
             .timeout(const Duration(seconds: 30));

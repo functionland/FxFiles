@@ -79,6 +79,16 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     if (mounted && !_loading) _load(force: true, silent: true);
   }
 
+  /// Manual Refresh = the user asking for OTHER devices' writes. The
+  /// wasm client pins each forest for its lifetime, so a plain re-list
+  /// would re-serve this session's stale forest; rebuild the client
+  /// first (interim until fula_client 0.6.8 exposes per-bucket forest
+  /// invalidation), then force-list.
+  Future<void> _refreshHard() async {
+    await WebListingSwr.instance.hardRefreshSession();
+    if (mounted) await _load(force: true);
+  }
+
   /// Web lists ONLY the category's -v8 bucket (owner decision,
   /// 2026-06-11): the legacy buckets carry the gc-damaged forest whose
   /// repair paths (404 forest-walk, forest backups) are native-only —
@@ -770,7 +780,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : () => _load(force: true),
+            onPressed: _loading ? null : _refreshHard,
           ),
         ],
       ),

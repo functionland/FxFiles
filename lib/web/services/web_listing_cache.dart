@@ -213,7 +213,13 @@ class WebListingCache {
       final at = fetchedAt ?? DateTime.now();
       if (!allowOlder) {
         final existing = await readListing(bucket);
-        if (existing != null && existing.fetchedAt.isAfter(at)) {
+        if (existing != null &&
+            existing.fetchedAt.isAfter(at) &&
+            // A stamp far in the FUTURE is corrupt (device clock moved
+            // back after it was written) — honoring it would reject
+            // every update forever. Overwrite instead.
+            !existing.fetchedAt
+                .isAfter(DateTime.now().add(const Duration(minutes: 5)))) {
           debugPrint('WebListingCache.writeListing($bucket): kept newer '
               'entry (${existing.fetchedAt} > $at)');
           return;
@@ -309,7 +315,10 @@ class WebListingCache {
       if (key == null) return;
       final at = fetchedAt ?? DateTime.now();
       final existing = await readManifest(bucket, objectKey);
-      if (existing != null && existing.fetchedAt.isAfter(at)) {
+      if (existing != null &&
+          existing.fetchedAt.isAfter(at) &&
+          !existing.fetchedAt
+              .isAfter(DateTime.now().add(const Duration(minutes: 5)))) {
         debugPrint(
             'WebListingCache.writeManifest($bucket/$objectKey): kept '
             'newer entry');

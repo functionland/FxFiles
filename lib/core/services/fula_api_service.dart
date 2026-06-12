@@ -430,6 +430,19 @@ class FulaApiService implements FulaApi {
     _loadedForests.clear();
   }
 
+  /// Drop ONE bucket's forest memo so the next listing re-fetches the
+  /// forest from the server. Listings read the session-memoized forest
+  /// (loaded once per bucket per session) — a refresh that's meant to
+  /// pick up ANOTHER device's writes must invalidate first, or it
+  /// re-serves the stale in-memory forest as if it were live (found
+  /// via a real two-client repro: a long-lived web tab kept re-caching
+  /// a pre-upload listing). Additive; no existing caller's behavior
+  /// changes.
+  void invalidateForestCache(String bucket) {
+    _loadedForests.remove(bucket);
+    _localLoadedForests.remove(bucket);
+  }
+
   // ============================================================================
   // KEY MANAGEMENT
   // ============================================================================

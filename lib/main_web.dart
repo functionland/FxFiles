@@ -456,6 +456,20 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
             'revalidation=${aged.revalidation != null}');
         final fresh = await aged.revalidation;
         log('swr revalidated n=${fresh?.objects.length ?? -1}');
+
+        // 6. Cross-device freshness (interim): hardRefreshSession
+        //    rebuilds the wasm client, so the next listing re-fetches
+        //    the forest from the SERVER — the elapsed time includes a
+        //    real forest round trip (vs ~3 ms warm), and the output
+        //    shows a fresh [perf] forest-load line with real cost.
+        final hardOk = await WebListingSwr.instance.hardRefreshSession();
+        final forceSw = Stopwatch()..start();
+        final forced =
+            await WebListingSwr.instance.getListing(swrBucket, force: true);
+        forceSw.stop();
+        log('swr hard-refresh ok=$hardOk ms=${forceSw.elapsedMilliseconds} '
+            'n=${forced.objects.length} forestRefetched='
+            '${forceSw.elapsedMilliseconds > 50}');
         break;
       case 'perf-seed':
         // Populate documents-v8 with tiny files so the perf mode can
