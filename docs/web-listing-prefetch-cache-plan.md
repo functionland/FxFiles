@@ -1,8 +1,10 @@
 # Web Listing Cache + Background Prefetch — Design Plan
 
-Status: P0 measured (§11) + **P1 SHIPPED** (§11.1, 2026-06-12) — SWR live for categories
-and feature manifests; next: P2 prefetch scheduler. Advisor rounds: design (Gemini +
-Copilot, §10/§12) and P1 implementation review (Gemini, §11.1).
+Status: P0 measured (§11) + **P1 SHIPPED** (§11.1) + **P2 SHIPPED** (§11.2, 2026-06-12)
+— SWR + background prefetch live; next: P3 lifecycle (write-through listing patches,
+cross-user wipe-at-sign-in, size caps/LRU, cross-tab invalidation broadcasts). Advisor
+rounds: design (Gemini + Copilot, §10/§12), P1 impl (Gemini, §11.1), P2 impl (Gemini,
+§11.2). Two-client write-safety analysis: §7.1.
 Scope: web shell only (`lib/web/**` + additive core seams). Native screens keep their
 existing flows; any shared-file change must be behavior-identical natively.
 
@@ -244,6 +246,44 @@ background task to foreground priority).
    work, needs fula-api capability review).
 4. **Schema/version**: `v` field bump ⇒ entry ignored and rewritten.
 
+### 7.1 Two-client write safety (owner question, 2026-06-12)
+
+Scenario: the user has two clients (say the app on a phone and the web app), writes from
+one, then writes from the other. Invariant the cache must hold: **caching may only ever
+delay what a client SEES — it must never change what a client WRITES.**
+
+How that holds by construction:
+
+1. **The cache never feeds a write.** Every mutation path reads LIVE before writing:
+   the web manifest services' merge-before-overwrite all call the SWR reader with
+   `force: true`, which bypasses the cache READ and awaits the network (`_manifestHalf`
+   force path). File uploads/deletes don't consult the cache at all. The only cached
+   input a mutation can consume is the **frozen legacy half** — which is immutable
+   post-migration on every platform, so a frozen copy is exact by definition.
+2. **One deliberate exception, strictly safer than pre-cache behavior**: if a forced
+   live manifest read FAILS transiently mid-mutation, the SWR layer falls back to the
+   cached v8 blob. The pre-cache code dropped the blob entirely in that case (merging
+   from legacy only) — so the worst case improved from "lose everything the other
+   client wrote to v8" to "lose at most the other client's last-seconds delta". The
+   underlying race is the platform-wide download-merge-overwrite LWW that exists on
+   native today; the cache neither created nor widened it.
+3. **Cross-client READ staleness is bounded and self-healing**: client A's write becomes
+   visible on the web at the next screen open ≥ 2 min after the web's last fetch
+   (silent revalidate patches the open screen), at worst after the 1 h stale tier, and
+   immediately after any web-side mutation/Refresh (force) or connection regain. The
+   2-minute no-revalidate window is the only interval where A's write can be invisible
+   to an actively-bouncing web user — the advisor-reviewed trade for not re-listing on
+   every navigation. The V2 forest-root probe shrinks exactly this window.
+4. **Each client's cache is private.** There is no shared cache state between devices
+   to corrupt — every client converges on the server's truth through its own live
+   reads; the monotonic fetch-stamp guard orders only LOCAL writes to the LOCAL cache
+   and cannot suppress content that arrived from another client (any live read carries
+   whatever the server has, regardless of author).
+5. **Web's own writes are write-through** (listings force-refresh; manifest uploads
+   write the uploaded bytes into the cache), so the web never shows itself a
+   pre-mutation copy of its own data — and a subsequent write from the OTHER client
+   simply wins the next revalidate, exactly like two native devices today.
+
 ## 8. Lifecycle, bounds, and multi-user
 
 | Concern | Decision |
@@ -437,6 +477,37 @@ rewritten. HKDF pinned to both RFC 5869 SHA-256 vectors; tier policy unit-tested
    NoSuchKey/NoSuchBucket; AES-GCM entries now bind their cache slot as AAD (an entry
    swapped to another key fails auth); 30 s timeouts inside single-flight closures
    (a hung flight can no longer starve a bucket's refreshes).
+
+### 11.2 P2 results (shipped 2026-06-12)
+
+Built as designed (§6 + §8.1) with these notes:
+- The idle gate is the foreground-activity counter + tab visibility; the planned
+  MasterHealthService gate is substituted by the 3-strike consecutive-failure stop (the
+  health service isn't started in the web shell today — revisit in P3 if it is).
+- Foreground coverage: the SWR layer marks user-driven manifest reads centrally (the
+  `recordUsage` flag doubles as "user-driven"), the bucket screen wraps listing await +
+  in-place patch, uploads/downloads/delete/collab transfer/shelf+track downloads wrapped
+  explicitly. The scheduler shares P1's single-flight maps, so a user opening a bucket
+  mid-prefetch joins the same listing (promotion, no double fetch).
+- bfcache restores stay cancelled after `pagehide` (documented limitation).
+
+Gates (e2e=prefetch, cold cache after sign-in; busy probe = 4 s foreground hold mid-run):
+
+| Metric | Desktop | Low-end override + 5× CPU throttle | Gate |
+|---|---|---|---|
+| First task after sign-in | ~2.7 s | ~6.5 s | 2 s / 5 s policy delay ✓ |
+| Tasks run | 10/10 (6 cats + 4 manifest groups) | **exactly 3** (top categories, no manifests) | §8.1 ✓ |
+| Dequeues during busy window | **0** | **0** | 0 ✓ |
+| All categories warm | 6/6 in ~11 s | 3/3 in ~26 s | ≤ 30 s ✓ |
+
+Gemini adversarial round (all fixed pre-ship): `whenIdle` lost-wakeup race
+(subscribe-before-recheck pattern — a waiter could otherwise park forever on a quiet
+tab); cross-user scheduler residue (sign-out now resets the scheduler AND deletes the
+cache box — pulled forward from P3); hidden-tab 1 s poll → event-driven completer (no
+timer wakeups; instant resume); BroadcastChannel same-window tiebreak (random token,
+lower wins; plus the fix for both-tabs-politely-standing-down); storage quota re-checked
+every 3rd task. Accepted as-is: manifest failures don't count toward the 3-strike stop
+(self-heal via SWR); flat 5-min poison (queue passes once per session).
 
 ## 12. Advisor round summary
 

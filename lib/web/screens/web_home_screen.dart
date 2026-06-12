@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
+import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// Web home — mirror of the native home screen's section layout
@@ -25,6 +26,17 @@ class WebHomeScreen extends StatefulWidget {
 class _WebHomeScreenState extends State<WebHomeScreen> {
   late final Future<StorageInfo> _storage =
       BillingApiService.instance.getStorageAndCredits();
+
+  @override
+  void initState() {
+    super.initState();
+    // Kick the background cache warmer once home has rendered. It
+    // self-delays per device class (§8.1), yields to every foreground
+    // operation, and is idempotent across home revisits.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      WebPrefetchScheduler.instance.start();
+    });
+  }
 
   String _fmtBytes(int bytes) {
     if (bytes >= 1024 * 1024 * 1024) {

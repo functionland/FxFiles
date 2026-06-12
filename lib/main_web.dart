@@ -43,10 +43,13 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
+import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -247,6 +250,73 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         final keys = r.objects.map((o) => o.key).toSet();
         log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
             'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'prefetch':
+        // P2 gates (plan §9): cold sign-in → categories warm within
+        // ~30 s; ZERO task dequeues inside a foreground-busy window;
+        // ?low=1 applies the §8.1 low-end policy (expect exactly 3
+        // category tasks, no manifests).
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: prefetch mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        final lowEnd = Uri.parse(web.window.location.href)
+                .queryParameters['low'] ==
+            '1';
+        if (lowEnd) WebDeviceClass.debugOverrideLowEnd = true;
+        await WebListingCache.instance.clearAll();
+        log('cache-cleared lowEnd=$lowEnd');
+
+        // The HOME screen kicks the scheduler when it mounts (the real
+        // production trigger) — observe that run rather than starting
+        // a second one through the idempotence guard.
+        final sched = WebPrefetchScheduler.instance;
+        final swPrefetch = Stopwatch()..start();
+        while (sched.startedTasks == 0 &&
+            sched.disabledReason == null &&
+            swPrefetch.elapsed < const Duration(seconds: 20)) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        log('first-task-after ms=${swPrefetch.elapsedMilliseconds} '
+            'disabled=${sched.disabledReason ?? 'no'}');
+
+        // Foreground-busy probe: hold the counter for 4 s mid-run and
+        // assert no new task dequeues inside the window.
+        WebForegroundActivity.instance.begin();
+        final snap = sched.startedTasks;
+        log('busy-begin startedTasks=$snap');
+        await Future<void>.delayed(const Duration(seconds: 4));
+        final delta = sched.startedTasks - snap;
+        log('busy-end startedTasks=${sched.startedTasks} '
+            'dequeuedDuringBusy=$delta');
+        WebForegroundActivity.instance.end();
+
+        while (!sched.finished &&
+            sched.disabledReason == null &&
+            swPrefetch.elapsed < const Duration(seconds: 90)) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+        swPrefetch.stop();
+
+        var warmCats = 0;
+        for (final base in [
+          'images',
+          'documents',
+          'videos',
+          'audio',
+          'downloads',
+          'archives',
+        ]) {
+          final hit = await WebListingCache.instance
+              .readListing(BucketVersionResolver.writeBucket(base));
+          if (hit != null) warmCats++;
+        }
+        log('prefetch-result ms=${swPrefetch.elapsedMilliseconds} '
+            'total=${sched.totalTasks} completed=${sched.completedTasks} '
+            'failed=${sched.failedTasks} warmCats=$warmCats '
+            'disabled=${sched.disabledReason ?? 'no'}');
         break;
       case 'swr':
         // P1 gates (plan §9): warm open < 200 ms, L2 decrypt < 100 ms

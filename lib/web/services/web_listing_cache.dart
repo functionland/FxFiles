@@ -290,6 +290,75 @@ class WebListingCache {
     }
   }
 
+  // ------------------------------------------------------ usage log
+
+  /// Plaintext frecency sidecar for the prefetch queue (plan §6.1):
+  /// `<owner>|usage` → {screenKey: {n, last}}. Contains only fixed
+  /// screen identifiers (cat|images-v8, man|tag-metadata…) — no user
+  /// content — so it deliberately skips the crypto path.
+  static const int _usageMaxEntries = 40;
+
+  Future<void> recordUsage(String screenKey) async {
+    try {
+      final owner = await ownerHash();
+      if (owner == null) return;
+      final box = await _openBox();
+      final k = '$owner|usage';
+      Map<String, dynamic> usage = {};
+      final raw = box.get(k);
+      if (raw != null) {
+        try {
+          usage = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+        } catch (_) {}
+      }
+      final prev = usage[screenKey];
+      final n = (prev is Map ? (prev['n'] as num?)?.toInt() : null) ?? 0;
+      usage[screenKey] = {
+        'n': n + 1,
+        'last': DateTime.now().toIso8601String(),
+      };
+      if (usage.length > _usageMaxEntries) {
+        final entries = usage.entries.toList()
+          ..sort((a, b) {
+            final la = DateTime.tryParse(
+                    (a.value as Map)['last'] as String? ?? '') ??
+                DateTime(2000);
+            final lb = DateTime.tryParse(
+                    (b.value as Map)['last'] as String? ?? '') ??
+                DateTime(2000);
+            return lb.compareTo(la);
+          });
+        usage = Map.fromEntries(entries.take(_usageMaxEntries));
+      }
+      await box.put(
+          k, Uint8List.fromList(utf8.encode(jsonEncode(usage))));
+    } catch (e) {
+      debugPrint('WebListingCache.recordUsage skipped: $e');
+    }
+  }
+
+  /// screenKey → (count, lastAt); empty on any failure.
+  Future<Map<String, ({int n, DateTime lastAt})>> readUsage() async {
+    try {
+      final owner = await ownerHash();
+      if (owner == null) return const {};
+      final raw = (await _openBox()).get('$owner|usage');
+      if (raw == null) return const {};
+      final json = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+      final out = <String, ({int n, DateTime lastAt})>{};
+      for (final e in json.entries) {
+        final v = e.value;
+        if (v is! Map) continue;
+        final lastAt = DateTime.tryParse(v['last'] as String? ?? '');
+        if (lastAt == null) continue;
+        out[e.key] = (n: (v['n'] as num?)?.toInt() ?? 0, lastAt: lastAt);
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
   // ------------------------------------------------------- lifecycle
 
   /// Drop everything (sign-out wiring lands in P3; provided now so the

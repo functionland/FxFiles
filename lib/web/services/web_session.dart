@@ -11,6 +11,8 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 
 /// Signed-in identity as the web shell sees it.
 class WebUser {
@@ -354,6 +356,14 @@ class WebSession extends ChangeNotifier {
     try {
       await BucketCacheService.clear();
     } catch (_) {}
+    // SWR cache + prefetcher: the listing-cache box is deleted (the
+    // KEK loss alone would make leftovers unreadable, but delete
+    // anyway) and the scheduler forgets this account's run state so
+    // the next sign-in prefetches fresh with no cross-user residue.
+    try {
+      await WebListingCache.instance.clearAll();
+    } catch (_) {}
+    WebPrefetchScheduler.instance.reset();
     await AuthCore.clearSessionStorage();
     _user = null;
     notifyListeners();

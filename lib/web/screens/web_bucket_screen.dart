@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
@@ -97,8 +98,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
     final bucket = BucketVersionResolver.writeBucket(widget.base);
     try {
-      final r =
-          await WebListingSwr.instance.getListing(bucket, force: force);
+      // Foreground-wrapped: the prefetcher must yield while a screen
+      // the user is looking at loads or patches in.
+      final r = await WebForegroundActivity.instance
+          .run(() => WebListingSwr.instance.getListing(bucket, force: force));
       _applyListing(
         bucket,
         r.objects,
@@ -107,7 +110,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       );
       final reval = r.revalidation;
       if (reval != null) {
-        reval.then((fresh) {
+        WebForegroundActivity.instance.run(() => reval).then((fresh) {
           if (fresh == null || !mounted) return;
           _applyListing(
             bucket,
@@ -212,6 +215,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
 
     final target = BucketVersionResolver.writeBucket(widget.base);
     setState(() => _uploading = true);
+    WebForegroundActivity.instance.begin();
     try {
       // First upload into a fresh vault/category: the bucket may not
       // exist yet. Same ensure-pattern as the native cloud services
@@ -249,6 +253,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     } catch (e) {
       _snack('Upload failed: $e');
     } finally {
+      WebForegroundActivity.instance.end();
       if (mounted) {
         setState(() {
           _uploading = false;
@@ -264,9 +269,8 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     _snack('Downloading "${_displayName(o)}"…');
     try {
       final bucket = o.sourceBucket ?? widget.base;
-      final bytes = await FulaApiService.instance.downloadObject(
-        bucket,
-        o.key,
+      final bytes = await WebForegroundActivity.instance.run(
+        () => FulaApiService.instance.downloadObject(bucket, o.key),
       );
       saveBytesAsDownload(
         _displayName(o).split('/').last,
@@ -302,7 +306,8 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     if (confirmed != true) return;
     try {
       final bucket = o.sourceBucket ?? widget.base;
-      await FulaApiService.instance.deleteObject(bucket, o.key);
+      await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.deleteObject(bucket, o.key));
       _snack('Deleted');
       await _load(force: true);
     } catch (e) {

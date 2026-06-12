@@ -7,6 +7,7 @@ import 'package:web/web.dart' as web;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_swr_policy.dart';
 
@@ -86,6 +87,14 @@ class WebListingSwr extends ChangeNotifier {
   /// then update the cache. Cache-hit paths return immediately and
   /// carry an optional [SwrListing.revalidation] future per the tiers.
   Future<SwrListing> getListing(String bucket, {bool force = false}) async {
+    // Frecency signal for the prefetch queue — user-driven reads only
+    // (the scheduler's own warm-ups must not self-reinforce).
+    unawaited(WebListingCache.instance.recordUsage('cat|$bucket'));
+    return _getListing(bucket, force: force);
+  }
+
+  Future<SwrListing> _getListing(String bucket,
+      {required bool force}) async {
     if (!force) {
       final cached = await WebListingCache.instance.readListing(bucket);
       if (cached != null) {
@@ -136,6 +145,27 @@ class WebListingSwr extends ChangeNotifier {
       staleTier: false,
       offlineStale: r.stale,
     );
+  }
+
+  // ------------------------------------------------------- prefetch
+
+  /// Scheduler entry (P2): always-live listing through the shared
+  /// single-flight — warms the bucket's forest in wasm AND rewrites
+  /// the cache. Returns false on failure (drives the scheduler's
+  /// poison/3-strike logic). Never records usage.
+  Future<bool> prefetchListing(String bucket) async {
+    final r = await _revalidate(bucket);
+    return r != null;
+  }
+
+  /// Scheduler entry (P2): warm one manifest pair — awaited live v8
+  /// half (tiny GET; the win is the metadata bucket's forest), frozen
+  /// legacy half as usual. Failures self-heal through normal SWR, so
+  /// completion always counts as done.
+  Future<void> prefetchManifest(
+      String base, String key, Uint8List encryptionKey) {
+    return downloadMetadataMergedSwr(base, key, encryptionKey,
+        force: true, recordUsage: false);
   }
 
   /// Background revalidate: plain live listing (no offline-fallback
@@ -202,6 +232,26 @@ class WebListingSwr extends ChangeNotifier {
     String key,
     Uint8List encryptionKey, {
     bool force = false,
+    bool recordUsage = true,
+  }) async {
+    if (recordUsage) {
+      // recordUsage doubles as "user-driven": frecency signal AND a
+      // foreground-activity window so the prefetcher yields. The
+      // scheduler passes recordUsage=false and stays out of both.
+      unawaited(WebListingCache.instance.recordUsage('man|$base'));
+      return WebForegroundActivity.instance.run(
+          () => _downloadMetadataMergedSwr(base, key, encryptionKey,
+              force: force));
+    }
+    return _downloadMetadataMergedSwr(base, key, encryptionKey,
+        force: force);
+  }
+
+  Future<List<Uint8List>> _downloadMetadataMergedSwr(
+    String base,
+    String key,
+    Uint8List encryptionKey, {
+    required bool force,
   }) async {
     final v8 = BucketVersionResolver.writeBucket(base);
     final blobs = <Uint8List>[];

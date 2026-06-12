@@ -7,6 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 
 /// Mirror of lib/features/sharing/screens/collaboration_detail_screen.dart
@@ -116,11 +117,13 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
     setState(() => _busy = true);
     _snack('Uploading "${file.name}"…');
     try {
-      await CollaborationService.instance.uploadCollabFileFromLocal(
-        groupId: widget.groupId,
-        fileName: file.name,
-        fileData: bytes,
-        linkSecretKey: linkSecretKey,
+      await WebForegroundActivity.instance.run(
+        () => CollaborationService.instance.uploadCollabFileFromLocal(
+          groupId: widget.groupId,
+          fileName: file.name,
+          fileData: bytes,
+          linkSecretKey: linkSecretKey,
+        ),
       );
       if (mounted) ScaffoldMessenger.of(context).clearSnackBars();
       _snack('Added "${file.name}"');
@@ -136,8 +139,10 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
   Future<void> _download(CollaborationFile file) async {
     _snack('Downloading "${file.fileName}"…');
     try {
-      final bytes = await CollaborationService.instance
-          .downloadCollabFile(widget.groupId, file);
+      final bytes = await WebForegroundActivity.instance.run(
+        () => CollaborationService.instance
+            .downloadCollabFile(widget.groupId, file),
+      );
       saveBytesAsDownload(
         file.fileName,
         bytes,

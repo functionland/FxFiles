@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -95,8 +96,8 @@ class WebFeatures {
     if (item.remoteKey == null || item.remoteKey!.isEmpty) {
       throw StateError('Item has no cloud copy');
     }
-    return FulaApiService.instance
-        .downloadAndDecrypt(bucket, item.remoteKey!, kek);
+    return WebForegroundActivity.instance.run(() => FulaApiService.instance
+        .downloadAndDecrypt(bucket, item.remoteKey!, kek));
   }
 
   // --------------------------------------------------------------- websites
@@ -256,7 +257,8 @@ class WebFeatures {
       'audio',
     }) {
       try {
-        return await FulaApiService.instance.downloadObject(bucket, key);
+        return await WebForegroundActivity.instance.run(
+            () => FulaApiService.instance.downloadObject(bucket, key));
       } catch (e) {
         lastError = e;
       }

@@ -7,6 +7,7 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 
@@ -478,7 +479,8 @@ class _WebSharedScreenState extends State<WebSharedScreen>
   Future<void> _downloadAccepted(AcceptedShare share) async {
     _snack('Downloading…');
     try {
-      final bytes = await WebShareService.downloadSharedFile(share);
+      final bytes = await WebForegroundActivity.instance
+          .run(() => WebShareService.downloadSharedFile(share));
       final name = share.token.fileName ??
           share.token.pathScope.split('/').last;
       saveBytesAsDownload(
