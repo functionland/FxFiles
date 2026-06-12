@@ -430,17 +430,27 @@ class FulaApiService implements FulaApi {
     _loadedForests.clear();
   }
 
-  /// Drop ONE bucket's forest memo so the next listing re-fetches the
-  /// forest from the server. Listings read the session-memoized forest
-  /// (loaded once per bucket per session) — a refresh that's meant to
-  /// pick up ANOTHER device's writes must invalidate first, or it
-  /// re-serves the stale in-memory forest as if it were live (found
+  /// Drop ONE bucket's forest so the next listing/download re-fetches
+  /// it from the server. The forest is cached at BOTH layers — this
+  /// Dart memo and inside the Rust client (its copy is what actually
+  /// pins the data; fula_client 0.6.9 exposed the dirty-safe
+  /// invalidation for it, issue #36). A refresh that's meant to pick
+  /// up ANOTHER device's writes must call this first, or the session
+  /// re-serves its stale in-memory forest as if it were live (found
   /// via a real two-client repro: a long-lived web tab kept re-caching
-  /// a pre-upload listing). Additive; no existing caller's behavior
-  /// changes.
-  void invalidateForestCache(String bucket) {
+  /// a pre-upload listing). Dirty-safe: a forest with pending unsaved
+  /// local changes is NOT evicted (core contract). Additive; no
+  /// existing caller's behavior changes.
+  Future<void> invalidateForestCache(String bucket) async {
     _loadedForests.remove(bucket);
     _localLoadedForests.remove(bucket);
+    final client = _client;
+    if (client == null) return;
+    try {
+      await fula.invalidateForestCache(client: client, bucket: bucket);
+    } catch (e) {
+      debugPrint('invalidateForestCache($bucket): $e');
+    }
   }
 
   // ============================================================================

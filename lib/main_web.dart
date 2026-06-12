@@ -457,17 +457,17 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         final fresh = await aged.revalidation;
         log('swr revalidated n=${fresh?.objects.length ?? -1}');
 
-        // 6. Cross-device freshness (interim): hardRefreshSession
-        //    rebuilds the wasm client, so the next listing re-fetches
-        //    the forest from the SERVER — the elapsed time includes a
-        //    real forest round trip (vs ~3 ms warm), and the output
-        //    shows a fresh [perf] forest-load line with real cost.
-        final hardOk = await WebListingSwr.instance.hardRefreshSession();
+        // 6. Cross-device freshness (fula_client 0.6.9): the force
+        //    path's per-bucket invalidateForestCache drops BOTH forest
+        //    caches (Dart memo + Rust client), so this listing
+        //    re-fetches the forest from the SERVER — the elapsed time
+        //    includes a real forest round trip (vs ~3 ms warm) and the
+        //    output shows a [perf] forest-load line with real cost.
         final forceSw = Stopwatch()..start();
         final forced =
             await WebListingSwr.instance.getListing(swrBucket, force: true);
         forceSw.stop();
-        log('swr hard-refresh ok=$hardOk ms=${forceSw.elapsedMilliseconds} '
+        log('swr force-fresh ms=${forceSw.elapsedMilliseconds} '
             'n=${forced.objects.length} forestRefetched='
             '${forceSw.elapsedMilliseconds > 50}');
         break;
