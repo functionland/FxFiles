@@ -41,7 +41,8 @@ class _WebAutomateTasksScreenState extends State<WebAutomateTasksScreen> {
       _error = null;
     });
     try {
-      await WebTagService.instance.load(force: force);
+      await WebTagService.instance
+          .load(force: force, refetchForest: force);
       _tags = WebTagService.instance.tags
           .where((t) => t.name.startsWith('automate-tasks-'))
           .toList();

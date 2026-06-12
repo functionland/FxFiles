@@ -39,7 +39,8 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
       _error = null;
     });
     try {
-      final items = await WebFeatures.loadShelf(force: force);
+      final items =
+          await WebFeatures.loadShelf(force: force, refetchForest: force);
       setState(() => _items = items);
     } catch (e) {
       setState(() => _error = '$e');

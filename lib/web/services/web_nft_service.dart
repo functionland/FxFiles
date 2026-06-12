@@ -83,22 +83,24 @@ class WebNftService extends ChangeNotifier {
   /// Download + additively merge the [v8, legacy] manifests. SWR (P1):
   /// non-forced loads serve the cached blobs instantly (refreshed
   /// behind past the fresh window); force = awaited live read.
-  Future<void> load({bool force = false}) {
+  Future<void> load({bool force = false, bool refetchForest = false}) {
     if (_loaded && !force) return Future.value();
     final inFlight = _loadFuture;
     if (inFlight != null) return inFlight;
-    final f = _doLoad(force: force).whenComplete(() => _loadFuture = null);
+    final f = _doLoad(force: force, refetchForest: refetchForest)
+        .whenComplete(() => _loadFuture = null);
     _loadFuture = f;
     return f;
   }
 
-  Future<void> _doLoad({required bool force}) async {
+  Future<void> _doLoad(
+      {required bool force, required bool refetchForest}) async {
     final kek = await _kek();
     final key = await _manifestKey();
     final byId = <String, NftCollection>{};
     for (final blob in await WebListingSwr.instance
         .downloadMetadataMergedSwr(_nftMetadataBucket, key, kek,
-            force: force)) {
+            force: force, refetchForest: refetchForest)) {
       try {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw in (j['collections'] as List<dynamic>? ?? const [])) {

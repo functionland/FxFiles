@@ -88,10 +88,14 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// reachable from the mobile/desktop apps.
   /// SWR load (plan §5.2): cached render lands immediately when the
   /// cache has this bucket; the live fetch then patches the view in
-  /// place. force = mutation/Refresh semantics — awaited live listing,
-  /// exactly the pre-SWR behavior (plus the cache update). silent =
-  /// no spinner (connection-regain revalidate).
-  Future<void> _load({bool force = false, bool silent = false}) async {
+  /// place. force = awaited live listing. refetchForest (defaults to
+  /// force) = ALSO pull the forest from the server — right for the
+  /// Refresh button / reconnect (cross-device intent), wrong after our
+  /// OWN upload/delete, whose freshest truth is the session forest.
+  Future<void> _load(
+      {bool force = false,
+      bool silent = false,
+      bool? refetchForest}) async {
     if (!silent) {
       setState(() {
         _loading = true;
@@ -102,8 +106,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     try {
       // Foreground-wrapped: the prefetcher must yield while a screen
       // the user is looking at loads or patches in.
-      final r = await WebForegroundActivity.instance
-          .run(() => WebListingSwr.instance.getListing(bucket, force: force));
+      final r = await WebForegroundActivity.instance.run(() =>
+          WebListingSwr.instance.getListing(bucket,
+              force: force, refetchForest: refetchForest));
       _applyListing(
         bucket,
         r.objects,
@@ -265,7 +270,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           _uploadPct = null;
           _uploadLabel = '';
         });
-        await _load(force: true);
+        // Own write: list from the session forest (it's AHEAD of the
+        // server for a few seconds — refetching here made the new
+        // file vanish).
+        await _load(force: true, refetchForest: false);
       }
     }
   }
@@ -319,7 +327,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       await WebListingCache.instance.patchListingRemove(bucket, o.key);
       WebCacheSync.instance.sendInvalidateListing(bucket);
       _snack('Deleted');
-      await _load(force: true);
+      // Own write — session forest already lacks the file; a server
+      // refetch during the propagation window would resurrect it.
+      await _load(force: true, refetchForest: false);
     } catch (e) {
       _snack('Delete failed: $e');
     }

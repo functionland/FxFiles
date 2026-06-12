@@ -110,19 +110,26 @@ class WebListingSwr extends ChangeNotifier {
 
   /// SWR read of one bucket's listing.
   ///
-  /// force=true is the mutation/refresh semantic: bypass the cache READ
-  /// entirely and await the live listing (exactly today's behavior),
-  /// then update the cache. Cache-hit paths return immediately and
-  /// carry an optional [SwrListing.revalidation] future per the tiers.
-  Future<SwrListing> getListing(String bucket, {bool force = false}) async {
+  /// force=true bypasses the cache READ and awaits the live listing,
+  /// then updates the cache. [refetchForest] (default: follows force)
+  /// additionally drops the session forest so the listing comes from
+  /// the SERVER: right for cross-device intent (Refresh button,
+  /// resume, reconnect), WRONG after this client's OWN mutation — the
+  /// uploader's in-memory forest is AHEAD of the server for a few
+  /// seconds after a write, and refetching during that window made a
+  /// just-uploaded file vanish (real regression, 2026-06-12). Mutation
+  /// callers pass refetchForest: false.
+  Future<SwrListing> getListing(String bucket,
+      {bool force = false, bool? refetchForest}) async {
     // Frecency signal for the prefetch queue — user-driven reads only
     // (the scheduler's own warm-ups must not self-reinforce).
     unawaited(WebListingCache.instance.recordUsage('cat|$bucket'));
-    return _getListing(bucket, force: force);
+    return _getListing(bucket,
+        force: force, refetchForest: refetchForest ?? force);
   }
 
   Future<SwrListing> _getListing(String bucket,
-      {required bool force}) async {
+      {required bool force, required bool refetchForest}) async {
     if (!force) {
       final cached = await WebListingCache.instance.readListing(bucket);
       if (cached != null) {
@@ -166,10 +173,10 @@ class WebListingSwr extends ChangeNotifier {
 
     // Miss (or force): live-first — same semantics the screen had
     // before SWR, including listObjectsCached's offline fallback.
-    // force additionally drops the session's forest (Dart memo + the
-    // Rust client's copy, 0.6.9): a refresh is the user asking for
-    // OTHER devices' writes, which live only in a re-fetched forest.
-    if (force) {
+    // refetchForest drops the session's forest (Dart memo + the Rust
+    // client's copy, 0.6.9): cross-device refreshes only — own-write
+    // reloads keep the session forest, which is the freshest copy.
+    if (refetchForest) {
       await FulaApiService.instance.invalidateForestCache(bucket);
     }
     final r = await FulaApiService.instance.listObjectsCached(bucket);
@@ -200,11 +207,12 @@ class WebListingSwr extends ChangeNotifier {
   /// Scheduler entry (P2): warm one manifest pair — awaited live v8
   /// half (tiny GET; the win is the metadata bucket's forest), frozen
   /// legacy half as usual. Failures self-heal through normal SWR, so
-  /// completion always counts as done.
+  /// completion always counts as done. Cross-device warm-up →
+  /// refetchForest.
   Future<void> prefetchManifest(
       String base, String key, Uint8List encryptionKey) {
     return downloadMetadataMergedSwr(base, key, encryptionKey,
-        force: true, recordUsage: false);
+        force: true, recordUsage: false, refetchForest: true);
   }
 
   /// Background revalidate: plain live listing (no offline-fallback
@@ -272,12 +280,18 @@ class WebListingSwr extends ChangeNotifier {
   ///  - legacy half: immutable post-migration → fetched ONCE per user
   ///    and frozen forever (including frozen absence). Steady-state
   ///    cost is one GET instead of two.
+  /// [refetchForest] defaults FALSE here (opposite of listings): the
+  /// dominant force callers are SERVICE MUTATIONS doing
+  /// merge-before-overwrite, where a server-lagging manifest read
+  /// could clobber this client's own recent writes. Only explicit
+  /// cross-device refreshes (screen Refresh buttons) pass true.
   Future<List<Uint8List>> downloadMetadataMergedSwr(
     String base,
     String key,
     Uint8List encryptionKey, {
     bool force = false,
     bool recordUsage = true,
+    bool refetchForest = false,
   }) async {
     if (recordUsage) {
       // recordUsage doubles as "user-driven": frecency signal AND a
@@ -286,10 +300,10 @@ class WebListingSwr extends ChangeNotifier {
       unawaited(WebListingCache.instance.recordUsage('man|$base'));
       return WebForegroundActivity.instance.run(
           () => _downloadMetadataMergedSwr(base, key, encryptionKey,
-              force: force));
+              force: force, refetchForest: refetchForest));
     }
     return _downloadMetadataMergedSwr(base, key, encryptionKey,
-        force: force);
+        force: force, refetchForest: refetchForest);
   }
 
   Future<List<Uint8List>> _downloadMetadataMergedSwr(
@@ -297,6 +311,7 @@ class WebListingSwr extends ChangeNotifier {
     String key,
     Uint8List encryptionKey, {
     required bool force,
+    required bool refetchForest,
   }) async {
     final v8 = BucketVersionResolver.writeBucket(base);
     final blobs = <Uint8List>[];
@@ -307,6 +322,7 @@ class WebListingSwr extends ChangeNotifier {
       key: key,
       encryptionKey: encryptionKey,
       force: force,
+      refetchForest: refetchForest,
       frozen: false,
     );
     if (v8Blob != null) blobs.add(v8Blob);
@@ -318,6 +334,7 @@ class WebListingSwr extends ChangeNotifier {
         key: key,
         encryptionKey: encryptionKey,
         force: false, // frozen — force never re-fetches legacy
+        refetchForest: false,
         frozen: true,
       );
       if (legacyBlob != null) blobs.add(legacyBlob);
@@ -330,6 +347,7 @@ class WebListingSwr extends ChangeNotifier {
     required String key,
     required Uint8List encryptionKey,
     required bool force,
+    required bool refetchForest,
     required bool frozen,
   }) async {
     final cached = await WebListingCache.instance.readManifest(bucket, key);
@@ -345,12 +363,15 @@ class WebListingSwr extends ChangeNotifier {
       return cached.blob;
     }
 
-    // Miss, or force on the mutable half: live fetch. Drop the forest
-    // first — manifests are read THROUGH the bucket's forest, so a
-    // long-lived session would otherwise re-serve the old blob.
+    // Miss, or force on the mutable half: live fetch. Cross-device
+    // refreshes drop the forest first (manifests are read THROUGH the
+    // bucket's forest); mutation reads keep the session forest — it
+    // already reflects this client's own writes.
     final started = DateTime.now();
     try {
-      await FulaApiService.instance.invalidateForestCache(bucket);
+      if (refetchForest) {
+        await FulaApiService.instance.invalidateForestCache(bucket);
+      }
       final blob = await FulaApiService.instance
           .downloadAndDecrypt(bucket, key, encryptionKey)
           .timeout(const Duration(seconds: 30));

@@ -32,14 +32,16 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
 
   // SWR: the initial open serves the cached tag manifest instantly
   // (mutations write through the cache, so it's never behind our own
-  // edits); the Refresh button keeps the awaited live read.
+  // edits); the Refresh button does an awaited live read INCLUDING a
+  // server forest re-fetch (cross-device intent).
   Future<void> _load({bool force = false}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      await WebTagService.instance.load(force: force);
+      await WebTagService.instance
+          .load(force: force, refetchForest: force);
       if (mounted) setState(() => _loading = false);
     } catch (e) {
       if (mounted) {

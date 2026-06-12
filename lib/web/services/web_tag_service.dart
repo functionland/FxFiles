@@ -66,8 +66,11 @@ class WebTagService {
   /// SWR (P1): without [force] the blobs come from the listing cache
   /// when present (background-refreshed past the fresh window) — screen
   /// opens render instantly. Mutations and Refresh buttons pass
-  /// force=true for an awaited live read.
-  Future<void> load({bool force = false}) async {
+  /// force=true for an awaited live read; ONLY explicit cross-device
+  /// refreshes also pass [refetchForest] (a mutation's merge-read must
+  /// keep the session forest — it already reflects our own writes,
+  /// while the server may briefly lag them).
+  Future<void> load({bool force = false, bool refetchForest = false}) async {
     if (_loaded && !force) return;
     final kek = await _kek();
     final uid = await userId();
@@ -75,7 +78,7 @@ class WebTagService {
     final filesById = <String, TaggedFile>{};
     for (final blob in await WebListingSwr.instance.downloadMetadataMergedSwr(
         _bucket, '$_keyPrefix$uid.json', kek,
-        force: force)) {
+        force: force, refetchForest: refetchForest)) {
       try {
         final meta = TagCloudMetadata.fromJson(
             jsonDecode(utf8.decode(blob)) as Map<String, dynamic>);

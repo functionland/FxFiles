@@ -44,8 +44,10 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
       _error = null;
     });
     try {
-      await WebTagService.instance.load(force: force);
-      final r = await WebFeatures.loadWebsites(force: force);
+      await WebTagService.instance
+          .load(force: force, refetchForest: force);
+      final r = await WebFeatures.loadWebsites(
+          force: force, refetchForest: force);
       setState(() {
         _generations = r.generations;
         _pointers = r.pointersByTag;
