@@ -252,16 +252,63 @@ background task to foreground priority).
 | **Size bounds** | Per entry: max 20 000 objects (beyond that, store nothing — the screen already paginates poorly past that anyway; log it). Total budget: 25 MB ciphertext. On overflow: LRU-evict by `lastAccess` **before** writing the new entry (never transiently exceed the budget — quota failure mid-write must not be reachable). Listings are metadata-only (≈ 150–300 B/object) so the budget fits ~50–100 k objects across buckets. |
 | **Multi-tab** | One `BroadcastChannel('fxfiles-cache')` carrying three message kinds (advisor round upgraded this from prefetch-dedup only): (1) `prefetch-alive` ping — another tab pinged < 5 min ago ⇒ skip prefetch here; (2) `invalidate <key>` — sent on every app-originated write (upload/delete), other tabs drop that L1/L2 entry and revalidate on next view (a delete in tab A must not survive in tab B); (3) `signed-out` — other tabs clear L1 immediately and route to sign-in (the box delete is done by the originating tab; receivers must drop in-memory copies). Hive web serializes box access via IndexedDB transactions. |
 | **Mobile data / battery** | Prefetch ceiling: stop after the queue's first 8 items on `PlatformCapabilities`-detected narrow screens (heuristic for phones), full queue on desktop. `navigator.connection.saveData === true` ⇒ prefetch disabled entirely (respect Data Saver). |
+| **Low-RAM / older phones** | Dedicated device-class policy — see §8.1. The failure mode is not slowness but **silent tab kills**: Android Chrome OOM-evicts background-heavy tabs and reloads them, which would throw away the session's warmed forests AND interrupt the user. Low-end devices get a minimal prefetch footprint instead of a slightly-smaller normal one. |
 | **Master down** | `MasterHealthService` gate at scheduler + the existing stale banners on screens. Prefetch failures never surface UI. |
 | **Privacy** | Cache encrypted under a KEK-derived key (§5.1); no filenames at rest in plaintext; no cache writes pre-sign-in (no KEK → no key). |
+
+### 8.1 Low-end device policy (owner requirement)
+
+Older / low-RAM phones are a first-class constraint, not a degraded case of desktop. Two
+distinct risks: (a) **memory** — every prefetched bucket pins a decrypted forest in wasm
+linear memory plus an L1 listing in the Dart heap; Android Chrome silently OOM-kills
+heavy tabs (the user sees a reload and loses all session warm-up); (b) **CPU** — decrypt
++ JSON parse of large cached entries can jank the open path on older SoCs even when the
+network is removed from it.
+
+**Device classification** (computed once at boot, exposed as `DeviceClass.lowEnd`):
+
+```
+lowEnd =  (navigator.deviceMemory != null && deviceMemory <= 2)        // Chrome/Android
+       || (deviceMemory unavailable && narrowScreen
+           && navigator.hardwareConcurrency <= 4)                      // Safari/FF fallback
+```
+
+`deviceMemory` is Chromium-only, so the fallback heuristic (phone-width screen + ≤ 4
+cores) covers Safari/Firefox. Misclassifying a mid phone as low-end costs a little
+warm-up; misclassifying the other way costs a tab kill — bias toward low-end.
+
+**Policy when `lowEnd`:**
+
+| Knob | Normal mobile | Low-end |
+|---|---|---|
+| Prefetch queue | 8 items | **3 items** (frecency-top categories only, no feature manifests — those warm on first open) |
+| Prefetch start delay | 2 s idle | **5 s idle** (older devices are still settling the boot path) |
+| Forests warmed beyond user-opened | bounded by queue | **≤ 2** |
+| Total cache budget | 25 MB | **10 MB** |
+| L1 in-memory entries | unbounded (session) | **LRU-capped at 6 entries** (a 5 k-object listing ≈ 1–3 MB of Dart heap each) |
+| Per-entry object cap | 20 000 | **5 000** (beyond that: cache the first 5 000 by mtime desc + mark `truncated` — the open still paints instantly, the live fetch completes the view) |
+
+**Lifecycle hooks (all device classes, but written for phones):** on
+`visibilitychange → hidden` the scheduler pauses (don't burn background CPU on a phone);
+on `pagehide`/`freeze` (Page Lifecycle API — Android Chrome freezes background tabs) the
+current task is abandoned at the next checkpoint and the queue persists nothing — a
+frozen-then-resumed tab restarts cleanly from the cache state on disk. Combined with the
+existing rules (Data Saver kill-switch, storage-quota pre-check), the worst case on a
+2 GB phone is: no prefetch at all, SWR still works, behavior identical to today plus the
+instant cached render.
+
+**P0 on low-end:** the baseline table is recorded twice — normal, and with DevTools
+4–6× CPU throttling + a 2 GB `deviceMemory` override — and the P1 decrypt gate
+(< 100 ms) is judged on the throttled profile, not desktop.
 
 ## 9. Phasing (one Claude session each, gates as usual)
 
 - **P0 — Measure**: temporary `--dart-define=PERF=true` timing probes split into
   **forest-load vs list-from-forest vs manifest GET vs decrypt** on the test vault (the
   split decides whether the scheduler should prioritize forest warming over listings);
-  also record per-forest wasm memory cost. Baseline table lands in this doc. If something
-  other than forest+listing dominates, re-plan before building.
+  also record per-forest wasm memory cost. Run twice: normal, and the §8.1 throttled
+  low-end profile (4–6× CPU, 2 GB deviceMemory override). Baseline table lands in this
+  doc. If something other than forest+listing dominates, re-plan before building.
 - **P1 — SWR read path** (pillar A): `web_listing_cache.dart` (encrypted Hive box via
   `crypto.subtle`, owner scoping, schema v1, L1 map) + single-flight map +
   `web_bucket_screen` SWR + feature services `load()` SWR + frozen-legacy manifest halves
@@ -271,9 +318,11 @@ background task to foreground priority).
   to today.
 - **P2 — Scheduler** (pillar B): `web_foreground_activity.dart` + call-site wraps +
   `web_prefetch_scheduler.dart` (frecency, concurrency 1, preemption checkpoints, poison
-  marks + backoff, health gate, Data Saver, quota check, multi-tab ping). Gate: with a
-  download in flight, zero prefetch requests observed in the network log; cold sign-in →
-  all six categories warm within ~30 s idle.
+  marks + backoff, health gate, Data Saver, quota check, multi-tab ping) + the §8.1
+  `DeviceClass` policy and visibility/freeze lifecycle hooks. Gates: with a download in
+  flight, zero prefetch requests observed in the network log; cold sign-in → all six
+  categories warm within ~30 s idle (desktop); on the throttled low-end profile, exactly
+  3 prefetch tasks run and the tab survives a background/foreground cycle.
 - **P3 — Lifecycle** (pillar C): write-through patches on upload/delete + `invalidate`
   broadcasts; sign-out wipe + `signed-out` broadcast + the wasm client-handle disposal
   audit; cross-user wipe; size caps + LRU; usage log. Gate: user-switch E2E shows zero
@@ -303,6 +352,10 @@ Revisit only with a dedicated SW-versioning design.
 Tracked risks (not v1 blockers): wasm forest memory growth from prefetch warming (§6.3,
 P0 measures, V2 prunes); cross-device staleness inside the 1 h silent window (V2
 forest-root probe closes it); browser-initiated IndexedDB eviction (handled as miss).
+
+Owner addition (2026-06-12): low-RAM / older phones are a first-class constraint → §8.1
+device-class policy (minimal prefetch footprint, capped L1, truncated giant entries,
+visibility/freeze hooks, throttled-profile gates in P0/P1/P2).
 
 ## 11. Advisor round summary
 
