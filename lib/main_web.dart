@@ -23,6 +23,8 @@
 // Progress + results are print()ed with an [e2e] prefix.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -41,7 +43,10 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
+import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_session.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
 
 const bool _e2eEnabled = bool.fromEnvironment('E2E');
 
@@ -241,6 +246,111 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
             'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
         break;
+      case 'perf-seed':
+        // Populate documents-v8 with tiny files so the perf mode can
+        // measure how forest-load / list / decrypt SCALE with object
+        // count (the empty test vault only gives floor costs). Files
+        // stay around — later perf runs and P1 gates reuse them.
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: perf-seed mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        final seedCount = int.tryParse(
+                Uri.parse(web.window.location.href).queryParameters['n'] ??
+                    '') ??
+            150;
+        final seedBucket = BucketVersionResolver.writeBucket('documents');
+        try {
+          await FulaApiService.instance.createBucket(seedBucket);
+        } catch (_) {}
+        final body = _e2ePattern(4 * 1024, 11);
+        var ok = 0;
+        final swSeed = Stopwatch()..start();
+        for (var i = 0; i < seedCount; i++) {
+          try {
+            await FulaApiService.instance
+                .uploadObject(seedBucket, '/e2e/perf/f$i.bin', body);
+            ok++;
+          } catch (e) {
+            log('seed upload $i failed: ${'$e'.split('\n').first}');
+          }
+          if ((i + 1) % 25 == 0) {
+            log('seeded ${i + 1}/$seedCount '
+                '(${swSeed.elapsedMilliseconds ~/ (i + 1)}ms/file)');
+          }
+        }
+        swSeed.stop();
+        log('perf-seed-done ok=$ok/$seedCount '
+            'totalMs=${swSeed.elapsedMilliseconds}');
+        break;
+      case 'perf':
+        // P0 baseline for docs/web-listing-prefetch-cache-plan.md.
+        // Per category: cold open (forest-load + list — the [perf]
+        // spans from fula_api_service print the split) vs warm re-list
+        // (forest memoized), plus approximate JS-heap growth per cold
+        // load. Then each feature manifest load, timed.
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: perf mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        const bases = [
+          'images',
+          'videos',
+          'audio',
+          'documents',
+          'downloads',
+          'archives',
+        ];
+        for (final base in bases) {
+          final bucket = BucketVersionResolver.writeBucket(base);
+          final h0 = _jsHeapMB();
+          final cold = Stopwatch()..start();
+          var count = -1;
+          var note = '';
+          try {
+            final r =
+                await FulaApiService.instance.listObjectsCached(bucket);
+            count = r.objects.length;
+            if (r.stale) note = ' stale';
+          } catch (e) {
+            note = ' error=${'$e'.split('\n').first}';
+          }
+          cold.stop();
+          final h1 = _jsHeapMB();
+          final warm = Stopwatch()..start();
+          try {
+            await FulaApiService.instance.listObjectsCached(bucket);
+          } catch (_) {}
+          warm.stop();
+          final heap = (h0 != null && h1 != null)
+              ? (h1 - h0).toStringAsFixed(1)
+              : '?';
+          log('cat $base cold=${cold.elapsedMilliseconds}ms '
+              'warm=${warm.elapsedMilliseconds}ms n=$count '
+              'heapDeltaMB=$heap$note');
+        }
+        Future<void> feat(String name, Future<void> Function() fn) async {
+          final sw = Stopwatch()..start();
+          var note = '';
+          try {
+            await fn();
+          } catch (e) {
+            note = ' error=${'$e'.split('\n').first}';
+          }
+          sw.stop();
+          log('feat $name ${sw.elapsedMilliseconds}ms$note');
+        }
+
+        await feat('tags', () => WebTagService.instance.load(force: true));
+        await feat('nfts', () => WebNftService.instance.load(force: true));
+        await feat('websites', () => WebFeatures.loadWebsites());
+        await feat('shelf', () => WebFeatures.loadShelf());
+        await feat('playlists', () => WebFeatures.loadPlaylists());
+        break;
       case 'wallet':
         // Regression probe for the AppKit modal: in the broken state
         // (dead context) openModalView() resolved INSTANTLY with no
@@ -260,16 +370,20 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
           log('FAIL: walletNavigatorKey has no context');
           break;
         }
+        // Harness context: the root-navigator context is app-lifetime,
+        // which is exactly what the lint can't see.
+        // ignore: use_build_context_synchronously
         await WalletService.instance.initialize(ctx);
         log('wallet-initialized=${WalletService.instance.isInitialized}');
         var connectResolved = false;
         unawaited(WalletService.instance
+            // ignore: use_build_context_synchronously
             .connectWallet(ctx)
-            .then((_) => connectResolved = true)
+            .then<bool>((_) => connectResolved = true)
             .catchError((Object e) {
           connectResolved = true;
           log('connect-error: $e');
-          return null;
+          return false;
         }));
         await Future<void>.delayed(const Duration(seconds: 4));
         log('modal-open-pending=${!connectResolved} '
@@ -282,6 +396,24 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
     log('FAIL: $e');
   }
   log('E2E DONE');
+}
+
+/// Approximate JS heap (MB) via Chrome's non-standard
+/// `performance.memory.usedJSHeapSize` — null elsewhere. Launched with
+/// --enable-precise-memory-info for unquantized values. Wasm linear
+/// memory is backed by an ArrayBuffer counted in this number, so the
+/// per-category delta approximates the forest's resident cost.
+double? _jsHeapMB() {
+  try {
+    final perf = web.window.performance as JSObject;
+    final mem = perf.getProperty('memory'.toJS);
+    if (mem.isUndefinedOrNull) return null;
+    final used = (mem as JSObject).getProperty('usedJSHeapSize'.toJS);
+    if (used.isUndefinedOrNull) return null;
+    return (used as JSNumber).toDartDouble / (1024 * 1024);
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Deterministic test payload: byte i = (i * 31 + offset) % 251. The

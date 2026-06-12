@@ -7,6 +7,7 @@ import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/platform/file_length.dart';
 import 'package:fula_files/core/platform/frb_u64.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
+import 'package:fula_files/core/perf/perf_probe.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
@@ -408,7 +409,8 @@ class FulaApiService implements FulaApi {
   Future<void> _ensureForestLoaded(String bucket) async {
     if (_loadedForests.contains(bucket)) return;
     try {
-      await fula.loadForest(client: _client!, bucket: bucket);
+      await perfSpan('forest-load $bucket',
+          () => fula.loadForest(client: _client!, bucket: bucket));
       _loadedForests.add(bucket);
       debugPrint('Forest loaded for bucket: $bucket');
     } catch (e) {
@@ -636,10 +638,12 @@ class FulaApiService implements FulaApi {
     try {
       await _ensureForestLoaded(bucket);
 
-      final files = await fula.listFromForest(
-        client: _client!,
-        bucket: bucket,
-      );
+      final files = await perfSpan(
+          'list-from-forest $bucket',
+          () => fula.listFromForest(
+                client: _client!,
+                bucket: bucket,
+              ));
 
       // Filter by prefix if specified (listFromForest returns the whole
       // bucket; the prefix is a Dart-side narrowing).
@@ -913,7 +917,8 @@ class FulaApiService implements FulaApi {
     final blobs = <Uint8List>[];
     for (final bucket in buckets) {
       try {
-        final d = await downloadAndDecrypt(bucket, key, encryptionKey);
+        final d = await perfSpan('manifest-download $bucket $key',
+            () => downloadAndDecrypt(bucket, key, encryptionKey));
         if (d.isNotEmpty) blobs.add(d);
       } catch (e) {
         debugPrint('downloadMetadataMerged: $bucket miss: $e');

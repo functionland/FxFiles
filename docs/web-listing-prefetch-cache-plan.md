@@ -1,6 +1,6 @@
 # Web Listing Cache + Background Prefetch — Design Plan
 
-Status: advisor-reviewed (Gemini + Copilot, 2026-06-12 — see §10/§11), awaiting owner approval
+Status: advisor-reviewed (Gemini + Copilot, 2026-06-12 — see §10/§12); P0 baseline measured (§11) — confirms the design, ready for P1
 Scope: web shell only (`lib/web/**` + additive core seams). Native screens keep their
 existing flows; any shared-file change must be behavior-identical natively.
 
@@ -357,7 +357,50 @@ Owner addition (2026-06-12): low-RAM / older phones are a first-class constraint
 device-class policy (minimal prefetch footprint, capped L1, truncated giant entries,
 visibility/freeze hooks, throttled-profile gates in P0/P1/P2).
 
-## 11. Advisor round summary
+## 11. P0 baseline (measured 2026-06-12)
+
+Instrumentation: `lib/core/perf/perf_probe.dart` spans (compiled out unless
+`--dart-define=PERF=true`) around `_ensureForestLoaded`, `listFromForest` and
+`downloadMetadataMerged`; driven by the `?e2e=perf` mode (E2E builds only) via
+`tools/web-perf-run.ps1` (normal, and `-ThrottleRate 5` low-end profile through CDP
+`Emulation.setCPUThrottlingRate`). Test vault `95116083…`; `documents-v8` seeded with
+135 × 4 KB files (`?e2e=perf-seed`) to expose object-count scaling; other categories
+empty (floor cost). Desktop hardware, warm network. deviceMemory override isn't in
+stable CDP, so the low-end run throttles CPU only — fine for P0's purpose.
+
+| Measurement | Normal | 5× CPU throttle |
+|---|---|---|
+| Cold open, empty bucket (floor) | 57–360 ms | 66–270 ms |
+| Cold open, **135 files** | **1200 ms** (forest 560 + first list 632) | 708 ms (network variance dominates run-to-run) |
+| Warm re-list, empty | 0–6 ms | 8–19 ms |
+| Warm re-list, **135 files** | **134 ms** | **244 ms** |
+| First wasm call of session (extra warm-up) | ~0.3–1.1 s | **~2.4 s** |
+| Feature manifest load (per feature, 2 forest loads + GETs) | 140–360 ms (GET+decrypt itself ≈ 5 ms; the cost IS the metadata-bucket forest loads) | similar |
+| Heap delta per warmed forest | ~0.1–1.9 MB (at this scale) + 5–7 MB one-time session warm-up | similar |
+
+Derived scaling (n=0 → n=135): **≈ 6.5 ms/file cold** (≈ 2.3 forest + 4.2 first
+enumeration) and **≈ 1 ms/file warm** (≈ 2 ms/file at 5× — enumeration has a real CPU
+component). Extrapolated to a 2 000-file category: **~13 s cold, ~2 s per warm re-list**
+on desktop — which reproduces the reported "every open takes ages" experience and is
+worse on phones.
+
+Conclusions (P0 gate: does forest+listing dominate? → **yes**, no re-plan):
+1. SWR (pillar A) attacks the right thing: the open path must not wait on forest-load
+   OR enumeration. Even the *revalidate* is O(n) with a CPU term — background-only, and
+   the < 2 min no-revalidate tier is justified.
+2. Prefetch (pillar B) = exactly "forest-load + one enumeration per bucket", frecency
+   order — a listing IS the warm-up; no separate forest-only mode needed.
+3. The session's first wasm call carries seconds of warm-up under throttle — the
+   prefetcher's first background task absorbs it off the user's critical path.
+4. Feature manifests are cheap once their metadata-bucket forests are warm; the
+   frozen-legacy halves halve steady-state cost as designed.
+5. Low-end policy (§8.1) validated: per-file CPU in enumeration ⇒ L1 caps + truncated
+   giant entries matter on old phones.
+6. Side finding (out of scope here, worth a fula-api note): per-upload cost grew
+   1.0 s → 3.8 s/file as the bucket went 0 → 135 objects — upload forest writes scale
+   with bucket size.
+
+## 12. Advisor round summary
 
 Reviewed 2026-06-12 by Gemini CLI and GitHub Copilot CLI (independent model families;
 built-in/Codex/Cursor advisors quota-unavailable). Verdicts: structurally sound, no
