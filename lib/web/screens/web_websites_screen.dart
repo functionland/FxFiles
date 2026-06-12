@@ -35,14 +35,17 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
     _load();
   }
 
-  Future<void> _load() async {
+  // SWR: initial open serves cached manifests; Refresh forces live.
+  // Mutations (create group / completed generations / pointer mints)
+  // write through the cache, so the default path stays current.
+  Future<void> _load({bool force = false}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      await WebTagService.instance.load(force: true);
-      final r = await WebFeatures.loadWebsites();
+      await WebTagService.instance.load(force: force);
+      final r = await WebFeatures.loadWebsites(force: force);
       setState(() {
         _generations = r.generations;
         _pointers = r.pointersByTag;
@@ -187,7 +190,7 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _load,
+            onPressed: () => _load(force: true),
           ),
         ],
       ),

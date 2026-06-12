@@ -9,6 +9,8 @@ import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 
 /// Web counterpart of the native TagStorageService. Same cloud manifest
 /// (TagCloudMetadata at `tag-metadata(-v8)/.fula/tags/{userId}.json`,
@@ -59,14 +61,20 @@ class WebTagService {
 
   /// Download + additively merge the [v8, legacy] manifests (first/v8
   /// wins an id) into the in-memory snapshot.
+  ///
+  /// SWR (P1): without [force] the blobs come from the listing cache
+  /// when present (background-refreshed past the fresh window) — screen
+  /// opens render instantly. Mutations and Refresh buttons pass
+  /// force=true for an awaited live read.
   Future<void> load({bool force = false}) async {
     if (_loaded && !force) return;
     final kek = await _kek();
     final uid = await userId();
     final tagsById = <String, FileTag>{};
     final filesById = <String, TaggedFile>{};
-    for (final blob in await FulaApiService.instance
-        .downloadMetadataMerged(_bucket, '$_keyPrefix$uid.json', kek)) {
+    for (final blob in await WebListingSwr.instance.downloadMetadataMergedSwr(
+        _bucket, '$_keyPrefix$uid.json', kek,
+        force: force)) {
       try {
         final meta = TagCloudMetadata.fromJson(
             jsonDecode(utf8.decode(blob)) as Map<String, dynamic>);
@@ -131,6 +139,10 @@ class WebTagService {
       data,
       contentType: 'application/json',
     );
+    // Write-through: the SWR cache must reflect the manifest we just
+    // uploaded, or the next open would serve the pre-mutation copy.
+    await WebListingCache.instance
+        .writeManifest(_writeBucket, '$_keyPrefix$uid.json', data);
     debugPrint('WebTagService: synced ${_tags.length} tags, '
         '${_taggedFiles.length} associations');
   }

@@ -62,8 +62,10 @@ class _WebNftsScreenState extends State<WebNftsScreen> {
       _error = null;
     });
     try {
-      await WebTagService.instance.load(force: true);
-      await WebNftService.instance.load(force: true);
+      // SWR: cached manifests render instantly; the services'
+      // write-through keeps them current after our own mutations.
+      await WebTagService.instance.load();
+      await WebNftService.instance.load();
       if (mounted) setState(() => _loading = false);
     } catch (e) {
       if (mounted) {

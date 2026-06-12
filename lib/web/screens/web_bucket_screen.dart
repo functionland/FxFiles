@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -43,6 +44,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   String? _error;
   bool _loading = true;
 
+  /// When the rendered listing came from the SWR cache: its fetch time
+  /// (drives the "Synced X min ago" line past 15 minutes).
+  DateTime? _fetchedAt;
+
   /// objectKey → tags, refreshed after each listing (native parity:
   /// file rows show compact tag chips).
   Map<String, List<FileTag>> _fileTags = const {};
@@ -55,7 +60,20 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   @override
   void initState() {
     super.initState();
+    // Connection-regain → silent forced revalidate (plan §5.3).
+    WebListingSwr.instance.ensureOnlineHook();
+    WebListingSwr.instance.addListener(_onOnline);
     _load();
+  }
+
+  @override
+  void dispose() {
+    WebListingSwr.instance.removeListener(_onOnline);
+    super.dispose();
+  }
+
+  void _onOnline() {
+    if (mounted && !_loading) _load(force: true, silent: true);
   }
 
   /// Web lists ONLY the category's -v8 bucket (owner decision,
@@ -65,28 +83,40 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// and corrupt legacy reads. The fresh v8 sibling is the write target
   /// for every platform and is fully healthy. Pre-migration files stay
   /// reachable from the mobile/desktop apps.
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// SWR load (plan §5.2): cached render lands immediately when the
+  /// cache has this bucket; the live fetch then patches the view in
+  /// place. force = mutation/Refresh semantics — awaited live listing,
+  /// exactly the pre-SWR behavior (plus the cache update). silent =
+  /// no spinner (connection-regain revalidate).
+  Future<void> _load({bool force = false, bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     final bucket = BucketVersionResolver.writeBucket(widget.base);
     try {
-      final r = await FulaApiService.instance.listObjectsCached(bucket);
-      final objects = r.objects
-          .map((o) => o.withSourceBucket(bucket))
-          .toList()
-        ..sort((a, b) {
-          final at = a.lastModified?.millisecondsSinceEpoch ?? 0;
-          final bt = b.lastModified?.millisecondsSinceEpoch ?? 0;
-          return bt.compareTo(at);
+      final r =
+          await WebListingSwr.instance.getListing(bucket, force: force);
+      _applyListing(
+        bucket,
+        r.objects,
+        stale: r.offlineStale || r.staleTier,
+        fetchedAt: r.fetchedAt,
+      );
+      final reval = r.revalidation;
+      if (reval != null) {
+        reval.then((fresh) {
+          if (fresh == null || !mounted) return;
+          _applyListing(
+            bucket,
+            fresh.objects,
+            stale: fresh.offlineStale,
+            fetchedAt: DateTime.now(),
+          );
         });
-      setState(() {
-        _objects = objects;
-        _stale = r.stale;
-        _loading = false;
-      });
-      _refreshTags(bucket, objects);
+      }
     } catch (e) {
       // A category nobody has uploaded to yet has no -v8 bucket at all:
       // that's the empty state, not an error.
@@ -96,6 +126,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           _objects = const [];
           _stale = false;
           _loading = false;
+          _fetchedAt = null;
         });
         return;
       }
@@ -104,6 +135,28 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         _loading = false;
       });
     }
+  }
+
+  void _applyListing(
+    String bucket,
+    List<FulaObject> raw, {
+    required bool stale,
+    DateTime? fetchedAt,
+  }) {
+    final objects = raw.map((o) => o.withSourceBucket(bucket)).toList()
+      ..sort((a, b) {
+        final at = a.lastModified?.millisecondsSinceEpoch ?? 0;
+        final bt = b.lastModified?.millisecondsSinceEpoch ?? 0;
+        return bt.compareTo(at);
+      });
+    if (!mounted) return;
+    setState(() {
+      _objects = objects;
+      _stale = stale;
+      _loading = false;
+      _fetchedAt = fetchedAt;
+    });
+    _refreshTags(bucket, objects);
   }
 
   /// Best-effort tag chip data — never blocks or fails the listing.
@@ -202,7 +255,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           _uploadPct = null;
           _uploadLabel = '';
         });
-        await _load();
+        await _load(force: true);
       }
     }
   }
@@ -251,7 +304,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       final bucket = o.sourceBucket ?? widget.base;
       await FulaApiService.instance.deleteObject(bucket, o.key);
       _snack('Deleted');
-      await _load();
+      await _load(force: true);
     } catch (e) {
       _snack('Delete failed: $e');
     }
@@ -702,7 +755,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : _load,
+            onPressed: _loading ? null : () => _load(force: true),
           ),
         ],
       ),
@@ -734,8 +787,23 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                   'reached just now.'),
               leading: const Icon(Icons.cloud_off),
               actions: [
-                TextButton(onPressed: _load, child: const Text('Retry')),
+                TextButton(
+                    onPressed: () => _load(force: true),
+                    child: const Text('Retry')),
               ],
+            ),
+          if (!_stale &&
+              !_loading &&
+              _fetchedAt != null &&
+              DateTime.now().difference(_fetchedAt!) > kSwrSyncedAgoWindow)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
+              child: Text(
+                'Synced ${DateTime.now().difference(_fetchedAt!).inMinutes} min ago',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
             ),
           if (_error != null)
             Expanded(
@@ -752,7 +820,8 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                     ),
                     const SizedBox(height: 12),
                     FilledButton(
-                        onPressed: _load, child: const Text('Retry')),
+                        onPressed: () => _load(force: true),
+                        child: const Text('Retry')),
                   ],
                 ),
               ),

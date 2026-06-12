@@ -31,13 +31,15 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
     _load();
   }
 
-  Future<void> _load() async {
+  // SWR: initial open serves the cached shelf manifest; Refresh/Retry
+  // force the awaited live read.
+  Future<void> _load({bool force = false}) async {
     setState(() {
       _items = null;
       _error = null;
     });
     try {
-      final items = await WebFeatures.loadShelf();
+      final items = await WebFeatures.loadShelf(force: force);
       setState(() => _items = items);
     } catch (e) {
       setState(() => _error = '$e');
@@ -186,7 +188,7 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _load,
+            onPressed: () => _load(force: true),
           ),
         ],
       ),
@@ -203,7 +205,9 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
                         textAlign: TextAlign.center),
                   ),
                   const SizedBox(height: 12),
-                  FilledButton(onPressed: _load, child: const Text('Retry')),
+                  FilledButton(
+                      onPressed: () => _load(force: true),
+                      child: const Text('Retry')),
                 ],
               ),
             )

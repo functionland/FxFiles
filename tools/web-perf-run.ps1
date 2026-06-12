@@ -15,11 +15,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Seed,
     [double]$ThrottleRate = 0,
     [int]$TimeoutSec = 240,
+    [string]$Mode = "perf",
     [string]$Chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 )
 
 $seedEnc = [uri]::EscapeDataString($Seed)
-$url = "http://localhost:$Port/?e2e=perf&seed=$seedEnc"
+$url = "http://localhost:$Port/?e2e=$Mode&seed=$seedEnc"
 $profileDir = "$env:TEMP\fx-perf-$(Get-Random)"
 $errFile = "$env:TEMP\fx-perf-stderr-$(Get-Random).txt"
 $dbgPort = 9333

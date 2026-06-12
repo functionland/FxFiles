@@ -20,6 +20,7 @@ import 'package:fula_files/core/services/ipns_record.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
+import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// One asset for a website generation: either picked in-browser
@@ -335,6 +336,9 @@ class WebIpnsService {
         kek,
         contentType: 'application/json',
       );
+      // Write-through to the SWR cache (read by WebFeatures.loadWebsites).
+      await WebListingCache.instance
+          .writeManifest(_writeBucket, objectKey, data);
       debugPrint('WebIpnsService: pointers backed up (${merged.length})');
     } catch (e) {
       debugPrint('WebIpnsService: backup failed (non-fatal): $e');
@@ -877,6 +881,8 @@ class WebWebsiteService extends ChangeNotifier {
         kek,
         contentType: 'application/json',
       );
+      // Write-through to the SWR cache (read by WebFeatures.loadWebsites).
+      await WebListingCache.instance.writeManifest(writeBucket, key, data);
       debugPrint('WebWebsiteService: manifest synced (${byId.length} gens)');
     } catch (e) {
       debugPrint('WebWebsiteService: manifest sync failed (non-fatal): $e');

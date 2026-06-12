@@ -18,6 +18,8 @@ import 'package:fula_files/core/services/nft_contract_service.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Web counterpart of the native NftService — same recipes for the
@@ -77,22 +79,25 @@ class WebNftService extends ChangeNotifier {
   Future<String> _manifestKey() async =>
       '.fula/nfts/${await WebTagService.userId()}.json';
 
-  /// Download + additively merge the [v8, legacy] manifests.
+  /// Download + additively merge the [v8, legacy] manifests. SWR (P1):
+  /// non-forced loads serve the cached blobs instantly (refreshed
+  /// behind past the fresh window); force = awaited live read.
   Future<void> load({bool force = false}) {
     if (_loaded && !force) return Future.value();
     final inFlight = _loadFuture;
     if (inFlight != null) return inFlight;
-    final f = _doLoad().whenComplete(() => _loadFuture = null);
+    final f = _doLoad(force: force).whenComplete(() => _loadFuture = null);
     _loadFuture = f;
     return f;
   }
 
-  Future<void> _doLoad() async {
+  Future<void> _doLoad({required bool force}) async {
     final kek = await _kek();
     final key = await _manifestKey();
     final byId = <String, NftCollection>{};
-    for (final blob in await FulaApiService.instance
-        .downloadMetadataMerged(_nftMetadataBucket, key, kek)) {
+    for (final blob in await WebListingSwr.instance
+        .downloadMetadataMergedSwr(_nftMetadataBucket, key, kek,
+            force: force)) {
       try {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw in (j['collections'] as List<dynamic>? ?? const [])) {
@@ -151,6 +156,8 @@ class WebNftService extends ChangeNotifier {
         kek,
         contentType: 'application/json',
       );
+      // Write-through so the next SWR read serves this manifest.
+      await WebListingCache.instance.writeManifest(writeBucket, key, data);
       debugPrint('WebNftService: manifest synced (${byId.length})');
     } catch (e) {
       debugPrint('WebNftService: manifest sync failed (non-fatal): $e');

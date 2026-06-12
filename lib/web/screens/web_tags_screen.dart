@@ -30,7 +30,10 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
     _load();
   }
 
-  Future<void> _load({bool force = true}) async {
+  // SWR: the initial open serves the cached tag manifest instantly
+  // (mutations write through the cache, so it's never behind our own
+  // edits); the Refresh button keeps the awaited live read.
+  Future<void> _load({bool force = false}) async {
     setState(() {
       _loading = true;
       _error = null;
@@ -128,7 +131,7 @@ class _WebTagsScreenState extends State<WebTagsScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _load,
+            onPressed: () => _load(force: true),
           ),
         ],
       ),
@@ -289,7 +292,7 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
 
   Future<void> _load() async {
     try {
-      await WebTagService.instance.load(force: true);
+      await WebTagService.instance.load();
       if (mounted) setState(() => _loading = false);
     } catch (e) {
       if (mounted) {

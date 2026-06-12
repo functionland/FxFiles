@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Read-only cloud loaders for the four feature areas the web shell
@@ -49,12 +50,12 @@ class WebFeatures {
   /// ShelfStorageService.restoreFromCloud: merged manifests, first
   /// (v8) wins per id, order applied from the first manifest carrying
   /// one.
-  static Future<List<ShelfItem>> loadShelf() async {
+  static Future<List<ShelfItem>> loadShelf({bool force = false}) async {
     final kek = await _kek();
     final userId = await _userId();
     final key = '.fula/dumps/$userId.json';
-    final blobs = await FulaApiService.instance
-        .downloadMetadataMerged('dump-metadata', key, kek);
+    final blobs = await WebListingSwr.instance
+        .downloadMetadataMergedSwr('dump-metadata', key, kek, force: force);
 
     final byId = <String, ShelfItem>{};
     List<String>? order;
@@ -107,13 +108,15 @@ class WebFeatures {
       ({
         List<WebsiteGeneration> generations,
         Map<String, WebsiteGroupPointer> pointersByTag,
-      })> loadWebsites() async {
+      })> loadWebsites({bool force = false}) async {
     final kek = await _kek();
     final userId = await _userId();
 
     final byId = <String, WebsiteGeneration>{};
-    for (final blob in await FulaApiService.instance.downloadMetadataMerged(
-        'website-metadata', '.fula/websites/$userId.json', kek)) {
+    for (final blob in await WebListingSwr.instance
+        .downloadMetadataMergedSwr(
+            'website-metadata', '.fula/websites/$userId.json', kek,
+            force: force)) {
       try {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw in (j['generations'] as List<dynamic>? ?? const [])) {
@@ -129,8 +132,10 @@ class WebFeatures {
     try {
       // NOTE: underscore, not hyphen — IpnsPointerService writes
       // `.fula/website_pointers/…` (ipns_pointer_service.dart:283).
-      for (final blob in await FulaApiService.instance.downloadMetadataMerged(
-          'website-metadata', '.fula/website_pointers/$userId.json', kek)) {
+      for (final blob in await WebListingSwr.instance
+          .downloadMetadataMergedSwr(
+              'website-metadata', '.fula/website_pointers/$userId.json', kek,
+              force: force)) {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw
             in (j['pointers'] as List<dynamic>? ?? j.values.toList())) {
@@ -156,8 +161,8 @@ class WebFeatures {
   /// Tags + tagged-file associations. Single-sourced through
   /// WebTagService (which owns the manifest read AND write paths).
   static Future<({List<FileTag> tags, List<TaggedFile> files})>
-      loadTags() async {
-    await WebTagService.instance.load(force: true);
+      loadTags({bool force = false}) async {
+    await WebTagService.instance.load(force: force);
     return (
       tags: WebTagService.instance.tags,
       files: WebTagService.instance.taggedFiles,

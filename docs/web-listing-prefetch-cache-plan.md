@@ -1,6 +1,8 @@
 # Web Listing Cache + Background Prefetch — Design Plan
 
-Status: advisor-reviewed (Gemini + Copilot, 2026-06-12 — see §10/§12); P0 baseline measured (§11) — confirms the design, ready for P1
+Status: P0 measured (§11) + **P1 SHIPPED** (§11.1, 2026-06-12) — SWR live for categories
+and feature manifests; next: P2 prefetch scheduler. Advisor rounds: design (Gemini +
+Copilot, §10/§12) and P1 implementation review (Gemini, §11.1).
 Scope: web shell only (`lib/web/**` + additive core seams). Native screens keep their
 existing flows; any shared-file change must be behavior-identical natively.
 
@@ -399,6 +401,42 @@ Conclusions (P0 gate: does forest+listing dominate? → **yes**, no re-plan):
 6. Side finding (out of scope here, worth a fula-api note): per-upload cost grew
    1.0 s → 3.8 s/file as the bucket went 0 → 135 objects — upload forest writes scale
    with bucket size.
+
+### 11.1 P1 results (shipped 2026-06-12)
+
+Built as designed (§5) with these deltas:
+- Manifest revalidation updates the **cache only** (next open is fresh); in-place screen
+  patching for feature screens arrives with P2's notifications. Category screens DO
+  patch in place (the bucket screen subscribes to its revalidation future).
+- Playlists stay live in v1 (their reader is per-object downloads over prefix listings —
+  needs per-object cache entries; P2+).
+- Sign-out wipe + cross-user wipe land in P3 as planned (KEK loss already makes
+  leftovers unreadable; `clearAll()` exists and is e2e-exercised).
+
+Gates (e2e=swr via tools/web-perf-run.ps1, documents-v8 @135 objects):
+
+| Metric | Normal | 5× CPU throttle | Gate |
+|---|---|---|---|
+| Warm open through SWR | **1–4 ms** | **12–35 ms** | < 200 ms ✓ |
+| L2 read (decrypt+parse) | 3–8 ms | 12–76 ms | < 100 ms ✓ |
+| L1 re-open | 0 ms | 2–5 ms | — |
+| (reference: cache-miss live open) | ~750 ms | ~2 200–2 800 ms | unchanged |
+
+Aged-entry path verified live: cached render + background revalidation lands + cache
+rewritten. HKDF pinned to both RFC 5869 SHA-256 vectors; tier policy unit-tested.
+
+**Bugs caught before ship** (why the gates + adversarial review exist):
+1. The e2e gate caught a real single-flight deadlock:
+   `whenComplete(() => map.remove(key))` — `Map.remove` returns the removed value (the
+   future itself) and `whenComplete` awaits a returned future → the future deadlocked on
+   itself. Fixed with block-body callbacks; lesson recorded.
+2. Gemini's implementation review (adversarial round) flagged, all fixed:
+   slow-revalidation-overwrites-forced-mutation race → monotonic fetch-start stamps with
+   a keep-newer guard on every cache write; generic "404/not found" string-matching too
+   loose to gate the legacy freeze → negative caching now requires structural
+   NoSuchKey/NoSuchBucket; AES-GCM entries now bind their cache slot as AAD (an entry
+   swapped to another key fails auth); 30 s timeouts inside single-flight closures
+   (a hung flight can no longer starve a bucket's refreshes).
 
 ## 12. Advisor round summary
 

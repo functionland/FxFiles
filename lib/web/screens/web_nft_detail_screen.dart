@@ -48,7 +48,9 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
   Future<void> _load() async {
     try {
       await WebTagService.instance.load();
-      await WebNftService.instance.load(force: true);
+      // SWR: cached manifest; mint/claim flows mutate through the
+      // service, whose write-through keeps the cache current.
+      await WebNftService.instance.load();
       if (mounted) setState(() => _loading = false);
     } catch (e) {
       if (mounted) {

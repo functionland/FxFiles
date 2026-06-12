@@ -44,6 +44,8 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -245,6 +247,66 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
         final keys = r.objects.map((o) => o.key).toSet();
         log('delete-ok absentSmall=${!keys.contains('/e2e/p4-small.bin')} '
             'absentLarge=${!keys.contains('/e2e/p4-large.bin')}');
+        break;
+      case 'swr':
+        // P1 gates (plan §9): warm open < 200 ms, L2 decrypt < 100 ms
+        // (judged on the throttled profile via tools/web-perf-run.ps1).
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: swr mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        final swrBucket = BucketVersionResolver.writeBucket('documents');
+
+        // 1. Prime: cache miss → live listing + cache write.
+        final prime = Stopwatch()..start();
+        final primed =
+            await WebListingSwr.instance.getListing(swrBucket);
+        prime.stop();
+        log('swr prime ms=${prime.elapsedMilliseconds} '
+            'n=${primed.objects.length} fromCache=${primed.fromCache}');
+
+        // 2. L2 read (decrypt + parse, no L1).
+        WebListingCache.instance.clearL1();
+        final l2 = Stopwatch()..start();
+        final l2Hit =
+            await WebListingCache.instance.readListing(swrBucket);
+        l2.stop();
+        log('swr l2-read ms=${l2.elapsedMilliseconds} '
+            'n=${l2Hit?.objects.length ?? -1}');
+
+        // 3. Warm open through the full SWR path (fresh tier → no
+        //    revalidation), L2-only again.
+        WebListingCache.instance.clearL1();
+        final open = Stopwatch()..start();
+        final hit = await WebListingSwr.instance.getListing(swrBucket);
+        open.stop();
+        log('swr open ms=${open.elapsedMilliseconds} '
+            'fromCache=${hit.fromCache} n=${hit.objects.length} '
+            'revalidation=${hit.revalidation != null}');
+
+        // 4. L1 hit (back-navigation cost).
+        final l1 = Stopwatch()..start();
+        await WebListingSwr.instance.getListing(swrBucket);
+        l1.stop();
+        log('swr l1-open ms=${l1.elapsedMilliseconds}');
+
+        // 5. Aged entry → silent-revalidate tier: rewrite with an old
+        //    fetchedAt, expect cached render + a background refresh.
+        await WebListingCache.instance.writeListing(
+          swrBucket,
+          hit.objects,
+          fetchedAt: DateTime.now().subtract(const Duration(minutes: 10)),
+          allowOlder: true, // harness: plant an aged entry deliberately
+        );
+        WebListingCache.instance.clearL1();
+        final aged = await WebListingSwr.instance.getListing(swrBucket);
+        log('swr aged fromCache=${aged.fromCache} '
+            'staleTier=${aged.staleTier} '
+            'revalidation=${aged.revalidation != null}');
+        final fresh = await aged.revalidation;
+        log('swr revalidated n=${fresh?.objects.length ?? -1}');
         break;
       case 'perf-seed':
         // Populate documents-v8 with tiny files so the perf mode can
