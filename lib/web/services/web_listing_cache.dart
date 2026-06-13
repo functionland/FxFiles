@@ -586,24 +586,35 @@ class WebListingCache {
     }
   }
 
-  /// Drop everything (sign-out wiring lands in P3; provided now so the
-  /// e2e harness and early callers have it).
+  /// Drop everything: L1, the derived key, and the L2 box on disk.
+  ///
+  /// CLOSE this tab's box connection BEFORE deleting the database. On web
+  /// the box is an IndexedDB connection, and `deleteDatabase` fires
+  /// `onblocked` and never resolves while any connection is open — so
+  /// deleting an open box can hang indefinitely. Closing first removes
+  /// this tab's connection; other tabs close theirs via the 'signed-out'
+  /// broadcast → [deactivate]. The delete is still best-effort: callers
+  /// must not let it block anything security-critical (see
+  /// WebSession.signOut).
   Future<void> clearAll() async {
     _l1Listings.clear();
     _l1Manifests.clear();
     _aesKey = null;
     _aesKeyOwner = null;
+    final box = _box;
+    _box = null;
     try {
-      final box = _box;
       if (box != null && box.isOpen) {
-        await box.deleteFromDisk();
-      } else {
-        await Hive.deleteBoxFromDisk(boxName);
+        await box.close();
       }
     } catch (e) {
-      debugPrint('WebListingCache.clearAll: $e');
+      debugPrint('WebListingCache.clearAll close: $e');
     }
-    _box = null;
+    try {
+      await Hive.deleteBoxFromDisk(boxName);
+    } catch (e) {
+      debugPrint('WebListingCache.clearAll delete: $e');
+    }
   }
 
   /// Harness hook (unit tests + the e2e=swr gate runs): force the next

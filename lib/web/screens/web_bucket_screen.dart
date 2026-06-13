@@ -23,13 +23,10 @@ import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
-
-/// Hard per-file upload cap for web v1: picked files are held fully in
-/// browser memory before the encrypted upload, so bound the worst case.
-const int kWebUploadCapBytes = 200 * 1024 * 1024;
 
 /// Merged (legacy + v8) listing of one content category, with upload /
 /// download / delete / preview.
@@ -55,10 +52,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// file rows show compact tag chips).
   Map<String, List<FileTag>> _fileTags = const {};
 
-  // Upload state (single in-flight batch).
-  bool _uploading = false;
-  String _uploadLabel = '';
-  double? _uploadPct;
+  // Uploads now run in the app-level WebUploadManager (they survive
+  // navigating away from this screen). We only listen for "a file for THIS
+  // category finished" to refresh the listing from the now-fresh cache.
+  StreamSubscription<String>? _uploadDoneSub;
 
   @override
   void initState() {
@@ -66,12 +63,21 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     // Connection-regain → silent forced revalidate (plan §5.3).
     WebListingSwr.instance.ensureOnlineHook();
     WebListingSwr.instance.addListener(_onOnline);
+    _uploadDoneSub =
+        WebUploadManager.instance.onBucketCompleted.listen((base) {
+      // The manager already refreshed this tab's cache from the session
+      // forest before emitting, so a plain (force:false) load serves the
+      // fresh listing — including the new file — without another forest
+      // read.
+      if (base == widget.base && mounted) _load();
+    });
     _load();
   }
 
   @override
   void dispose() {
     WebListingSwr.instance.removeListener(_onOnline);
+    _uploadDoneSub?.cancel();
     super.dispose();
   }
 
@@ -220,62 +226,24 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
     if (picked == null || picked.files.isEmpty) return;
 
-    final target = BucketVersionResolver.writeBucket(widget.base);
-    setState(() => _uploading = true);
-    WebForegroundActivity.instance.begin();
-    try {
-      // First upload into a fresh vault/category: the bucket may not
-      // exist yet. Same ensure-pattern as the native cloud services
-      // (create, tolerate already-exists).
-      try {
-        await FulaApiService.instance.createBucket(target);
-      } catch (_) {}
-      for (final f in picked.files) {
-        final data = f.bytes;
-        if (data == null) continue;
-        if (data.length > kWebUploadCapBytes) {
-          _snack('"${f.name}" is larger than the 200 MB web upload limit '
-              '- use the desktop or mobile app for very large files.');
-          continue;
-        }
-        setState(() {
-          _uploadLabel = f.name;
-          _uploadPct = null;
-        });
-        final key = '/${f.name}';
-        if (data.length <= 768 * 1024) {
-          await FulaApiService.instance.uploadObject(target, key, data);
-        } else {
-          await FulaApiService.instance.uploadLargeFile(
-            target,
-            key,
-            data,
-            onProgress: (p) {
-              if (mounted) setState(() => _uploadPct = p.percentage / 100);
-            },
-          );
-        }
-      }
-      _snack('Upload complete');
-      // Other tabs drop their cached copy of this bucket; our own
-      // forced reload below refreshes this tab + the cache.
-      WebCacheSync.instance.sendInvalidateListing(target);
-    } catch (e) {
-      _snack('Upload failed: $e');
-    } finally {
-      WebForegroundActivity.instance.end();
-      if (mounted) {
-        setState(() {
-          _uploading = false;
-          _uploadPct = null;
-          _uploadLabel = '';
-        });
-        // Own write: list from the session forest (it's AHEAD of the
-        // server for a few seconds — refetching here made the new
-        // file vanish).
-        await _load(force: true, refetchForest: false);
-      }
+    // Hand the picked bytes to the app-level manager and return. The upload
+    // now runs independently of this screen: progress shows in the global
+    // tray, it survives navigating away, the bucket is created and per-file
+    // size cap enforced there, and on completion the manager refreshes this
+    // tab's cache and pings us via onBucketCompleted (own-write path).
+    final files = <({String name, Uint8List bytes})>[];
+    for (final f in picked.files) {
+      final data = f.bytes;
+      if (data == null) continue;
+      files.add((name: f.name, bytes: data));
     }
+    if (files.isEmpty) return;
+
+    WebUploadManager.instance.enqueue(
+      base: widget.base,
+      bucket: BucketVersionResolver.writeBucket(widget.base),
+      files: files,
+    );
   }
 
   Future<void> _download(FulaObject o) async {
@@ -784,24 +752,13 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           ),
         ],
       ),
+      // Always enabled: the upload runs in the global manager, so the user
+      // can queue more files (or navigate) while one is in flight. Live
+      // progress shows in the shell-level upload tray, not here.
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _uploading ? null : _pickAndUpload,
-        icon: _uploading
-            ? SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  value: _uploadPct,
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
-              )
-            : const Icon(Icons.upload_file),
-        label: Text(_uploading
-            ? (_uploadPct != null
-                ? '${(_uploadPct! * 100).toStringAsFixed(0)}%  $_uploadLabel'
-                : 'Uploading $_uploadLabel')
-            : 'Upload'),
+        onPressed: _pickAndUpload,
+        icon: const Icon(Icons.upload_file),
+        label: const Text('Upload'),
       ),
       body: Column(
         children: [

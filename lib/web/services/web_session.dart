@@ -14,6 +14,7 @@ import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
+import 'package:fula_files/web/services/web_upload_manager.dart';
 
 /// Signed-in identity as the web shell sees it.
 class WebUser {
@@ -361,29 +362,62 @@ class WebSession extends ChangeNotifier {
         '(fula configured=${init.configured})');
   }
 
-  /// Sign out: stop pollers, reset the Fula client, clear all session
-  /// storage (same key set as native sign-out, plus the persisted
-  /// Mode B/C index keys).
+  /// Sign out: clear all session storage (same key set as native
+  /// sign-out, plus the persisted Mode B/C index keys), reset the Fula
+  /// client + caches, and redirect to /signin.
+  ///
+  /// Ordering is deliberate and security-critical: the AUTHORITATIVE
+  /// logout (clear persisted credentials → drop the in-memory user →
+  /// notifyListeners) runs FIRST and is never gated on the best-effort
+  /// teardown. Previously the listing-cache box delete ran first; on web
+  /// that delete can BLOCK indefinitely (IndexedDB `deleteDatabase` fires
+  /// `onblocked` while a connection is open), which stalled the whole
+  /// method — credentials were never cleared (a reload restored the
+  /// session) and the redirect never fired.
   Future<void> signOut() async {
+    // 1) Refresh-safety: clear persisted credentials so a reload can't
+    //    restore the session. Timeout-bounded so a stuck secure-storage
+    //    delete can't trap the user logged in.
     try {
-      await MasterHealthService.instance.stop();
-    } catch (_) {}
-    FulaApiService.instance.reset();
-    try {
-      await BucketCacheService.clear();
-    } catch (_) {}
-    // SWR cache + prefetcher: the listing-cache box is deleted (the
-    // KEK loss alone would make leftovers unreadable, but delete
-    // anyway) and the scheduler forgets this account's run state so
-    // the next sign-in prefetches fresh with no cross-user residue.
-    try {
-      await WebListingCache.instance.clearAll();
-    } catch (_) {}
-    WebPrefetchScheduler.instance.reset();
-    await AuthCore.clearSessionStorage();
-    WebCacheSync.instance.sendSignedOut();
+      await AuthCore.clearSessionStorage()
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('WebSession.signOut: clearSessionStorage: $e');
+    }
+
+    // 2) In-session logout + redirect to /signin.
     _user = null;
     notifyListeners();
+
+    // 3) Tell other tabs, then reset in-memory services. WebUploadManager
+    //    reset drops any queued/finished uploads so the next user never
+    //    sees or continues this user's (an in-flight Rust call can't be
+    //    cancelled on web, but no new job starts after this).
+    WebCacheSync.instance.sendSignedOut();
+    FulaApiService.instance.reset();
+    WebPrefetchScheduler.instance.reset();
+    WebUploadManager.instance.reset();
+
+    // 4) Best-effort teardown — MUST NOT block sign-out. The KEK is
+    //    already gone so any residual listing cache is unreadable;
+    //    deleting the box is hygiene, not security. Each task is its OWN
+    //    fire-and-forget so a hang in one (e.g. a blocked IndexedDB delete
+    //    while another tab holds the box) can't starve the others.
+    unawaited(() async {
+      try {
+        await MasterHealthService.instance.stop();
+      } catch (_) {}
+    }());
+    unawaited(() async {
+      try {
+        await BucketCacheService.clear();
+      } catch (_) {}
+    }());
+    unawaited(() async {
+      try {
+        await WebListingCache.instance.clearAll();
+      } catch (_) {}
+    }());
   }
 
   /// Another tab signed out: shared storage is already cleared; this
@@ -392,6 +426,7 @@ class WebSession extends ChangeNotifier {
   void _onRemoteSignOut() {
     if (_user == null) return;
     FulaApiService.instance.reset();
+    WebUploadManager.instance.reset();
     _user = null;
     notifyListeners(); // router redirects to /signin
   }
