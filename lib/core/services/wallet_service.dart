@@ -602,21 +602,31 @@ Timestamp: $timestamp''';
       // Give the relay a moment to deliver, then try to open the wallet app
       // so the user sees the confirmation prompt without manually switching.
       // Stop retrying once the tx completes (user already approved/rejected).
-      unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
-        for (var attempt = 0; attempt < 3 && !txCompleted; attempt++) {
-          try {
-            final opened = await tryOpenWallet();
-            if (opened) return;
-            debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} returned false');
-          } catch (e) {
-            debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} error: $e');
+      //
+      // WEB-ONLY GUARD (s6): auto-foregrounding is never useful on web — it
+      // no-ops on desktop web (no app to foreground), and on mobile web the
+      // launchUrl/window.open fires from this delayed (non-gesture) future, so
+      // the browser shows "popup blocked". On web the user foregrounds the
+      // wallet via the in-dialog "Open wallet" button (a real gesture) instead.
+      // kIsWeb is a compile-time const, so this is dead-code-eliminated on web
+      // and the loop is kept unconditionally on native (byte-identical).
+      if (!kIsWeb) {
+        unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
+          for (var attempt = 0; attempt < 3 && !txCompleted; attempt++) {
+            try {
+              final opened = await tryOpenWallet();
+              if (opened) return;
+              debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} returned false');
+            } catch (e) {
+              debugPrint('WalletService: tryOpenWallet attempt ${attempt + 1} error: $e');
+            }
+            // Wait longer each retry: 1s, 2s
+            if (attempt < 2 && !txCompleted) {
+              await Future.delayed(Duration(seconds: attempt + 1));
+            }
           }
-          // Wait longer each retry: 1s, 2s
-          if (attempt < 2 && !txCompleted) {
-            await Future.delayed(Duration(seconds: attempt + 1));
-          }
-        }
-      }));
+        }));
+      }
 
       final txHash = await pendingTx;
       txCompleted = true;
