@@ -188,6 +188,14 @@ class WebFeatures {
     final v8 = BucketVersionResolver.writeBucket(legacy);
 
     Future<List<Playlist>> listIn(String bucket) async {
+      // Drop any stale cached forest first so a fresh page load / refresh
+      // sees writes made by this (or another) session. Every other web
+      // feature reads through WebListingSwr, which invalidates the forest;
+      // playlists list `listObjects` directly, so do it here (fix: a
+      // playlist created on web vanished after refresh while still in the
+      // cloud — the tab re-served a pre-upload forest, exactly the case
+      // invalidateForestCache documents).
+      await FulaApiService.instance.invalidateForestCache(bucket);
       final out = <Playlist>[];
       final objects = await FulaApiService.instance
           .listObjects(bucket, prefix: _playlistPrefix);

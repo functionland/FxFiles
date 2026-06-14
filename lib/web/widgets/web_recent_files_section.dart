@@ -64,7 +64,8 @@ class _WebRecentFilesSectionState extends State<WebRecentFilesSection> {
           ),
         ),
         SizedBox(
-          height: 120,
+          // 30% taller than the original 120 (s1).
+          height: 156,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),

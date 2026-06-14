@@ -68,6 +68,23 @@
       max-width: 300px;
     }
     .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary {
+      display: inline-block;
+      padding: 0.875rem 2rem;
+      margin-top: 0.75rem;
+      background: transparent;
+      color: #c4b5fd;
+      text-decoration: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      border: 1px solid #6366f1;
+      cursor: pointer;
+      transition: background 0.2s;
+      width: 100%;
+      max-width: 300px;
+    }
+    .btn-secondary:hover { background: rgba(99, 102, 241, 0.12); }
     .divider {
       display: flex;
       align-items: center;
@@ -123,6 +140,10 @@
 
     <button class="btn-primary" id="open-btn" onclick="openApp()">
       Open in FxFiles
+    </button>
+
+    <button class="btn-secondary" id="webapp-btn" onclick="openWebApp()">
+      Continue in web app
     </button>
 
     <p class="status" id="status">Attempting to open FxFiles...</p>
@@ -188,6 +209,23 @@
       // _handleNftClaim handler reads first.
       if (secret) url += '#secret=' + encodeURIComponent(secret);
       return url;
+    }
+
+    // Web-app option: continue the claim in the browser app at
+    // files.fx.land/app/. It is HASH-routed, so chain/contract/token/secret
+    // all live in the URL FRAGMENT after "#/" — the secret is never sent to a
+    // server (same privacy property as the deep link).
+    function buildWebAppLink() {
+      const p = new URLSearchParams();
+      if (chain) p.set('chain', chain);
+      if (contract) p.set('contract', contract);
+      if (token) p.set('token', token);
+      if (secret) p.set('secret', secret);
+      return 'https://files.fx.land/app/#/nft-claim?' + p.toString();
+    }
+
+    function openWebApp() {
+      window.location.href = buildWebAppLink();
     }
 
     function openApp() {
