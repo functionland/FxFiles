@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
+import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
@@ -26,6 +27,7 @@ import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 import 'package:fula_files/web/widgets/web_text_viewer.dart';
@@ -795,6 +797,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// codec support depends on the browser; the dialog offers Download
   /// as the fallback.
   Future<void> _previewMedia(FulaObject o) async {
+    // Audio → the full-screen queue player (#21); video stays on Chewie.
+    if (_isAudio(o)) {
+      await _openAudioPlayer(o);
+      return;
+    }
     _snack('Loading "${_displayName(o)}"…');
     try {
       final bucket = o.sourceBucket ?? widget.base;
@@ -814,6 +821,45 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     } catch (e) {
       _snack('Playback failed: $e');
     }
+  }
+
+  /// A player queue item for an audio object in this bucket (the controller
+  /// downloads on demand, so nothing is fetched until it plays).
+  WebAudioTrack _audioTrackFor(FulaObject o) {
+    final bucket = o.sourceBucket ?? widget.base;
+    return WebAudioTrack(
+      name: _displayName(o).split('/').last,
+      mime: _mediaMime(o),
+      cloudKey: o.key,
+      download: () => FulaApiService.instance.downloadObject(bucket, o.key),
+    );
+  }
+
+  /// Open the full-screen audio player with a queue of every audio file in
+  /// the current listing, starting at [tapped] (#21).
+  Future<void> _openAudioPlayer(FulaObject tapped) async {
+    final audio = (_objects ?? const <FulaObject>[]).where(_isAudio).toList();
+    final tappedBucket = tapped.sourceBucket ?? widget.base;
+    var start = audio.indexWhere((o) =>
+        o.key == tapped.key &&
+        (o.sourceBucket ?? widget.base) == tappedBucket);
+    if (start < 0) {
+      // Not in the current listing (e.g. a deep-open) — play it on its own.
+      audio.insert(0, tapped);
+      start = 0;
+    }
+    _recordRecent(tapped, tappedBucket);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      useSafeArea: false,
+      builder: (ctx) => Dialog.fullscreen(
+        child: WebAudioPlayer(
+          queue: [for (final o in audio) _audioTrackFor(o)],
+          startIndex: start,
+        ),
+      ),
+    );
   }
 
   void _snack(String msg) {
