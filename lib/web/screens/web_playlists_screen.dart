@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/core/models/playlist.dart';
+import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_features.dart';
-import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_audio_player.dart';
 
 /// Mirror of lib/features/audio/screens/playlists_screen.dart
 /// (view-only): 64x64 list-music cover, name + "N tracks · duration"
@@ -164,27 +165,32 @@ class _WebPlaylistDetailScreenState extends State<WebPlaylistDetailScreen> {
     }
   }
 
-  Future<void> _play(AudioTrack track) async {
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Loading "${track.name}"…')));
-    try {
-      final bytes = await WebFeatures.downloadTrack(track);
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => MediaPreviewDialog(
-          title: track.name,
-          bytes: bytes,
-          mimeType: 'audio/mpeg',
-          isVideo: false,
+  /// Play the playlist through the full-screen web audio player (#21), with
+  /// the whole playlist as the queue starting at [track]. Tracks download on
+  /// demand inside the player.
+  void _play(AudioTrack track) {
+    final p = _playlist;
+    if (p == null || p.tracks.isEmpty) return;
+    var start = p.tracks.indexWhere((t) => t.path == track.path);
+    if (start < 0) start = 0;
+    showDialog<void>(
+      context: context,
+      useSafeArea: false,
+      builder: (ctx) => Dialog.fullscreen(
+        child: WebAudioPlayer(
+          queue: [
+            for (final t in p.tracks)
+              WebAudioTrack(
+                name: t.name,
+                mime: 'audio/mpeg',
+                cloudKey: t.path,
+                download: () => WebFeatures.downloadTrack(t),
+              ),
+          ],
+          startIndex: start,
         ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Could not play "${track.name}": this track is '
-              'not in cloud audio storage.')));
-    }
+      ),
+    );
   }
 
   @override
