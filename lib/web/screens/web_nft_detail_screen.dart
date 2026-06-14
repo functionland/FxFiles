@@ -12,6 +12,7 @@ import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/web/services/web_nft_gas_logic.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
+import 'package:fula_files/web/services/web_nft_status_logic.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Mirror of lib/features/nft/screens/nft_detail_screen.dart for the
@@ -832,13 +833,6 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
                                   color: statusColor),
                             ),
                           ),
-                          if (m.claims.isNotEmpty) ...[
-                            const SizedBox(width: 6),
-                            Text(
-                              '${m.claims.length} claim link${m.claims.length == 1 ? '' : 's'}',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ],
                         ],
                       ),
                     ],
@@ -846,6 +840,20 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
                 ),
               ],
             ),
+            // a1: per-copy breakdown (completed) + per-claim status rows,
+            // mirroring native nft_card.dart (_CopyBreakdown / _ClaimRow).
+            if (m.status == NftMintStatus.completed && m.count > 0) ...[
+              const SizedBox(height: 10),
+              _copyBreakdown(theme, m),
+            ],
+            if (m.claims.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text('Claim Links',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              ...m.claims.map((c) => _claimRow(theme, c, chain)),
+            ],
             if (m.status == NftMintStatus.error &&
                 m.errorMessage != null) ...[
               const SizedBox(height: 8),
@@ -869,5 +877,149 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
         ),
       ),
     );
+  }
+
+  /// Per-copy breakdown (Held / Link generated / Claimed / Burned), mirroring
+  /// native nft_card.dart `_CopyBreakdown`. Counts come from the pure
+  /// `copyCounts`; this maps them to icons/colors.
+  Widget _copyBreakdown(ThemeData theme, NftMintRecord m) {
+    final c = copyCounts(m, DateTime.now());
+    final entries = <({String label, int count, Color color, IconData icon})>[
+      if (c.held > 0)
+        (
+          label: 'Held by you',
+          count: c.held,
+          color: Colors.blue,
+          icon: LucideIcons.wallet
+        ),
+      if (c.linkGenerated > 0)
+        (
+          label: 'Link generated',
+          count: c.linkGenerated,
+          color: Colors.orange,
+          icon: LucideIcons.link
+        ),
+      if (c.claimed > 0)
+        (
+          label: 'Claimed',
+          count: c.claimed,
+          color: Colors.green,
+          icon: LucideIcons.userCheck
+        ),
+      if (c.burned > 0)
+        (
+          label: 'Burned',
+          count: c.burned,
+          color: Colors.red,
+          icon: LucideIcons.flame
+        ),
+    ];
+    if (entries.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Copy Breakdown',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        ...entries.map((e) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Icon(e.icon, size: 14, color: e.color),
+                  const SizedBox(width: 8),
+                  Text('${e.count}x ${e.label}',
+                      style: TextStyle(fontSize: 12, color: e.color)),
+                ],
+              ),
+            )),
+      ],
+    );
+  }
+
+  /// One claim-offer status row (dot + label + expiry / claimer + Copy Link),
+  /// mirroring native `_ClaimRow`. The wallet-gated Cancel action is omitted.
+  Widget _claimRow(
+      ThemeData theme, NftClaimRecord claim, SupportedChain? chain) {
+    final now = DateTime.now();
+    final kind = claimKind(claim, now);
+    final color = switch (kind) {
+      NftClaimKind.pending => Colors.orange,
+      NftClaimKind.expired => Colors.grey,
+      NftClaimKind.claimed => Colors.green,
+      NftClaimKind.burned => Colors.red,
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration:
+                    BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 6),
+              Text(claimKindLabel(kind),
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              if (kind == NftClaimKind.pending)
+                Text('expires ${formatExpiry(claim.expiresAt, now)}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant)),
+              if (kind == NftClaimKind.claimed &&
+                  claim.claimerAddress != null)
+                Expanded(
+                  child: Text('→ ${truncateAddress(claim.claimerAddress!)}',
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant)),
+                ),
+            ],
+          ),
+          if (claimIsActionable(claim, now)) ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: () => _copyClaimLink(claim, chain),
+                icon: const Icon(LucideIcons.copy, size: 14),
+                label: const Text('Copy Link'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 6),
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _copyClaimLink(NftClaimRecord claim, SupportedChain? chain) {
+    final contract = chain?.nftContractAddress;
+    if (contract == null || claim.linkHash == null) return;
+    final link = WebNftService.buildClaimLink(
+      chainId: claim.chainId,
+      contractAddress: contract,
+      tokenId: claim.tokenId,
+      secret: claim.linkHash!,
+    );
+    Clipboard.setData(ClipboardData(text: link));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Claim link copied')));
+    }
   }
 }
