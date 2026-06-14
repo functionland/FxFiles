@@ -69,4 +69,15 @@ void main() {
       expect(p.updatedAt, created); // unchanged
     });
   });
+
+  group('cleanPlaylistName', () {
+    test('trims surrounding whitespace but keeps inner spaces', () {
+      expect(cleanPlaylistName('  My Mix  '), 'My Mix');
+    });
+
+    test('returns null for blank or whitespace-only input', () {
+      expect(cleanPlaylistName(''), isNull);
+      expect(cleanPlaylistName('   '), isNull);
+    });
+  });
 }

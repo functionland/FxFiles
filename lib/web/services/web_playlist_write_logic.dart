@@ -47,3 +47,10 @@ bool appendTrack(Playlist p, AudioTrack track, DateTime now) {
   p.updatedAt = now;
   return true;
 }
+
+/// Trim a user-entered playlist name; null when it's empty after trimming so
+/// callers reject blank names uniformly (#23).
+String? cleanPlaylistName(String raw) {
+  final t = raw.trim();
+  return t.isEmpty ? null : t;
+}
