@@ -9,6 +9,7 @@ import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/widgets/web_recent_files_section.dart';
+import 'package:fula_files/web/widgets/web_storage_section.dart';
 
 /// Web home — mirror of the native home screen's section layout
 /// (lib/features/home/widgets/on_this_phone_section.dart,
@@ -37,17 +38,6 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       WebPrefetchScheduler.instance.start();
     });
-  }
-
-  String _fmtBytes(int bytes) {
-    if (bytes >= 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-    }
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
-    return '$bytes B';
   }
 
   /// Same CircleAvatar rules as the native home screen: OAuth photo →
@@ -232,16 +222,9 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                         return Text('Loading storage info…',
                             style: Theme.of(context).textTheme.bodySmall);
                       }
-                      final s = snap.data!;
-                      final quota = s.freeTierBytes + s.paidStorageBytes;
-                      final credits = s.totalCredits - s.usedCredits;
-                      return Text(
-                        '${_fmtBytes(s.currentStorageBytes)} of '
-                        '${_fmtBytes(quota)} used'
-                        '${credits > 0 ? '  ·  ${credits.toStringAsFixed(0)} credits' : ''}',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      );
+                      // Storage indicator like mobile (#6): a "STORAGE"
+                      // section with a Cloud progress bar (web omits Phone).
+                      return WebStorageSection(info: snap.data!);
                     },
                   ),
                 ),
