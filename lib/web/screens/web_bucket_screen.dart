@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -24,10 +23,12 @@ import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
+import 'package:fula_files/web/widgets/web_text_viewer.dart';
 
 /// Merged (legacy + v8) listing of one content category, with upload /
 /// download / delete / preview.
@@ -632,13 +633,14 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
 
   bool _isText(FulaObject o) {
     final ct = o.metadata?['contentType'] ?? '';
-    if (ct.startsWith('text/') || ct == 'application/json') return true;
-    final n = o.key.toLowerCase();
-    return n.endsWith('.txt') ||
-        n.endsWith('.md') ||
-        n.endsWith('.json') ||
-        n.endsWith('.csv') ||
-        n.endsWith('.log');
+    if (ct.startsWith('text/') ||
+        ct == 'application/json' ||
+        ct == 'application/xml') {
+      return true;
+    }
+    // Native parity: the full LocalFile.isTextViewable extension set
+    // (xml, ts, js, html, yaml, py, …), not just the old short list (#19).
+    return isTextViewableName(o.key);
   }
 
   /// A stable kind for the recents store (forces image/video/audio
@@ -669,7 +671,18 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       await _previewMedia(o);
       return;
     }
-    if (!_isImage(o) && !_isText(o)) {
+    if (_isText(o)) {
+      // The whole file is in memory on web; decoding + splitting a huge
+      // string would jank the JS thread, so cap inline viewing and fall
+      // back to download (#19). Guard on the listed size pre-download.
+      if (o.size > kMaxInlineTextBytes) {
+        await _download(o);
+      } else {
+        await _previewText(o);
+      }
+      return;
+    }
+    if (!_isImage(o)) {
       await _download(o);
       return;
     }
@@ -678,7 +691,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     // resolves (not on FutureBuilder rebuilds, not on failure).
     final future = FulaApiService.instance.downloadObject(bucket, o.key);
     unawaited(future.then((bytes) {
-      _recordRecent(o, bucket, imageBytes: _isImage(o) ? bytes : null);
+      _recordRecent(o, bucket, imageBytes: bytes);
     }).catchError((_) {}));
     showDialog<void>(
       context: context,
@@ -728,19 +741,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                     ),
                   ),
                   Flexible(
-                    child: _isImage(o)
-                        ? InteractiveViewer(
-                            maxScale: 8,
-                            child: Image.memory(bytes, fit: BoxFit.contain),
-                          )
-                        : SingleChildScrollView(
-                            padding: const EdgeInsets.all(16),
-                            child: SelectableText(
-                              utf8.decode(bytes, allowMalformed: true),
-                              style: const TextStyle(
-                                  fontFamily: 'monospace', fontSize: 13),
-                            ),
-                          ),
+                    child: InteractiveViewer(
+                      maxScale: 8,
+                      child: Image.memory(bytes, fit: BoxFit.contain),
+                    ),
                   ),
                   const SizedBox(height: 8),
                 ],
@@ -750,6 +754,40 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         ),
       ),
     );
+  }
+
+  /// Full-screen inline text/code viewer (#19). Mirrors [_previewMedia]:
+  /// a snackbar while downloading, record the open (Recent strip #17),
+  /// then show the viewer with the decrypted bytes.
+  Future<void> _previewText(FulaObject o) async {
+    _snack('Loading "${_displayName(o)}"…');
+    try {
+      final bucket = o.sourceBucket ?? widget.base;
+      final bytes =
+          await FulaApiService.instance.downloadObject(bucket, o.key);
+      if (!mounted) return;
+      final name = _displayName(o).split('/').last;
+      _recordRecent(o, bucket);
+      // Backstop the size cap: if the listing size was 0/unset a truly large
+      // file would jank the viewer's decode/split, so download it instead.
+      if (bytes.length > kMaxInlineTextBytes) {
+        saveBytesAsDownload(name, bytes);
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        useSafeArea: false,
+        builder: (ctx) => Dialog.fullscreen(
+          child: WebTextViewer(
+            fileName: name,
+            bytes: bytes,
+            onDownload: () => saveBytesAsDownload(name, bytes),
+          ),
+        ),
+      );
+    } catch (e) {
+      _snack('Preview failed: $e');
+    }
   }
 
   /// Download + decrypt, then play via a blob URL fed to the HTML5
