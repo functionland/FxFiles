@@ -12,6 +12,7 @@ import 'package:fula_files/web/screens/web_nft_claim_screen.dart';
 import 'package:fula_files/web/screens/web_nft_detail_screen.dart';
 import 'package:fula_files/web/screens/web_nfts_screen.dart';
 import 'package:fula_files/web/screens/web_playlists_screen.dart';
+import 'package:fula_files/web/screens/web_search_screen.dart';
 import 'package:fula_files/web/screens/web_shared_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
@@ -50,6 +51,10 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/',
         builder: (context, state) => const WebHomeScreen(),
+      ),
+      GoRoute(
+        path: '/search',
+        builder: (context, state) => const WebSearchScreen(),
       ),
       GoRoute(
         path: '/b/:base',
