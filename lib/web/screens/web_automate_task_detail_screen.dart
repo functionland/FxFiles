@@ -246,28 +246,41 @@ class _WebAutomateTaskDetailScreenState
               _section(context, title: 'Placeholders'),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: PlaceholderChipBar(
-                  headers: _headers,
-                  extraChips:
-                      _attachmentFileName != null ? const ['File'] : const [],
-                  fields: [
-                    PlaceholderField(
-                      focusNode: _toFocus,
-                      controller: _toController,
-                      label: 'TO',
+                // Mobile-web fix (#15): tapping a placeholder chip must NOT
+                // unfocus the TO/Message field — on mobile web that closes
+                // the soft keyboard and leaves a stale viewInsets gap that
+                // never collapses. TextFieldTapRegion makes these chips
+                // count as the fields' own editing controls (so the
+                // fields' onTapOutside won't fire), and ExcludeFocus stops
+                // the chips from stealing focus. Together the field stays
+                // focused and the keyboard stays open — no close, no gap.
+                child: TextFieldTapRegion(
+                  child: ExcludeFocus(
+                    child: PlaceholderChipBar(
+                      headers: _headers,
+                      extraChips: _attachmentFileName != null
+                          ? const ['File']
+                          : const [],
+                      fields: [
+                        PlaceholderField(
+                          focusNode: _toFocus,
+                          controller: _toController,
+                          label: 'TO',
+                        ),
+                        PlaceholderField(
+                          focusNode: _messageFocus,
+                          controller: _messageController,
+                          label: 'message',
+                        ),
+                        if (isEmail)
+                          PlaceholderField(
+                            focusNode: _subjectFocus,
+                            controller: _subjectController,
+                            label: 'subject',
+                          ),
+                      ],
                     ),
-                    PlaceholderField(
-                      focusNode: _messageFocus,
-                      controller: _messageController,
-                      label: 'message',
-                    ),
-                    if (isEmail)
-                      PlaceholderField(
-                        focusNode: _subjectFocus,
-                        controller: _subjectController,
-                        label: 'subject',
-                      ),
-                  ],
+                  ),
                 ),
               ),
               _section(
