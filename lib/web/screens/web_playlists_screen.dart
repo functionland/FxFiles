@@ -207,24 +207,22 @@ class _WebPlaylistDetailScreenState extends State<WebPlaylistDetailScreen> {
     if (p == null || p.tracks.isEmpty) return;
     var start = p.tracks.indexWhere((t) => t.path == track.path);
     if (start < 0) start = 0;
+    final c = WebAudioController.instance;
+    c.playQueue([
+      for (final t in p.tracks)
+        WebAudioTrack(
+          name: t.name,
+          mime: 'audio/mpeg',
+          cloudKey: t.path,
+          download: () => WebFeatures.downloadTrack(t),
+        ),
+    ], start);
+    c.setExpanded(true); // event context — safe to notify the mini-player
     showDialog<void>(
       context: context,
       useSafeArea: false,
-      builder: (ctx) => Dialog.fullscreen(
-        child: WebAudioPlayer(
-          queue: [
-            for (final t in p.tracks)
-              WebAudioTrack(
-                name: t.name,
-                mime: 'audio/mpeg',
-                cloudKey: t.path,
-                download: () => WebFeatures.downloadTrack(t),
-              ),
-          ],
-          startIndex: start,
-        ),
-      ),
-    );
+      builder: (ctx) => const Dialog.fullscreen(child: WebAudioPlayer()),
+    ).then((_) => c.setExpanded(false));
   }
 
   @override

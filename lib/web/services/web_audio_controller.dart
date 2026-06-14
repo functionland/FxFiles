@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -30,6 +29,18 @@ class WebAudioTrack {
 /// blob leaks and can crash mobile browsers). Pure transitions come from
 /// web_audio_queue.dart; this is the browser playback glue.
 class WebAudioController extends ChangeNotifier {
+  WebAudioController._() {
+    _player.processingStateStream.listen((s) {
+      if (s == ProcessingState.completed) _onComplete();
+    });
+  }
+
+  /// App-lifetime singleton so playback survives closing the full-screen
+  /// player; a global mini-player keeps it controllable. The player and its
+  /// stream subscription live for the app's lifetime and are never disposed
+  /// (use [stopPlayback] to halt + clear).
+  static final WebAudioController instance = WebAudioController._();
+
   final AudioPlayer _player = AudioPlayer();
   AudioPlayer get player => _player;
 
@@ -38,19 +49,14 @@ class WebAudioController extends ChangeNotifier {
   int _index = -1;
   WebRepeatMode _repeat = WebRepeatMode.off;
   bool _shuffle = false;
-  bool _disposed = false;
+
+  /// True while the full-screen player is open (the mini-player hides then).
+  bool _expanded = false;
 
   String? _currentBlobUrl;
   int _loadToken = 0; // guards against out-of-order async loads
 
   final Random _rng = Random();
-  StreamSubscription<ProcessingState>? _procSub;
-
-  WebAudioController() {
-    _procSub = _player.processingStateStream.listen((s) {
-      if (s == ProcessingState.completed) _onComplete();
-    });
-  }
 
   List<WebAudioTrack> get queue => _queue;
   int get index => _index;
@@ -58,6 +64,13 @@ class WebAudioController extends ChangeNotifier {
       (_index >= 0 && _index < _queue.length) ? _queue[_index] : null;
   WebRepeatMode get repeatMode => _repeat;
   bool get shuffle => _shuffle;
+  bool get isExpanded => _expanded;
+
+  void setExpanded(bool v) {
+    if (_expanded == v) return;
+    _expanded = v;
+    notifyListeners();
+  }
 
   Future<void> playQueue(List<WebAudioTrack> tracks, int startIndex) async {
     _originalOrder = List.of(tracks);
@@ -78,10 +91,10 @@ class WebAudioController extends ChangeNotifier {
     final track = _queue[i];
     try {
       final bytes = await track.download();
-      if (_disposed || token != _loadToken) return; // superseded by a newer load
+      if (token != _loadToken) return; // superseded by a newer load
       _swapBlob(createBlobUrl(bytes, mimeType: track.mime));
       await _player.setUrl(_currentBlobUrl!);
-      if (_disposed || token != _loadToken) return;
+      if (token != _loadToken) return;
       await _player.play();
     } catch (e) {
       debugPrint('WebAudioController._loadAndPlay($i): $e');
@@ -185,11 +198,13 @@ class WebAudioController extends ChangeNotifier {
     _index = ni < 0 ? 0 : ni;
   }
 
-  @override
-  void dispose() {
-    _disposed = true;
-    _procSub?.cancel();
-    _player.dispose();
+  /// Stop and clear playback (mini-player close / sign-out) WITHOUT disposing
+  /// the singleton: cancel any in-flight load, pause, drop the queue, revoke
+  /// the blob. The player stays alive for the next [playQueue].
+  void stopPlayback() {
+    _loadToken++; // cancel any in-flight load
+    _player.pause();
+    _player.seek(Duration.zero);
     final url = _currentBlobUrl;
     _currentBlobUrl = null;
     if (url != null) {
@@ -197,6 +212,10 @@ class WebAudioController extends ChangeNotifier {
         revokeBlobUrl(url);
       } catch (_) {}
     }
-    super.dispose();
+    _queue = const [];
+    _originalOrder = const [];
+    _index = -1;
+    _expanded = false;
+    notifyListeners();
   }
 }

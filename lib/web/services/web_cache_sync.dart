@@ -3,6 +3,7 @@ import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 
+import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
@@ -59,6 +60,7 @@ class WebCacheSync {
           WebListingCache.instance.deactivate();
           WebRecentFilesService.instance.deactivate();
           WebPrefetchScheduler.instance.reset();
+          WebAudioController.instance.stopPlayback();
           onRemoteSignOut?.call();
         }
         // 'prefetch-*' messages belong to the scheduler's instance.

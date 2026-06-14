@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:fula_files/app/theme/app_theme.dart';
 import 'package:fula_files/web/router_web.dart';
+import 'package:fula_files/web/widgets/web_mini_audio_player.dart';
 import 'package:fula_files/web/widgets/web_upload_tray.dart';
 
 /// Root widget of the FxFiles web shell.
@@ -33,6 +34,9 @@ class _FxFilesWebAppState extends State<FxFilesWebApp> {
           children: [
             if (child != null) Positioned.fill(child: child),
             const WebUploadTray(),
+            // Persistent audio mini-player — keeps playback alive + controllable
+            // after the full-screen player is minimized (s2).
+            const WebMiniAudioPlayer(),
           ],
         );
       },
