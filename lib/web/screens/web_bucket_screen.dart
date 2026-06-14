@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_audio_controller.dart';
+import 'package:fula_files/web/services/web_bucket_sort.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
@@ -55,6 +56,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// When the rendered listing came from the SWR cache: its fetch time
   /// (drives the "Synced X min ago" line past 15 minutes).
   DateTime? _fetchedAt;
+
+  /// Per-category sort (#7), mirroring mobile: default date-descending
+  /// (newest first). In-memory per screen visit (mobile doesn't persist it).
+  WebSortBy _sortBy = WebSortBy.date;
+  bool _sortAscending = false;
 
   /// objectKey → tags, refreshed after each listing (native parity:
   /// file rows show compact tag chips).
@@ -170,12 +176,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     required bool stale,
     DateTime? fetchedAt,
   }) {
-    final objects = raw.map((o) => o.withSourceBucket(bucket)).toList()
-      ..sort((a, b) {
-        final at = a.lastModified?.millisecondsSinceEpoch ?? 0;
-        final bt = b.lastModified?.millisecondsSinceEpoch ?? 0;
-        return bt.compareTo(at);
-      });
+    final objects = sortObjects(
+      raw.map((o) => o.withSourceBucket(bucket)).toList(),
+      _sortBy,
+      _sortAscending,
+    );
     if (!mounted) return;
     setState(() {
       _objects = objects;
@@ -185,6 +190,53 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     });
     _refreshTags(bucket, objects);
     _maybeAutoOpen(objects);
+  }
+
+  /// Re-sort the already-loaded objects (a sort change doesn't refetch).
+  void _resort() {
+    final objs = _objects;
+    if (objs == null) return;
+    setState(() => _objects = sortObjects(objs, _sortBy, _sortAscending));
+  }
+
+  /// Mobile-style sort sheet (#7): Date newest/oldest, Name A–Z/Z–A.
+  void _showSortSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) {
+        Widget tile(String label, WebSortBy by, bool asc) {
+          final selected = _sortBy == by && _sortAscending == asc;
+          return ListTile(
+            title: Text(label),
+            trailing: selected
+                ? Icon(Icons.check, color: Theme.of(ctx).colorScheme.primary)
+                : null,
+            onTap: () {
+              Navigator.pop(ctx);
+              if (selected) return;
+              _sortBy = by;
+              _sortAscending = asc;
+              _resort();
+            },
+          );
+        }
+
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                  title: Text('Sort by',
+                      style: TextStyle(fontWeight: FontWeight.w600))),
+              tile('Date modified (newest first)', WebSortBy.date, false),
+              tile('Date modified (oldest first)', WebSortBy.date, true),
+              tile('Name (A–Z)', WebSortBy.name, true),
+              tile('Name (Z–A)', WebSortBy.name, false),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// `/b/<base>?open=<key>` deep-open (home Recent strip): open the
@@ -890,6 +942,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         ),
         title: Text(labels[widget.base] ?? widget.base),
         actions: [
+          IconButton(
+            tooltip: 'Sort',
+            icon: const Icon(Icons.sort),
+            onPressed: (_objects == null) ? null : _showSortSheet,
+          ),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
