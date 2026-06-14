@@ -14,6 +14,7 @@ import 'package:fula_files/core/utils/bip39_local.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
+import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 
 /// Signed-in identity as the web shell sees it.
@@ -416,6 +417,11 @@ class WebSession extends ChangeNotifier {
     unawaited(() async {
       try {
         await WebListingCache.instance.clearAll();
+      } catch (_) {}
+    }());
+    unawaited(() async {
+      try {
+        await WebRecentFilesService.instance.clearAll();
       } catch (_) {}
     }());
   }

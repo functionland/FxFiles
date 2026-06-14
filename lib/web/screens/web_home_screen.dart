@@ -8,6 +8,7 @@ import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
+import 'package:fula_files/web/widgets/web_recent_files_section.dart';
 
 /// Web home — mirror of the native home screen's section layout
 /// (lib/features/home/widgets/on_this_phone_section.dart,
@@ -213,6 +214,8 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 8),
+                // Recent strip (issue #17) — hides itself when empty.
+                const WebRecentFilesSection(),
                 _onYourCloudSection(context),
                 _createSection(context),
                 _moreSection(context),
