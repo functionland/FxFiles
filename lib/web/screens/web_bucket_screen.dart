@@ -20,6 +20,7 @@ import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
+import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -32,7 +33,11 @@ import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 /// download / delete / preview.
 class WebBucketScreen extends StatefulWidget {
   final String base; // 'images' | 'videos' | 'documents' | 'audio'
-  const WebBucketScreen({super.key, required this.base});
+
+  /// When set (via `/b/<base>?open=<key>`), the matching file opens
+  /// automatically once the listing loads — used by the home Recent strip.
+  final String? openKey;
+  const WebBucketScreen({super.key, required this.base, this.openKey});
 
   @override
   State<WebBucketScreen> createState() => _WebBucketScreenState();
@@ -56,6 +61,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   // navigating away from this screen). We only listen for "a file for THIS
   // category finished" to refresh the listing from the now-fresh cache.
   StreamSubscription<String>? _uploadDoneSub;
+
+  /// `?open=` deep-open guard so we auto-open the target file at most once.
+  bool _autoOpened = false;
 
   @override
   void initState() {
@@ -173,6 +181,28 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       _fetchedAt = fetchedAt;
     });
     _refreshTags(bucket, objects);
+    _maybeAutoOpen(objects);
+  }
+
+  /// `/b/<base>?open=<key>` deep-open (home Recent strip): open the
+  /// matching file once it appears in the listing. Retries across the
+  /// cache→revalidation renders (flag set only on a successful match); if
+  /// the file is gone it simply never opens and the user sees the category.
+  void _maybeAutoOpen(List<FulaObject> objects) {
+    if (widget.openKey == null || _autoOpened) return;
+    FulaObject? match;
+    for (final o in objects) {
+      if (o.key == widget.openKey) {
+        match = o;
+        break;
+      }
+    }
+    if (match == null) return;
+    _autoOpened = true;
+    final obj = match;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _preview(obj);
+    });
   }
 
   /// Best-effort tag chip data — never blocks or fails the listing.
@@ -260,6 +290,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
             ? o.metadata!['contentType']!
             : 'application/octet-stream',
       );
+      _recordRecent(o, bucket);
     } catch (e) {
       _snack('Download failed: $e');
     }
@@ -610,6 +641,29 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         n.endsWith('.log');
   }
 
+  /// A stable kind for the recents store (forces image/video/audio
+  /// classification so the strip renders the right card + thumbnail).
+  String _recentMime(FulaObject o) {
+    if (_isImage(o)) return 'image/*';
+    if (_isVideo(o)) return 'video/*';
+    if (_isAudio(o)) return 'audio/*';
+    final ct = o.metadata?['contentType'] ?? '';
+    return ct.isNotEmpty ? ct : 'application/octet-stream';
+  }
+
+  /// Record a successful open in the device-local Recent strip (#17).
+  void _recordRecent(FulaObject o, String bucket, {Uint8List? imageBytes}) {
+    WebRecentFilesService.instance.recordOpened(
+      bucket: bucket,
+      base: widget.base,
+      key: o.key,
+      name: _displayName(o).split('/').last,
+      mime: _recentMime(o),
+      size: o.size,
+      imageBytes: imageBytes,
+    );
+  }
+
   Future<void> _preview(FulaObject o) async {
     if (_isVideo(o) || _isAudio(o)) {
       await _previewMedia(o);
@@ -619,16 +673,20 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       await _download(o);
       return;
     }
+    final bucket = o.sourceBucket ?? widget.base;
+    // One download future shared with the dialog; record once when it
+    // resolves (not on FutureBuilder rebuilds, not on failure).
+    final future = FulaApiService.instance.downloadObject(bucket, o.key);
+    unawaited(future.then((bytes) {
+      _recordRecent(o, bucket, imageBytes: _isImage(o) ? bytes : null);
+    }).catchError((_) {}));
     showDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 900, maxHeight: 700),
           child: FutureBuilder<Uint8List>(
-            future: FulaApiService.instance.downloadObject(
-              o.sourceBucket ?? widget.base,
-              o.key,
-            ),
+            future: future,
             builder: (ctx, snap) {
               if (snap.hasError) {
                 return Padding(
@@ -701,10 +759,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   Future<void> _previewMedia(FulaObject o) async {
     _snack('Loading "${_displayName(o)}"…');
     try {
-      final bytes = await FulaApiService.instance.downloadObject(
-        o.sourceBucket ?? widget.base,
-        o.key,
-      );
+      final bucket = o.sourceBucket ?? widget.base;
+      final bytes =
+          await FulaApiService.instance.downloadObject(bucket, o.key);
+      _recordRecent(o, bucket);
       if (!mounted) return;
       await showDialog<void>(
         context: context,

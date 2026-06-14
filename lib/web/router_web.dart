@@ -55,6 +55,9 @@ GoRouter buildWebRouter() {
         path: '/b/:base',
         builder: (context, state) => WebBucketScreen(
           base: state.pathParameters['base'] ?? 'documents',
+          // Home Recent strip taps land here as /b/<base>?open=<key> so the
+          // file reopens via the bucket screen's existing preview path.
+          openKey: state.uri.queryParameters['open'],
         ),
       ),
       GoRoute(
