@@ -13,34 +13,25 @@ import 'package:fula_files/web/services/web_save.dart';
 /// `audio_player_screen.dart`: now-playing, seek slider, play/pause, skip
 /// prev/next, rewind/forward 10s, repeat (off/one/all), shuffle, a tappable
 /// queue, add-to-playlist and download. Shown via `Dialog.fullscreen` (like
-/// the image/text previews); owns a [WebAudioController] for its lifetime.
+/// the image/text previews) over the [WebAudioController] singleton: the
+/// caller starts playback with `WebAudioController.instance.playQueue(...)`
+/// BEFORE opening this, and closing just MINIMIZES to the mini-player
+/// (playback continues in the background).
 class WebAudioPlayer extends StatefulWidget {
-  final List<WebAudioTrack> queue;
-  final int startIndex;
-  const WebAudioPlayer({
-    super.key,
-    required this.queue,
-    required this.startIndex,
-  });
+  const WebAudioPlayer({super.key});
 
   @override
   State<WebAudioPlayer> createState() => _WebAudioPlayerState();
 }
 
 class _WebAudioPlayerState extends State<WebAudioPlayer> {
-  final WebAudioController _c = WebAudioController();
+  WebAudioController get _c => WebAudioController.instance;
 
-  @override
-  void initState() {
-    super.initState();
-    _c.playQueue(widget.queue, widget.startIndex);
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
+  // NOTE: the expanded flag is set by the CALLERS around showDialog (event
+  // context), NOT in initState/dispose — doing it here fires notifyListeners
+  // during the dialog's build/dispose phase and marks the already-built
+  // mini-player dirty mid-build (a framework assertion). See app_web /
+  // web_bucket_screen / web_playlists_screen / web_mini_audio_player.
 
   void _snack(String m) {
     if (!mounted) return;

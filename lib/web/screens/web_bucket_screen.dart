@@ -850,16 +850,19 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
     _recordRecent(tapped, tappedBucket);
     if (!mounted) return;
+    // Start playback on the singleton, then open the (parameterless) player —
+    // closing it just minimizes to the mini-player (s2). setExpanded is done
+    // here (event context), not in the dialog's initState, to avoid notifying
+    // the mini-player mid-build.
+    final c = WebAudioController.instance;
+    c.playQueue([for (final o in audio) _audioTrackFor(o)], start);
+    c.setExpanded(true);
     await showDialog<void>(
       context: context,
       useSafeArea: false,
-      builder: (ctx) => Dialog.fullscreen(
-        child: WebAudioPlayer(
-          queue: [for (final o in audio) _audioTrackFor(o)],
-          startIndex: start,
-        ),
-      ),
+      builder: (ctx) => const Dialog.fullscreen(child: WebAudioPlayer()),
     );
+    c.setExpanded(false);
   }
 
   void _snack(String msg) {

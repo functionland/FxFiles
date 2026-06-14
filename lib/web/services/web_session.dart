@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
+import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
@@ -424,6 +425,9 @@ class WebSession extends ChangeNotifier {
         await WebRecentFilesService.instance.clearAll();
       } catch (_) {}
     }());
+    // Stop background audio so the previous user's track doesn't keep playing
+    // into the next session (s2).
+    WebAudioController.instance.stopPlayback();
   }
 
   /// Another tab signed out: shared storage is already cleared; this
