@@ -4,12 +4,14 @@ import 'package:go_router/go_router.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_playlist_service.dart';
+import 'package:fula_files/web/services/web_playlist_write_logic.dart';
 import 'package:fula_files/web/widgets/web_audio_player.dart';
 
-/// Mirror of lib/features/audio/screens/playlists_screen.dart
-/// (view-only): 64x64 list-music cover, name + "N tracks · duration"
-/// rows, Play button, native empty-state copy. Creation/reorder stay
-/// native.
+/// Mirror of lib/features/audio/screens/playlists_screen.dart: 64x64
+/// list-music cover, name + "N tracks · duration" rows, Play button, and a
+/// create (+) FAB writing to the cloud playlist store (#23). Reorder /
+/// delete / rename stay native for now.
 class WebPlaylistsScreen extends StatefulWidget {
   const WebPlaylistsScreen({super.key});
 
@@ -40,6 +42,33 @@ class _WebPlaylistsScreenState extends State<WebPlaylistsScreen> {
     }
   }
 
+  Future<void> _create() async {
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (_) => const _CreatePlaylistDialog(),
+    );
+    final name = raw == null ? null : cleanPlaylistName(raw);
+    if (name == null) return;
+    try {
+      final created = await WebPlaylistService.instance.createPlaylist(name);
+      if (!mounted) return;
+      // Optimistic insert rather than a cloud re-list: object-storage
+      // list-after-write can lag on this backend, so the new playlist could
+      // briefly be missing from a refresh (advisor: Gemini). Prepend (the
+      // list is newest-first) and dedup by id; a manual refresh reconciles.
+      setState(() {
+        final cur = _playlists ?? const <Playlist>[];
+        _playlists = [created, ...cur.where((p) => p.id != created.id)];
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Created "$name"')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create playlist: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -58,6 +87,11 @@ class _WebPlaylistsScreenState extends State<WebPlaylistsScreen> {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'Create playlist',
+        onPressed: _create,
+        child: const Icon(Icons.add),
+      ),
       body: _error != null
           ? Center(child: Text('Could not load playlists.\n$_error'))
           : _playlists == null
@@ -72,7 +106,7 @@ class _WebPlaylistsScreenState extends State<WebPlaylistsScreen> {
                           Text('No playlists yet',
                               style: theme.textTheme.titleMedium),
                           const SizedBox(height: 6),
-                          Text('Create your first playlist in the FxFiles app',
+                          Text('Tap + to create your first playlist',
                               style: theme.textTheme.bodySmall),
                         ],
                       ),
@@ -284,6 +318,48 @@ class _WebPlaylistDetailScreenState extends State<WebPlaylistDetailScreen> {
                     ),
                   ],
                 ),
+    );
+  }
+}
+
+/// Name-input dialog for creating a playlist. A StatefulWidget so it owns and
+/// disposes its TextEditingController (no leak); pops the entered text.
+class _CreatePlaylistDialog extends StatefulWidget {
+  const _CreatePlaylistDialog();
+
+  @override
+  State<_CreatePlaylistDialog> createState() => _CreatePlaylistDialogState();
+}
+
+class _CreatePlaylistDialogState extends State<_CreatePlaylistDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Create playlist'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'Playlist name'),
+        onSubmitted: (_) => Navigator.pop(context, _controller.text),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _controller.text),
+          child: const Text('Create'),
+        ),
+      ],
     );
   }
 }
