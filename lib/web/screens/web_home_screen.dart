@@ -125,6 +125,11 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
         title: const Text('FxFiles'),
         actions: [
           IconButton(
+            tooltip: 'Search',
+            icon: const Icon(Icons.search),
+            onPressed: () => context.go('/search'),
+          ),
+          IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => launchUrl(
