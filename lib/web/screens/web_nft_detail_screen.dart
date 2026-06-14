@@ -200,10 +200,23 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
                 if (isWalletStep && connected) ...[
                   const SizedBox(height: 16),
                   if (_isMobileWeb)
-                    FilledButton.icon(
-                      onPressed: () => WalletService.instance.tryOpenWallet(),
-                      icon: const Icon(LucideIcons.externalLink, size: 16),
-                      label: Text('Open $walletName'),
+                    Column(
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () =>
+                              WalletService.instance.tryOpenWallet(),
+                          icon:
+                              const Icon(LucideIcons.externalLink, size: 16),
+                          label: Text('Open $walletName'),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Tap to open your wallet and confirm.',
+                          textAlign: TextAlign.center,
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        ),
+                      ],
                     )
                   else
                     Text(
