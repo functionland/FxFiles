@@ -21,6 +21,7 @@ import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
+import 'package:fula_files/web/services/web_nft_gas_logic.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 /// Web counterpart of the native NftService — same recipes for the
@@ -559,12 +560,49 @@ class WebNftService extends ChangeNotifier {
 
   // -------------------------------------------------------- claim offers
 
+  /// Estimate the ETH (in wei) to escrow so the recipient can claim
+  /// gas-free, mirroring native: a 300k-gas margin at the current gas price,
+  /// with a 1-gwei fallback on any RPC/CORS failure (the browser probe to a
+  /// public RPC may be blocked). Base-only sponsorship is enforced by the
+  /// caller via [sponsorGasSupported]; the result is an ESTIMATE.
+  Future<BigInt> estimateGasDeposit(int chainId) async {
+    final chain = SupportedChain.byChainId(chainId);
+    BigInt? gasPrice;
+    final rpc = chain?.rpcUrl;
+    if (rpc != null) {
+      try {
+        final resp = await http
+            .post(
+              Uri.parse(rpc),
+              headers: {'Content-Type': 'application/json'},
+              body:
+                  '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":1}',
+            )
+            .timeout(const Duration(seconds: 5));
+        final body = jsonDecode(resp.body);
+        final res = body['result'];
+        if (res is String) {
+          gasPrice = BigInt.parse(res.replaceFirst('0x', ''), radix: 16);
+        }
+      } catch (_) {
+        // CORS / network / parse failure → fall back to the 1-gwei default.
+      }
+    }
+    return gasDepositFor(gasPrice);
+  }
+
   /// Create an on-chain claim offer + shareable link (internal wallet).
+  ///
+  /// When [gasDepositWei] is non-null it is attached as the payable tx
+  /// `value`, escrowing ETH so the recipient can claim gas-free (s5,
+  /// Base-only). Null (the default) sends `value: 0x0` — identical to the
+  /// prior behaviour where the recipient pays their own claim gas.
   Future<({String claimLink, NftClaimRecord record})> createClaimOffer({
     required String tagId,
     required NftMintRecord mint,
     required Duration expiry,
     String? claimerAddress,
+    BigInt? gasDepositWei,
   }) async {
     final chain = SupportedChain.byChainId(mint.chainId);
     if (chain == null) throw Exception('Unknown chain: ${mint.chainId}');
@@ -603,6 +641,7 @@ class WebNftService extends ChangeNotifier {
       chain: chain,
       contractAddress: nftContractAddress,
       encodedData: data,
+      value: gasDepositWei, // null → 0x0 (recipient pays own gas)
     );
     await contract.pollForReceipt(chainId: chain.chainId, txHash: txHash);
 
