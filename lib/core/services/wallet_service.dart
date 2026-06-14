@@ -157,9 +157,52 @@ class WalletService {
     }
   }
 
+  /// Re-derive [isConnected]/[connectedAddress] from the LIVE AppKit
+  /// session. The cached `_connectedAddress` can lag a session that is
+  /// actually connected (notably on web, where AppKit may hold a session
+  /// without a fresh connect event), which would make callers needlessly
+  /// reopen the modal — and `openModalView()` while connected shows
+  /// AppKit's account/balance view, not a connect prompt. Returns the
+  /// current address (or null). Native-neutral: it only reflects the
+  /// session state, never changes it.
+  String? refreshConnectionState() {
+    final modal = _appKitModal;
+    if (modal == null) return _connectedAddress;
+    if (modal.isConnected) {
+      _updateConnectionState();
+    } else {
+      _connectedAddress = null;
+      _connectedChainId = null;
+    }
+    return _connectedAddress;
+  }
+
+  /// Dismiss the AppKit modal if it's showing (e.g. the account/balance
+  /// view that AppKit drops you on right after a successful connect, so it
+  /// doesn't linger over the next step). Safe no-op if nothing is open.
+  void closeModalIfOpen() {
+    try {
+      _appKitModal?.closeModal();
+    } catch (e) {
+      debugPrint('WalletService.closeModalIfOpen: $e');
+    }
+  }
+
   /// Connect wallet using AppKit modal
   Future<String?> connectWallet(BuildContext context) async {
     _ensureInitialized();
+
+    // Already have a live session? Do NOT call openModalView(): when
+    // connected it shows AppKit's ACCOUNT (address + balance) view and
+    // fires no connect event, so the completer below would hang and the
+    // user would just see their balance (the reported "re-click shows
+    // balance" bug). Re-derive from the live session — the cached address
+    // can lag on web — and return it.
+    final existing = refreshConnectionState();
+    if (existing != null) {
+      debugPrint('WalletService: already connected ($existing) — skip modal');
+      return existing;
+    }
 
     // AppKit keeps the BuildContext it was constructed with. If that
     // widget has since been disposed (e.g. the modal was initialized on
@@ -519,7 +562,17 @@ Timestamp: $timestamp''';
 
       final topic = session.topic ?? '';
 
-      debugPrint('WalletService: Sending tx to $contractAddress on chain ${chain.chainId}');
+      // Preflight snapshot — the fastest way to tell a UI/surfacing issue
+      // from a real send problem (stale address, chain not in the session
+      // namespace, null `from`). If a mint "never prompts", this line
+      // pinpoints why.
+      debugPrint('WalletService: tx preflight'
+          ' isConnected=${_appKitModal!.isConnected}'
+          ' serviceAddr=$_connectedAddress'
+          ' sessionAddr=${session.getAddress('eip155')}'
+          ' selectedChain=${_appKitModal!.selectedChain?.chainId}'
+          ' requestChain=eip155:${chain.chainId}'
+          ' to=$contractAddress dataLen=${encodedData.length}');
 
       final valueHex = value != null && value > BigInt.zero
           ? '0x${value.toRadixString(16)}'
@@ -693,6 +746,16 @@ Timestamp: $timestamp''';
   /// Returns true if a redirect was attempted.
   Future<bool> tryOpenWallet() async {
     if (_appKitModal == null) return false;
+    // Desktop web has no wallet app to foreground, and the WC peer's
+    // universal link is our own site (fx.land) — launching it just opens a
+    // useless tab. Mobile web CAN deep-link into the wallet app, so only
+    // bail on non-mobile web. (kIsWeb is false on native → unchanged.)
+    if (kIsWeb &&
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.android) {
+      debugPrint('WalletService: tryOpenWallet skipped (desktop web)');
+      return false;
+    }
     final session = _appKitModal!.session;
     if (session == null) return false;
 

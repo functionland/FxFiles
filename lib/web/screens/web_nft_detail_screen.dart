@@ -1,4 +1,6 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform, Uint8List;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -27,6 +29,19 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
   bool _loading = true;
   bool _minting = false;
   String? _error;
+
+  /// The asset to mint, chosen in the Assets section BEFORE the user taps
+  /// Mint NFT (native parity). Web holds the bytes in memory — there's no
+  /// local filesystem like the app's tagged files.
+  Uint8List? _assetBytes;
+  String? _assetName;
+
+  /// Mobile-web (not desktop) can deep-link into the wallet app to
+  /// confirm a transaction; desktop web confirms via a browser extension.
+  bool get _isMobileWeb =>
+      kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android);
 
   @override
   void initState() {
@@ -82,13 +97,23 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
   /// AppKit modal when none is connected yet. Returns false when the
   /// user closed it without connecting.
   Future<bool> _ensureWalletConnected() async {
-    if (WalletService.instance.isConnected) return true;
+    // Check the LIVE session, not the cached getter (which can lag on
+    // web): already connected → proceed without opening the modal. A
+    // stale "connected" that's actually dead returns null here and falls
+    // through to a real reconnect.
+    if (WalletService.instance.isInitialized &&
+        WalletService.instance.refreshConnectionState() != null) {
+      return true;
+    }
     try {
       if (!WalletService.instance.isInitialized) {
         await WalletService.instance.initialize(context);
       }
       if (!mounted) return false;
       await WalletService.instance.connectWallet(context);
+      // Dismiss AppKit's post-connect account/balance view so it doesn't
+      // linger over the mint progress dialog.
+      WalletService.instance.closeModalIfOpen();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -106,8 +131,9 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
     return true;
   }
 
-  Future<void> _startMintFlow() async {
-    if (!await _ensureWalletConnected() || !mounted) return;
+  /// Pick the image to mint (held in memory until the user mints or
+  /// removes it). Mirrors the native "Import" action in the Assets section.
+  Future<void> _pickAsset() async {
     final picked = await FilePicker.platform.pickFiles(
       withData: true,
       type: FileType.image,
@@ -115,9 +141,27 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
     final file = picked?.files.firstOrNull;
     final bytes = file?.bytes;
     if (file == null || bytes == null || !mounted) return;
+    setState(() {
+      _assetBytes = bytes;
+      _assetName = file.name;
+    });
+  }
 
-    final config = await _showMintConfigDialog(file.name);
+  Future<void> _startMintFlow() async {
+    final bytes = _assetBytes;
+    final name = _assetName;
+    if (bytes == null || name == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Add an image to mint first.')));
+      return;
+    }
+
+    // Config BEFORE the wallet (native ordering) so a wallet modal isn't
+    // sitting open while the user fills in the fields.
+    final config = await _showMintConfigDialog(name);
     if (config == null || !mounted) return;
+
+    if (!await _ensureWalletConnected() || !mounted) return;
 
     setState(() => _minting = true);
     var status = 'Starting...';
@@ -129,17 +173,46 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) {
           setDialog = setLocal;
+          // While the wallet is awaiting a signature, surface a way to
+          // reach it — a deep-link on mobile web, a hint on desktop where
+          // the browser-extension popup is where the user confirms.
+          final isWalletStep = status.toLowerCase().contains('in your wallet');
+          final connected = WalletService.instance.isConnected;
+          final walletName =
+              WalletService.instance.connectedWalletName ?? 'wallet';
           return AlertDialog(
             title: const Text('Minting NFT'),
-            content: Row(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(child: Text(status)),
+                  ],
                 ),
-                const SizedBox(width: 16),
-                Expanded(child: Text(status)),
+                if (isWalletStep && connected) ...[
+                  const SizedBox(height: 16),
+                  if (_isMobileWeb)
+                    FilledButton.icon(
+                      onPressed: () => WalletService.instance.tryOpenWallet(),
+                      icon: const Icon(LucideIcons.externalLink, size: 16),
+                      label: Text('Open $walletName'),
+                    )
+                  else
+                    Text(
+                      'Confirm the transaction in your wallet '
+                      '(your browser-extension wallet will pop up).',
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                ],
               ],
             ),
           );
@@ -151,7 +224,7 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
       await WebNftService.instance.startMint(
         tagId: widget.tagId,
         bytes: bytes,
-        fileName: file.name,
+        fileName: name,
         collectionName: _displayName,
         chain: config.chain,
         count: config.count,
@@ -177,6 +250,77 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
     } finally {
       if (mounted) setState(() => _minting = false);
     }
+  }
+
+  /// Native-parity "Assets" section: pick/preview the image to mint
+  /// BEFORE the Mint NFT button (which stays disabled until one is set).
+  Widget _buildAssetSection(ThemeData theme) {
+    final bytes = _assetBytes;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('Asset',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: _minting ? null : _pickAsset,
+              icon: const Icon(LucideIcons.imagePlus, size: 16),
+              label: Text(bytes == null ? 'Add image' : 'Replace'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (bytes == null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 28),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest
+                  .withValues(alpha: 0.4),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                Icon(LucideIcons.imageOff, size: 36, color: Colors.grey[400]),
+                const SizedBox(height: 8),
+                Text('No image yet', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text('Add an image to mint as an NFT',
+                    style: theme.textTheme.bodySmall),
+              ],
+            ),
+          )
+        else
+          Card(
+            margin: EdgeInsets.zero,
+            child: ListTile(
+              leading: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(bytes,
+                    width: 48, height: 48, fit: BoxFit.cover),
+              ),
+              title: Text(_assetName ?? 'image',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text('Ready to mint',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              trailing: IconButton(
+                icon: const Icon(LucideIcons.x, size: 18),
+                tooltip: 'Remove',
+                onPressed: _minting
+                    ? null
+                    : () => setState(() {
+                          _assetBytes = null;
+                          _assetName = null;
+                        }),
+              ),
+            ),
+          ),
+        const SizedBox(height: 16),
+      ],
+    );
   }
 
   /// Mint config — same fields as the native mint-config sheet (event
@@ -458,10 +602,13 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
                     child: ListView(
                       padding: const EdgeInsets.all(16),
                       children: [
+                        _buildAssetSection(theme),
                         SizedBox(
                           width: double.infinity,
                           child: FilledButton.icon(
-                            onPressed: _minting ? null : _startMintFlow,
+                            onPressed: (_minting || _assetBytes == null)
+                                ? null
+                                : _startMintFlow,
                             style: FilledButton.styleFrom(
                                 backgroundColor: AppColors.primary),
                             icon: const Icon(LucideIcons.sparkles, size: 18),
@@ -469,6 +616,15 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
                                 Text(_minting ? 'Minting...' : 'Mint NFT'),
                           ),
                         ),
+                        if (_assetBytes == null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'Add an image above to enable minting.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodySmall
+                                ?.copyWith(color: Colors.grey[600]),
+                          ),
+                        ],
                         const SizedBox(height: 20),
                         Text('Minted NFTs',
                             style: theme.textTheme.titleSmall
