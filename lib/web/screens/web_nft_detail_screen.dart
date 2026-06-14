@@ -10,6 +10,7 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/web/services/web_nft_gas_logic.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
@@ -483,37 +484,92 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
 
   Future<void> _shareClaim(NftMintRecord mint) async {
     if (!await _ensureWalletConnected() || !mounted) return;
-    final expiryDays = await showModalBottomSheet<int>(
+    // Sponsoring the recipient's claim gas is Base-only, matching native (s5).
+    final canSponsor = sponsorGasSupported(mint.chainId);
+    final sel = await showModalBottomSheet<({int expiry, bool sponsorGas})>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(
-                title: Text('Claim link expires in',
-                    style: TextStyle(fontWeight: FontWeight.w600))),
-            for (final d in [1, 7, 30])
-              ListTile(
-                leading: const Icon(LucideIcons.clock, size: 18),
-                title: Text(d == 1 ? '1 day' : '$d days'),
-                onTap: () => Navigator.of(ctx).pop(d),
-              ),
-          ],
-        ),
-      ),
+      builder: (ctx) {
+        var expiryDays = 7;
+        var sponsorGas = false;
+        return StatefulBuilder(
+          builder: (ctx, setSheet) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(
+                    title: Text('Claim link expires in',
+                        style: TextStyle(fontWeight: FontWeight.w600))),
+                for (final d in [1, 7, 30])
+                  ListTile(
+                    leading: const Icon(LucideIcons.clock, size: 18),
+                    title: Text(d == 1 ? '1 day' : '$d days'),
+                    trailing: expiryDays == d
+                        ? const Icon(LucideIcons.checkCircle,
+                            size: 18, color: Colors.green)
+                        : null,
+                    onTap: () => setSheet(() => expiryDays = d),
+                  ),
+                if (canSponsor)
+                  SwitchListTile(
+                    title: const Text('Sponsor gas for receiver'),
+                    subtitle: Text(
+                      sponsorGas
+                          ? 'Receiver can claim & act gas-free (~0.001 ETH)'
+                          : 'Receiver pays their own gas',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    value: sponsorGas,
+                    onChanged: (v) => setSheet(() => sponsorGas = v),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => Navigator.of(ctx).pop(
+                              (expiry: expiryDays, sponsorGas: sponsorGas)),
+                          child: const Text('Create link'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
-    if (expiryDays == null || !mounted) return;
+    if (sel == null || !mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Creating claim offer…')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Creating claim offer — confirm in your wallet…')));
     try {
+      // Base-only: estimate the ETH to escrow so the recipient claims
+      // gas-free, then attach it as the payable tx value (s5).
+      final gasDepositWei = sel.sponsorGas
+          ? await WebNftService.instance.estimateGasDeposit(mint.chainId)
+          : null;
+      if (!mounted) return;
       final result = await WebNftService.instance.createClaimOffer(
         tagId: widget.tagId,
         mint: mint,
-        expiry: Duration(days: expiryDays),
+        expiry: Duration(days: sel.expiry),
+        gasDepositWei: gasDepositWei,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).clearSnackBars();
+      final chainName =
+          SupportedChain.byChainId(mint.chainId)?.chainName ?? 'Unknown';
+      final sponsored = gasDepositWei != null;
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -528,9 +584,29 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text('Token #${mint.tokenId} · $chainName',
+                  style: Theme.of(ctx).textTheme.bodySmall),
+              const SizedBox(height: 8),
               const Text(
                   'Send this link to the recipient — opening it claims '
                   'one copy of the NFT.'),
+              if (sponsored) ...[
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(LucideIcons.checkCircle,
+                        size: 16, color: Colors.green),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Gas sponsored — the recipient can claim gas-free.',
+                        style: Theme.of(ctx).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 12),
               Container(
                 padding: const EdgeInsets.all(12),
