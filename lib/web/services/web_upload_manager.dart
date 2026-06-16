@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/utils/upload_retry.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
@@ -222,23 +223,37 @@ class WebUploadManager extends ChangeNotifier {
             } catch (_) {}
           }
 
-          if (bytes.length <= _kSmallUploadBytes) {
-            await FulaApiService.instance
-                .uploadObject(job.bucket, job.key, bytes);
-          } else {
-            await FulaApiService.instance.uploadLargeFile(
-              job.bucket,
-              job.key,
-              bytes,
-              onProgress: (p) {
-                // A reset() during this upload orphans the job; ignore late
-                // progress so we don't rebuild the tray for a dead session.
-                if (_epoch != epoch) return;
-                job.progress = p.percentage / 100;
-                notifyListeners();
-              },
-            );
-          }
+          // The fula-client blob-backend retry is compiled out on wasm32, so
+          // a single transient chunk-PUT drop (ERR_CONNECTION_CLOSED / "error
+          // sending request") would otherwise fail the whole (multi-chunk)
+          // large upload with no retry. Re-add it here for web. putFlat is
+          // idempotent (content-addressed chunks; path-keyed forest entry) and
+          // a chunk-PUT failure happens before the forest upsert/flush (the SDK
+          // also deletes the uploaded chunks on failure), so re-running is safe
+          // — no duplicates, no dirty-forest state. Non-transient errors
+          // (4xx / 409) are not retried.
+          await retryAsync(
+            () async {
+              if (bytes.length <= _kSmallUploadBytes) {
+                await FulaApiService.instance
+                    .uploadObject(job.bucket, job.key, bytes);
+              } else {
+                await FulaApiService.instance.uploadLargeFile(
+                  job.bucket,
+                  job.key,
+                  bytes,
+                  onProgress: (p) {
+                    // A reset() during this upload orphans the job; ignore late
+                    // progress so we don't rebuild the tray for a dead session.
+                    if (_epoch != epoch) return;
+                    job.progress = p.percentage / 100;
+                    notifyListeners();
+                  },
+                );
+              }
+            },
+            retryIf: isTransientUploadError,
+          );
 
           // Sign-out / user-switch landed while this file was uploading:
           // abandon the rest. The finally still runs (epoch-guarded) and
