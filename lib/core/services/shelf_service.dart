@@ -174,6 +174,18 @@ class ShelfService {
 
     await ShelfStorageService.instance.delete(item.id);
 
+    // Push the deletion into the cloud manifest BEFORE the tombstone is
+    // cleared (which happens after cloud cleanup just below). The
+    // merge-before-write guard on a future sync folds back in any cloud
+    // item this device lacks; if the cloud manifest still listed this
+    // just-deleted item after its tombstone cleared, that merge would
+    // RESURRECT it. flushNow() runs a sync that reflects the removal while
+    // the tombstone is still present (so the merge skips it), leaving the
+    // cloud manifest without the item. Non-fatal — _doSyncNow swallows its
+    // own errors, and a failed push leaves cloud cleanup below to retain
+    // the tombstone for a later retry.
+    await ShelfStorageService.instance.flushNow();
+
     final cloudCleanupOk = await _attemptCloudCleanup(
       remoteKey: item.remoteKey,
       thumbnailRemoteKey: item.thumbnailRemoteKey,
