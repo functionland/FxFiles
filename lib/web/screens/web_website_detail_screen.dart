@@ -14,6 +14,7 @@ import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_website_assets_logic.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 
@@ -88,40 +89,42 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     }
   }
 
-  /// App parity: the group's existing assets show up and get REUSED by
-  /// the next generation. The web sources them from the latest
-  /// generation's uploaded assets (CID-backed — content is public on
-  /// IPFS); group files that never uploaded are listed as app-only.
+  /// App parity: the group's existing assets show up and get REUSED by the
+  /// next generation. A group file is reusable on web when it has a public
+  /// IPFS CID from ANY completed generation (content is public on IPFS); a
+  /// file with no CID in any generation AND no cloud copy is device-local
+  /// and listed as app-only.
+  ///
+  /// Resolving the CID-backed set from the UNION of all completed generations
+  /// (not just the latest) is the fix for issue #44: per-run upload caps and
+  /// transient failures mean the freshest generation can be missing assets an
+  /// earlier run uploaded successfully, which the old latest-only code wrongly
+  /// flagged "on a device". Scoping to the group's CURRENT tagged files avoids
+  /// resurrecting files the user later removed. (Tags are loaded in `_load`
+  /// before this runs.)
   void _seedAssetsFromGroup() {
     if (_assetsSeeded) return;
     _assetsSeeded = true;
 
-    final latest = _generations
-        .where((g) =>
-            g.status == WebsiteGenStatus.completed && g.assets.isNotEmpty)
-        .firstOrNull;
-    final seededNames = <String>{};
-    if (latest != null) {
-      for (final a in latest.assets) {
-        if (!a.uploaded || a.cid == null || a.cid!.isEmpty) continue;
-        if (!seededNames.add(a.fileName)) continue;
-        _assets.add(WebPickedAsset(
-          fileName: a.fileName,
-          cid: a.cid,
-          gatewayUrl: a.gatewayUrl,
-          note: a.comment ?? '',
-        ));
-      }
-    }
-
-    // Tagged files of this group with no uploaded counterpart =
-    // device-local assets only the app can include.
-    _appOnlyAssets = [
+    final cidByName = websiteCidAssetsByName(_generations);
+    final tagged = [
       for (final tf in WebTagService.instance.filesWithTag(widget.tagId))
-        if (!seededNames.contains(tf.fileName) &&
-            (tf.remoteKey == null || tf.remoteKey!.isEmpty))
-          tf.fileName,
+        (
+          fileName: tf.fileName,
+          hasRemoteKey: tf.remoteKey != null && tf.remoteKey!.isNotEmpty,
+        ),
     ];
+    final resolved =
+        resolveWebsiteGroupAssets(taggedFiles: tagged, cidByName: cidByName);
+    for (final a in resolved.reusable) {
+      _assets.add(WebPickedAsset(
+        fileName: a.fileName,
+        cid: a.cid,
+        gatewayUrl: a.gatewayUrl,
+        note: a.note,
+      ));
+    }
+    _appOnlyAssets = resolved.appOnly;
   }
 
   String get _displayName {
