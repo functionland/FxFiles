@@ -11,6 +11,7 @@ import 'package:fula_files/core/models/shelf_item.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/shelf_merge_logic.dart';
 
 /// Persistence for the Shelf feature. Singleton, mirrors the repo's
 /// existing `*Service` convention (see [SyncService], [AuthService]).
@@ -92,6 +93,14 @@ class ShelfStorageService {
 
   @visibleForTesting
   Future<Uint8List?> Function(String key)? cloudSyncDownloadOverride;
+
+  /// Test seam for the merge-before-write read in [_doSyncNow]. When set,
+  /// the merge reads the cloud manifest blobs ([v8, legacy], in priority
+  /// order) from this instead of [FulaApiService]. THROWING simulates a
+  /// transient read failure (the sync then aborts to avoid a clobbering
+  /// overwrite); returning the blobs simulates a successful merge-read.
+  @visibleForTesting
+  Future<List<Uint8List>> Function()? cloudMergeReadOverride;
 
   Future<void> init() async {
     if (isInitialized) return;
@@ -489,6 +498,7 @@ class ShelfStorageService {
   Future<void> resetForTesting() async {
     cloudSyncUploadOverride = null;
     cloudSyncDownloadOverride = null;
+    cloudMergeReadOverride = null;
     _syncEnabled = true;
     _metadataBucketReady = false;
     await close();
@@ -646,6 +656,39 @@ class ShelfStorageService {
       final box = _box;
       if (box == null) return;
 
+      // Real-path preamble: validate the session, ensure the bucket, and
+      // — critically — MERGE-BEFORE-WRITE. The manifest is a full-snapshot
+      // blob written by BOTH native and web; without folding in cloud
+      // items this device lacks, our overwrite would clobber items added
+      // on another device (the web→native loss). Skipped in the
+      // upload-override test path (which exercises payload/sync directly).
+      String? userId;
+      Uint8List? encryptionKey;
+      if (cloudSyncUploadOverride == null) {
+        encryptionKey = await AuthService.instance.getEncryptionKey();
+        if (encryptionKey == null) return;
+        userId = await _getUserId();
+        if (userId == null) return;
+        if (!FulaApiService.instance.isConfigured) return;
+        // Make sure the bucket exists before the PUT. Without this,
+        // every upload hits NoSuchBucket on a fresh account and the
+        // cloud-restore on the next install finds nothing.
+        if (!await _ensureMetadataBucket()) {
+          debugPrint('ShelfStorageService.syncToCloud: '
+              'metadata bucket unavailable — skipping');
+          return;
+        }
+        final mergeOk =
+            await _mergeCloudAdditionsForSync(box, encryptionKey, userId);
+        if (!mergeOk) {
+          // The v8 manifest (the bucket we overwrite) couldn't be read —
+          // overwriting now could clobber. Skip; a later sync retries.
+          debugPrint('ShelfStorageService.syncToCloud: cloud merge-read '
+              'failed — skipping upload to avoid clobber');
+          return;
+        }
+      }
+
       final items = box.values.map((i) => i.toJson()).toList(growable: false);
       // Sanitise the order against the current item set on the way
       // out — drops any orphan ids (e.g. a delete that happened
@@ -665,20 +708,6 @@ class ShelfStorageService {
           // Test mode — bypass auth + FulaApiService.
           await cloudSyncUploadOverride!(data, '.fula/dumps/test.json');
         } else {
-          final encryptionKey =
-              await AuthService.instance.getEncryptionKey();
-          if (encryptionKey == null) return;
-          final userId = await _getUserId();
-          if (userId == null) return;
-          if (!FulaApiService.instance.isConfigured) return;
-          // Make sure the bucket exists before the PUT. Without this,
-          // every upload hits NoSuchBucket on a fresh account and the
-          // cloud-restore on the next install finds nothing.
-          if (!await _ensureMetadataBucket()) {
-            debugPrint('ShelfStorageService.syncToCloud: '
-                'metadata bucket unavailable — skipping');
-            return;
-          }
           payload['userId'] = userId;
           final dataWithUser =
               Uint8List.fromList(utf8.encode(jsonEncode(payload)));
@@ -689,7 +718,7 @@ class ShelfStorageService {
             _writeBucket,
             '.fula/dumps/$userId.json',
             dataWithUser,
-            encryptionKey,
+            encryptionKey!,
             contentType: 'application/json',
           );
         }
@@ -713,6 +742,153 @@ class ShelfStorageService {
       _inFlightSync = null;
       completer.complete();
     }
+  }
+
+  /// Run a manifest sync GUARANTEED to reflect the current box: drains any
+  /// in-flight sync (which may have snapshotted the box BEFORE a just-
+  /// applied mutation), then runs a fresh one. The delete path uses this
+  /// so the cloud manifest excludes a just-removed item BEFORE its
+  /// tombstone is cleared — otherwise [_mergeCloudAdditionsForSync] on a
+  /// later sync could fold the item back in (resurrect it).
+  Future<void> flushNow() async {
+    if (!_syncEnabled) return;
+    final inFlight = _inFlightSync;
+    if (inFlight != null) {
+      try {
+        await inFlight.future;
+      } catch (_) {/* its own handler already logged */}
+    }
+    await _doSyncNow();
+  }
+
+  /// MERGE-BEFORE-WRITE clobber guard. Before the full-snapshot upload,
+  /// fold any cloud-manifest items this device lacks into [box], so the
+  /// overwrite can't drop items added on another device. Items already in
+  /// the box and tombstoned (locally-deleted) ids are NOT re-added.
+  ///
+  /// Returns FALSE when the v8 manifest — the bucket we OVERWRITE — could
+  /// not be read (a transient transport error): the caller MUST skip the
+  /// upload. A confirmed-absent (`NoSuchKey`) or empty v8 manifest returns
+  /// TRUE (nothing to merge). Legacy is best-effort (never overwritten).
+  Future<bool> _mergeCloudAdditionsForSync(
+      Box<ShelfItem> box, Uint8List encryptionKey, String userId) async {
+    final key = '.fula/dumps/$userId.json';
+    final v8 = _writeBucket;
+
+    List<Uint8List> blobs;
+    if (cloudMergeReadOverride != null) {
+      try {
+        blobs = await cloudMergeReadOverride!();
+      } catch (e) {
+        debugPrint('ShelfStorageService._mergeCloudAdditionsForSync: '
+            'override read failed: $e');
+        return false;
+      }
+    } else {
+      // v8 — authoritative (the bucket we overwrite). Drop the cached
+      // forest FIRST: this read's whole purpose is to pick up ANOTHER
+      // device's writes (e.g. web), and without invalidation native
+      // re-serves its stale in-memory forest as if it were live (the
+      // documented two-client trap) → the merge sees the OLD manifest,
+      // folds in nothing, and clobbers the other device's item anyway.
+      //
+      // Safe even though mutation reads normally KEEP the forest (to avoid
+      // the "own just-uploaded write vanishes" regression): that hazard is
+      // about reads AFTER an upload when the forest is ahead of the
+      // server. This read runs BEFORE this cycle's upload and only ADDS
+      // cloud items to the box — it never removes our own in-flight items,
+      // so refetching can only gain another device's items, never lose
+      // ours. Only v8 needs it; legacy is frozen post-migration.
+      try {
+        await FulaApiService.instance.invalidateForestCache(v8);
+      } catch (e) {
+        debugPrint('ShelfStorageService._mergeCloudAdditionsForSync: '
+            'invalidateForestCache($v8) failed (read may be stale): $e');
+      }
+      Uint8List? v8Blob;
+      try {
+        v8Blob = await FulaApiService.instance
+            .downloadAndDecrypt(v8, key, encryptionKey);
+      } catch (e) {
+        if (!_isConfirmedAbsence(e)) {
+          debugPrint('ShelfStorageService._mergeCloudAdditionsForSync: '
+              'v8 read failed (skip upload): $e');
+          return false;
+        }
+        v8Blob = null; // genuinely no v8 manifest yet
+      }
+      // legacy — best-effort (never overwritten, so a failure here just
+      // skips one-time consolidation; it can't cause a clobber).
+      Uint8List? legacyBlob;
+      if (v8 != _metadataBucket) {
+        try {
+          legacyBlob = await FulaApiService.instance
+              .downloadAndDecrypt(_metadataBucket, key, encryptionKey);
+        } catch (e) {
+          debugPrint('ShelfStorageService._mergeCloudAdditionsForSync: '
+              'legacy read skipped: $e');
+        }
+      }
+      blobs = <Uint8List>[
+        if (v8Blob != null) v8Blob,
+        if (legacyBlob != null) legacyBlob,
+      ];
+    }
+
+    // Parse the manifest blobs (v8 first) into items.
+    final cloudItems = <ShelfItem>[];
+    for (final blob in blobs) {
+      if (blob.isEmpty) continue;
+      try {
+        final raw = jsonDecode(utf8.decode(blob));
+        if (raw is! Map<String, dynamic>) continue;
+        for (final entry in (raw['items'] as List? ?? const <dynamic>[])) {
+          if (entry is! Map<String, dynamic>) continue;
+          try {
+            cloudItems.add(ShelfItem.fromJson(entry));
+          } catch (_) {/* skip malformed entry */}
+        }
+      } catch (e) {
+        debugPrint('ShelfStorageService._mergeCloudAdditionsForSync: '
+            'parse skipped: $e');
+      }
+    }
+
+    final additions = shelfCloudAdditions(
+      boxIds: box.keys.cast<String>().toSet(),
+      tombstonedIds: getPendingDeleteIds(),
+      cloudItemsV8First: cloudItems,
+    );
+    for (final item in additions) {
+      // Direct put — does NOT call add()/_scheduleSyncToCloud(), so no
+      // re-entrant sync. The Hive watch stream re-renders the grid, so
+      // the merged items appear on this device too.
+      await box.put(item.id, item);
+    }
+    if (additions.isNotEmpty) {
+      debugPrint('ShelfStorageService: merge-before-write folded in '
+          '${additions.length} cloud item(s)');
+    }
+    return true;
+  }
+
+  /// Strict absence codes — a confirmed "no such object/bucket" (vs a
+  /// transient transport error). Tells a genuinely-empty v8 manifest
+  /// (safe to overwrite) from a read failure (must abort).
+  static bool _isConfirmedAbsence(Object e) {
+    final s = '$e';
+    return s.contains('NoSuchKey') || s.contains('NoSuchBucket');
+  }
+
+  /// Test seam: run the merge-before-write step against the current box,
+  /// driven by [cloudMergeReadOverride]. Returns the same bool as the real
+  /// path (false ⇒ abort upload). Exists because the real merge only runs
+  /// after the auth/bucket preamble, which unit tests bypass.
+  @visibleForTesting
+  Future<bool> mergeCloudAdditionsForTest() {
+    final box = _box;
+    if (box == null) return Future<bool>.value(true);
+    return _mergeCloudAdditionsForSync(box, Uint8List(0), 'test-uid');
   }
 
   /// Clear ALL local shelf data — called on sign-out (the user is wiping their

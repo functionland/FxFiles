@@ -887,4 +887,95 @@ void main() {
       );
     });
   });
+
+  group('Merge-before-write (clobber guard)', () {
+    Uint8List cloudManifest(List<ShelfItem> items) =>
+        Uint8List.fromList(utf8.encode(jsonEncode({
+          'v': 2,
+          'updatedAt': '2026-06-16T00:00:00.000Z',
+          'items': items.map((i) => i.toJson()).toList(),
+          'order': items.map((i) => i.id).toList(),
+        })));
+
+    test('folds in cloud items the box lacks; keeps existing rows', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'local'));
+
+      ShelfStorageService.instance.cloudMergeReadOverride = () async => [
+            cloudManifest([
+              _item(id: 'local'), // already present — skipped
+              _item(id: 'web-1', category: ShelfCategory.link),
+              _item(id: 'web-2', category: ShelfCategory.image),
+            ]),
+          ];
+
+      final ok =
+          await ShelfStorageService.instance.mergeCloudAdditionsForTest();
+      expect(ok, isTrue);
+      expect(ShelfStorageService.instance.getAll().map((i) => i.id).toSet(),
+          {'local', 'web-1', 'web-2'});
+    });
+
+    test('does NOT resurrect a tombstoned (locally-deleted) item', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'keep'));
+      // Simulate a local delete whose cloud cleanup is still pending.
+      await ShelfStorageService.instance.markPendingDelete(
+        ShelfPendingDeleteEntry(
+            itemId: 'deleted', markedAt: DateTime.utc(2026, 6, 16)),
+      );
+
+      ShelfStorageService.instance.cloudMergeReadOverride = () async => [
+            cloudManifest([_item(id: 'keep'), _item(id: 'deleted')]),
+          ];
+
+      final ok =
+          await ShelfStorageService.instance.mergeCloudAdditionsForTest();
+      expect(ok, isTrue);
+      expect(ShelfStorageService.instance.getById('deleted'), isNull,
+          reason: 'tombstoned id must not be folded back in');
+    });
+
+    test('aborts (returns false) when the cloud read fails', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'local'));
+      ShelfStorageService.instance.cloudMergeReadOverride =
+          () async => throw StateError('transient gateway error');
+
+      final ok =
+          await ShelfStorageService.instance.mergeCloudAdditionsForTest();
+      expect(ok, isFalse, reason: 'a read failure must abort the upload');
+      expect(ShelfStorageService.instance.getAll().map((i) => i.id).toSet(),
+          {'local'}, reason: 'box untouched on abort');
+    });
+
+    test('empty cloud read is a no-op that succeeds', () async {
+      await ShelfStorageService.instance.init();
+      await ShelfStorageService.instance.add(_item(id: 'local'));
+      ShelfStorageService.instance.cloudMergeReadOverride =
+          () async => <Uint8List>[];
+      final ok =
+          await ShelfStorageService.instance.mergeCloudAdditionsForTest();
+      expect(ok, isTrue);
+      expect(ShelfStorageService.instance.getAll().map((i) => i.id).toSet(),
+          {'local'});
+    });
+  });
+
+  group('flushNow', () {
+    test('triggers an immediate upload reflecting the current box', () async {
+      await ShelfStorageService.instance.init();
+      final uploads = <Map<String, dynamic>>[];
+      ShelfStorageService.instance.cloudSyncUploadOverride = (data, _) async {
+        uploads.add(jsonDecode(utf8.decode(data)) as Map<String, dynamic>);
+      };
+      await ShelfStorageService.instance.add(_item(id: 'a'));
+      await ShelfStorageService.instance.flushNow();
+      expect(uploads, isNotEmpty);
+      final ids = (uploads.last['items'] as List)
+          .map((e) => (e as Map<String, dynamic>)['id'])
+          .toSet();
+      expect(ids, contains('a'));
+    });
+  });
 }
