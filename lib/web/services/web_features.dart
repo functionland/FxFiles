@@ -2,18 +2,21 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/models/shelf_item.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
+import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_website_assets_logic.dart';
 
 /// Read-only cloud loaders for the four feature areas the web shell
 /// mirrors from native (Shelf / Websites / Tags / Playlists). Each
@@ -158,6 +161,44 @@ class WebFeatures {
     final generations = byId.values.toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return (generations: generations, pointersByTag: pointers);
+  }
+
+  /// CIDs of a website group's assets, read from the AUTHORITATIVE,
+  /// unencrypted `website-assets` bucket (each object's ETag IS its public
+  /// IPFS CID). This is the ground truth of what reached IPFS — used to
+  /// recover sites whose generation manifest recorded `uploaded=false` /
+  /// no-CID despite a successful upload (issue #44). Returns {fileName:
+  /// cid}; FAIL-SOFT → empty map on any error so callers fall back to the
+  /// manifest. Lists against the SAME endpoint the asset upload PUTs to
+  /// (`apiGatewayUrl` ?? the S3 gateway), which is where the objects
+  /// physically live — NOT the `api.cloud.fx.land` pinning service (which
+  /// doesn't serve S3 list). >1000 assets (truncation) isn't paged — far
+  /// beyond any real website.
+  static Future<Map<String, String>> websiteAssetCids(
+      String displayName) async {
+    try {
+      final prefix = '${sanitizeWebsiteName(displayName)}/';
+      var endpoint = (await SecureStorageService.instance
+              .read(SecureStorageKeys.apiGatewayUrl)) ??
+          AuthCore.defaultS3GatewayUrl;
+      endpoint = endpoint.replaceAll(RegExp(r'/+$'), '');
+      final jwt = await SecureStorageService.instance
+          .read(SecureStorageKeys.jwtToken);
+      if (jwt == null || jwt.isEmpty) return const {};
+      final uri = Uri.parse('$endpoint/website-assets/'
+          '?list-type=2&prefix=$prefix&max-keys=1000');
+      final resp = await http
+          .get(uri, headers: {'Authorization': 'Bearer $jwt'})
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode != 200) {
+        debugPrint('WebFeatures.websiteAssetCids: HTTP ${resp.statusCode}');
+        return const {};
+      }
+      return parseWebsiteAssetCids(resp.body, prefix);
+    } catch (e) {
+      debugPrint('WebFeatures.websiteAssetCids: $e');
+      return const {};
+    }
   }
 
   // ------------------------------------------------------------------- tags

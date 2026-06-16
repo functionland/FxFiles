@@ -68,15 +68,23 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       await WebTagService.instance.load();
       final r = await WebFeatures.loadWebsites();
       await WebIpnsService.instance.load(force: true);
+      final tag = WebTagService.instance.tagById(widget.tagId);
+      final rawName = tag?.name ?? 'website';
+      final displayName = rawName.startsWith('websites-')
+          ? rawName.substring('websites-'.length)
+          : rawName;
+      // Authoritative CID source (#44): assets that reached IPFS but whose
+      // generation recorded uploaded=false/no-CID. Fail-soft → {}.
+      final assetCids = await WebFeatures.websiteAssetCids(displayName);
       if (!mounted) return;
       setState(() {
-        _tag = WebTagService.instance.tagById(widget.tagId);
+        _tag = tag;
         _cloudGenerations = r.generations
             .where((g) => g.tagId == widget.tagId)
             .toList();
         _pointer = WebIpnsService.instance.pointerFor(widget.tagId) ??
             r.pointersByTag[widget.tagId];
-        _seedAssetsFromGroup();
+        _seedAssetsFromGroup(assetCids);
         _loading = false;
       });
     } catch (e) {
@@ -102,11 +110,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// flagged "on a device". Scoping to the group's CURRENT tagged files avoids
   /// resurrecting files the user later removed. (Tags are loaded in `_load`
   /// before this runs.)
-  void _seedAssetsFromGroup() {
+  void _seedAssetsFromGroup(Map<String, String> websiteAssetCids) {
     if (_assetsSeeded) return;
     _assetsSeeded = true;
 
-    final cidByName = websiteCidAssetsByName(_generations);
+    // CIDs from two sources: the generation manifest (union across all
+    // completed generations) and — authoritatively — the website-assets
+    // bucket, which records what actually reached IPFS even when the
+    // manifest saved uploaded=false/no-CID (issue #44). The bucket wins.
+    final cidByName = mergeAuthoritativeCids(
+      websiteCidAssetsByName(_generations),
+      websiteAssetCids,
+    );
     final tagged = [
       for (final tf in WebTagService.instance.filesWithTag(widget.tagId))
         (

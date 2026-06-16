@@ -13,6 +13,8 @@
 // assets) avoids surfacing files the user later REMOVED from the group but
 // that still live in an old generation's manifest.
 
+import 'package:xml/xml.dart';
+
 import 'package:fula_files/core/models/website_generation.dart';
 
 /// A CID-backed (public-on-IPFS) website asset, reusable across platforms.
@@ -78,4 +80,62 @@ Map<String, ResolvedWebsiteAsset> websiteCidAssetsByName(
     }
   }
   return (reusable: reusable, appOnly: appOnly);
+}
+
+/// Sanitize a website display name into its `website-assets` key prefix —
+/// byte-for-byte the transform native applies before uploading
+/// (WebsiteService: `tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_')`),
+/// e.g. "Real Estate" → "Real_Estate".
+String sanitizeWebsiteName(String displayName) =>
+    displayName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+
+/// Parse an S3 `ListBucketResult` body into {fileName: cid}. Each
+/// `<Contents>` carries a `<Key>` of `<prefix>/<fileName>` and an `<ETag>`
+/// whose (de-quoted) value IS the public IPFS CID. The folder marker (Key
+/// == prefix) and entries missing a key/etag are skipped. Throws on
+/// malformed XML — the IO caller swallows that to fall back to the manifest.
+Map<String, String> parseWebsiteAssetCids(String xmlBody, String prefix) {
+  final out = <String, String>{};
+  final doc = XmlDocument.parse(xmlBody);
+  // Match by LOCAL name — the S3 body declares a default xmlns, so
+  // qualified-name lookups (getElement/findAllElements) are namespace-
+  // sensitive and would silently miss everything.
+  String childText(XmlElement e, String local) {
+    for (final c in e.children.whereType<XmlElement>()) {
+      if (c.name.local == local) return c.innerText;
+    }
+    return '';
+  }
+
+  for (final c in doc.descendants
+      .whereType<XmlElement>()
+      .where((e) => e.name.local == 'Contents')) {
+    final key = childText(c, 'Key');
+    final etag = childText(c, 'ETag').replaceAll('"', '');
+    if (etag.isEmpty || !key.startsWith(prefix)) continue;
+    final fileName = key.substring(prefix.length);
+    if (fileName.isEmpty) continue; // folder marker, not a file
+    out[fileName] = etag;
+  }
+  return out;
+}
+
+/// Merge the `website-assets` CIDs (authoritative — they ARE on IPFS) over
+/// the generation-manifest map. The manifest can record `uploaded=false` /
+/// no-CID even when the asset succeeded (issue #44), so `website-assets`
+/// wins the CID; the manifest's note (if any) is preserved.
+Map<String, ResolvedWebsiteAsset> mergeAuthoritativeCids(
+  Map<String, ResolvedWebsiteAsset> manifestCids,
+  Map<String, String> websiteAssetCids,
+) {
+  final out = Map<String, ResolvedWebsiteAsset>.from(manifestCids);
+  for (final e in websiteAssetCids.entries) {
+    out[e.key] = (
+      fileName: e.key,
+      cid: e.value,
+      gatewayUrl: null, // built from the CID on demand
+      note: out[e.key]?.note ?? '',
+    );
+  }
+  return out;
 }

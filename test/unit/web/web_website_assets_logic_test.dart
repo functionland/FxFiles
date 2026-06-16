@@ -135,4 +135,50 @@ void main() {
       expect(r.reusable.map((x) => x.fileName).toList(), ['a']); // no 'old'
     });
   });
+
+  group('sanitizeWebsiteName', () {
+    test('matches the native asset-prefix transform', () {
+      expect(sanitizeWebsiteName('Real Estate'), 'Real_Estate');
+      expect(sanitizeWebsiteName('My-Site_1'), 'My-Site_1');
+      expect(sanitizeWebsiteName('a b/c.d'), 'a_b_c_d');
+    });
+  });
+
+  group('parseWebsiteAssetCids', () {
+    const xml = '''<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>website-assets</Name>
+  <Prefix>Real_Estate/</Prefix>
+  <Contents><Key>Real_Estate/</Key><ETag>"folder"</ETag></Contents>
+  <Contents><Key>Real_Estate/Mls-sample.webp</Key><ETag>"bafk1"</ETag></Contents>
+  <Contents><Key>Real_Estate/Screenshot.Chrome.png</Key><ETag>"bafy2"</ETag></Contents>
+  <Contents><Key>Other_Site/x.jpg</Key><ETag>"bafk9"</ETag></Contents>
+</ListBucketResult>''';
+
+    test('extracts {fileName: cid}, strips quotes/prefix, skips folder + other prefixes', () {
+      final m = parseWebsiteAssetCids(xml, 'Real_Estate/');
+      expect(m, {
+        'Mls-sample.webp': 'bafk1',
+        'Screenshot.Chrome.png': 'bafy2',
+      });
+    });
+
+    test('non-matching prefix → empty', () {
+      expect(parseWebsiteAssetCids(xml, 'Nope/'), isEmpty);
+    });
+  });
+
+  group('mergeAuthoritativeCids', () {
+    test('website-assets CID wins; manifest note preserved; new keys added', () {
+      final manifest = <String, ResolvedWebsiteAsset>{
+        'a': (fileName: 'a', cid: 'OLD', gatewayUrl: 'u', note: 'hello'),
+        'c': (fileName: 'c', cid: 'CID_C', gatewayUrl: null, note: ''),
+      };
+      final m = mergeAuthoritativeCids(manifest, {'a': 'NEW', 'b': 'CID_B'});
+      expect(m['a']!.cid, 'NEW'); // authoritative override
+      expect(m['a']!.note, 'hello'); // note preserved
+      expect(m['b']!.cid, 'CID_B'); // new key from website-assets
+      expect(m['c']!.cid, 'CID_C'); // manifest-only key untouched
+    });
+  });
 }
