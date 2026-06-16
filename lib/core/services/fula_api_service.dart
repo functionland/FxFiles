@@ -94,6 +94,24 @@ class FulaApiService implements FulaApi {
   // Track which buckets have had their forest loaded
   final Set<String> _loadedForests = {};
 
+  /// The exact arguments of the last [initialize] call, retained verbatim so
+  /// [rebuildEncryptedClient] can replay it to get a brand-new client with an
+  /// EMPTY forest cache. This is the only recovery for a bucket whose forest
+  /// is stuck DIRTY in the SDK's in-memory cache (see [rebuildEncryptedClient]).
+  ({
+    String endpoint,
+    Uint8List secretKey,
+    String? accessToken,
+    String? defaultBucket,
+    String? userEmail,
+    String? chainRpcUrl,
+    String? usersIndexAnchorAddress,
+    String? usersIndexIpnsName,
+    List<String>? usersIndexIpnsGatewayUrls,
+    Uint8List? bucketsIndexKey,
+    Uint8List? userEntrySigningSeed,
+  })? _lastInitArgs;
+
   // Saved credentials for endpoint switching
   Uint8List? _currentSecretKey;
   String? _cloudEndpoint;
@@ -147,6 +165,20 @@ class FulaApiService implements FulaApi {
     /// per-user entry (`K_entry_seed`). Pass `null` for Mode A users.
     Uint8List? userEntrySigningSeed,
   }) async {
+    // Retain verbatim so rebuildEncryptedClient() can replay this exact call.
+    _lastInitArgs = (
+      endpoint: endpoint,
+      secretKey: secretKey,
+      accessToken: accessToken,
+      defaultBucket: defaultBucket,
+      userEmail: userEmail,
+      chainRpcUrl: chainRpcUrl,
+      usersIndexAnchorAddress: usersIndexAnchorAddress,
+      usersIndexIpnsName: usersIndexIpnsName,
+      usersIndexIpnsGatewayUrls: usersIndexIpnsGatewayUrls,
+      bucketsIndexKey: bucketsIndexKey,
+      userEntrySigningSeed: userEntrySigningSeed,
+    );
     try {
       // Derive the per-user cold-start key. Try the JWT-sub-based
       // derivation FIRST â€” it matches master's `state.rs::hash_user_id`
@@ -451,6 +483,76 @@ class FulaApiService implements FulaApi {
     } catch (e) {
       debugPrint('invalidateForestCache($bucket): $e');
     }
+  }
+
+  /// Rebuild the encrypted client by replaying the last [initialize] call,
+  /// producing a fresh client whose per-bucket forest cache is EMPTY.
+  ///
+  /// This is the only recovery for a bucket whose forest is stuck DIRTY. The
+  /// SDK serves a dirty forest straight from its in-memory cache regardless of
+  /// the TTL (`encryption.rs` load_forest_internal: `if is_fresh ||
+  /// entry.is_dirty()`), and [invalidateForestCache] is dirty-safe (it will
+  /// NOT evict a dirty forest). A flaky-network upload whose forest flush
+  /// failed leaves the forest dirty and un-reflushable (the server's sequence
+  /// guard rejects the stale-seq rewrite), so a long-lived session then
+  /// re-serves the stale index forever — Refresh's invalidate is a silent
+  /// no-op and only a fresh browser context reads correctly. Rebuilding the
+  /// client is exactly what that fresh context does.
+  ///
+  /// Safe by construction: it does NOT flush, so the discarded dirty forest is
+  /// never persisted and cannot clobber another device's writes. Any unsaved
+  /// local change is dropped, but it was never on the server (that is WHY the
+  /// forest was dirty), so the session simply becomes consistent with storage.
+  ///
+  /// On the web the SDK block cache is compiled out (wasm32), so the in-memory
+  /// forest cache is the ONLY stale state and a fresh client provably clears it
+  /// (this is why incognito always shows the latest).
+  ///
+  /// Callers MUST ensure no upload is in flight — a rebuild swaps the client
+  /// handle, and an in-flight write would land on the discarded old client. On
+  /// the web that guard is `WebUploadManager.instance.isActive`. A failed
+  /// replay leaves the previous client intact (initialize only assigns
+  /// `_client` on success), so a transient failure is a safe no-op.
+  Future<void> rebuildEncryptedClient() async {
+    final a = _lastInitArgs;
+    if (a == null) {
+      throw FulaApiException(
+          'rebuildEncryptedClient: no prior initialize() to replay');
+    }
+    // Diagnostic honesty (never discard dirty state silently): a rebuild drops
+    // every in-memory forest. A DIRTY forest holds unsaved upserts — e.g. a
+    // file whose content reached S3 but whose index flush failed. Discarding
+    // it removes that entry from the listing; the content is orphaned on S3
+    // and was never in the SERVER index (so other devices never saw it and the
+    // upload had reported failure), so the user must re-upload it. Log which
+    // buckets are dirty so this is observable, and so a live Refresh confirms
+    // the dirty-forest root cause.
+    final preClient = _client;
+    if (preClient != null) {
+      for (final bucket in _loadedForests.toList()) {
+        try {
+          if (await fula.hasPendingChanges(client: preClient, bucket: bucket)) {
+            debugPrint('FulaApiService.rebuildEncryptedClient: DISCARDING dirty '
+                'forest "$bucket" — unsaved local changes dropped (a failed '
+                'upload to this bucket must be retried)');
+          }
+        } catch (_) {/* best-effort logging only */}
+      }
+    }
+    debugPrint('FulaApiService: rebuilding encrypted client (dropping forests)');
+    await initialize(
+      endpoint: a.endpoint,
+      secretKey: a.secretKey,
+      accessToken: a.accessToken,
+      defaultBucket: a.defaultBucket,
+      userEmail: a.userEmail,
+      chainRpcUrl: a.chainRpcUrl,
+      usersIndexAnchorAddress: a.usersIndexAnchorAddress,
+      usersIndexIpnsName: a.usersIndexIpnsName,
+      usersIndexIpnsGatewayUrls: a.usersIndexIpnsGatewayUrls,
+      bucketsIndexKey: a.bucketsIndexKey,
+      userEntrySigningSeed: a.userEntrySigningSeed,
+    );
   }
 
   // ============================================================================

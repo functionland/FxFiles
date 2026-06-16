@@ -118,6 +118,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   Future<void> _load(
       {bool force = false,
       bool silent = false,
+      bool hardRebuild = false,
       bool? refetchForest}) async {
     if (!silent) {
       setState(() {
@@ -127,6 +128,20 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     }
     final bucket = BucketVersionResolver.writeBucket(widget.base);
     try {
+      // Hard refresh (explicit Refresh button): the SDK can strand a bucket's
+      // forest DIRTY in the in-memory cache, where neither the 60s TTL nor
+      // invalidateForestCache evicts it — so a plain force-refresh keeps
+      // serving the stale index (only a fresh client / incognito reads the
+      // server). Rebuilding the client drops every in-memory forest so the
+      // listing below reloads from storage. Skip while an upload is in flight:
+      // a rebuild swaps the client handle out from under the in-flight write.
+      if (hardRebuild && !WebUploadManager.instance.isActive) {
+        try {
+          await FulaApiService.instance.rebuildEncryptedClient();
+        } catch (e) {
+          debugPrint('WebBucket: hard-rebuild failed (continuing): $e');
+        }
+      }
       // Foreground-wrapped: the prefetcher must yield while a screen
       // the user is looking at loads or patches in.
       final r = await WebForegroundActivity.instance.run(() =>
@@ -950,7 +965,8 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : () => _load(force: true),
+            onPressed:
+                _loading ? null : () => _load(force: true, hardRebuild: true),
           ),
         ],
       ),
