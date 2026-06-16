@@ -52,6 +52,7 @@ import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
+import 'package:fula_files/web/services/web_shelf_service.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
 const bool _e2eEnabled = bool.fromEnvironment('E2E');
@@ -238,6 +239,52 @@ Future<void> _runE2E({Object? bootError, required bool restored}) async {
             'sk-roundtrip=${_bytesEqual(Uint8List.fromList(skRoundtrip), priv)}');
         await FulaApiService.instance.deleteObject(target, key);
         log('share-cleanup-ok');
+        break;
+      case 'shelf-add':
+        // P-shelf gate: in-app Add to Shelf (link/note/file) writes the
+        // shared manifest, and — critically — a SECOND add must not wipe
+        // the first (the full-snapshot overwrite data-loss guard).
+        if (_e2eSeed.isEmpty) {
+          log('FAIL: shelf-add mode needs seed');
+          break;
+        }
+        await WebSession.instance.signInModeC(seed: _e2eSeed);
+        log('signin-ok euid=${WebSession.instance.user?.id}');
+        final shBefore = await WebFeatures.loadShelf(force: true);
+        log('shelf before n=${shBefore.length}');
+        final shLink1 =
+            await WebShelfService.instance.addLink('https://e2e.example/one');
+        final shNote = await WebShelfService.instance
+            .addNote('e2e note line one\nsecond line');
+        final shFile = await WebShelfService.instance.addBytes(
+            bytes: _e2ePattern(2048, 5),
+            name: 'e2e-shelf.bin',
+            mime: 'application/octet-stream');
+        final shAfter3 = await WebFeatures.loadShelf(force: true);
+        log('shelf after-3 n=${shAfter3.length} '
+            'hasLink=${shAfter3.any((i) => i.id == shLink1.id)} '
+            'hasNote=${shAfter3.any((i) => i.id == shNote.id)} '
+            'hasFile=${shAfter3.any((i) => i.id == shFile.id)} '
+            'linkManifestOnly=${shLink1.remoteKey == null && shLink1.textPayload != null} '
+            'fileHasRemote=${shFile.remoteKey != null}');
+        // The discriminating assertion: a consecutive add must preserve
+        // every earlier item (no full-snapshot wipe).
+        final shLink2 =
+            await WebShelfService.instance.addLink('https://e2e.example/two');
+        final shAfter4 = await WebFeatures.loadShelf(force: true);
+        log('shelf after-4 n=${shAfter4.length} '
+            'firstSurvived=${shAfter4.any((i) => i.id == shLink1.id)} '
+            'secondPresent=${shAfter4.any((i) => i.id == shLink2.id)} '
+            'noteSurvived=${shAfter4.any((i) => i.id == shNote.id)} '
+            'fileSurvived=${shAfter4.any((i) => i.id == shFile.id)}');
+        try {
+          final shBack = await WebFeatures.downloadShelfItem(
+              shAfter4.firstWhere((i) => i.id == shFile.id));
+          log('shelf file-roundtrip bytes=${shBack.length} '
+              'equal=${_bytesEqual(shBack, _e2ePattern(2048, 5))}');
+        } catch (e) {
+          log('shelf file-roundtrip FAIL: $e');
+        }
         break;
       case 'delete':
         log('restored=$restored');
