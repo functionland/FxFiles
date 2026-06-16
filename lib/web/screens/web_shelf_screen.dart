@@ -1,13 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:fula_files/core/models/shelf_item.dart';
+import 'package:fula_files/web/services/web_audio_recorder.dart';
+import 'package:fula_files/web/services/web_camera_capture.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_save.dart';
+import 'package:fula_files/web/services/web_shelf_service.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 
 /// Mirror of lib/features/shelf/screens/shelf_screen.dart (view-only):
@@ -24,6 +29,7 @@ class WebShelfScreen extends StatefulWidget {
 class _WebShelfScreenState extends State<WebShelfScreen> {
   List<ShelfItem>? _items;
   String? _error;
+  bool _busy = false;
 
   @override
   void initState() {
@@ -175,6 +181,226 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
+  // --------------------------------------------------------------- add flows
+
+  Future<void> _openAddMenu() async {
+    // Each capture is launched from INSIDE the tap gesture (pop is
+    // synchronous, the flow is started in the same turn) so iOS Safari
+    // keeps user-activation for the file/camera input — dispatching after
+    // an `await showModalBottomSheet` would lose it and the picker would
+    // silently fail to open (the same gesture-activation footgun the
+    // wallet auto-open hit).
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.link),
+              title: const Text('Add link'),
+              subtitle: const Text('Save a URL'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_addLinkFlow());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.sticky_note_2_outlined),
+              title: const Text('Add note'),
+              subtitle: const Text('Jot some text'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_addNoteFlow());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.upload_file_outlined),
+              title: const Text('Upload file'),
+              subtitle: const Text('Pick a file from this device'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_addFileFlow());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Take photo'),
+              subtitle: const Text('Capture with the camera'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_addPhotoFlow());
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.mic_none_outlined),
+              title: const Text('Record audio'),
+              subtitle: const Text('Record from the microphone'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_addAudioFlow());
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addLinkFlow() async {
+    final controller = TextEditingController();
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add link'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            hintText: 'https://…',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => Navigator.pop(ctx, controller.text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (raw == null) return;
+    final clean = raw.trim();
+    if (clean.isEmpty) return;
+    final uri = Uri.tryParse(clean);
+    if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
+      _snack('Enter a valid http(s) link.');
+      return;
+    }
+    await _runAdd(() => WebShelfService.instance.addLink(clean), 'link');
+  }
+
+  Future<void> _addNoteFlow() async {
+    final controller = TextEditingController();
+    final text = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add note'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 3,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              hintText: 'Type a note…',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (text == null || text.trim().isEmpty) return;
+    await _runAdd(() => WebShelfService.instance.addNote(text), 'note');
+  }
+
+  Future<void> _addFileFlow() async {
+    final picked = await FilePicker.platform.pickFiles(withData: true);
+    if (picked == null || picked.files.isEmpty) return;
+    final f = picked.files.first;
+    final data = f.bytes;
+    if (data == null) {
+      _snack('Could not read that file.');
+      return;
+    }
+    await _runAdd(
+      () => WebShelfService.instance.addBytes(bytes: data, name: f.name),
+      'file',
+    );
+  }
+
+  Future<void> _addPhotoFlow() async {
+    CapturedFile? cap;
+    try {
+      cap = await WebCameraCapture.takePhoto();
+    } catch (e) {
+      _snack('Camera unavailable: $e');
+      return;
+    }
+    final c = cap;
+    if (c == null) return;
+    await _runAdd(
+      () => WebShelfService.instance
+          .addBytes(bytes: c.bytes, name: c.name, mime: c.mime),
+      'photo',
+    );
+  }
+
+  Future<void> _addAudioFlow() async {
+    final cap = await showDialog<CapturedFile>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const _RecordAudioDialog(),
+    );
+    if (cap == null) return;
+    await _runAdd(
+      () => WebShelfService.instance
+          .addBytes(bytes: cap.bytes, name: cap.name, mime: cap.mime),
+      'recording',
+    );
+  }
+
+  Future<void> _runAdd(Future<ShelfItem> Function() op, String label) async {
+    setState(() => _busy = true);
+    _snack('Adding $label…');
+    try {
+      final item = await op();
+      if (!mounted) return;
+      setState(() {
+        final list = [...?_items]..removeWhere((i) => i.id == item.id);
+        _items = [item, ...list];
+        _error = null;
+      });
+      _snack('Added to Shelf.');
+      // Reconcile against the (write-through-updated) cache without
+      // blanking the grid.
+      unawaited(_silentReload());
+    } catch (e) {
+      if (mounted) _snack('Could not add $label: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _silentReload() async {
+    try {
+      final items = await WebFeatures.loadShelf();
+      if (mounted) setState(() => _items = items);
+    } catch (_) {
+      // Keep the optimistic list; a manual Refresh surfaces real errors.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -297,6 +523,145 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
                         );
                       },
                     ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _busy ? null : _openAddMenu,
+        icon: _busy
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.add),
+        label: const Text('Add'),
+      ),
+    );
+  }
+}
+
+/// Modal that records mic audio via [WebAudioRecorder] and returns the
+/// captured bytes (or null if cancelled). Owns the recorder lifecycle —
+/// the mic stream is always released on stop / cancel / dispose.
+class _RecordAudioDialog extends StatefulWidget {
+  const _RecordAudioDialog();
+
+  @override
+  State<_RecordAudioDialog> createState() => _RecordAudioDialogState();
+}
+
+class _RecordAudioDialogState extends State<_RecordAudioDialog> {
+  final WebAudioRecorder _recorder = WebAudioRecorder();
+  Timer? _ticker;
+  bool _starting = true;
+  bool _stopping = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      await _recorder.start();
+      if (!mounted) return;
+      setState(() => _starting = false);
+      _ticker = Timer.periodic(
+          const Duration(milliseconds: 300), (_) => setState(() {}));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _starting = false;
+        _error = 'Microphone unavailable. Allow mic access and try again.';
+      });
+    }
+  }
+
+  Future<void> _stopAndSave() async {
+    if (_stopping) return;
+    setState(() => _stopping = true);
+    _ticker?.cancel();
+    try {
+      final cap = await _recorder.stop();
+      if (mounted) Navigator.pop(context, cap);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _stopping = false;
+          _error = 'Could not save the recording: $e';
+        });
+      }
+    }
+  }
+
+  void _cancel() {
+    _ticker?.cancel();
+    _recorder.dispose();
+    Navigator.pop(context, null);
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _recorder.dispose();
+    super.dispose();
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (_error != null) {
+      return AlertDialog(
+        title: const Text('Record audio'),
+        content: Text(_error!),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Close'),
+          ),
+        ],
+      );
+    }
+    return AlertDialog(
+      title: const Text('Record audio'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.mic, size: 48, color: theme.colorScheme.error),
+          const SizedBox(height: 12),
+          Text(
+            _starting ? 'Starting…' : _fmt(_recorder.elapsed),
+            style: theme.textTheme.headlineSmall,
+          ),
+          if (!_starting) ...[
+            const SizedBox(height: 4),
+            Text('Recording…', style: theme.textTheme.bodySmall),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _stopping ? null : _cancel,
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: (_starting || _stopping) ? null : _stopAndSave,
+          icon: _stopping
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.stop),
+          label: const Text('Stop & save'),
+        ),
+      ],
     );
   }
 }
