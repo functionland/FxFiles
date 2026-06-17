@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
+import 'package:fula_files/web/screens/web_settings_screen.dart' show kWebAppVersion;
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/widgets/web_recent_files_section.dart';
@@ -132,10 +133,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => launchUrl(
-              Uri.parse('https://cloud.fx.land'),
-              webOnlyWindowName: '_blank',
-            ),
+            onPressed: () => context.go('/settings'),
           ),
           const SizedBox(width: 4),
         ],
@@ -199,7 +197,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
               const SizedBox(width: 10),
               // Subtle build/version stamp next to the GitHub link.
               Text(
-                'v1.11.4.3',
+                kWebAppVersion,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context)
                           .textTheme

@@ -2,6 +2,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/core/services/wallet_service.dart'
     show walletNavigatorKey;
+import 'package:fula_files/web/screens/web_api_config_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
 import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
@@ -13,6 +14,7 @@ import 'package:fula_files/web/screens/web_nft_detail_screen.dart';
 import 'package:fula_files/web/screens/web_nfts_screen.dart';
 import 'package:fula_files/web/screens/web_playlists_screen.dart';
 import 'package:fula_files/web/screens/web_search_screen.dart';
+import 'package:fula_files/web/screens/web_settings_screen.dart';
 import 'package:fula_files/web/screens/web_shared_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
@@ -146,6 +148,14 @@ GoRouter buildWebRouter() {
         builder: (context, state) => WebAutomateTaskRunScreen(
           tagId: state.pathParameters['id'] ?? '',
         ),
+      ),
+      GoRoute(
+        path: '/settings',
+        builder: (context, state) => const WebSettingsScreen(),
+      ),
+      GoRoute(
+        path: '/settings/api',
+        builder: (context, state) => const WebApiConfigScreen(),
       ),
     ],
   );
