@@ -1118,6 +1118,42 @@ class FulaApiService implements FulaApi {
   // fula_client handles chunking internally, so these are simplified
   // ============================================================================
 
+  /// Polls the SDK's [fula.ProgressHandle] every 200ms and forwards REAL
+  /// cumulative byte progress to [onProgress] while an upload future runs.
+  /// Returns the timer — cancel it in a `finally`.
+  ///
+  /// Reported bytes are capped so the percentage never reads 100% before the
+  /// upload future resolves: the SDK's cumulative bytes reach `total` at the
+  /// last chunk's PUT, BEFORE the index PUT + forest-flush tail. The caller
+  /// fires a final `onProgress(total, total)` only after a successful await.
+  /// Unchanged ticks are skipped so the web tray doesn't repaint needlessly.
+  /// Polling is best-effort — a transient FRB error never breaks the upload.
+  Timer? _startProgressPoll(
+    fula.ProgressHandle? handle,
+    void Function(UploadProgress)? onProgress,
+    int fallbackTotal,
+  ) {
+    if (handle == null || onProgress == null) return null;
+    int lastReported = -1;
+    return Timer.periodic(const Duration(milliseconds: 200), (_) async {
+      try {
+        final p = await fula.pollProgress(handle: handle);
+        final total = frbU64ToInt(p.totalBytes) ?? 0;
+        final uploaded = frbU64ToInt(p.bytesUploaded) ?? 0;
+        final cap = total > 0 ? (total * 99) ~/ 100 : uploaded;
+        final shown = uploaded > cap ? cap : uploaded;
+        if (shown == lastReported) return;
+        lastReported = shown;
+        onProgress(UploadProgress(
+          bytesUploaded: shown,
+          totalBytes: total > 0 ? total : fallbackTotal,
+        ));
+      } catch (_) {
+        // best-effort; the next tick retries
+      }
+    });
+  }
+
   Future<String> uploadLargeFile(
     String bucket,
     String key,
@@ -1128,20 +1164,35 @@ class FulaApiService implements FulaApi {
   }) async {
     _guardLegacyWrite(bucket);
     _ensureConfigured();
+    Timer? poll;
     try {
       await _ensureForestLoaded(bucket);
 
-      // fula_client handles large files automatically
-      // Progress callback not yet supported in fula_client - upload directly
-      final result = await fula.putFlat(
-        client: _client!,
-        bucket: bucket,
-        path: key,
-        data: data.toList(),
-        contentType: null,
-      );
+      // Real per-chunk progress (fula-api 0.6.11): poll the handle while the
+      // chunked upload runs. Small/non-chunked files emit no events — the bar
+      // stays at 0% until the completion report below.
+      final progressHandle =
+          onProgress != null ? await fula.createProgressHandle() : null;
+      poll = _startProgressPoll(progressHandle, onProgress, data.length);
 
-      // Report completion
+      final result = progressHandle != null
+          ? await fula.putFlatWithProgress(
+              client: _client!,
+              bucket: bucket,
+              path: key,
+              data: data.toList(),
+              contentType: null,
+              progress: progressHandle,
+            )
+          : await fula.putFlat(
+              client: _client!,
+              bucket: bucket,
+              path: key,
+              data: data.toList(),
+              contentType: null,
+            );
+
+      // True completion (after the forest flush) -> 100%.
       if (onProgress != null) {
         onProgress(UploadProgress(
           bytesUploaded: data.length,
@@ -1152,6 +1203,8 @@ class FulaApiService implements FulaApi {
       return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload large file: $e');
+    } finally {
+      poll?.cancel();
     }
   }
 
@@ -1225,29 +1278,53 @@ class FulaApiService implements FulaApi {
   }) async {
     _guardLegacyWrite(bucket); // primary content-upload path (sync queue)
     _ensureConfigured();
+    Timer? poll;
     try {
       await _ensureForestLoaded(bucket);
 
       final fileSize = await fileLength(filePath);
 
-      final result = cancelHandle != null
-          ? await fula.putFlatResumableFromPathCancellable(
-              client: _client!,
-              bucket: bucket,
-              path: key,
-              filePath: filePath,
-              manifestPath: manifestPath,
-              contentType: null,
-              cancel: cancelHandle,
-            )
-          : await fula.putFlatResumableFromPath(
-              client: _client!,
-              bucket: bucket,
-              path: key,
-              filePath: filePath,
-              manifestPath: manifestPath,
-              contentType: null,
-            );
+      // Real per-chunk progress (fula-api 0.6.11): poll the handle during the
+      // resumable upload.
+      final progressHandle =
+          onProgress != null ? await fula.createProgressHandle() : null;
+      poll = _startProgressPoll(progressHandle, onProgress, fileSize);
+
+      final fula.PutResult result;
+      if (progressHandle != null) {
+        // The progress variant requires a CancelHandle; synthesize a
+        // throwaway one (never triggered) when the caller passed none.
+        final cancel = cancelHandle ?? await fula.createCancelHandle();
+        result = await fula.putFlatResumableFromPathWithProgress(
+          client: _client!,
+          bucket: bucket,
+          path: key,
+          filePath: filePath,
+          manifestPath: manifestPath,
+          contentType: null,
+          cancel: cancel,
+          progress: progressHandle,
+        );
+      } else if (cancelHandle != null) {
+        result = await fula.putFlatResumableFromPathCancellable(
+          client: _client!,
+          bucket: bucket,
+          path: key,
+          filePath: filePath,
+          manifestPath: manifestPath,
+          contentType: null,
+          cancel: cancelHandle,
+        );
+      } else {
+        result = await fula.putFlatResumableFromPath(
+          client: _client!,
+          bucket: bucket,
+          path: key,
+          filePath: filePath,
+          manifestPath: manifestPath,
+          contentType: null,
+        );
+      }
 
       if (onProgress != null) {
         onProgress(UploadProgress(
@@ -1259,6 +1336,8 @@ class FulaApiService implements FulaApi {
       return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to upload (resumable): $e');
+    } finally {
+      poll?.cancel();
     }
   }
 
@@ -1277,21 +1356,42 @@ class FulaApiService implements FulaApi {
     void Function(UploadProgress)? onProgress,
   }) async {
     _ensureConfigured();
+    Timer? poll;
     try {
       final fileSize = await fileLength(filePath);
 
-      final result = cancelHandle != null
-          ? await fula.resumeFlatUploadFromPathCancellable(
-              client: _client!,
-              manifestPath: manifestPath,
-              filePath: filePath,
-              cancel: cancelHandle,
-            )
-          : await fula.resumeFlatUploadFromPath(
-              client: _client!,
-              manifestPath: manifestPath,
-              filePath: filePath,
-            );
+      // Real per-chunk progress (fula-api 0.6.11). Resume SEEDS the SDK
+      // counter with already-uploaded chunks, so the bar continues mid-way.
+      final progressHandle =
+          onProgress != null ? await fula.createProgressHandle() : null;
+      poll = _startProgressPoll(progressHandle, onProgress, fileSize);
+
+      final fula.PutResult result;
+      if (progressHandle != null) {
+        // The progress variant requires a CancelHandle; synthesize a
+        // throwaway one (never triggered) when the caller passed none.
+        final cancel = cancelHandle ?? await fula.createCancelHandle();
+        result = await fula.resumeFlatUploadFromPathWithProgress(
+          client: _client!,
+          manifestPath: manifestPath,
+          filePath: filePath,
+          cancel: cancel,
+          progress: progressHandle,
+        );
+      } else if (cancelHandle != null) {
+        result = await fula.resumeFlatUploadFromPathCancellable(
+          client: _client!,
+          manifestPath: manifestPath,
+          filePath: filePath,
+          cancel: cancelHandle,
+        );
+      } else {
+        result = await fula.resumeFlatUploadFromPath(
+          client: _client!,
+          manifestPath: manifestPath,
+          filePath: filePath,
+        );
+      }
 
       if (onProgress != null) {
         onProgress(UploadProgress(
@@ -1303,6 +1403,8 @@ class FulaApiService implements FulaApi {
       return result.etag;
     } catch (e) {
       throw FulaApiException('Failed to resume upload: $e');
+    } finally {
+      poll?.cancel();
     }
   }
 

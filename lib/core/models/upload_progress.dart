@@ -12,6 +12,11 @@ class UploadProgressState {
   /// Total bytes to upload
   final int totalBytes;
 
+  /// Real cumulative bytes uploaded so far, when the SDK reports it
+  /// (chunked uploads). `null` means fall back to the time-based estimate —
+  /// small/non-chunked uploads emit no per-chunk progress events.
+  final int? bytesUploaded;
+
   /// When the upload started
   final DateTime startedAt;
 
@@ -29,6 +34,7 @@ class UploadProgressState {
     required this.remoteKey,
     required this.fileName,
     required this.totalBytes,
+    this.bytesUploaded,
     required this.startedAt,
     required this.estimatedDuration,
     this.pauseDuration = Duration.zero,
@@ -44,7 +50,18 @@ class UploadProgressState {
   }
 
   /// Progress percentage (0-100), capped at 99% until actually complete.
+  ///
+  /// Prefers REAL cumulative bytes (`bytesUploaded`) reported by the SDK for
+  /// chunked uploads; falls back to the time-based estimate when the SDK
+  /// reports nothing (small/non-chunked uploads). Either way it's capped at
+  /// 99% until `completeUpload` removes the entry — the SDK's cumulative
+  /// bytes reach `total` when the last chunk's PUT returns, before the index
+  /// PUT + forest-flush tail finishes.
   double get percentage {
+    final bytes = bytesUploaded;
+    if (bytes != null && totalBytes > 0) {
+      return ((bytes / totalBytes) * 100).clamp(0, 99);
+    }
     if (estimatedDuration.inMilliseconds <= 0) return 0;
     final progress = (elapsed.inMilliseconds / estimatedDuration.inMilliseconds) * 100;
     return progress.clamp(0, 99); // Cap at 99% until confirmed complete
@@ -80,6 +97,7 @@ class UploadProgressState {
     String? remoteKey,
     String? fileName,
     int? totalBytes,
+    int? bytesUploaded,
     DateTime? startedAt,
     Duration? estimatedDuration,
     Duration? pauseDuration,
@@ -90,6 +108,7 @@ class UploadProgressState {
       remoteKey: remoteKey ?? this.remoteKey,
       fileName: fileName ?? this.fileName,
       totalBytes: totalBytes ?? this.totalBytes,
+      bytesUploaded: bytesUploaded ?? this.bytesUploaded,
       startedAt: startedAt ?? this.startedAt,
       estimatedDuration: estimatedDuration ?? this.estimatedDuration,
       pauseDuration: pauseDuration ?? this.pauseDuration,

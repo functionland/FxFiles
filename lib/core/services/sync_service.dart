@@ -1091,6 +1091,9 @@ class SyncService {
               _activeSync[task.localPath] = current.copyWith(
                 bytesTransferred: progress.bytesUploaded,
               );
+              // Real cumulative bytes -> UI progress manager (drives the %).
+              UploadProgressManager.instance
+                  .updateProgress(task.localPath, progress.bytesUploaded);
             },
           );
         } else {
@@ -1106,6 +1109,9 @@ class SyncService {
               _activeSync[task.localPath] = current.copyWith(
                 bytesTransferred: progress.bytesUploaded,
               );
+              // Real cumulative bytes -> UI progress manager (drives the %).
+              UploadProgressManager.instance
+                  .updateProgress(task.localPath, progress.bytesUploaded);
             },
           );
         }
