@@ -27,7 +27,7 @@ dependencies:
   google_sign_in_web: ^1.0.0
   
   # Storage & Files (with Encryption)
-  fula_client: ^0.6.9
+  fula_client: ^0.6.10
   path_provider: ^2.1.5
   file_picker: ^10.3.7
   open_filex: ^4.6.0
