@@ -137,6 +137,19 @@ class UploadProgressManager {
     _notifyListeners();
   }
 
+  /// Update an active upload's REAL cumulative byte progress (chunked
+  /// uploads, fed from the SDK's `poll_progress`). Makes
+  /// [UploadProgressState.percentage] reflect actual transfer instead of the
+  /// time estimate. No-op if the upload isn't tracked (already completed or
+  /// cancelled). The periodic UI timer ([updateInterval]) picks up the
+  /// change, so this deliberately does NOT notify — it can be called at a
+  /// higher frequency than the UI needs to repaint.
+  void updateProgress(String localPath, int bytesUploaded) {
+    final upload = _activeUploads[localPath];
+    if (upload == null) return;
+    _activeUploads[localPath] = upload.copyWith(bytesUploaded: bytesUploaded);
+  }
+
   /// Mark an upload as complete and record speed for future estimates.
   void completeUpload({
     required String localPath,
