@@ -387,6 +387,32 @@ class WebSession extends ChangeNotifier {
       debugPrint('WebSession.signOut: clearSessionStorage: $e');
     }
 
+    // 1b) Web-specific: reset the user-overridable API configuration to
+    //     defaults on sign-out. Mobile intentionally KEEPS endpoint
+    //     overrides for account-switching; on web we reset so the next
+    //     user starts from the built-in defaults. Timeout-bounded so a
+    //     stuck secure-storage delete can't trap the user logged in.
+    try {
+      await Future(() async {
+        for (final k in const [
+          SecureStorageKeys.apiGatewayUrl,
+          SecureStorageKeys.ipfsServerUrl,
+          SecureStorageKeys.billingServerUrl,
+          SecureStorageKeys.aiEndpointUrl,
+          SecureStorageKeys.ipfsGatewayUrl,
+          SecureStorageKeys.ipfsEndpointUrl,
+          SecureStorageKeys.baseRpcUrl,
+          SecureStorageKeys.usersIndexAnchorAddress,
+          SecureStorageKeys.usersIndexIpnsName,
+          SecureStorageKeys.usersIndexIpnsGatewayUrls,
+        ]) {
+          await SecureStorageService.instance.delete(k);
+        }
+      }).timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('WebSession.signOut: reset API config: $e');
+    }
+
     // 2) In-session logout + redirect to /signin.
     _user = null;
     notifyListeners();
