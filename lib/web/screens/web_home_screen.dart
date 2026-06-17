@@ -196,6 +196,18 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   ),
                 ),
               ),
+              const SizedBox(width: 10),
+              // Subtle build/version stamp next to the GitHub link.
+              Text(
+                'v1.11.4.3',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.color
+                          ?.withValues(alpha: 0.45),
+                    ),
+              ),
             ],
           ),
         ),
