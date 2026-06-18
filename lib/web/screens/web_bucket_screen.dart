@@ -318,12 +318,25 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       : null;
 
   Future<void> _pickAndUpload() async {
-    final picked = await FilePicker.platform.pickFiles(
-      withData: true,
-      allowMultiple: true,
-      type: _pickerType,
-      allowedExtensions: _pickerExtensions,
-    );
+    final FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        withData: true,
+        allowMultiple: true,
+        type: _pickerType,
+        allowedExtensions: _pickerExtensions,
+      );
+    } catch (e) {
+      // `withData: true` makes file_picker read each file fully into memory
+      // *during* the pick. On a low-RAM phone a large file can exhaust the
+      // browser tab's memory budget, so the read throws here. Without this
+      // catch the upload silently never starts — the reported "select a large
+      // file and nothing happens".
+      _snack('Couldn\'t read the selected file. It may be too large for this '
+          'device\'s browser. Use the FxFiles desktop or mobile app for very '
+          'large files.');
+      return;
+    }
     if (picked == null || picked.files.isEmpty) return;
 
     // Hand the picked bytes to the app-level manager and return. The upload
@@ -332,18 +345,55 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     // size cap enforced there, and on completion the manager refreshes this
     // tab's cache and pings us via onBucketCompleted (own-write path).
     final files = <({String name, Uint8List bytes})>[];
+    final unread = <PlatformFile>[];
     for (final f in picked.files) {
       final data = f.bytes;
-      if (data == null) continue;
+      if (data == null) {
+        // The browser couldn't load this file into memory — almost always a
+        // large file on a memory-constrained tab, where `withData: true`
+        // swallows the FileReader failure and hands back null bytes. `f.size`
+        // is still populated, so we can explain why instead of silently
+        // dropping it (the reported "nothing happens" for large files).
+        unread.add(f);
+        continue;
+      }
       files.add((name: f.name, bytes: data));
     }
-    if (files.isEmpty) return;
 
-    WebUploadManager.instance.enqueue(
-      base: widget.base,
-      bucket: BucketVersionResolver.writeBucket(widget.base),
-      files: files,
-    );
+    if (files.isNotEmpty) {
+      WebUploadManager.instance.enqueue(
+        base: widget.base,
+        bucket: BucketVersionResolver.writeBucket(widget.base),
+        files: files,
+      );
+    }
+
+    if (unread.isNotEmpty) {
+      _snack(_unreadFilesMessage(unread));
+    }
+  }
+
+  /// User-facing reason for files whose bytes the browser failed to load.
+  /// Almost always a large file that exceeds the tab's memory budget on a
+  /// low-end device; `PlatformFile.size` is still available even when
+  /// `bytes` is null, so we can distinguish "too large" from a transient
+  /// read failure.
+  String _unreadFilesMessage(List<PlatformFile> unread) {
+    final mgr = WebUploadManager.instance;
+    if (unread.length == 1) {
+      final f = unread.first;
+      final mb = (f.size / (1024 * 1024)).round();
+      if (f.size > mgr.capBytes) {
+        return '"${f.name}" ($mb MB) is larger than the ${mgr.capLabel} upload '
+            'limit for this device\'s browser. Use the FxFiles desktop or '
+            'mobile app for large files.';
+      }
+      return '"${f.name}" couldn\'t be read by this device\'s browser. Please '
+          'try again, or use the FxFiles desktop or mobile app.';
+    }
+    return '${unread.length} files couldn\'t be uploaded from this device\'s '
+        'browser (too large or unreadable). Use the FxFiles desktop or mobile '
+        'app for large files.';
   }
 
   Future<void> _download(FulaObject o) async {
