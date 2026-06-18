@@ -60,6 +60,53 @@ class WebListingSwr extends ChangeNotifier {
   /// Single-flight for background manifest refreshes, keyed bucket|key.
   final Map<String, Future<void>> _manifestRefreshes = {};
 
+  /// This session's recent own-uploads, per bucket: the file's listing object
+  /// keyed by its object key, plus when it was uploaded. The gateway's forest
+  /// index has a post-write PROPAGATION WINDOW — a server forest refetch right
+  /// after an upload can come back WITHOUT the just-uploaded file (the delete
+  /// path documents the same window: a refetch there would *resurrect* a
+  /// just-deleted file). A manual Refresh / background revalidate does exactly
+  /// that refetch, so without this the file the user just uploaded vanishes
+  /// from the listing until the server catches up. We merge these back into a
+  /// server-fetched listing until the server shows the file or it ages out.
+  /// Per-session + own-writes only, so cross-device changes still flow through
+  /// and a cross-device delete wins once the window passes.
+  final Map<String, Map<String, ({FulaObject obj, DateTime ts})>>
+      _recentUploads = {};
+
+  /// Safety cap: stop merging an own-upload after this long even if the server
+  /// still hasn't shown it (guards against a never-propagating write).
+  static const Duration _ownWriteWindow = Duration(minutes: 5);
+
+  /// Record a file this session just uploaded so a Refresh during the
+  /// propagation window doesn't hide it. [obj] is the real listing object
+  /// (full metadata) captured from the own-write listing.
+  void recordRecentUpload(String bucket, FulaObject obj) {
+    (_recentUploads[bucket] ??= {})[obj.key] = (obj: obj, ts: DateTime.now());
+  }
+
+  /// Drop all recorded own-uploads — call on sign-out / user-switch so one
+  /// user's just-uploaded filenames can never merge into another user's
+  /// listing.
+  void clearRecentUploads() => _recentUploads.clear();
+
+  /// Merge this session's recent own-uploads into a freshly server-fetched
+  /// [serverObjects] listing for [bucket]: first drop entries the server now
+  /// shows or that have aged past [_ownWriteWindow], then re-add whatever
+  /// remains (recent + still missing from the server). Returns the list to
+  /// cache + render. A no-op once the server has caught up.
+  List<FulaObject> _mergeRecentUploads(
+      String bucket, List<FulaObject> serverObjects) {
+    final recent = _recentUploads[bucket];
+    if (recent == null || recent.isEmpty) return serverObjects;
+    final now = DateTime.now();
+    final serverKeys = serverObjects.map((o) => o.key).toSet();
+    recent.removeWhere((key, v) =>
+        serverKeys.contains(key) || now.difference(v.ts) > _ownWriteWindow);
+    if (recent.isEmpty) return serverObjects;
+    return [...serverObjects, for (final v in recent.values) v.obj];
+  }
+
   bool _onlineHooked = false;
   DateTime? _hiddenAt;
 
@@ -180,12 +227,18 @@ class WebListingSwr extends ChangeNotifier {
       await FulaApiService.instance.invalidateForestCache(bucket);
     }
     final r = await FulaApiService.instance.listObjectsCached(bucket);
+    // Keep this session's just-uploaded files visible through the gateway's
+    // post-write forest propagation window. Merge for the render regardless of
+    // freshness (the merge dedups, so it's a no-op once the server shows the
+    // file); only PERSIST when we actually got a fresh server listing — an
+    // offline-stale result leaves the good cache untouched.
+    final objects = _mergeRecentUploads(bucket, r.objects);
     if (!r.stale) {
       await WebListingCache.instance
-          .writeListing(bucket, r.objects, fetchedAt: r.fetchedAt);
+          .writeListing(bucket, objects, fetchedAt: r.fetchedAt);
     }
     return SwrListing(
-      objects: r.objects,
+      objects: objects,
       fetchedAt: r.fetchedAt,
       fromCache: false,
       staleTier: false,
@@ -235,9 +288,12 @@ class WebListingSwr extends ChangeNotifier {
         // as fresh — the cache could then never pick up another
         // device's uploads (real two-client bug, 2026-06-12).
         await FulaApiService.instance.invalidateForestCache(bucket);
-        final objects = await FulaApiService.instance
+        final fetched = await FulaApiService.instance
             .listObjects(bucket)
             .timeout(const Duration(seconds: 30));
+        // Same propagation-window protection as the live path: don't let a
+        // background revalidate drop a file this session just uploaded.
+        final objects = _mergeRecentUploads(bucket, fetched);
         await WebListingCache.instance
             .writeListing(bucket, objects, fetchedAt: started);
         return (objects: objects, offlineStale: false);

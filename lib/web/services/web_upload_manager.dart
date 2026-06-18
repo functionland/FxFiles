@@ -170,6 +170,10 @@ class WebUploadManager extends ChangeNotifier {
     WebUnloadGuard.instance.addRef();
 
     final completedBuckets = <String, String>{};
+    // bucket -> keys this drain uploaded, so we can record their listing
+    // objects as recent own-writes (kept visible through a Refresh during the
+    // gateway's post-write forest propagation window).
+    final completedKeys = <String, List<String>>{};
     final ensuredBuckets = <String>{};
 
     try {
@@ -217,6 +221,7 @@ class WebUploadManager extends ChangeNotifier {
           job.progress = 1.0;
           job._picked = null;
           completedBuckets[job.base] = job.bucket;
+          (completedKeys[job.bucket] ??= <String>[]).add(job.key);
           WebCacheSync.instance.sendInvalidateListing(job.bucket);
           notifyListeners();
         } catch (e) {
@@ -245,8 +250,23 @@ class WebUploadManager extends ChangeNotifier {
       if (_epoch == epoch) {
         for (final entry in completedBuckets.entries) {
           try {
-            await WebListingSwr.instance
+            // Own-write reload (refetchForest:false keeps the session forest,
+            // which already has the new files). Capture the listing so we can
+            // record each uploaded file's real object as a recent own-write —
+            // that's what keeps it visible through a manual Refresh during the
+            // gateway's post-write propagation window.
+            final listing = await WebListingSwr.instance
                 .getListing(entry.value, force: true, refetchForest: false);
+            final keys = completedKeys[entry.value];
+            if (keys != null) {
+              final byKey = {for (final o in listing.objects) o.key: o};
+              for (final k in keys) {
+                final obj = byKey[k];
+                if (obj != null) {
+                  WebListingSwr.instance.recordRecentUpload(entry.value, obj);
+                }
+              }
+            }
           } catch (_) {}
           _completed.add(entry.key);
         }
@@ -354,6 +374,7 @@ class WebUploadManager extends ChangeNotifier {
   void reset() {
     _epoch++;
     _jobs.clear();
+    WebListingSwr.instance.clearRecentUploads();
     notifyListeners();
   }
 }
