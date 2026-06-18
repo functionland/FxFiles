@@ -2,26 +2,34 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:fula_client/fula_client.dart' as fula;
-
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/utils/upload_retry.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
-import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
+import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_unload_guard.dart';
 
-/// Threshold below which we use the single-shot [FulaApiService.uploadObject]
-/// instead of the chunked [FulaApiService.uploadLargeFile] — mirrors the
-/// original inline upload path in WebBucketScreen.
+/// Files at or below this size take the single-shot [FulaApiService.uploadObject]
+/// path (read once, one PUT). Larger files stream chunk-by-chunk so they never
+/// have to fit in the tab's heap.
 const int _kSmallUploadBytes = 768 * 1024;
+
+/// How much plaintext to read per slice during pass 1 (the plan/commit pass).
+/// Only one slice is in memory at a time; the value just trades syscalls for a
+/// slightly bigger transient buffer.
+const int _kPlanReadBytes = 4 * 1024 * 1024;
 
 enum WebUploadStatus { queued, uploading, done, failed, skipped, cancelled }
 
-/// One queued file. Owns its bytes until the upload finishes; the bytes
-/// are freed the instant the job leaves the active state so a low-RAM
-/// phone doesn't hold a big [Uint8List] longer than necessary.
+/// Raised internally to unwind a streaming upload when the user cancels or the
+/// session is reset mid-flight — distinguishes a clean abandon from a failure.
+class _AbandonedUpload implements Exception {
+  const _AbandonedUpload();
+}
+
+/// One queued file. Holds a lazily-readable [WebPickedFile] (a browser Blob
+/// reference) — NOT the file bytes — so even a multi-GB file costs ~nothing in
+/// the tray; slices are read on demand during the upload.
 class WebUploadJob {
   WebUploadJob({
     required this.id,
@@ -30,8 +38,8 @@ class WebUploadJob {
     required this.key,
     required this.name,
     required this.size,
-    required Uint8List bytes,
-  }) : _bytes = bytes;
+    required WebPickedFile picked,
+  }) : _picked = picked;
 
   final int id;
 
@@ -48,19 +56,17 @@ class WebUploadJob {
   /// Display name.
   final String name;
 
-  /// Byte length (kept after [_bytes] is freed, for the tray).
+  /// Byte length (from the Blob; available without reading the file).
   final int size;
 
-  Uint8List? _bytes;
-
-  /// Cancel handle for the in-flight large upload (0.6.14). Created when the
-  /// upload starts; triggering it aborts the upload between chunks.
-  fula.CancelHandle? cancelHandle;
+  /// The lazily-readable file handle; dropped once the job leaves the active
+  /// state. It's only a reference, so this is about tidiness, not memory.
+  WebPickedFile? _picked;
 
   WebUploadStatus status = WebUploadStatus.queued;
 
-  /// 0..1 while uploading; null means indeterminate (small upload or not
-  /// yet started).
+  /// 0..1 while uploading; null means indeterminate (small upload, or pass 1
+  /// of a streaming upload where total progress isn't known yet).
   double? progress;
 
   /// User-facing reason when [status] is failed or skipped.
@@ -72,44 +78,26 @@ class WebUploadJob {
 
 /// App-level, navigation-independent upload queue for the web shell.
 ///
-/// The whole point: uploads used to live inside `WebBucketScreen`'s State,
-/// so navigating away (or to an external page) tore down the progress UI
-/// and skipped the post-upload refresh. Hoisting the work here — a
-/// ChangeNotifier singleton created at app boot — means an upload survives
-/// any in-app navigation (client-side routing never reloads the page) and
-/// stays visible through the shell-level [WebUploadTray].
+/// Hoisted out of `WebBucketScreen` so an upload survives in-app navigation and
+/// stays visible through the shell-level `WebUploadTray`.
 ///
 /// Design notes:
-///  * **Sequential** (concurrency 1): bounds wasm linear-memory growth and
-///    keeps the per-file Rust chunker the only thing in flight — important
-///    for older/low-RAM phones (Gemini-flagged OOM-kill risk).
-///  * **Frees bytes ASAP**: a finished/failed job drops its [Uint8List]
-///    immediately.
-///  * **Foreground span**: holds one [WebForegroundActivity] ref for the
-///    whole drain so background prefetch yields (bandwidth + wasm locks).
-///  * **Unload guard**: holds one [WebUnloadGuard] ref so a real tab close /
-///    refresh / external-link navigation prompts instead of silently
-///    dropping an in-flight upload (web can't resume an in-memory upload
-///    across a reload).
-///  * Cannot truly continue while a MOBILE tab is suspended — iOS Safari /
-///    Android Chrome freeze backgrounded-tab JS; the upload pauses and
-///    resumes when the tab is foregrounded again. There is no web API that
-///    changes that for in-memory uploads on iOS.
+///  * **Streaming, memory-bounded**: large files are read from the picked Blob
+///    in slices and pushed through the fula_client streaming handle
+///    (`streamingUploadBegin` → plan → `finalizePlan` → `uploadChunk` ×N →
+///    `finish`). Peak memory is ~one chunk, independent of file size — so there
+///    is no longer a per-file size cap, and a large file on a low-RAM phone no
+///    longer OOMs the tab the way the old `withData: true` read did.
+///  * **Sequential** (concurrency 1 across files, and chunks within a file go
+///    one at a time): bounds wasm linear-memory growth on older/low-RAM phones.
+///  * **Foreground span / unload guard**: held for the whole drain so prefetch
+///    yields and a real tab close prompts instead of silently dropping a file.
+///  * Cannot truly continue while a MOBILE tab is suspended (iOS Safari freezes
+///    backgrounded-tab JS); the upload pauses and resumes when foregrounded.
+///    Resume across a full reload lands in a later release.
 class WebUploadManager extends ChangeNotifier {
   WebUploadManager._();
   static final WebUploadManager instance = WebUploadManager._();
-
-  /// Hard per-file cap. Picked files are held fully in memory before the
-  /// encrypted upload; on low-RAM/older devices a big buffer in a possibly
-  /// backgrounded tab is a prime target for the OS to reclaim, so the cap
-  /// is lower there.
-  static const int _capDesktopBytes = 200 * 1024 * 1024;
-  static const int _capLowEndBytes = 75 * 1024 * 1024;
-
-  int get capBytes =>
-      WebDeviceClass.lowEnd ? _capLowEndBytes : _capDesktopBytes;
-
-  String get capLabel => '${(capBytes / (1024 * 1024)).round()} MB';
 
   final List<WebUploadJob> _jobs = [];
   List<WebUploadJob> get jobs => List.unmodifiable(_jobs);
@@ -117,10 +105,8 @@ class WebUploadManager extends ChangeNotifier {
   int _seq = 0;
   bool _pumping = false;
 
-  /// Bumped by [reset] (sign-out / user-switch). The pump captures it at
-  /// start and bails its post-upload side effects if it changed mid-drain,
-  /// so an in-flight upload can never refresh the NEW user's cache or fire
-  /// a completion for them.
+  /// Bumped by [reset] (sign-out / user-switch). The pump captures it at start
+  /// and bails its post-upload side effects if it changed mid-drain.
   int _epoch = 0;
 
   bool get isActive => _jobs.any((j) => j.isActive);
@@ -134,44 +120,34 @@ class WebUploadManager extends ChangeNotifier {
     return null;
   }
 
-  /// Emits a category `base` once its uploads in a drain have completed and
-  /// the same-tab listing cache has been refreshed — a visible bucket
-  /// screen listens and re-reads (cheap, from the now-fresh cache).
+  /// Emits a category `base` once its uploads in a drain have completed and the
+  /// same-tab listing cache has been refreshed.
   final StreamController<String> _completed =
       StreamController<String>.broadcast();
   Stream<String> get onBucketCompleted => _completed.stream;
 
-  /// Queue [files] (already read into memory) for [base]'s [bucket].
-  /// Over-cap files are recorded as `skipped` with a reason so the user
-  /// sees why in the tray rather than silently losing them.
+  /// Queue lazily-readable picked [files] for [base]'s [bucket]. No size cap —
+  /// large files stream without being loaded into memory.
   void enqueue({
     required String base,
     required String bucket,
-    required List<({String name, Uint8List bytes})> files,
+    required List<WebPickedFile> files,
   }) {
     if (files.isEmpty) return;
-    // Tidy: drop previously-finished SUCCESS rows so the tray reflects the
-    // new batch. Failed/skipped rows are kept until the user dismisses them.
+    // Tidy: drop previously-finished SUCCESS rows so the tray reflects the new
+    // batch. Failed/cancelled rows are kept until the user dismisses them.
     _jobs.removeWhere((j) => j.status == WebUploadStatus.done);
 
     for (final f in files) {
-      final job = WebUploadJob(
+      _jobs.add(WebUploadJob(
         id: _seq++,
         base: base,
         bucket: bucket,
         key: '/${f.name}',
         name: f.name,
-        size: f.bytes.length,
-        bytes: f.bytes,
-      );
-      if (f.bytes.length > capBytes) {
-        job.status = WebUploadStatus.skipped;
-        job.error =
-            'Larger than the $capLabel web upload limit — use the desktop '
-            'or mobile app for very large files.';
-        job._bytes = null;
-      }
-      _jobs.add(job);
+        size: f.size,
+        picked: f,
+      ));
     }
     notifyListeners();
     unawaited(_pump());
@@ -190,16 +166,9 @@ class WebUploadManager extends ChangeNotifier {
     _pumping = true;
     final epoch = _epoch;
 
-    // One span for the whole drain: prefetch yields, and a page-unload is
-    // guarded, until every queued file is done. Both acquire calls are
-    // non-throwing (counter increments; addRef's listener install is
-    // internally try/caught), so placing them before the try can't strand
-    // `_pumping` or unbalance the refs released in the finally.
     WebForegroundActivity.instance.begin();
     WebUnloadGuard.instance.addRef();
 
-    // base -> bucket for the categories that gained a file this drain, so
-    // we refresh each one's same-tab cache exactly once at the end.
     final completedBuckets = <String, String>{};
     final ensuredBuckets = <String>{};
 
@@ -212,8 +181,8 @@ class WebUploadManager extends ChangeNotifier {
         job.progress = null;
         notifyListeners();
 
-        final bytes = job._bytes;
-        if (bytes == null) {
+        final picked = job._picked;
+        if (picked == null) {
           job.status = WebUploadStatus.failed;
           job.error = 'No data to upload.';
           notifyListeners();
@@ -221,90 +190,58 @@ class WebUploadManager extends ChangeNotifier {
         }
 
         try {
-          // First upload into a fresh vault/category: the bucket may not
-          // exist yet. Same ensure-pattern as the native cloud services
-          // (create, tolerate already-exists). Once per bucket per drain.
+          // First upload into a fresh vault/category: the bucket may not exist
+          // yet. Create-and-tolerate-already-exists, once per bucket per drain.
           if (ensuredBuckets.add(job.bucket)) {
             try {
               await FulaApiService.instance.createBucket(job.bucket);
             } catch (_) {}
           }
 
-          // The fula-client blob-backend retry is compiled out on wasm32, so
-          // a single transient chunk-PUT drop (ERR_CONNECTION_CLOSED / "error
-          // sending request") would otherwise fail the whole (multi-chunk)
-          // large upload with no retry. Re-add it here for web. putFlat is
-          // idempotent (content-addressed chunks; path-keyed forest entry) and
-          // a chunk-PUT failure happens before the forest upsert/flush (the SDK
-          // also deletes the uploaded chunks on failure), so re-running is safe
-          // — no duplicates, no dirty-forest state. Non-transient errors
-          // (4xx / 409) are not retried.
-          // Cancel handle so the Sync Queue can abort this large upload
-          // mid-flight (0.6.14). Small single-shot uploads aren't cancellable.
-          job.cancelHandle =
-              await FulaApiService.instance.createCancelHandle();
-          await retryAsync(
-            () async {
-              if (bytes.length <= _kSmallUploadBytes) {
-                await FulaApiService.instance
-                    .uploadObject(job.bucket, job.key, bytes);
-              } else {
-                await FulaApiService.instance.uploadLargeFileCancellable(
-                  job.bucket,
-                  job.key,
-                  bytes,
-                  cancelHandle: job.cancelHandle,
-                  onProgress: (p) {
-                    // A reset() during this upload orphans the job; ignore late
-                    // progress so we don't rebuild the tray for a dead session.
-                    if (_epoch != epoch) return;
-                    job.progress = p.percentage / 100;
-                    notifyListeners();
-                  },
-                );
-              }
-            },
-            // Don't retry a user-cancelled upload: a cancel abort can look
-            // transient (connection-closed), so the status flag gates retry.
-            retryIf: (e) =>
-                isTransientUploadError(e) &&
-                job.status != WebUploadStatus.cancelled,
-          );
+          if (job.size <= _kSmallUploadBytes) {
+            // Small file: one read, one PUT (streaming overhead isn't worth it).
+            final bytes = await picked.readSlice(0, job.size);
+            if (_epoch != epoch || job.status == WebUploadStatus.cancelled) {
+              throw const _AbandonedUpload();
+            }
+            await FulaApiService.instance
+                .uploadObject(job.bucket, job.key, bytes);
+          } else {
+            await _streamUpload(job, picked, epoch);
+          }
 
-          // Sign-out / user-switch landed while this file was uploading:
-          // abandon the rest. The finally still runs (epoch-guarded) and
-          // releases the foreground + unload refs.
+          // Sign-out / user-switch landed mid-upload: abandon the rest.
           if (_epoch != epoch) break;
 
           job.status = WebUploadStatus.done;
           job.progress = 1.0;
-          job._bytes = null; // free the buffer immediately (low-RAM)
+          job._picked = null;
           completedBuckets[job.base] = job.bucket;
-          // Other tabs drop their cached listing for this bucket.
           WebCacheSync.instance.sendInvalidateListing(job.bucket);
           notifyListeners();
         } catch (e) {
-          if (job.status == WebUploadStatus.cancelled) {
-            // User cancelled mid-flight: the SDK aborted + cleaned up the
-            // uploaded chunks. Keep 'cancelled' (not 'failed') so the tray
-            // shows a cancel, not an error.
-            job._bytes = null;
+          // A user cancel or a session reset is a clean abandon, not a failure
+          // (the partial chunks are unreferenced and get swept later).
+          final abandoned = e is _AbandonedUpload ||
+              job.status == WebUploadStatus.cancelled ||
+              _epoch != epoch;
+          if (abandoned) {
+            if (job.status != WebUploadStatus.cancelled &&
+                _epoch == epoch) {
+              // Shouldn't happen, but never leave a row stuck "uploading".
+              job.status = WebUploadStatus.cancelled;
+            }
+            job._picked = null;
             notifyListeners();
           } else {
             job.status = WebUploadStatus.failed;
             job.error = '$e';
-            job._bytes = null;
+            job._picked = null;
             notifyListeners();
           }
         }
       }
     } finally {
-      // Refresh this tab's listing cache once per category that gained a
-      // file — from the SESSION forest (own-write → keep it; it's ahead of
-      // the server for a few seconds). Done even if no screen is mounted,
-      // so returning to the category shows the new file without a manual
-      // refresh. Then nudge any visible screen. Skipped entirely if a
-      // sign-out/user-switch happened mid-drain (don't touch a new session).
       if (_epoch == epoch) {
         for (final entry in completedBuckets.entries) {
           try {
@@ -320,12 +257,56 @@ class WebUploadManager extends ChangeNotifier {
       _pumping = false;
       notifyListeners();
 
-      // A file enqueued during the drain's tail (after the last
-      // _nextQueued() returned null) would otherwise be stranded. There is
-      // no await between that check and clearing _pumping, so this is
-      // belt-and-suspenders — but cheap and safe.
       if (_nextQueued() != null) unawaited(_pump());
     }
+  }
+
+  /// Stream one large file through the fula_client streaming handle, reading it
+  /// from the Blob in slices so the whole file never lands in memory.
+  ///
+  /// Pass 1 (plan) reads the file once to commit the per-chunk nonces +
+  /// integrity root; pass 2 re-encrypts each chunk from its committed nonce and
+  /// PUTs it (the SDK retries a transient chunk-PUT internally, so a single drop
+  /// doesn't fail the whole upload). Throws [_AbandonedUpload] on cancel/reset.
+  Future<void> _streamUpload(
+      WebUploadJob job, WebPickedFile picked, int epoch) async {
+    final api = FulaApiService.instance;
+    void checkAbandon() {
+      if (_epoch != epoch || job.status == WebUploadStatus.cancelled) {
+        throw const _AbandonedUpload();
+      }
+    }
+
+    final handle = await api.streamingUploadBegin(job.bucket, job.key);
+
+    // Pass 1 — plan/commit. Read the file in slices (indeterminate progress).
+    var offset = 0;
+    while (offset < job.size) {
+      checkAbandon();
+      final end = (offset + _kPlanReadBytes) > job.size
+          ? job.size
+          : offset + _kPlanReadBytes;
+      final slice = await picked.readSlice(offset, end);
+      await api.streamingUploadPlanChunk(handle, slice);
+      offset = end;
+    }
+
+    final info = await api.streamingUploadFinalizePlan(handle);
+
+    // Pass 2 — upload each chunk from its committed nonce.
+    final cs = info.chunkSize;
+    for (var i = 0; i < info.numChunks; i++) {
+      checkAbandon();
+      final start = i * cs;
+      final end = (start + cs) > job.size ? job.size : start + cs;
+      final slice = await picked.readSlice(start, end);
+      await api.streamingUploadChunk(handle, i, slice);
+      job.progress = (i + 1) / info.numChunks;
+      if (_epoch == epoch) notifyListeners();
+    }
+
+    checkAbandon();
+    await api.streamingUploadFinish(handle);
   }
 
   /// Remove finished rows (done/failed/skipped/cancelled) from the tray.
@@ -334,37 +315,30 @@ class WebUploadManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cancel a job. A queued job is dropped before it starts; an in-flight large
-  /// upload is aborted via its CancelHandle (the SDK stops between chunks and
-  /// deletes the already-uploaded chunks). Marking it `cancelled` (not `failed`)
-  /// makes [_pump] skip the retry and treat the resulting error as a clean
-  /// cancel, not an error.
+  /// Cancel a job. A queued job is dropped before it starts; an in-flight
+  /// streaming upload stops feeding chunks at the next boundary (the partial,
+  /// unreferenced chunks are swept later — there is no SDK-level abort for the
+  /// streaming path yet). Marking it `cancelled` makes [_pump] treat the unwind
+  /// as a clean cancel, not an error.
   void cancelJob(int id) {
     final idx = _jobs.indexWhere((j) => j.id == id);
     if (idx < 0) return;
     final job = _jobs[idx];
-    if (!job.isActive) return; // already done/failed/skipped/cancelled
+    if (!job.isActive) return;
     job.status = WebUploadStatus.cancelled;
     job.error = null;
-    final h = job.cancelHandle;
-    if (h != null) {
-      // Fire-and-forget: sets the flag the in-flight upload polls.
-      FulaApiService.instance.triggerCancel(h);
-    }
-    job._bytes = null;
+    job._picked = null;
     notifyListeners();
   }
 
-  /// Prioritize a queued job so it uploads next (mirrors the mobile sync
-  /// queue's "Upload next"). No-op for the active or finished rows.
+  /// Prioritize a queued job so it uploads next ("Upload next"). No-op for the
+  /// active or finished rows.
   void moveJobToFront(int id) {
     final idx = _jobs.indexWhere((j) => j.id == id);
     if (idx < 0) return;
     final job = _jobs[idx];
     if (job.status != WebUploadStatus.queued) return;
     _jobs.removeAt(idx);
-    // Insert ahead of the other queued jobs but after any leading
-    // uploading/finished rows, so it becomes the next one [_nextQueued] picks.
     var insertAt = 0;
     while (insertAt < _jobs.length &&
         _jobs[insertAt].status != WebUploadStatus.queued) {
@@ -375,10 +349,8 @@ class WebUploadManager extends ChangeNotifier {
   }
 
   /// Sign-out / user-switch: abandon the queue so a new user never sees or
-  /// continues the previous user's uploads. An already-in-flight Rust call
-  /// can't be cancelled (web has no resumable handle), but clearing the
-  /// queue stops anything new from starting; the pump's `_nextQueued()`
-  /// then returns null and it winds down cleanly.
+  /// continues the previous user's uploads. The in-flight streaming loop checks
+  /// the epoch at each chunk boundary and unwinds cleanly.
   void reset() {
     _epoch++;
     _jobs.clear();
