@@ -14,7 +14,7 @@ import 'package:fula_files/web/services/web_session.dart';
 
 /// App version label shown in About + the home footer. Kept in one place
 /// so the two stay in sync (the home footer imports this).
-const String kWebAppVersion = 'v1.11.4.4';
+const String kWebAppVersion = 'v1.11.4.5';
 
 /// In-app web Settings page. Replaces the old behavior where the gear icon
 /// opened cloud.fx.land in a new tab. Mirrors the mobile Settings screen's
@@ -82,6 +82,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
                 _securitySection(context),
                 const Divider(height: 1),
                 _apiConfigSection(context),
+                const Divider(height: 1),
+                _syncQueueSection(context),
                 const Divider(height: 1),
                 _otherSection(context),
                 const Divider(height: 1),
@@ -358,6 +360,22 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
               'Change the gateway / IPFS / resolver URLs (advanced)'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.go('/settings/api'),
+        ),
+      ],
+    );
+  }
+
+  // ── Sync queue (manage uploads) ──────────────────────────────────────
+  Widget _syncQueueSection(BuildContext context) {
+    return _Section(
+      label: 'UPLOADS',
+      children: [
+        ListTile(
+          leading: const Icon(Icons.sync),
+          title: const Text('Sync queue'),
+          subtitle: const Text('Manage in-progress and queued uploads'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.go('/sync-queue'),
         ),
       ],
     );

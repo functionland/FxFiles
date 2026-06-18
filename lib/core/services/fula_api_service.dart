@@ -1208,6 +1208,51 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Like [uploadLargeFile] but cancellable mid-flight (web Sync Queue;
+  /// fula-client 0.6.14 `putFlatWithProgressCancellable`). Trigger
+  /// [cancelHandle] via [triggerCancel] to abort an in-progress large upload —
+  /// the SDK stops between chunks, deletes the already-uploaded chunks, and
+  /// throws. The error is intentionally NOT wrapped in [FulaApiException] so the
+  /// caller can distinguish a cancel; callers should track their own cancel
+  /// intent (a status flag) rather than string-matching the error.
+  Future<String> uploadLargeFileCancellable(
+    String bucket,
+    String key,
+    Uint8List data, {
+    fula.CancelHandle? cancelHandle,
+    void Function(UploadProgress)? onProgress,
+  }) async {
+    _guardLegacyWrite(bucket);
+    _ensureConfigured();
+    Timer? poll;
+    try {
+      await _ensureForestLoaded(bucket);
+      // putFlatWithProgressCancellable requires a progress handle; always
+      // create one and only poll it when the caller wants progress.
+      final progressHandle = await fula.createProgressHandle();
+      poll = _startProgressPoll(progressHandle, onProgress, data.length);
+      final cancel = cancelHandle ?? await fula.createCancelHandle();
+      final result = await fula.putFlatWithProgressCancellable(
+        client: _client!,
+        bucket: bucket,
+        path: key,
+        data: data.toList(),
+        contentType: null,
+        progress: progressHandle,
+        cancel: cancel,
+      );
+      if (onProgress != null) {
+        onProgress(UploadProgress(
+          bytesUploaded: data.length,
+          totalBytes: data.length,
+        ));
+      }
+      return result.etag;
+    } finally {
+      poll?.cancel();
+    }
+  }
+
   /// Upload a large file by path - avoids loading file into Dart memory
   ///
   /// The file is read on the Rust side, avoiding the FFI serialization

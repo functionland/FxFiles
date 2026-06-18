@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'package:fula_client/fula_client.dart' as fula;
+
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/utils/upload_retry.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
@@ -15,7 +17,7 @@ import 'package:fula_files/web/services/web_unload_guard.dart';
 /// original inline upload path in WebBucketScreen.
 const int _kSmallUploadBytes = 768 * 1024;
 
-enum WebUploadStatus { queued, uploading, done, failed, skipped }
+enum WebUploadStatus { queued, uploading, done, failed, skipped, cancelled }
 
 /// One queued file. Owns its bytes until the upload finishes; the bytes
 /// are freed the instant the job leaves the active state so a low-RAM
@@ -50,6 +52,11 @@ class WebUploadJob {
   final int size;
 
   Uint8List? _bytes;
+
+  /// Cancel handle for the in-flight large upload (0.6.14). Created when the
+  /// upload starts; triggering it aborts the upload between chunks.
+  fula.CancelHandle? cancelHandle;
+
   WebUploadStatus status = WebUploadStatus.queued;
 
   /// 0..1 while uploading; null means indeterminate (small upload or not
@@ -232,16 +239,21 @@ class WebUploadManager extends ChangeNotifier {
           // also deletes the uploaded chunks on failure), so re-running is safe
           // — no duplicates, no dirty-forest state. Non-transient errors
           // (4xx / 409) are not retried.
+          // Cancel handle so the Sync Queue can abort this large upload
+          // mid-flight (0.6.14). Small single-shot uploads aren't cancellable.
+          job.cancelHandle =
+              await FulaApiService.instance.createCancelHandle();
           await retryAsync(
             () async {
               if (bytes.length <= _kSmallUploadBytes) {
                 await FulaApiService.instance
                     .uploadObject(job.bucket, job.key, bytes);
               } else {
-                await FulaApiService.instance.uploadLargeFile(
+                await FulaApiService.instance.uploadLargeFileCancellable(
                   job.bucket,
                   job.key,
                   bytes,
+                  cancelHandle: job.cancelHandle,
                   onProgress: (p) {
                     // A reset() during this upload orphans the job; ignore late
                     // progress so we don't rebuild the tray for a dead session.
@@ -252,7 +264,11 @@ class WebUploadManager extends ChangeNotifier {
                 );
               }
             },
-            retryIf: isTransientUploadError,
+            // Don't retry a user-cancelled upload: a cancel abort can look
+            // transient (connection-closed), so the status flag gates retry.
+            retryIf: (e) =>
+                isTransientUploadError(e) &&
+                job.status != WebUploadStatus.cancelled,
           );
 
           // Sign-out / user-switch landed while this file was uploading:
@@ -268,10 +284,18 @@ class WebUploadManager extends ChangeNotifier {
           WebCacheSync.instance.sendInvalidateListing(job.bucket);
           notifyListeners();
         } catch (e) {
-          job.status = WebUploadStatus.failed;
-          job.error = '$e';
-          job._bytes = null;
-          notifyListeners();
+          if (job.status == WebUploadStatus.cancelled) {
+            // User cancelled mid-flight: the SDK aborted + cleaned up the
+            // uploaded chunks. Keep 'cancelled' (not 'failed') so the tray
+            // shows a cancel, not an error.
+            job._bytes = null;
+            notifyListeners();
+          } else {
+            job.status = WebUploadStatus.failed;
+            job.error = '$e';
+            job._bytes = null;
+            notifyListeners();
+          }
         }
       }
     } finally {
@@ -304,9 +328,49 @@ class WebUploadManager extends ChangeNotifier {
     }
   }
 
-  /// Remove finished rows (done/failed/skipped) from the tray.
+  /// Remove finished rows (done/failed/skipped/cancelled) from the tray.
   void clearFinished() {
     _jobs.removeWhere((j) => !j.isActive);
+    notifyListeners();
+  }
+
+  /// Cancel a job. A queued job is dropped before it starts; an in-flight large
+  /// upload is aborted via its CancelHandle (the SDK stops between chunks and
+  /// deletes the already-uploaded chunks). Marking it `cancelled` (not `failed`)
+  /// makes [_pump] skip the retry and treat the resulting error as a clean
+  /// cancel, not an error.
+  void cancelJob(int id) {
+    final idx = _jobs.indexWhere((j) => j.id == id);
+    if (idx < 0) return;
+    final job = _jobs[idx];
+    if (!job.isActive) return; // already done/failed/skipped/cancelled
+    job.status = WebUploadStatus.cancelled;
+    job.error = null;
+    final h = job.cancelHandle;
+    if (h != null) {
+      // Fire-and-forget: sets the flag the in-flight upload polls.
+      FulaApiService.instance.triggerCancel(h);
+    }
+    job._bytes = null;
+    notifyListeners();
+  }
+
+  /// Prioritize a queued job so it uploads next (mirrors the mobile sync
+  /// queue's "Upload next"). No-op for the active or finished rows.
+  void moveJobToFront(int id) {
+    final idx = _jobs.indexWhere((j) => j.id == id);
+    if (idx < 0) return;
+    final job = _jobs[idx];
+    if (job.status != WebUploadStatus.queued) return;
+    _jobs.removeAt(idx);
+    // Insert ahead of the other queued jobs but after any leading
+    // uploading/finished rows, so it becomes the next one [_nextQueued] picks.
+    var insertAt = 0;
+    while (insertAt < _jobs.length &&
+        _jobs[insertAt].status != WebUploadStatus.queued) {
+      insertAt++;
+    }
+    _jobs.insert(insertAt, job);
     notifyListeners();
   }
 
