@@ -18,6 +18,7 @@ import 'package:fula_files/web/screens/web_settings_screen.dart';
 import 'package:fula_files/web/screens/web_shared_screen.dart';
 import 'package:fula_files/web/screens/web_shelf_screen.dart';
 import 'package:fula_files/web/screens/web_signin_screen.dart';
+import 'package:fula_files/web/screens/web_sync_queue_screen.dart';
 import 'package:fula_files/web/screens/web_tags_screen.dart';
 import 'package:fula_files/web/screens/web_website_detail_screen.dart';
 import 'package:fula_files/web/screens/web_websites_screen.dart';
@@ -156,6 +157,10 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/settings/api',
         builder: (context, state) => const WebApiConfigScreen(),
+      ),
+      GoRoute(
+        path: '/sync-queue',
+        builder: (context, state) => const WebSyncQueueScreen(),
       ),
     ],
   );
