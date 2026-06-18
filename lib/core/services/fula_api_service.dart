@@ -1253,6 +1253,48 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  // ── Streaming upload (fula_client 0.6.15) — memory-bounded large-file upload
+  // for web. The caller (WebUploadManager) slices the file lazily from a Blob
+  // and drives the two passes, so the whole file never lands in memory:
+  //   begin -> planChunk x N (pass 1: commit nonces + integrity root) ->
+  //   finalizePlan -> uploadChunk x N (pass 2: encrypt-from-stored-nonce + PUT)
+  //   -> finish (index + forest register + flush).
+  // Errors propagate raw (not wrapped in FulaApiException) so the caller can
+  // distinguish a user cancel/abandon from a real failure.
+
+  Future<fula.StreamingUploadHandle> streamingUploadBegin(
+    String bucket,
+    String key, {
+    String? contentType,
+  }) async {
+    _guardLegacyWrite(bucket);
+    _ensureConfigured();
+    await _ensureForestLoaded(bucket);
+    return fula.streamingUploadBegin(
+      client: _client!,
+      bucket: bucket,
+      key: key,
+      contentType: contentType,
+    );
+  }
+
+  Future<void> streamingUploadPlanChunk(
+          fula.StreamingUploadHandle handle, Uint8List bytes) =>
+      fula.streamingUploadPlanChunk(handle: handle, bytes: bytes);
+
+  Future<fula.StreamingPlanInfo> streamingUploadFinalizePlan(
+          fula.StreamingUploadHandle handle) =>
+      fula.streamingUploadFinalizePlan(handle: handle);
+
+  Future<void> streamingUploadChunk(
+          fula.StreamingUploadHandle handle, int chunkIndex, Uint8List bytes) =>
+      fula.streamingUploadChunk(
+          handle: handle, chunkIndex: chunkIndex, bytes: bytes);
+
+  Future<void> streamingUploadFinish(fula.StreamingUploadHandle handle) async {
+    await fula.streamingUploadFinish(handle: handle);
+  }
+
   /// Upload a large file by path - avoids loading file into Dart memory
   ///
   /// The file is read on the Rust side, avoiding the FFI serialization

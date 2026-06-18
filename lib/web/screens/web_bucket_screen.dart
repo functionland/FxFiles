@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -24,6 +23,7 @@ import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
+import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
@@ -302,98 +302,34 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     return '$bytes B';
   }
 
-  /// Category → picker filter, so the Audio category can't pick images
-  /// etc. Documents/Downloads stay open (catch-all categories);
-  /// Archives restricts to the native archive extension set.
-  FileType get _pickerType => switch (widget.base) {
-        'images' => FileType.image,
-        'videos' => FileType.video,
-        'audio' => FileType.audio,
-        'archives' => FileType.custom,
-        _ => FileType.any,
+  /// Category → `<input accept>` filter, so the Audio category can't pick
+  /// images etc. Documents/Downloads stay open (catch-all categories);
+  /// Archives restricts to the native archive extension set. `null` = accept
+  /// anything.
+  String? get _pickerAccept => switch (widget.base) {
+        'images' => 'image/*',
+        'videos' => 'video/*',
+        'audio' => 'audio/*',
+        'archives' => '.zip,.rar,.7z,.tar,.gz,.bz2,.xz,.iso',
+        _ => null,
       };
 
-  List<String>? get _pickerExtensions => widget.base == 'archives'
-      ? const ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso']
-      : null;
-
   Future<void> _pickAndUpload() async {
-    final FilePickerResult? picked;
-    try {
-      picked = await FilePicker.platform.pickFiles(
-        withData: true,
-        allowMultiple: true,
-        type: _pickerType,
-        allowedExtensions: _pickerExtensions,
-      );
-    } catch (e) {
-      // `withData: true` makes file_picker read each file fully into memory
-      // *during* the pick. On a low-RAM phone a large file can exhaust the
-      // browser tab's memory budget, so the read throws here. Without this
-      // catch the upload silently never starts — the reported "select a large
-      // file and nothing happens".
-      _snack('Couldn\'t read the selected file. It may be too large for this '
-          'device\'s browser. Use the FxFiles desktop or mobile app for very '
-          'large files.');
-      return;
-    }
-    if (picked == null || picked.files.isEmpty) return;
-
-    // Hand the picked bytes to the app-level manager and return. The upload
-    // now runs independently of this screen: progress shows in the global
-    // tray, it survives navigating away, the bucket is created and per-file
-    // size cap enforced there, and on completion the manager refreshes this
-    // tab's cache and pings us via onBucketCompleted (own-write path).
-    final files = <({String name, Uint8List bytes})>[];
-    final unread = <PlatformFile>[];
-    for (final f in picked.files) {
-      final data = f.bytes;
-      if (data == null) {
-        // The browser couldn't load this file into memory — almost always a
-        // large file on a memory-constrained tab, where `withData: true`
-        // swallows the FileReader failure and hands back null bytes. `f.size`
-        // is still populated, so we can explain why instead of silently
-        // dropping it (the reported "nothing happens" for large files).
-        unread.add(f);
-        continue;
-      }
-      files.add((name: f.name, bytes: data));
-    }
-
-    if (files.isNotEmpty) {
-      WebUploadManager.instance.enqueue(
-        base: widget.base,
-        bucket: BucketVersionResolver.writeBucket(widget.base),
-        files: files,
-      );
-    }
-
-    if (unread.isNotEmpty) {
-      _snack(_unreadFilesMessage(unread));
-    }
-  }
-
-  /// User-facing reason for files whose bytes the browser failed to load.
-  /// Almost always a large file that exceeds the tab's memory budget on a
-  /// low-end device; `PlatformFile.size` is still available even when
-  /// `bytes` is null, so we can distinguish "too large" from a transient
-  /// read failure.
-  String _unreadFilesMessage(List<PlatformFile> unread) {
-    final mgr = WebUploadManager.instance;
-    if (unread.length == 1) {
-      final f = unread.first;
-      final mb = (f.size / (1024 * 1024)).round();
-      if (f.size > mgr.capBytes) {
-        return '"${f.name}" ($mb MB) is larger than the ${mgr.capLabel} upload '
-            'limit for this device\'s browser. Use the FxFiles desktop or '
-            'mobile app for large files.';
-      }
-      return '"${f.name}" couldn\'t be read by this device\'s browser. Please '
-          'try again, or use the FxFiles desktop or mobile app.';
-    }
-    return '${unread.length} files couldn\'t be uploaded from this device\'s '
-        'browser (too large or unreadable). Use the FxFiles desktop or mobile '
-        'app for large files.';
+    // Raw-Blob picker: files are NOT read into memory here. Unlike the old
+    // file_picker `withData: true` path — which read the whole file up front
+    // and OOM'd the tab for large files on low-RAM phones — WebUploadManager
+    // streams each large file from its Blob in slices, so there's no size cap
+    // and a multi-GB file never has to fit in the heap. Progress shows in the
+    // global tray, the upload survives in-app navigation, the bucket is created
+    // there, and on completion the manager refreshes this tab's cache + pings
+    // us via onBucketCompleted (own-write path).
+    final picked = await pickFilesForUpload(accept: _pickerAccept);
+    if (picked.isEmpty) return;
+    WebUploadManager.instance.enqueue(
+      base: widget.base,
+      bucket: BucketVersionResolver.writeBucket(widget.base),
+      files: picked,
+    );
   }
 
   Future<void> _download(FulaObject o) async {
