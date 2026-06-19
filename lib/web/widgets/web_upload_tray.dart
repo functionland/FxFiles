@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:fula_files/core/utils/file_type_utils.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 
 /// Persistent, shell-level upload status surface. Mounted once above the
@@ -77,8 +78,12 @@ class WebUploadTray extends StatelessWidget {
   ) {
     final name = current?.name ?? 'Preparing…';
     final pct = current?.progress;
-    final remainingNote =
-        activeCount > 1 ? '$activeCount files left' : 'Uploading…';
+    // Show which category this file is going to (esp. important for the home's
+    // cross-category upload, where the destination is auto-chosen).
+    final cat = current != null ? categoryDisplayName(current.base) : null;
+    var note = cat != null ? 'Uploading to $cat' : 'Uploading…';
+    if (activeCount > 1) note += ' · $activeCount left';
+    if (pct != null) note += ' · ${(pct * 100).toStringAsFixed(0)}%';
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -103,10 +108,7 @@ class WebUploadTray extends StatelessWidget {
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
                   Text(
-                    remainingNote +
-                        (pct != null
-                            ? ' · ${(pct * 100).toStringAsFixed(0)}%'
-                            : ''),
+                    note,
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.hintColor),
                   ),
@@ -134,9 +136,17 @@ class WebUploadTray extends StatelessWidget {
     List<WebUploadJob> problems,
   ) {
     final hasProblems = problems.isNotEmpty;
+    // Distinct categories the completed files landed in (so the user can spot a
+    // mis-categorization, e.g. "wait, that went to Downloads").
+    final doneCats = mgr.jobs
+        .where((j) => j.status == WebUploadStatus.done)
+        .map((j) => categoryDisplayName(j.base))
+        .toSet()
+        .toList();
     final headline = StringBuffer();
     if (done > 0) {
       headline.write('$done upload${done == 1 ? '' : 's'} complete');
+      if (doneCats.isNotEmpty) headline.write(' · ${doneCats.join(', ')}');
     }
     if (hasProblems) {
       if (headline.isNotEmpty) headline.write(' · ');

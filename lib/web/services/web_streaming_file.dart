@@ -80,3 +80,19 @@ Future<List<WebPickedFile>> pickFilesForUpload({
   input.click(); // synchronous → preserves the user gesture (iOS Safari)
   return completer.future;
 }
+
+/// Wrap the files from a drag-and-drop `DataTransfer` (a `drop` event) in
+/// [WebPickedFile]s — the same lazily-readable Blob wrapper the picker uses, so
+/// dropped files ride the identical memory-bounded chunked-upload path (no
+/// whole-file read, no OOM).
+List<WebPickedFile> filesFromDataTransfer(web.DataTransfer? dt) {
+  final out = <WebPickedFile>[];
+  final files = dt?.files;
+  if (files != null) {
+    for (var i = 0; i < files.length; i++) {
+      final f = files.item(i);
+      if (f != null) out.add(WebPickedFile(f));
+    }
+  }
+  return out;
+}
