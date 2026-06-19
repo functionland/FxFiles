@@ -86,6 +86,12 @@ class ContactFormConfig {
   /// Optional email subject; ignored for WhatsApp. Empty when unset.
   final String emailSubject;
 
+  /// Optional message header. When non-empty it is prepended to the composed
+  /// WhatsApp/email message as a `#Title: <title>` line (above the field
+  /// lines). The generator UI pre-fills this with the website name, but the
+  /// creator can edit or clear it; empty means no header line is emitted.
+  final String title;
+
   final List<ContactFormField> fields;
 
   const ContactFormConfig({
@@ -93,6 +99,7 @@ class ContactFormConfig {
     this.channel = ContactFormChannel.whatsapp,
     this.destination = '',
     this.emailSubject = '',
+    this.title = '',
     this.fields = const [],
   });
 
@@ -109,6 +116,7 @@ class ContactFormConfig {
         'channel': channel.name,
         'destination': destination,
         if (emailSubject.trim().isNotEmpty) 'emailSubject': emailSubject,
+        if (title.trim().isNotEmpty) 'title': title,
         'fields': fields.map((f) => f.toJson()).toList(),
       };
 
@@ -119,6 +127,7 @@ class ContactFormConfig {
       channel: _channelFromName(json['channel'] as String?),
       destination: (json['destination'] as String?)?.trim() ?? '',
       emailSubject: (json['emailSubject'] as String?) ?? '',
+      title: (json['title'] as String?) ?? '',
       fields: rawFields is List
           ? rawFields
               .whereType<Map>()

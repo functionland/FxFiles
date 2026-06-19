@@ -263,6 +263,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late ContactFormChannel _channel;
   late final TextEditingController _destinationController;
   late final TextEditingController _emailSubjectController;
+  late final TextEditingController _titleController;
   late final List<_ContactFieldRow> _fields;
   // Current pricing snapshot. Seeded synchronously from the service's
   // in-memory cache (or the hardcoded fallback) so the cost line always
@@ -308,6 +309,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         TextEditingController(text: cf?.destination ?? '');
     _emailSubjectController =
         TextEditingController(text: cf?.emailSubject ?? '');
+    _titleController = TextEditingController(text: cf?.title ?? '');
     _fields = (cf?.fields ?? const <ContactFormField>[])
         .map((f) => _ContactFieldRow(
               label: f.label,
@@ -324,6 +326,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     _promptController.dispose();
     _destinationController.dispose();
     _emailSubjectController.dispose();
+    _titleController.dispose();
     for (final f in _fields) {
       f.dispose();
     }
@@ -374,6 +377,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         channel: _channel,
         destination: _destinationController.text.trim(),
         emailSubject: _emailSubjectController.text.trim(),
+        title: _titleController.text.trim(),
         fields: _fields.map((r) => r.toField()).toList(),
       );
 
@@ -719,6 +723,12 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 onChanged: (v) => setState(() {
                   _contactFormEnabled = v;
                   if (v && _fields.isEmpty) _fields.add(_ContactFieldRow());
+                  // Default the message header to the website name, but only
+                  // when the creator hasn't typed one — so it stays editable
+                  // and clearable.
+                  if (v && _titleController.text.trim().isEmpty) {
+                    _titleController.text = _nameController.text.trim();
+                  }
                 }),
               ),
             ],
@@ -768,6 +778,19 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 ),
               ),
             ],
+            const SizedBox(height: 12),
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: 'Message header (optional)',
+                hintText: 'e.g. your website name',
+                helperText: 'Added as "#Title: …" at the top of each message. '
+                    'Defaults to the website name; clear it to omit.',
+                helperMaxLines: 3,
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
             const SizedBox(height: 16),
             Align(
               alignment: Alignment.centerLeft,

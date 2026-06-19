@@ -66,6 +66,25 @@ void main() {
       expect(noSubject.encode(), isNot(contains('emailSubject')));
     });
 
+    test('title round-trips; empty title is omitted from JSON', () {
+      const withTitle = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        title: 'My Shop',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      expect(withTitle.encode(), contains('title'));
+      expect(ContactFormConfig.tryParse(withTitle.encode())!.title, 'My Shop');
+
+      const noTitle = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      expect(noTitle.encode(), isNot(contains('title')));
+      expect(ContactFormConfig.tryParse(noTitle.encode())!.title, '');
+    });
+
     test('encode() is single-line even when a label contains a newline', () {
       const cfg = ContactFormConfig(
         enabled: true,
