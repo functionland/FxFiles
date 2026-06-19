@@ -194,6 +194,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
   late final TextEditingController _emailSubjectController =
       TextEditingController(
           text: widget.initialContactForm?.emailSubject ?? '');
+  late final TextEditingController _titleController =
+      TextEditingController(text: widget.initialContactForm?.title ?? '');
   late final List<_ContactFieldRow> _fields = () {
     final initial = widget.initialContactForm?.fields ?? const [];
     if (initial.isEmpty) return [_ContactFieldRow()];
@@ -224,6 +226,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     _promptController.dispose();
     _destinationController.dispose();
     _emailSubjectController.dispose();
+    _titleController.dispose();
     for (final f in _fields) {
       f.dispose();
     }
@@ -235,6 +238,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
         channel: _channel,
         destination: _destinationController.text.trim(),
         emailSubject: _emailSubjectController.text.trim(),
+        title: _titleController.text.trim(),
         fields: _fields.map((r) => r.toField()).toList(),
       );
 
@@ -626,7 +630,14 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               style: TextStyle(fontSize: 11),
             ),
             value: _contactFormEnabled,
-            onChanged: (v) => setState(() => _contactFormEnabled = v),
+            onChanged: (v) => setState(() {
+              _contactFormEnabled = v;
+              // Default the message header to the website name, but only when
+              // the creator hasn't typed one — keeps it editable and clearable.
+              if (v && _titleController.text.trim().isEmpty) {
+                _titleController.text = _nameController.text.trim();
+              }
+            }),
           ),
           if (_contactFormEnabled) ...[
             const SizedBox(height: 8),
@@ -672,6 +683,19 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                 ),
               ),
             ],
+            const SizedBox(height: 10),
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: 'Message header (optional)',
+                hintText: 'e.g. your website name',
+                helperText: 'Added as "#Title: …" atop each message. '
+                    'Defaults to the website name; clear to omit.',
+                helperMaxLines: 3,
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
             const SizedBox(height: 12),
             Row(
               children: [

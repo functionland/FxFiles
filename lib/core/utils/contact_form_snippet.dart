@@ -8,6 +8,11 @@ import 'package:fula_files/core/models/contact_form_config.dart';
 /// visitor only taps Send in WhatsApp / their mail app. No server receives the
 /// data and there is no `action` attribute.
 ///
+/// Composed message shape: an optional `#Title: <header>` line first (from
+/// [ContactFormConfig.title]), then one `Label: value` line per answered
+/// field, then a `#Ref: <page URL>` line capturing `location.href` of the
+/// page the visitor submitted from.
+///
 /// Mirrors `lib/core/utils/target_uri_builder.dart` exactly: WhatsApp numbers
 /// are reduced to digits only and must be 7–15 long; every message component is
 /// `encodeURIComponent`-escaped at send time so user input can never break the
@@ -27,6 +32,11 @@ String buildContactFormSnippet(ContactFormConfig cfg) {
   // destination/subject can't break out of the JS string or the <script> block.
   final dest = _jsString(cfg.destination.trim());
   final subject = _jsString(cfg.emailSubject.trim());
+  // Optional message header (creator-set, UI-defaulted to the website name).
+  // Newlines are collapsed so the header can't split the `#Title:` line, and
+  // it's `</script>`-hardened/escaped like the other creator-controlled strings.
+  final title =
+      _jsString(cfg.title.trim().replaceAll(RegExp(r'[\r\n]+'), ' '));
 
   // Only the chosen channel's URL logic is emitted — smaller, and no dead
   // branch for the AI to "simplify" away.
@@ -57,6 +67,7 @@ $rows  <button type="submit" class="cf-send">Send</button>
   var f=document.getElementById('cf');
   if(!f)return;
   var DEST=$dest;
+  var TITLE=$title;
   f.addEventListener('submit',function(e){
     e.preventDefault();
     var lines=[],ok=true,g=f.querySelectorAll('[data-label]');
@@ -75,8 +86,10 @@ $rows  <button type="submit" class="cf-send">Send</button>
       if(val)lines.push(lbl+': '+val);
     }
     if(!ok){alert('Please fill in the required fields.');return;}
+    if(!lines.length){alert('Please fill in the form before sending.');return;}
+    if(TITLE)lines.unshift('#Title: '+TITLE);
+    lines.push('#Ref: '+location.href);
     var body=lines.join('\\n');
-    if(!body){alert('Please fill in the form before sending.');return;}
 $sendLogic
     window.location.href=url;
     setTimeout(function(){if(document.visibilityState==='visible'){var a=document.createElement('a');a.href=url;a.className='cf-fb';a.style.display='block';a.textContent='Tap here if nothing opened';f.appendChild(a);}},1500);

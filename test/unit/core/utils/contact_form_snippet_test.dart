@@ -168,4 +168,64 @@ void main() {
       expect(html, contains('maxlength="2000"'));
     });
   });
+
+  group('buildContactFormSnippet — title header & ref footer', () {
+    test('emits TITLE, prepends #Title, and always appends #Ref', () {
+      const cfg = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        title: 'Acme Co',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      final html = buildContactFormSnippet(cfg);
+      expect(html, contains('var TITLE="Acme Co"'));
+      expect(html, contains(r"lines.unshift('#Title: '+TITLE)"));
+      expect(html, contains(r"lines.push('#Ref: '+location.href)"));
+    });
+
+    test('empty title yields a falsy TITLE but #Ref is still appended', () {
+      const cfg = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      final html = buildContactFormSnippet(cfg);
+      expect(html, contains('var TITLE=""'));
+      expect(html, contains(r'if(TITLE)lines.unshift('));
+      expect(html, contains(r"lines.push('#Ref: '+location.href)"));
+    });
+
+    test('empty-submission guard keys off lines.length (not body)', () {
+      final html = buildContactFormSnippet(const ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        fields: [ContactFormField(label: 'Name')],
+      ));
+      expect(html, contains('!lines.length'));
+      expect(html, contains('Please fill in the form before sending'));
+    });
+
+    test('neutralizes </script> in a creator-supplied title', () {
+      const cfg = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        title: 'Hi </script> there',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      final html = buildContactFormSnippet(cfg);
+      expect(html, contains(r'Hi <\/script> there'));
+      expect(html, isNot(contains('Hi </script>')));
+    });
+
+    test('collapses newlines in the title so the #Title line cannot split', () {
+      const cfg = ContactFormConfig(
+        enabled: true,
+        destination: '15551234567',
+        title: 'Line1\nLine2',
+        fields: [ContactFormField(label: 'Name')],
+      );
+      final html = buildContactFormSnippet(cfg);
+      expect(html, contains('var TITLE="Line1 Line2"'));
+    });
+  });
 }
