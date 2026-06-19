@@ -13,7 +13,12 @@ import 'package:fula_files/web/services/web_session.dart';
 /// the GIS-rendered button (google_sign_in v7 web), so Mode A/B show
 /// that button where native shows its own "Continue with Google".
 class WebSignInScreen extends StatefulWidget {
-  const WebSignInScreen({super.key});
+  /// When true, render the bare scrollable login body (no Scaffold/Card) so it
+  /// can be hosted inside a bottom sheet (see [WebLoginSheet]), and close the
+  /// sheet automatically once sign-in completes. Default false = the
+  /// standalone full-screen `/signin` route, unchanged.
+  final bool asSheet;
+  const WebSignInScreen({super.key, this.asSheet = false});
 
   @override
   State<WebSignInScreen> createState() => _WebSignInScreenState();
@@ -46,10 +51,31 @@ class _WebSignInScreenState extends State<WebSignInScreen> {
     super.initState();
     // GIS button events are the only Google sign-in trigger on web.
     WebSession.instance.initGoogleWeb();
+    // Sheet mode: auto-close the sheet once authentication completes.
+    if (widget.asSheet) {
+      WebSession.instance.addListener(_popSheetWhenSignedIn);
+    }
+  }
+
+  /// Sheet mode only: pop the login sheet once sign-in succeeds. Deferred to a
+  /// post-frame and guarded by `isCurrent` so we never pop during a notify
+  /// callback or pop the wrong route if the user navigated/dismissed
+  /// concurrently.
+  void _popSheetWhenSignedIn() {
+    if (!widget.asSheet || !mounted) return;
+    if (!WebSession.instance.isSignedIn) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final route = ModalRoute.of(context);
+      if (route != null && route.isCurrent) Navigator.of(context).maybePop();
+    });
   }
 
   @override
   void dispose() {
+    if (widget.asSheet) {
+      WebSession.instance.removeListener(_popSheetWhenSignedIn);
+    }
     _passwordController.dispose();
     _restoreController.dispose();
     super.dispose();
@@ -128,6 +154,18 @@ class _WebSignInScreenState extends State<WebSignInScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final body = AnimatedBuilder(
+      animation: WebSession.instance,
+      builder: (context, _) => switch (_page) {
+        _Page.choice => _buildChoice(context),
+        _Page.modeA => _buildModeA(context),
+        _Page.modeB => _buildModeB(context),
+        _Page.modeC => _buildModeC(context),
+      },
+    );
+    // Sheet mode: bare body — WebLoginSheet supplies the scroll, padding,
+    // drag handle and keyboard inset. Full-screen mode: the centered Card.
+    if (widget.asSheet) return body;
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
@@ -136,17 +174,7 @@ class _WebSignInScreenState extends State<WebSignInScreen> {
             margin: const EdgeInsets.all(24),
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: SingleChildScrollView(
-                child: AnimatedBuilder(
-                  animation: WebSession.instance,
-                  builder: (context, _) => switch (_page) {
-                    _Page.choice => _buildChoice(context),
-                    _Page.modeA => _buildModeA(context),
-                    _Page.modeB => _buildModeB(context),
-                    _Page.modeC => _buildModeC(context),
-                  },
-                ),
-              ),
+              child: SingleChildScrollView(child: body),
             ),
           ),
         ),

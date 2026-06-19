@@ -9,6 +9,8 @@ import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/web/screens/web_settings_screen.dart' show kWebAppVersion;
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
+import 'package:fula_files/web/widgets/web_login_bar.dart';
+import 'package:fula_files/web/widgets/web_login_sheet.dart';
 import 'package:fula_files/web/widgets/web_recent_files_section.dart';
 import 'package:fula_files/web/widgets/web_storage_section.dart';
 
@@ -27,18 +29,98 @@ class WebHomeScreen extends StatefulWidget {
 }
 
 class _WebHomeScreenState extends State<WebHomeScreen> {
-  late final Future<StorageInfo> _storage =
-      BillingApiService.instance.getStorageAndCredits();
+  /// Storage/credits for the signed-in user. Null while logged out (the
+  /// billing API requires auth) — set by [_initSignedIn] on sign-in.
+  Future<StorageInfo>? _storage;
+
+  /// True while the login bottom sheet is on screen (suppresses the top
+  /// WebLoginBar and prevents a double-open).
+  bool _loginSheetOpen = false;
 
   @override
   void initState() {
     super.initState();
-    // Kick the background cache warmer once home has rendered. It
-    // self-delays per device class (§8.1), yields to every foreground
-    // operation, and is idempotent across home revisits.
+    WebSession.instance.addListener(_onSession);
+    if (WebSession.instance.isSignedIn) {
+      _initSignedIn();
+    }
+    // After first paint: when logged out, auto-present the cancelable login
+    // sheet (signed-in initializers ran above via _initSignedIn).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      WebPrefetchScheduler.instance.start();
+      _maybeAutoOpenLogin();
     });
+  }
+
+  @override
+  void dispose() {
+    WebSession.instance.removeListener(_onSession);
+    super.dispose();
+  }
+
+  /// Initializers that must NOT run while signed out (they hit auth-required
+  /// backends): the storage/credits fetch + the background cache warmer.
+  /// Re-run when the session transitions to signed-in.
+  void _initSignedIn() {
+    _storage = BillingApiService.instance.getStorageAndCredits();
+    // Self-delays per device class (§8.1), yields to foreground ops, and is
+    // idempotent across home revisits.
+    WebPrefetchScheduler.instance.start();
+  }
+
+  void _onSession() {
+    if (!mounted) return;
+    final signedIn = WebSession.instance.isSignedIn;
+    if (signedIn) {
+      if (_storage == null) _initSignedIn();
+    } else {
+      // Signed out: drop the now-unauthorized storage future so a later
+      // sign-in re-fetches it.
+      _storage = null;
+    }
+    setState(() {});
+    // After sign-out (or a cross-tab sign-out) re-present the login prompt;
+    // WebSession.signOut already re-armed loginPromptDismissed.
+    if (!signedIn) _maybeAutoOpenLogin();
+  }
+
+  /// Auto-open the login sheet unless it's already showing, the user already
+  /// dismissed it this session, or they're signed in.
+  void _maybeAutoOpenLogin() {
+    if (!mounted || _loginSheetOpen) return;
+    if (WebSession.instance.isSignedIn) return;
+    if (WebSession.instance.loginPromptDismissed) return;
+    _openLoginSheet();
+  }
+
+  /// Present the login sheet. Used by auto-open, the top WebLoginBar, the
+  /// logged-out profile button, and logged-out navigation ([_go]). Explicit
+  /// opens ignore `loginPromptDismissed` (only auto-open respects it).
+  Future<void> _openLoginSheet() async {
+    if (_loginSheetOpen || WebSession.instance.isSignedIn) return;
+    setState(() => _loginSheetOpen = true);
+    await WebLoginSheet.show(context);
+    if (!mounted) return;
+    setState(() {
+      _loginSheetOpen = false;
+      // Closed while still signed out ⇒ the user cancelled. Remember it (on
+      // WebSession, so it survives this widget being rebuilt on navigation)
+      // so we don't immediately re-present it; the top WebLoginBar lets them
+      // re-open it. Reset on sign-out.
+      if (!WebSession.instance.isSignedIn) {
+        WebSession.instance.loginPromptDismissed = true;
+      }
+    });
+  }
+
+  /// Navigate when signed in; otherwise present the login sheet — a logged-out
+  /// tap on a cloud action is a clear "log in to continue" prompt rather than
+  /// a silent bounce back home via the router gate.
+  void _go(String route) {
+    if (WebSession.instance.isSignedIn) {
+      context.go(route);
+    } else {
+      _openLoginSheet();
+    }
   }
 
   /// Same CircleAvatar rules as the native home screen: OAuth photo →
@@ -118,22 +200,28 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
       // avatar (left, opens the identity/sign-out sheet), plain
       // "FxFiles" title (no logo), settings (right → cloud portal).
       appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Profile',
-          onPressed: _showProfileSheet,
-          icon: _profileAvatar(context),
-        ),
+        leading: WebSession.instance.isSignedIn
+            ? IconButton(
+                tooltip: 'Profile',
+                onPressed: _showProfileSheet,
+                icon: _profileAvatar(context),
+              )
+            : IconButton(
+                tooltip: 'Sign in',
+                onPressed: _openLoginSheet,
+                icon: const Icon(Icons.account_circle_outlined),
+              ),
         title: const Text('FxFiles'),
         actions: [
           IconButton(
             tooltip: 'Search',
             icon: const Icon(Icons.search),
-            onPressed: () => context.go('/search'),
+            onPressed: () => _go('/search'),
           ),
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => context.go('/settings'),
+            onPressed: () => _go('/settings'),
           ),
           const SizedBox(width: 4),
         ],
@@ -210,43 +298,60 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           ),
         ),
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SizedBox(height: 8),
-                // Recent strip (issue #17) — hides itself when empty.
-                const WebRecentFilesSection(),
-                _onYourCloudSection(context),
-                _createSection(context),
-                _moreSection(context),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                  child: FutureBuilder<StorageInfo>(
-                    future: _storage,
-                    builder: (ctx, snap) {
-                      if (snap.hasError) {
-                        // Quota display is best-effort — never block home.
-                        return const SizedBox.shrink();
-                      }
-                      if (!snap.hasData) {
-                        return Text('Loading storage info…',
-                            style: Theme.of(context).textTheme.bodySmall);
-                      }
-                      // Storage indicator like mobile (#6): a "STORAGE"
-                      // section with a Cloud progress bar (web omits Phone).
-                      return WebStorageSection(info: snap.data!);
-                    },
+      body: Column(
+        children: [
+          // Top "sign in" bar: logged out AND the sheet is closed (i.e. the
+          // user cancelled it). Tap re-opens the sheet. Full-width, directly
+          // below the AppBar — mirrors the native SetupStatusBar placement.
+          if (!WebSession.instance.isSignedIn &&
+              !_loginSheetOpen &&
+              WebSession.instance.loginPromptDismissed)
+            WebLoginBar(onTap: _openLoginSheet),
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 8),
+                      // Recent strip (issue #17) — hides itself when empty
+                      // (and is empty while logged out → renders nothing).
+                      const WebRecentFilesSection(),
+                      _onYourCloudSection(context),
+                      _createSection(context),
+                      _moreSection(context),
+                      // Storage line — signed-in only (billing needs auth).
+                      if (_storage != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: FutureBuilder<StorageInfo>(
+                            future: _storage,
+                            builder: (ctx, snap) {
+                              if (snap.hasError) {
+                                // Quota display is best-effort — never block home.
+                                return const SizedBox.shrink();
+                              }
+                              if (!snap.hasData) {
+                                return Text('Loading storage info…',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall);
+                              }
+                              // Storage indicator like mobile (#6): a "STORAGE"
+                              // section with a Cloud progress bar (web omits Phone).
+                              return WebStorageSection(info: snap.data!);
+                            },
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -274,7 +379,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                     icon: LucideIcons.image,
                     label: 'Images',
                     iconColor: AppColors.primary,
-                    onTap: () => context.go('/b/images'),
+                    onTap: () => _go('/b/images'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -283,7 +388,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   child: _HeroTile(
                     icon: LucideIcons.video,
                     label: 'Videos',
-                    onTap: () => context.go('/b/videos'),
+                    onTap: () => _go('/b/videos'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -292,7 +397,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   child: _HeroTile(
                     icon: LucideIcons.music,
                     label: 'Audio',
-                    onTap: () => context.go('/b/audio'),
+                    onTap: () => _go('/b/audio'),
                   ),
                 ),
               ],
@@ -305,7 +410,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                 child: _SmallTile(
                   icon: LucideIcons.fileText,
                   label: 'Documents',
-                  onTap: () => context.go('/b/documents'),
+                  onTap: () => _go('/b/documents'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -313,7 +418,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                 child: _SmallTile(
                   icon: LucideIcons.download,
                   label: 'Downloads',
-                  onTap: () => context.go('/b/downloads'),
+                  onTap: () => _go('/b/downloads'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -321,7 +426,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                 child: _SmallTile(
                   icon: LucideIcons.archive,
                   label: 'Archives',
-                  onTap: () => context.go('/b/archives'),
+                  onTap: () => _go('/b/archives'),
                 ),
               ),
             ],
@@ -350,7 +455,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   icon: LucideIcons.globe,
                   label: 'Website',
                   badge: 'beta',
-                  onTap: () => context.go('/websites'),
+                  onTap: () => _go('/websites'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -359,7 +464,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   icon: LucideIcons.gem,
                   label: 'NFT',
                   badge: 'mint & share',
-                  onTap: () => context.go('/nfts'),
+                  onTap: () => _go('/nfts'),
                 ),
               ),
             ],
@@ -372,7 +477,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   icon: LucideIcons.inbox,
                   label: 'Shelf',
                   badge: 'share to FxFiles',
-                  onTap: () => context.go('/shelf'),
+                  onTap: () => _go('/shelf'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -381,7 +486,7 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                   icon: LucideIcons.zap,
                   label: 'Automate',
                   badge: 'CSV → bulk send',
-                  onTap: () => context.go('/automate-tasks'),
+                  onTap: () => _go('/automate-tasks'),
                 ),
               ),
             ],
@@ -406,19 +511,19 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
             icon: LucideIcons.share2,
             label: 'Shared',
             subtitle: 'Shares & collaborations',
-            onTap: () => context.go('/shared'),
+            onTap: () => _go('/shared'),
           ),
           _MoreRow(
             icon: LucideIcons.tags,
             label: 'Tags',
             subtitle: 'Organize by label',
-            onTap: () => context.go('/tags'),
+            onTap: () => _go('/tags'),
           ),
           _MoreRow(
             icon: LucideIcons.listMusic,
             label: 'Playlists',
             subtitle: 'Audio collections',
-            onTap: () => context.go('/playlists'),
+            onTap: () => _go('/playlists'),
           ),
         ],
       ),
