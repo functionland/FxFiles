@@ -59,6 +59,15 @@ class WebSession extends ChangeNotifier {
   bool get busy => _busy;
   String? get lastError => _lastError;
 
+  /// Session-scoped: the user dismissed the auto-presented login prompt on
+  /// the logged-out home, so it shouldn't immediately re-open while they
+  /// look around. Lives HERE (not in the home widget's State) because the
+  /// home State is recreated on navigation — a State-local flag wouldn't
+  /// persist the cancel. Reset on sign-out so the next logged-out session
+  /// re-arms the prompt. Not part of `notifyListeners` semantics — the home
+  /// reads it directly when deciding whether to auto-open.
+  bool loginPromptDismissed = false;
+
   /// Generate a fresh 24-word BIP39 recovery mnemonic (256-bit entropy).
   Future<String> generateRecoveryMnemonic() =>
       generateBip39Mnemonic(strength: 256);
@@ -413,8 +422,10 @@ class WebSession extends ChangeNotifier {
       debugPrint('WebSession.signOut: reset API config: $e');
     }
 
-    // 2) In-session logout + redirect to /signin.
+    // 2) In-session logout + redirect to the (logged-out) home. Re-arm the
+    //    login prompt so the next session auto-presents it again.
     _user = null;
+    loginPromptDismissed = false;
     notifyListeners();
 
     // 3) Tell other tabs, then reset in-memory services. WebUploadManager
@@ -464,6 +475,7 @@ class WebSession extends ChangeNotifier {
     FulaApiService.instance.reset();
     WebUploadManager.instance.reset();
     _user = null;
-    notifyListeners(); // router redirects to /signin
+    loginPromptDismissed = false;
+    notifyListeners(); // router redirects to the logged-out home
   }
 }

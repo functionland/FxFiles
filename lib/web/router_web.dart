@@ -41,10 +41,18 @@ GoRouter buildWebRouter() {
     refreshListenable: WebSession.instance,
     redirect: (context, state) {
       final signedIn = WebSession.instance.isSignedIn;
-      final onSignIn = state.matchedLocation == '/signin';
-      if (!signedIn && !onSignIn) return '/signin';
-      if (signedIn && onSignIn) return '/';
-      return null;
+      final loc = state.matchedLocation;
+      if (signedIn) {
+        // Once authenticated, the standalone sign-in screen has no purpose.
+        return loc == '/signin' ? '/' : null;
+      }
+      // Logged out: the home renders and auto-presents a CANCELABLE login
+      // sheet (plus a top "sign in" bar). The home is the only logged-out
+      // surface — every other route needs auth, so funnel logged-out users
+      // there instead of a dead/empty screen. '/signin' stays reachable as a
+      // full-screen fallback.
+      if (loc == '/' || loc == '/signin') return null;
+      return '/';
     },
     routes: [
       GoRoute(
