@@ -1,10 +1,13 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:fula_client/fula_client.dart' as fula;
 
+import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 
 /// Result of generating a fresh MCP X25519 keypair.
@@ -91,6 +94,64 @@ class AiConnectionService {
       );
     }
     return pub;
+  }
+
+  /// Mint a short-lived, scoped MCP gateway JWT via P11's issuer endpoint
+  /// (`POST {issuerBaseUrl}/api/mcp/tokens`).
+  ///
+  /// CONTRACT (pinning-webui `mcpIssueAndRespond` / `mintMcpToken`): the request
+  /// is authenticated with the user's SESSION JWT as a bearer token; the minted
+  /// token's scope is derived server-side from that session's `sub` (the MCP
+  /// public key is NOT sent — the server ignores it). The body is JSON; the only
+  /// honoured field is an optional `ttlSeconds` (clamped server-side to
+  /// [60, 86400]). The response is JSON `{ token, jti, expiresAt, tokenType,
+  /// scope }`; the bundle's `jwt` is the `token` field.
+  ///
+  /// [httpClient] is injected for tests (mirrors `issuer_client.dart`).
+  /// Throws [StateError] if there is no session JWT; throws [Exception] on a
+  /// non-2xx response or a malformed body.
+  Future<String> mintScopedJwt({http.Client? httpClient, int? ttlSeconds}) async {
+    final sessionJwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    if (sessionJwt == null || sessionJwt.isEmpty) {
+      throw StateError(
+        'No session token. Please sign in before creating an AI connection.',
+      );
+    }
+    final baseUrl = await AuthCore.issuerBaseUrl();
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client
+          .post(
+            Uri.parse('$baseUrl/api/mcp/tokens'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $sessionJwt',
+            },
+            // The MCP pubkey is intentionally NOT sent: the server scopes the
+            // token to the session `sub`. Only ttlSeconds is honoured.
+            body: jsonEncode({
+              if (ttlSeconds != null) 'ttlSeconds': ttlSeconds,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(
+          'Failed to mint MCP token: ${response.statusCode} - ${response.body}',
+        );
+      }
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final token = decoded['token'];
+      if (token is! String || token.isEmpty) {
+        throw Exception('MCP token response missing "token" field.');
+      }
+      return token;
+    } finally {
+      // Only close clients we created; never close an injected (test) client.
+      if (httpClient == null) client.close();
+    }
   }
 
   /// List the persisted (non-secret) connection records.
