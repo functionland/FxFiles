@@ -5,6 +5,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 import 'package:fula_files/features/ai_connections/providers/ai_connections_provider.dart';
+import 'package:fula_files/features/ai_connections/screens/ai_activity_screen.dart';
 
 /// P13 — "AI Connections": list saved MCP pairings and create new ones.
 ///
@@ -21,7 +22,20 @@ class AiConnectionsScreen extends ConsumerWidget {
     final state = ref.watch(aiConnectionsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('AI Connections')),
+      appBar: AppBar(
+        title: const Text('AI Connections'),
+        actions: [
+          IconButton(
+            // P16 — reach the collective "AI activity" view (what AIs have
+            // stored in the shared workspace).
+            icon: const Icon(LucideIcons.history),
+            tooltip: 'AI activity',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AiActivityScreen()),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: state.isBusy ? null : () => _onCreatePressed(context, ref),
         icon: const Icon(LucideIcons.plus),
@@ -78,7 +92,7 @@ class AiConnectionsScreen extends ConsumerWidget {
                       isThreeLine: true,
                       trailing: IconButton(
                         icon: const Icon(LucideIcons.trash2),
-                        tooltip: 'Remove',
+                        tooltip: 'Disconnect',
                         onPressed: state.isBusy
                             ? null
                             : () => _onDeletePressed(context, ref, c),
@@ -209,13 +223,31 @@ class AiConnectionsScreen extends ConsumerWidget {
     WidgetRef ref,
     AiConnection connection,
   ) async {
+    // HONEST disconnect (P16). Deleting the connection record removes the only
+    // copy of this pairing FxFiles holds — but it does NOT instantly cut the AI
+    // off. The AI is carrying a short-lived, scoped session JWT and CANNOT
+    // renew it (the issuer's refresh endpoint rejects MCP tokens → 401), so it
+    // keeps working until that token reaches its `exp` — about an hour by
+    // default, at most 24h if the instance configured a longer TTL — and then
+    // is permanently locked out. The copy below states exactly that; it must
+    // NOT imply instant revocation.
+    //
+    // FOLLOW-UP (documented, not built here): true ~instant revocation needs a
+    // SERVER-SIDE connection-revoke. Three pieces: (1) bind the minted token's
+    // `jti` to the connection's `mcp_pub_b64` at mint time; (2) add a
+    // `DELETE /api/mcp/tokens/connection/{mcp_pub_b64}` endpoint that blocklists
+    // that jti; (3) gate the gateway's check behind a `FULA_MCP_REVOCATION_ENABLED`
+    // flag → ~30s revoke once enabled. Until then this disconnect is
+    // expiry-bound, and the dialog says so truthfully.
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Remove connection?'),
-        content: Text(
-          'Remove "${connection.label}"? The AI client using it will lose '
-          'access when its token expires. This only deletes the local record.',
+        title: Text('Disconnect ${connection.label}?'),
+        content: const Text(
+          'This AI loses access when its current session token expires — within '
+          'about an hour by default, and up to 24 hours at most. It cannot renew '
+          'that token on its own, so it gets no new access after that. Files it '
+          'already stored stay in your library.',
         ),
         actions: [
           TextButton(
@@ -224,7 +256,7 @@ class AiConnectionsScreen extends ConsumerWidget {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Remove'),
+            child: const Text('Disconnect'),
           ),
         ],
       ),
