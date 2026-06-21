@@ -161,6 +161,8 @@ final RegExp _paletteLinePattern =
     RegExp(r'^Palette:\s*(.*)$', multiLine: true);
 final RegExp _contactFormLinePattern =
     RegExp(r'^ContactForm:\s*(.*)$', multiLine: true);
+final RegExp _languagesLinePattern =
+    RegExp(r'^Languages:\s*(.*)$', multiLine: true);
 
 String _formatAssetNote({
   required String fileName,
@@ -274,6 +276,76 @@ String buildWebsiteContactFormBlock(ContactFormConfig cfg) {
   return b.toString();
 }
 
+/// Supported website languages → their autonym (the language's own name).
+/// Autonyms are used as the switcher labels in the generated site and shown
+/// next to the English name in the FxFiles picker. English is the default.
+const Map<String, String> websiteLanguageAutonyms = {
+  'English': 'English',
+  'French': 'Français',
+  'Spanish': 'Español',
+  'Arabic': 'العربية',
+  'Farsi': 'فارسی',
+  'Hindi': 'हिन्दी',
+  'Chinese': '中文',
+  'Japanese': '日本語',
+};
+
+/// Website languages that read right-to-left (need dir="rtl" + mirrored layout).
+const Set<String> _rtlWebsiteLanguages = {'Arabic', 'Farsi'};
+
+/// Build the auto-added SITE LANGUAGES block from the selected languages.
+/// Returns '' for the default (English-only) case so existing single-language
+/// prompts are unchanged. Defensively clamps to 3 (mirrors the picker cap).
+String buildWebsiteLanguagesBlock(List<String> languages) {
+  final langs = <String>[
+    for (final l in languages)
+      if (websiteLanguageAutonyms.containsKey(l.trim())) l.trim(),
+  ].take(3).toList();
+  if (langs.isEmpty || (langs.length == 1 && langs.first == 'English')) return '';
+
+  final b = StringBuffer()..writeln('=== SITE LANGUAGES (auto-added) ===');
+  if (langs.length == 1) {
+    final lang = langs.first;
+    b.writeln('Write the ENTIRE website in $lang '
+        '(${websiteLanguageAutonyms[lang]}). ALL visible text — navigation, '
+        'headings, body copy, buttons, form labels, alt text, and footer — must '
+        'be in $lang; do not leave any text in another language.');
+    if (_rtlWebsiteLanguages.contains(lang)) {
+      b.writeln('$lang is right-to-left: set dir="rtl" on the <html> element and '
+          'mirror the layout accordingly.');
+    }
+  } else {
+    final labelled =
+        langs.map((l) => '$l (${websiteLanguageAutonyms[l]})').join(', ');
+    final hasRtl = langs.any(_rtlWebsiteLanguages.contains);
+    b
+      ..writeln('Build a MULTILINGUAL website in these languages: $labelled.')
+      ..writeln('- Add a language-switcher dropdown in the site header (e.g. '
+          'top-right). Label each option with the language\'s OWN name (the '
+          'autonym shown in parentheses above), and include a small neutral icon '
+          'next to each name (a globe, or the language\'s own script glyph); do '
+          'NOT use national flags — they do not map cleanly to languages.')
+      ..writeln('- Default the site to ${langs.first}.')
+      ..writeln('- Provide a complete, faithful, human-quality translation of '
+          'ALL visible text for EVERY listed language — never leave text '
+          'untranslated or mixed between languages.')
+      ..writeln('- Because ALL language versions ship together in one static '
+          'bundle under the output budget above, keep the site compact — prefer '
+          'fewer, shorter sections so every language fits in full. Never sacrifice '
+          'translation completeness to fit; reduce the amount of content instead.')
+      ..writeln('- Switching language updates all visible text instantly, '
+          'client-side (no page reload), and persists the choice in localStorage '
+          'so it survives refreshes.');
+    if (hasRtl) {
+      b.writeln('- For right-to-left languages (Arabic / Farsi), set dir="rtl" '
+          'and mirror the layout when that language is active; use dir="ltr" '
+          'otherwise.');
+    }
+  }
+  b.write('=== END SITE LANGUAGES ===');
+  return b.toString();
+}
+
 /// Parse the `ContactForm:` header line out of a stored prompt, or null
 /// when absent/invalid (used by the post-publish render check too).
 ContactFormConfig? parseWebsiteContactFormLine(String storedPrompt) {
@@ -294,6 +366,7 @@ final RegExp _nameLinePattern =
   String websiteName,
   String category,
   List<String> styles,
+  List<String> languages,
   String palette,
   String userBody,
   ContactFormConfig? contactForm,
@@ -307,6 +380,7 @@ final RegExp _nameLinePattern =
       websiteName: '',
       category: '',
       styles: const <String>[],
+      languages: const <String>['English'],
       palette: '',
       userBody: stored.trim(),
       contactForm: contactForm,
@@ -327,6 +401,20 @@ final RegExp _nameLinePattern =
   final paletteMatch = _paletteLinePattern.firstMatch(stored);
   final palette = paletteMatch?.group(1)?.trim() ?? '';
 
+  // Languages: parse the line, or default to English when absent. Older records
+  // AND English-only sites have no Languages line (compose omits the default),
+  // so "no line" must resolve to ['English'] — never [] — or Recreate would
+  // silently drop the language back to nothing.
+  final languagesMatch = _languagesLinePattern.firstMatch(stored);
+  final languages = <String>[];
+  if (languagesMatch != null) {
+    final raw = languagesMatch.group(1)?.trim() ?? '';
+    languages.addAll(
+      raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty),
+    );
+  }
+  if (languages.isEmpty) languages.add('English');
+
   // User body is everything after the first blank line.
   final blankLineIdx = stored.indexOf('\n\n');
   final body =
@@ -336,6 +424,7 @@ final RegExp _nameLinePattern =
     websiteName: nameMatch.group(1)?.trim() ?? '',
     category: categoryMatch.group(1)?.trim() ?? '',
     styles: styles,
+    languages: languages,
     palette: palette,
     userBody: body,
     contactForm: contactForm,
@@ -353,6 +442,7 @@ String composeEnrichedWebsitePrompt({
   required String palette,
   required String body,
   ContactFormConfig? contactForm,
+  List<String> languages = const <String>['English'],
 }) {
   final buffer = StringBuffer()
     ..writeln('Website Name: $websiteName')
@@ -362,6 +452,16 @@ String composeEnrichedWebsitePrompt({
   }
   if (palette.isNotEmpty) {
     buffer.writeln('Palette: $palette');
+  }
+  // Languages: only emit when beyond the default (English only), so existing
+  // single-language prompts stay byte-identical. The defensive take(3) mirrors
+  // the picker's cap so a bad caller can't emit a longer list.
+  final langs = <String>[
+    for (final l in languages)
+      if (l.trim().isNotEmpty) l.trim(),
+  ].take(3).toList();
+  if (!(langs.isEmpty || (langs.length == 1 && langs.first == 'English'))) {
+    buffer.writeln('Languages: ${langs.join(', ')}');
   }
   if (contactForm != null && contactForm.enabled) {
     buffer.writeln('ContactForm: ${contactForm.encode()}');
@@ -428,6 +528,22 @@ String buildWebsiteAiPrompt(
       ..writeln('=== END PALETTE PREFERENCE ===');
   }
 
+  final languagesMatch = _languagesLinePattern.firstMatch(storedPrompt);
+  final languagesRaw = languagesMatch?.group(1)?.trim() ?? '';
+  if (languagesRaw.isNotEmpty) {
+    final langs = languagesRaw
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    final languagesBlock = buildWebsiteLanguagesBlock(langs);
+    if (languagesBlock.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..writeln(languagesBlock);
+    }
+  }
+
   final contactFormMatch = _contactFormLinePattern.firstMatch(storedPrompt);
   final contactForm = contactFormMatch != null
       ? ContactFormConfig.tryParse(contactFormMatch.group(1) ?? '')
@@ -456,6 +572,7 @@ String buildWebsiteAiPrompt(
   // it literally on the page.
   final echoPrompt = storedPrompt
       .replaceAll(RegExp(r'^ContactForm:.*$\n?', multiLine: true), '')
+      .replaceAll(RegExp(r'^Languages:.*$\n?', multiLine: true), '')
       .trimRight();
   buffer
     ..writeln()

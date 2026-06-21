@@ -124,6 +124,7 @@ class WebsiteService {
     required String body,
     List<AssetNote> assetNotes = const [],
     ContactFormConfig? contactForm,
+    List<String> languages = const <String>['English'],
   }) {
     return _buildAiPrompt(
       composeEnrichedWebsitePrompt(
@@ -133,6 +134,7 @@ class WebsiteService {
         palette: palette,
         body: body,
         contactForm: contactForm,
+        languages: languages,
       ),
       assetNotes: assetNotes,
       cidsAvailable: false,
