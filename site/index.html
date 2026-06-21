@@ -64,6 +64,29 @@
   }
   @keyframes grad-shift { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
 
+  /* Non-Latin scripts (Arabic / Farsi / Hindi / Chinese / Japanese) sit taller
+     than Latin, so the tight Latin heading metrics crop them. Drop the
+     Latin-tuned negative tracking and give the headings a roomier line box.
+     Latin (en/fr/es) is untouched. */
+  :lang(ar) h1, :lang(fa) h1, :lang(hi) h1, :lang(zh) h1, :lang(ja) h1 {
+    line-height: 1.42; letter-spacing: normal;
+  }
+  :lang(ar) h2, :lang(fa) h2, :lang(hi) h2, :lang(zh) h2, :lang(ja) h2 {
+    line-height: 1.45; letter-spacing: normal;
+  }
+  :lang(ar) h3, :lang(fa) h3, :lang(hi) h3, :lang(zh) h3, :lang(ja) h3 {
+    line-height: 1.5;
+  }
+  /* gradient-text uses background-clip:text, so the fill paints over the font's
+     content box — non-Latin marks/descenders that overflow it render
+     transparent (glyph bottoms vanish, "cut off"). inline-block + a roomy line
+     box + vertical padding makes the fill cover the whole glyph. text-align is
+     inherited, so the hero's two centered lines stay centered. */
+  :lang(ar) .gradient-text, :lang(fa) .gradient-text, :lang(hi) .gradient-text,
+  :lang(zh) .gradient-text, :lang(ja) .gradient-text {
+    display: inline-block; line-height: 1.4; padding: 0.06em 0 0.16em;
+  }
+
   /* nav */
   nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; transition: background .3s, backdrop-filter .3s, border-color .3s; border-bottom: 1px solid transparent; }
   nav.scrolled { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(20px); border-bottom-color: var(--border); }
