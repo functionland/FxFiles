@@ -27,6 +27,7 @@ import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
+import 'package:fula_files/web/utils/cloud_folder_tree.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
@@ -192,7 +193,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     DateTime? fetchedAt,
   }) {
     final objects = sortObjects(
-      raw.map((o) => o.withSourceBucket(bucket)).toList(),
+      // Hide folder-keep markers: Cloud Files can create folders in this same
+      // bucket, and the marker object must never render as a file here.
+      stripFolderMarkers(raw).map((o) => o.withSourceBucket(bucket)).toList(),
       _sortBy,
       _sortAscending,
     );

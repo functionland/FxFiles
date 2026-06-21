@@ -132,18 +132,31 @@ class WebUploadManager extends ChangeNotifier {
     required String base,
     required String bucket,
     required List<WebPickedFile> files,
+    String keyPrefix = '',
   }) {
     if (files.isEmpty) return;
     // Tidy: drop previously-finished SUCCESS rows so the tray reflects the new
     // batch. Failed/cancelled rows are kept until the user dismisses them.
     _jobs.removeWhere((j) => j.status == WebUploadStatus.done);
 
+    // Normalize the folder prefix: no leading slash, exactly one trailing
+    // slash. Empty → bucket root (key stays "/<name>", as before). Cloud Files
+    // passes the current folder so files land under it.
+    var p = keyPrefix.trim();
+    while (p.startsWith('/')) {
+      p = p.substring(1);
+    }
+    while (p.endsWith('/')) {
+      p = p.substring(0, p.length - 1);
+    }
+    final dir = p.isEmpty ? '' : '$p/';
+
     for (final f in files) {
       _jobs.add(WebUploadJob(
         id: _seq++,
         base: base,
         bucket: bucket,
-        key: '/${f.name}',
+        key: '/$dir${f.name}',
         name: f.name,
         size: f.size,
         picked: f,
