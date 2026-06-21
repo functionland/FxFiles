@@ -210,4 +210,11 @@ class SecureStorageKeys {
   // changing the (publisher-independent) IPNS name.
   static const String websiteIpnsPublishEndpoint =
       'website_ipns_publish_endpoint';
+
+  // P13 — AI Connections. JSON array of the persisted (NON-secret) MCP pairing
+  // records: each entry holds only the MCP public key, a user label, id and
+  // createdAt (see AiConnection). The one-time connection bundle's SECRETS
+  // (mcp_secret_b64, workspace_secret_b64, the scoped jwt) are deliberately
+  // NEVER persisted — the bundle is shown once for the user to copy.
+  static const String aiConnections = 'ai_connections';
 }

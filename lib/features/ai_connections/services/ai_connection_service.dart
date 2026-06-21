@@ -5,9 +5,12 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:fula_client/fula_client.dart' as fula;
 
+import 'package:uuid/uuid.dart';
+
 import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/utils/user_id.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 
 /// Result of generating a fresh MCP X25519 keypair.
@@ -154,21 +157,111 @@ class AiConnectionService {
     }
   }
 
+  /// Build the MCP connection bundle JSON string. PURE (no I/O): every value is
+  /// passed in, so this is fully unit-testable without FFI or the network.
+  ///
+  /// The shape MUST match the MCP's `CapabilityBundleJson`
+  /// (`fula-api/crates/fula-mcp/src/capability.rs`) — field names + base64 are
+  /// load-bearing (Rust `#[derive(Deserialize)]`). Required fields:
+  ///   endpoint, jwt, workspace_secret_b64, mcp_secret_b64, owner_public_b64.
+  /// Optional: user_id, storage_api_url.
+  ///
+  /// NOTE the key direction (the one catastrophic swap to avoid):
+  ///   mcp_secret_b64  = base64(MCP **secret** key)
+  ///   owner_public_b64 = base64(owner **public** key)
+  String buildBundleJson({
+    required String endpoint,
+    required String jwt,
+    required Uint8List workspaceSecret,
+    required Uint8List mcpSecretKey,
+    required Uint8List ownerPublicKey,
+    String? userId,
+    String? storageApiUrl,
+  }) {
+    final bundle = <String, dynamic>{
+      'endpoint': endpoint,
+      'jwt': jwt,
+      'workspace_secret_b64': base64Encode(workspaceSecret),
+      // base64 of the 32-byte MCP X25519 SECRET key (NOT the public key).
+      'mcp_secret_b64': base64Encode(mcpSecretKey),
+      // base64 of the 32-byte owner X25519 PUBLIC key.
+      'owner_public_b64': base64Encode(ownerPublicKey),
+      if (userId != null && userId.isNotEmpty) 'user_id': userId,
+      if (storageApiUrl != null && storageApiUrl.isNotEmpty)
+        'storage_api_url': storageApiUrl,
+    };
+    return jsonEncode(bundle);
+  }
+
+  /// Resolve the S3 gateway endpoint for the bundle: the user's configured
+  /// gateway override, else the default S3 gateway.
+  Future<String> _resolveEndpoint() async {
+    final stored = await SecureStorageService.instance
+        .read(SecureStorageKeys.apiGatewayUrl);
+    if (stored != null && stored.isNotEmpty) return stored;
+    return AuthCore.defaultS3GatewayUrl;
+  }
+
+  /// Orchestrate steps 2–5 and return the one-time bundle JSON string.
+  ///
+  /// Generates a fresh MCP keypair, derives the workspace secret + owner public
+  /// key, mints the scoped JWT, builds the contract JSON, then persists ONLY the
+  /// NON-secret record (mcp public key + label + createdAt). The bundle (with
+  /// its secrets) is returned to the caller to show ONCE and is never stored.
+  Future<String> createConnection({required String label}) async {
+    final keypair = await generateMcpKeypair();
+    final workspaceSecret = await deriveWorkspaceSecret();
+    final ownerPub = await ownerPublicKey();
+    final jwt = await mintScopedJwt();
+    final endpoint = await _resolveEndpoint();
+    final storageApiUrl = await AuthCore.issuerBaseUrl();
+    // FxFiles' canonical per-user id (sha256(base64(pubkey))[..16]). Reused
+    // verbatim so it matches what the MCP stamps onto tag metadata and what
+    // FxFiles derives elsewhere — do NOT re-roll the hash/slice here.
+    final userId = await deriveUserId();
+
+    final bundle = buildBundleJson(
+      endpoint: endpoint,
+      jwt: jwt,
+      workspaceSecret: workspaceSecret,
+      mcpSecretKey: keypair.secretKey,
+      ownerPublicKey: ownerPub,
+      userId: userId,
+      storageApiUrl: storageApiUrl,
+    );
+
+    // Persist ONLY the record — public key + label + id + createdAt. No secrets.
+    final record = AiConnection(
+      id: const Uuid().v4(),
+      label: label,
+      mcpPublicKeyB64: base64Encode(keypair.publicKey),
+      createdAt: DateTime.now(),
+    );
+    final existing = await listConnections();
+    await _persist([...existing, record]);
+
+    return bundle;
+  }
+
   /// List the persisted (non-secret) connection records.
   Future<List<AiConnection>> listConnections() async {
-    throw UnimplementedError('listConnections: P13 step 5');
+    final raw =
+        await SecureStorageService.instance.read(SecureStorageKeys.aiConnections);
+    return AiConnection.decodeList(raw);
   }
 
-  /// Orchestrate steps 2–5: generate the MCP keypair, derive the workspace
-  /// secret + owner public key, mint the scoped JWT, build the bundle JSON,
-  /// persist ONLY the record (public key + label + createdAt), and return the
-  /// one-time bundle string.
-  Future<String> createConnection({required String label}) async {
-    throw UnimplementedError('createConnection: P13 step 5');
-  }
-
-  /// Delete a persisted connection record by id.
+  /// Delete a persisted connection record by id. (Does not revoke the remote
+  /// token — that lapses on its short exp.)
   Future<void> deleteConnection(String id) async {
-    throw UnimplementedError('deleteConnection: P13 step 5');
+    final remaining =
+        (await listConnections()).where((c) => c.id != id).toList();
+    await _persist(remaining);
+  }
+
+  Future<void> _persist(List<AiConnection> connections) async {
+    await SecureStorageService.instance.write(
+      SecureStorageKeys.aiConnections,
+      AiConnection.encodeList(connections),
+    );
   }
 }
