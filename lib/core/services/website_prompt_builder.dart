@@ -323,16 +323,19 @@ String buildWebsiteLanguagesBlock(List<String> languages) {
       ..writeln('- Add a language-switcher dropdown in the site header (e.g. '
           'top-right). Label each option with the language\'s OWN name (the '
           'autonym shown in parentheses above), and include a small neutral icon '
-          'next to each name (a globe, or the language\'s own script glyph); do '
-          'NOT use national flags — they do not map cleanly to languages.')
+          'next to each name — an inline SVG globe or a Unicode/script glyph, '
+          'NOT an external image; do NOT use national flags — they do not map '
+          'cleanly to languages.')
       ..writeln('- Default the site to ${langs.first}.')
       ..writeln('- Provide a complete, faithful, human-quality translation of '
           'ALL visible text for EVERY listed language — never leave text '
           'untranslated or mixed between languages.')
       ..writeln('- Because ALL language versions ship together in one static '
-          'bundle under the output budget above, keep the site compact — prefer '
-          'fewer, shorter sections so every language fits in full. Never sacrifice '
-          'translation completeness to fit; reduce the amount of content instead.')
+          'bundle under the output budget above, keep the site compact so every '
+          'language fits in full: prefer fewer, shorter sections, terse headings, '
+          'and single-paragraph copy. If it still would not fit, shorten or drop '
+          'whole sections UNIFORMLY across every language — never omit a language '
+          'or leave any language partially translated.')
       ..writeln('- Switching language updates all visible text instantly, '
           'client-side (no page reload), and persists the choice in localStorage '
           'so it survives refreshes.');

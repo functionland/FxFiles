@@ -127,5 +127,24 @@ void main() {
           const ['English', 'French', 'Spanish', 'Japanese']);
       expect(b.contains('日本語'), isFalse); // 4th language dropped
     });
+
+    test('multi → output-budget guidance (advisor: prevent truncation)', () {
+      // Both advisors flagged the 40KB output cap vs N× translation text as the
+      // headline risk: the block must tell the model all languages share one
+      // bundle and to reduce content uniformly rather than drop/skimp a
+      // language. Lock it in so a future edit can't silently remove it.
+      final b = buildWebsiteLanguagesBlock(const ['English', 'French']);
+      expect(b, contains('one static'));
+      expect(b.toLowerCase(), contains('uniformly'));
+      expect(b.toLowerCase(), contains('never omit a language'));
+    });
+
+    test('multi → switcher icon is inline, never an external image/flag', () {
+      // Static IPFS hosting: the switcher icon must be inline (SVG/Unicode),
+      // not a CDN image, or the site breaks offline.
+      final b = buildWebsiteLanguagesBlock(const ['English', 'French']);
+      expect(b.toLowerCase(), contains('inline svg'));
+      expect(b.contains('NOT an external image'), isTrue);
+    });
   });
 }
