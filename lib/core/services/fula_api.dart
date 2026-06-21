@@ -221,6 +221,30 @@ abstract class FulaApi {
   /// Delete an object from the master + the user's forest.
   Future<void> deleteObject(String bucket, String key);
 
+  // ── AI workspace (P14) ─────────────────────────────────────────────────────
+  // Surface the AI/MCP's own encrypted `fula-ai-workspace` forest in native
+  // category views + adopt its tags. All three are GATED behind
+  // [hasAiConnection] so they are a no-op for non-AI users.
+
+  /// True if the user has at least one AI-connection record (P13). The gate for
+  /// every workspace read: when false, [listWorkspaceObjects] /
+  /// [downloadWorkspaceObject] do nothing, so non-AI users pay zero cost.
+  Future<bool> hasAiConnection();
+
+  /// List objects from the AI-workspace forest under [prefix] (e.g.
+  /// `ai/images/`), each tagged `sourceBucket = 'fula-ai-workspace'`. Returns
+  /// `[]` (never throws) when there is no AI connection or the workspace can't
+  /// be read, so it can never hide the user's own content in a merged view.
+  Future<List<FulaObject>> listWorkspaceObjects(
+    String bucket, {
+    String prefix,
+  });
+
+  /// Download + decrypt a single object from the AI-workspace forest (e.g. the
+  /// AI tag doc `ai/tag-metadata/ai-workspace.json`). Throws on a genuine read
+  /// error; the tag-adoption caller catches it so a failure never blocks restore.
+  Future<Uint8List> downloadWorkspaceObject(String bucket, String key);
+
   // share/collab APIs deliberately not in this interface yet — those
   // scenarios are skeleton-only in this round. Adding them later is
   // an additive change to this surface + the concrete service +

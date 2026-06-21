@@ -334,4 +334,60 @@ class FakeFulaApi implements FulaApi {
             .where((f) => f.key != key)
             .toList();
   }
+
+  // ---- AI workspace (P14) ----
+
+  /// Gate flag: whether the user has an AI connection. Defaults to FALSE so the
+  /// common (non-AI) test path exercises the no-op gate. Set true to simulate
+  /// "an AI connection exists" and unlock the workspace list/download stubs.
+  bool aiConnectionExists = false;
+
+  /// Per-`(bucket, key)` byte payloads for [downloadWorkspaceObject]. Same key
+  /// format as [downloadResponseFor]: `"$bucket:$key"`.
+  Map<String, Uint8List> workspaceDownloadResponseFor = <String, Uint8List>{};
+
+  int hasAiConnectionCalls = 0;
+  final Map<String, int> listWorkspaceObjectsCalls = <String, int>{};
+  final Map<String, int> downloadWorkspaceCalls = <String, int>{};
+
+  @override
+  Future<bool> hasAiConnection() async {
+    hasAiConnectionCalls++;
+    return aiConnectionExists;
+  }
+
+  @override
+  Future<List<FulaObject>> listWorkspaceObjects(
+    String bucket, {
+    String prefix = '',
+  }) async {
+    // Honor the gate EXACTLY like the real FulaApiService: no connection → no
+    // read, return empty. (Keeps real/fake gate semantics identical so a test
+    // can't pass a path the real code never reaches.)
+    if (!aiConnectionExists) return const <FulaObject>[];
+    listWorkspaceObjectsCalls[bucket] =
+        (listWorkspaceObjectsCalls[bucket] ?? 0) + 1;
+    final all = objectsResponseFor[bucket] ?? const <FulaObject>[];
+    final filtered =
+        prefix.isEmpty ? all : all.where((f) => f.key.startsWith(prefix));
+    // Tag with the workspace bucket, mirroring the real implementation.
+    return filtered.map((o) => o.withSourceBucket(bucket)).toList();
+  }
+
+  @override
+  Future<Uint8List> downloadWorkspaceObject(String bucket, String key) async {
+    if (!aiConnectionExists) {
+      throw FulaApiException('FakeFulaApi: no AI connection');
+    }
+    final composite = '$bucket:$key';
+    downloadWorkspaceCalls[composite] =
+        (downloadWorkspaceCalls[composite] ?? 0) + 1;
+    final bytes = workspaceDownloadResponseFor[composite];
+    if (bytes == null) {
+      throw FulaApiException(
+        'FakeFulaApi.downloadWorkspaceObject: no stub for "$composite"',
+      );
+    }
+    return bytes;
+  }
 }
