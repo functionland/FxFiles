@@ -345,6 +345,11 @@ String buildWebsiteLanguagesBlock(List<String> languages) {
           'otherwise.');
     }
   }
+  b.writeln('Exception to the above: keep proper names, brand names, and the '
+      'branded part of product names in their ORIGINAL spelling/script in every '
+      'language — do NOT translate or transliterate them (this includes the '
+      "website's own name when it is a brand, e.g. a Latin brand name stays "
+      'Latin even in an Arabic or Chinese page).');
   b.write('=== END SITE LANGUAGES ===');
   return b.toString();
 }

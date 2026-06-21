@@ -146,5 +146,17 @@ void main() {
       expect(b.toLowerCase(), contains('inline svg'));
       expect(b.contains('NOT an external image'), isTrue);
     });
+
+    test('preserves brand/proper names from translation (single + multi)', () {
+      // Brand names, proper names, and branded product-name parts must NOT be
+      // translated or transliterated (e.g. a Latin brand stays Latin in Arabic).
+      final multi = buildWebsiteLanguagesBlock(const ['English', 'Arabic']);
+      expect(multi.toLowerCase(), contains('brand names'));
+      expect(multi.toLowerCase(), contains('transliterate'));
+      // Applies to the single non-English case too.
+      final single = buildWebsiteLanguagesBlock(const ['Arabic']);
+      expect(single.toLowerCase(), contains('brand names'));
+      expect(single.toLowerCase(), contains('transliterate'));
+    });
   });
 }
