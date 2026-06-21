@@ -20,7 +20,53 @@ import 'package:flutter/foundation.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api.dart';
+import 'package:fula_files/core/services/fula_api_service.dart'
+    show FulaApiService;
 import 'package:fula_files/core/services/legacy_listing_cache.dart';
+
+/// P14 — additively merge the AI/MCP's workspace items for category [base] into
+/// [byKey], in place. The AI writes encrypted files to `fula-ai-workspace` under
+/// `ai/<category>/...`; this surfaces them in the SAME native category view as
+/// the user's own files (each AI item already carries
+/// `sourceBucket = 'fula-ai-workspace'` so the UI can badge / route it).
+///
+/// Safety invariants (all load-bearing):
+///  - GATED: a no-op unless [FulaApi.hasAiConnection] is true, so non-AI users
+///    pay nothing (not even a workspace list call).
+///  - LIVE: always a fresh read (never frozen/cached) — the AI workspace changes
+///    as the AI writes. Callers must NOT bake this into a frozen-legacy cache.
+///  - TOLERANT: [FulaApi.listWorkspaceObjects] returns `[]` on any AI-side error
+///    (auth/missing/decode), so a workspace problem can NEVER hide the user's
+///    own legacy/v8 content.
+///  - USER-WINS: seeded into [byKey] FIRST (before the user's legacy/v8 items),
+///    so a user's own object with a colliding key always overwrites an AI entry.
+///    (AI keys `ai/images/x.jpg` and user keys `x.jpg` are disjoint, so a
+///    collision can't actually occur — this is zero-cost belt-and-suspenders.)
+///  - VALIDATED: only keys shaped `ai/<base>/...` are admitted. The MCP is an
+///    independently-versioned writer; a malformed or off-category key is DROPPED
+///    rather than mis-filed.
+Future<void> _mergeAiWorkspaceInto(
+  FulaApi api,
+  String base,
+  Map<String, FulaObject> byKey,
+) async {
+  if (!await api.hasAiConnection()) return;
+  // listWorkspaceObjects never throws — tolerant by contract.
+  final aiItems = await api.listWorkspaceObjects(
+    FulaApiService.aiWorkspaceBucket,
+    prefix: 'ai/$base/',
+  );
+  for (final o in aiItems) {
+    final parts = o.key.split('/');
+    // Require exactly `ai/<base>/<name...>` — drop anything else.
+    if (parts.length < 3 || parts[0] != 'ai' || parts[1] != base) {
+      debugPrint('listCategory: dropping off-shape AI key "${o.key}"');
+      continue;
+    }
+    // Already tagged sourceBucket='fula-ai-workspace' by listWorkspaceObjects.
+    byKey[o.key] = o;
+  }
+}
 
 /// List a category as a single merged view across its legacy + v8 buckets.
 ///
@@ -36,13 +82,26 @@ Future<List<FulaObject>> listCategoryMerged(
 }) async {
   final buckets = BucketVersionResolver.readBuckets(base);
 
-  // Fast path: single bucket (unmanaged / v8 disabled). Tag + return.
-  if (buckets.length == 1) {
-    final objs = await api.listObjects(buckets.first, prefix: prefix);
-    return objs.map((o) => o.withSourceBucket(buckets.first)).toList();
+  final byKey = <String, FulaObject>{};
+
+  // P14: seed AI-workspace items FIRST (user buckets below overwrite on any key
+  // collision, so the user always wins). Only for a whole-category view —
+  // a subfolder-narrowed (non-empty prefix) read is the user's own keyspace and
+  // must not inject category-level AI files. Gated + tolerant inside the helper.
+  if (prefix.isEmpty) {
+    await _mergeAiWorkspaceInto(api, base, byKey);
   }
 
-  final byKey = <String, FulaObject>{};
+  // Single bucket (unmanaged / v8 disabled): one tagged read. (No longer an
+  // early return — AI items above must still surface.)
+  if (buckets.length == 1) {
+    final objs = await api.listObjects(buckets.first, prefix: prefix);
+    for (final o in objs) {
+      byKey[o.key] = o.withSourceBucket(buckets.first);
+    }
+    return byKey.values.toList();
+  }
+
   for (var i = 0; i < buckets.length; i++) {
     final bucket = buckets[i];
     List<FulaObject> objs;
@@ -79,24 +138,35 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
 }) async {
   final buckets = BucketVersionResolver.readBuckets(base);
 
-  // Fast path: single bucket (unmanaged / v8 disabled).
+  final byKey = <String, FulaObject>{};
+  var anyStale = false;
+  DateTime? oldestFetch;
+
+  // P14: seed AI-workspace items FIRST (user buckets overwrite on collision).
+  // A LIVE read — it does not participate in stale/fetchedAt (those describe
+  // the user's cached buckets). Whole-category view only (empty prefix).
+  if (prefix.isEmpty) {
+    await _mergeAiWorkspaceInto(api, base, byKey);
+  }
+
+  // Single bucket (unmanaged / v8 disabled): one cached read merged over any
+  // AI items already seeded. (No early return — AI items must still surface.)
   if (buckets.length == 1) {
     final r = await api.listObjectsCached(
       buckets.first,
       prefix: prefix,
       timeout: timeout,
     );
+    for (final o in r.objects) {
+      byKey[o.key] = o.withSourceBucket(buckets.first);
+    }
     return (
-      objects:
-          r.objects.map((o) => o.withSourceBucket(buckets.first)).toList(),
+      objects: byKey.values.toList(),
       stale: r.stale,
       fetchedAt: r.fetchedAt,
     );
   }
 
-  final byKey = <String, FulaObject>{};
-  var anyStale = false;
-  DateTime? oldestFetch;
   for (var i = 0; i < buckets.length; i++) {
     final bucket = buckets[i];
     ({List<FulaObject> objects, bool stale, DateTime? fetchedAt}) r;
@@ -147,14 +217,20 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
   final buckets = BucketVersionResolver.readBuckets(base);
 
   // Single bucket (unmanaged / v8 disabled): no legacy/v8 split, no caching.
+  // Still surfaces AI-workspace items (seeded FIRST; the user's read overwrites
+  // on any collision). The AI read is LIVE — nothing here is frozen.
   if (buckets.length == 1) {
+    final byKey = <String, FulaObject>{};
+    await _mergeAiWorkspaceInto(api, base, byKey);
     final r = await api.listObjectsCached(
       buckets.first,
       timeout: timeout,
     );
+    for (final o in r.objects) {
+      byKey[o.key] = o.withSourceBucket(buckets.first);
+    }
     return (
-      objects:
-          r.objects.map((o) => o.withSourceBucket(buckets.first)).toList(),
+      objects: byKey.values.toList(),
       stale: r.stale,
       fetchedAt: r.fetchedAt,
     );
@@ -201,8 +277,12 @@ Future<({List<FulaObject> objects, bool stale, DateTime? fetchedAt})>
     debugPrint('listCategoryCached: v8 "$v8" failed → empty: $e');
   }
 
-  // 3) Merge — legacy first, v8 overwrites (prefer-v8), each tagged.
+  // 3) Merge. P14: AI-workspace items FIRST so the user's own legacy/v8 objects
+  //    overwrite on any key collision (user always wins). The AI source is a
+  //    LIVE read and is NEVER written into the frozen-legacy cache above, so it
+  //    refreshes every call as the AI writes. Then legacy, then v8 (prefer-v8).
   final byKey = <String, FulaObject>{};
+  await _mergeAiWorkspaceInto(api, base, byKey);
   for (final o in legacyItems) {
     byKey[o.key] = o.withSourceBucket(legacy);
   }
