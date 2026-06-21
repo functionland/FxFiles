@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/contact_form_config.dart';
+import 'package:fula_files/core/services/website_prompt_builder.dart'
+    show websiteLanguageAutonyms;
 import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
 
@@ -11,6 +13,7 @@ typedef GenerateWebsitePromptResult = ({
   String websiteName,
   String category,
   List<String> styles,
+  List<String> languages,
   String palette,
   String prompt,
   bool enableTracking,
@@ -229,6 +232,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
   final String? initialPrompt;
   final bool initialEnableTracking;
   final ContactFormConfig? initialContactForm;
+  final List<String>? initialLanguages;
 
   /// Per-asset user notes captured in the website detail screen. Used by the
   /// "preview full prompt" eye icon so the user can see exactly what the AI
@@ -245,6 +249,7 @@ class GenerateWebsiteScreen extends StatefulWidget {
     this.initialPrompt,
     this.initialEnableTracking = false,
     this.initialContactForm,
+    this.initialLanguages,
     this.assetNotes = const [],
   });
 
@@ -258,6 +263,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
   late String _category;
   late String _palette;
   late String _selectedStyle;
+  late List<String> _selectedLanguages;
   late bool _enableTracking;
   late bool _contactFormEnabled;
   late ContactFormChannel _channel;
@@ -318,6 +324,14 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
               options: f.options.join(', '),
             ))
         .toList();
+
+    // Languages: keep only known options, cap at 3, default to English.
+    final knownLangs = websiteLanguageAutonyms.keys.toSet();
+    final initLangs = (widget.initialLanguages ?? const <String>[])
+        .where(knownLangs.contains)
+        .take(3)
+        .toList();
+    _selectedLanguages = initLangs.isEmpty ? <String>['English'] : initLangs;
   }
 
   @override
@@ -363,6 +377,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
       websiteName: name,
       category: _category,
       styles: <String>[_selectedStyle],
+      languages: _selectedLanguages,
       palette: _palette,
       prompt: _promptController.text.trim(),
       enableTracking: _enableTracking,
@@ -417,11 +432,80 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
 
   void _addField() => setState(() => _fields.add(_ContactFieldRow()));
 
+  void _toggleLanguage(String lang, bool selected) {
+    setState(() {
+      if (selected) {
+        if (!_selectedLanguages.contains(lang) &&
+            _selectedLanguages.length < 3) {
+          _selectedLanguages.add(lang);
+        }
+      } else {
+        _selectedLanguages.remove(lang);
+        if (_selectedLanguages.isEmpty) _selectedLanguages.add('English');
+      }
+    });
+  }
+
+  Widget _buildLanguagesSection(ThemeData theme) {
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+    final atCap = _selectedLanguages.length >= 3;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(LucideIcons.languages, size: 18, color: muted),
+            const SizedBox(width: 8),
+            Text(
+              'Languages',
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Pick up to 3. Choosing more than one adds a language switcher to '
+          'the generated site.',
+          style: theme.textTheme.bodySmall?.copyWith(color: muted, height: 1.4),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final entry in websiteLanguageAutonyms.entries)
+              _buildLanguageChip(theme, entry.key, entry.value, atCap),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLanguageChip(
+      ThemeData theme, String lang, String autonym, bool atCap) {
+    final selected = _selectedLanguages.contains(lang);
+    final disabled = !selected && atCap;
+    final label = lang == autonym ? lang : '$lang · $autonym';
+    return FilterChip(
+      avatar: Icon(
+        Icons.language,
+        size: 16,
+        color: disabled ? theme.disabledColor : null,
+      ),
+      showCheckmark: false,
+      label: Text(label),
+      selected: selected,
+      onSelected: disabled ? null : (sel) => _toggleLanguage(lang, sel),
+    );
+  }
+
   void _showPromptPreview() {
     final fullPrompt = WebsiteService.instance.buildPreviewPrompt(
       websiteName: _nameController.text.trim(),
       category: _category,
       styles: <String>[_selectedStyle],
+      languages: _selectedLanguages,
       palette: _palette,
       body: _promptController.text.trim(),
       assetNotes: widget.assetNotes,
@@ -535,6 +619,8 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 _buildPaletteHeader(theme),
                 const SizedBox(height: 10),
                 _buildPaletteCardsRow(),
+                const SizedBox(height: 24),
+                _buildLanguagesSection(theme),
                 const SizedBox(height: 24),
                 TextField(
                   controller: _promptController,

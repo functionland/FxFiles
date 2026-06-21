@@ -662,6 +662,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       websiteName: result.websiteName,
       category: result.category,
       styles: result.styles,
+      languages: result.languages,
       palette: result.palette,
       body: result.prompt,
       contactForm: result.contactForm,
@@ -693,6 +694,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     required String palette,
     required String body,
     ContactFormConfig? contactForm,
+    List<String> languages = const <String>['English'],
   }) =>
       // Single-sourced with the web shell in website_prompt_builder.dart.
       composeEnrichedWebsitePrompt(
@@ -702,6 +704,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
         palette: palette,
         body: body,
         contactForm: contactForm,
+        languages: languages,
       );
 
   Future<GenerateWebsitePromptResult?> _openGenerateScreen(
@@ -714,6 +717,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
     String? initialPrompt,
     bool initialEnableTracking = false,
     ContactFormConfig? initialContactForm,
+    List<String>? initialLanguages,
     List<AssetNote> assetNotes = const [],
   }) {
     return Navigator.of(context).push<GenerateWebsitePromptResult>(
@@ -727,6 +731,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
           initialPrompt: initialPrompt,
           initialEnableTracking: initialEnableTracking,
           initialContactForm: initialContactForm,
+          initialLanguages: initialLanguages,
           assetNotes: assetNotes,
         ),
       ),
@@ -781,6 +786,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       initialPrompt: seededPrompt,
       initialEnableTracking: gen.trackingEnabled,
       initialContactForm: parsed.contactForm,
+      initialLanguages: parsed.languages,
       assetNotes: assetNotes,
     );
     if (result == null || !mounted) return;
@@ -792,6 +798,7 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       websiteName: result.websiteName,
       category: result.category,
       styles: result.styles,
+      languages: result.languages,
       palette: result.palette,
       body: result.prompt,
       contactForm: result.contactForm,
