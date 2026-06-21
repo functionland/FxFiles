@@ -662,6 +662,56 @@ class TagStorageService {
         }
       }
     }
+
+    // P14 — ADDITIVELY adopt the AI/MCP's tags. The AI writes its tag doc to
+    // `fula-ai-workspace`/`ai/tag-metadata/ai-workspace.json` (same
+    // TagCloudMetadata JSON), encrypted under the workspace secret, so it is
+    // read via the SEPARATE workspace client (downloadWorkspaceObject) — the
+    // normal downloadAndDecrypt above routes to the user's own client/secret and
+    // could not decode it. Same additive, local-id-wins rule as legacy/v8: a
+    // local id is NEVER clobbered. Treating the MCP doc as UNTRUSTED, an AI tag
+    // whose id collides with an existing local tag is DISCARDED ENTIRELY (not
+    // field-merged), so a buggy/hostile MCP cannot shadow or mutate a user tag.
+    // GATED + tolerant: downloadWorkspaceObject is a no-op (throws fast) when
+    // there is no AI connection, and ANY failure here is swallowed so AI
+    // adoption can never block the user's own tag restore.
+    if (await FulaApiService.instance.hasAiConnection()) {
+      try {
+        final data = await FulaApiService.instance.downloadWorkspaceObject(
+          FulaApiService.aiWorkspaceBucket,
+          'ai/tag-metadata/ai-workspace.json',
+        );
+        final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+        final metadata = TagCloudMetadata.fromJson(json);
+        var aiAdded = 0;
+        for (final tag in metadata.tags) {
+          if (_tagsBox.containsKey(tag.id)) continue; // local wins — discard AI
+          await _tagsBox.put(tag.id, tag);
+          addedAny = true;
+          aiAdded++;
+        }
+        for (final tf in metadata.taggedFiles) {
+          if (_taggedFilesBox.containsKey(tf.id)) continue;
+          await _taggedFilesBox.put(tf.id, tf);
+          addedAny = true;
+          aiAdded++;
+        }
+        debugPrint('TagStorageService: adopted $aiAdded AI tag/file rows '
+            '(${metadata.tags.length} tags / ${metadata.taggedFiles.length} '
+            'files offered)');
+      } catch (e) {
+        final s = e.toString();
+        if (s.contains('NoSuchKey') ||
+            s.contains('Object not found') ||
+            s.contains('404') ||
+            s.contains('No AI connection')) {
+          debugPrint('Tag restore: no AI workspace tag doc (none written yet)');
+        } else {
+          debugPrint('TagStorageService: AI tag adoption error: $e');
+        }
+      }
+    }
+
     if (addedAny) _notifyListeners();
   }
 
