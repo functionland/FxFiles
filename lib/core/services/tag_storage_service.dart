@@ -662,7 +662,88 @@ class TagStorageService {
         }
       }
     }
+
+    // P14 — ADDITIVELY adopt the AI/MCP's tags. The AI writes its tag doc to
+    // `fula-ai-workspace`/`ai/tag-metadata/ai-workspace.json` (same
+    // TagCloudMetadata JSON), encrypted under the workspace secret, so it is
+    // read via the SEPARATE workspace client (downloadWorkspaceObject) — the
+    // normal downloadAndDecrypt above routes to the user's own client/secret and
+    // could not decode it. Same additive, local-id-wins rule as legacy/v8: a
+    // local id is NEVER clobbered. Treating the MCP doc as UNTRUSTED, an AI tag
+    // whose id collides with an existing local tag is DISCARDED ENTIRELY (not
+    // field-merged), so a buggy/hostile MCP cannot shadow or mutate a user tag.
+    // GATED + tolerant: downloadWorkspaceObject is a no-op (throws fast) when
+    // there is no AI connection, and ANY failure here is swallowed so AI
+    // adoption can never block the user's own tag restore.
+    if (await FulaApiService.instance.hasAiConnection()) {
+      try {
+        final data = await FulaApiService.instance.downloadWorkspaceObject(
+          FulaApiService.aiWorkspaceBucket,
+          'ai/tag-metadata/ai-workspace.json',
+        );
+        final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+        final metadata = TagCloudMetadata.fromJson(json);
+        // Pure additive selection: drop any AI row whose id already exists
+        // locally (local wins; the colliding AI row is discarded ENTIRELY).
+        final selected = selectNewTagRows(
+          metadata,
+          _tagsBox.keys.map((k) => k.toString()).toSet(),
+          _taggedFilesBox.keys.map((k) => k.toString()).toSet(),
+        );
+        for (final tag in selected.tagsToAdd) {
+          await _tagsBox.put(tag.id, tag);
+          addedAny = true;
+        }
+        for (final tf in selected.filesToAdd) {
+          await _taggedFilesBox.put(tf.id, tf);
+          addedAny = true;
+        }
+        debugPrint('TagStorageService: adopted '
+            '${selected.tagsToAdd.length} tags / '
+            '${selected.filesToAdd.length} files from AI workspace '
+            '(${metadata.tags.length} tags / ${metadata.taggedFiles.length} '
+            'offered)');
+      } catch (e) {
+        final s = e.toString();
+        if (s.contains('NoSuchKey') ||
+            s.contains('Object not found') ||
+            s.contains('404') ||
+            s.contains('No AI connection')) {
+          debugPrint('Tag restore: no AI workspace tag doc (none written yet)');
+        } else {
+          debugPrint('TagStorageService: AI tag adoption error: $e');
+        }
+      }
+    }
+
     if (addedAny) _notifyListeners();
+  }
+
+  /// Pure additive-merge selection for an adopted [incoming] tag doc (P14): the
+  /// rows whose id is NOT already present locally. A colliding id is dropped
+  /// ENTIRELY — never field-merged — so an UNTRUSTED writer (the AI/MCP) can
+  /// neither overwrite nor partially mutate a user's own tag. Extracted as a
+  /// pure, side-effect-free static so the load-bearing "local id wins, AI
+  /// collision discarded" rule is unit-testable without Hive or the FFI client.
+  ///
+  /// `localTagIds` / `localFileIds` are the ids already in the local boxes;
+  /// returns the tag + tagged-file rows the caller should add.
+  @visibleForTesting
+  static ({List<FileTag> tagsToAdd, List<TaggedFile> filesToAdd}) selectNewTagRows(
+    TagCloudMetadata incoming,
+    Set<String> localTagIds,
+    Set<String> localFileIds,
+  ) {
+    return (
+      tagsToAdd: [
+        for (final t in incoming.tags)
+          if (!localTagIds.contains(t.id)) t,
+      ],
+      filesToAdd: [
+        for (final f in incoming.taggedFiles)
+          if (!localFileIds.contains(f.id)) f,
+      ],
+    );
   }
 
   /// Relink tagged files after reinstall (match cloud files to local files)
