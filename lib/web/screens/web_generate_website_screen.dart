@@ -626,7 +626,17 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       ),
       showCheckmark: false,
       selectedColor: AppColors.primary.withValues(alpha: 0.18),
-      label: Text(label),
+      label: Text(
+        label,
+        // Non-Latin autonyms (العربية, हिन्दी, 中文, 日本語…) render via a
+        // fallback font whose glyphs overflow the tight default line box and
+        // get clipped at the chip's bottom edge. A roomier, evenly-distributed
+        // line height gives every script vertical room; Latin is unaffected.
+        style: const TextStyle(
+          height: 1.5,
+          leadingDistribution: TextLeadingDistribution.even,
+        ),
+      ),
       selected: selected,
       onSelected: disabled ? null : (sel) => _toggleLanguage(lang, sel),
     );
