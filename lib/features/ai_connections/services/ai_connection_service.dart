@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:fula_client/fula_client.dart' as fula;
 
+import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 
 /// Result of generating a fresh MCP X25519 keypair.
@@ -46,6 +47,50 @@ class AiConnectionService {
       await fula.derivePublicKeyFromSecret(secretKeyBytes: secretKey.toList()),
     );
     return (publicKey: publicKey, secretKey: secretKey);
+  }
+
+  /// BLAKE3 context label for the AI-workspace secret. Load-bearing: the MCP
+  /// derives the SAME label so both sides agree on the workspace key.
+  static const String workspaceSecretContext = 'fula:ai-workspace-secret:v1';
+
+  /// Derive the 32-byte AI-workspace secret from the user's master KEK.
+  ///
+  /// This is a ONE-WAY derivation: `BLAKE3_derive_key(context, KEK)`. The MCP
+  /// receives only the derived secret (`workspace_secret_b64`) and therefore
+  /// CANNOT recover the master KEK from it — the workspace is cryptographically
+  /// isolated from the rest of the user's encrypted data. Mirrors the
+  /// `auth_core.deriveBucketsIndexKeys` pattern (blake3DeriveKey over the KEK).
+  ///
+  /// Throws [StateError] if the user is signed out (no KEK available).
+  Future<Uint8List> deriveWorkspaceSecret() async {
+    final kek = await AuthService.instance.getEncryptionKey();
+    if (kek == null) {
+      throw StateError(
+        'No encryption key available. Please sign in before creating an AI connection.',
+      );
+    }
+    return Uint8List.fromList(
+      await fula.blake3DeriveKey(
+        context: workspaceSecretContext,
+        input: kek,
+      ),
+    );
+  }
+
+  /// The owner's X25519 **public** key — the same sharing/recipient public key
+  /// FxFiles derives from the user's secret (`AuthService.getPublicKey()`, which
+  /// `sharing_service` uses as `ownerPublicKey`). Goes into the bundle as
+  /// `owner_public_b64`.
+  ///
+  /// Throws [StateError] if the user is signed out.
+  Future<Uint8List> ownerPublicKey() async {
+    final pub = await AuthService.instance.getPublicKey();
+    if (pub == null) {
+      throw StateError(
+        'Owner public key not available. Please sign in before creating an AI connection.',
+      );
+    }
+    return pub;
   }
 
   /// List the persisted (non-secret) connection records.
