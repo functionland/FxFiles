@@ -683,22 +683,26 @@ class TagStorageService {
         );
         final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
         final metadata = TagCloudMetadata.fromJson(json);
-        var aiAdded = 0;
-        for (final tag in metadata.tags) {
-          if (_tagsBox.containsKey(tag.id)) continue; // local wins — discard AI
+        // Pure additive selection: drop any AI row whose id already exists
+        // locally (local wins; the colliding AI row is discarded ENTIRELY).
+        final selected = selectNewTagRows(
+          metadata,
+          _tagsBox.keys.map((k) => k.toString()).toSet(),
+          _taggedFilesBox.keys.map((k) => k.toString()).toSet(),
+        );
+        for (final tag in selected.tagsToAdd) {
           await _tagsBox.put(tag.id, tag);
           addedAny = true;
-          aiAdded++;
         }
-        for (final tf in metadata.taggedFiles) {
-          if (_taggedFilesBox.containsKey(tf.id)) continue;
+        for (final tf in selected.filesToAdd) {
           await _taggedFilesBox.put(tf.id, tf);
           addedAny = true;
-          aiAdded++;
         }
-        debugPrint('TagStorageService: adopted $aiAdded AI tag/file rows '
+        debugPrint('TagStorageService: adopted '
+            '${selected.tagsToAdd.length} tags / '
+            '${selected.filesToAdd.length} files from AI workspace '
             '(${metadata.tags.length} tags / ${metadata.taggedFiles.length} '
-            'files offered)');
+            'offered)');
       } catch (e) {
         final s = e.toString();
         if (s.contains('NoSuchKey') ||
@@ -713,6 +717,33 @@ class TagStorageService {
     }
 
     if (addedAny) _notifyListeners();
+  }
+
+  /// Pure additive-merge selection for an adopted [incoming] tag doc (P14): the
+  /// rows whose id is NOT already present locally. A colliding id is dropped
+  /// ENTIRELY — never field-merged — so an UNTRUSTED writer (the AI/MCP) can
+  /// neither overwrite nor partially mutate a user's own tag. Extracted as a
+  /// pure, side-effect-free static so the load-bearing "local id wins, AI
+  /// collision discarded" rule is unit-testable without Hive or the FFI client.
+  ///
+  /// `localTagIds` / `localFileIds` are the ids already in the local boxes;
+  /// returns the tag + tagged-file rows the caller should add.
+  @visibleForTesting
+  static ({List<FileTag> tagsToAdd, List<TaggedFile> filesToAdd}) selectNewTagRows(
+    TagCloudMetadata incoming,
+    Set<String> localTagIds,
+    Set<String> localFileIds,
+  ) {
+    return (
+      tagsToAdd: [
+        for (final t in incoming.tags)
+          if (!localTagIds.contains(t.id)) t,
+      ],
+      filesToAdd: [
+        for (final f in incoming.taggedFiles)
+          if (!localFileIds.contains(f.id)) f,
+      ],
+    );
   }
 
   /// Relink tagged files after reinstall (match cloud files to local files)
