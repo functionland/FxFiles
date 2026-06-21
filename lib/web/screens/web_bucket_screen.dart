@@ -337,7 +337,10 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     try {
       final bucket = o.sourceBucket ?? widget.base;
       final bytes = await WebForegroundActivity.instance.run(
-        () => FulaApiService.instance.downloadObject(bucket, o.key),
+        // P14.1: route by sourceBucket so adopted AI-workspace files decrypt
+        // via the workspace client (bucket already folds in sourceBucket).
+        () => FulaApiService.instance
+            .downloadBySourceBucket(bucket, o.key, o.sourceBucket),
       );
       saveBytesAsDownload(
         _displayName(o).split('/').last,
@@ -499,8 +502,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     try {
       final bucket =
           o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
-      final bytes =
-          await FulaApiService.instance.downloadObject(bucket, o.key);
+      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
+      final bytes = await FulaApiService.instance
+          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
       final result = await IpfsPublicService.instance.pinBytes(
         bytes,
         fileName,
@@ -744,7 +748,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     final bucket = o.sourceBucket ?? widget.base;
     // One download future shared with the dialog; record once when it
     // resolves (not on FutureBuilder rebuilds, not on failure).
-    final future = FulaApiService.instance.downloadObject(bucket, o.key);
+    // P14.1: route by sourceBucket (AI files decrypt via workspace client).
+    final future = FulaApiService.instance
+        .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
     unawaited(future.then((bytes) {
       _recordRecent(o, bucket, imageBytes: bytes);
     }).catchError((_) {}));
@@ -818,8 +824,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     _snack('Loading "${_displayName(o)}"…');
     try {
       final bucket = o.sourceBucket ?? widget.base;
-      final bytes =
-          await FulaApiService.instance.downloadObject(bucket, o.key);
+      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
+      final bytes = await FulaApiService.instance
+          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
       if (!mounted) return;
       final name = _displayName(o).split('/').last;
       _recordRecent(o, bucket);
@@ -858,8 +865,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     _snack('Loading "${_displayName(o)}"…');
     try {
       final bucket = o.sourceBucket ?? widget.base;
-      final bytes =
-          await FulaApiService.instance.downloadObject(bucket, o.key);
+      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
+      final bytes = await FulaApiService.instance
+          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
       _recordRecent(o, bucket);
       if (!mounted) return;
       await showDialog<void>(
@@ -884,7 +892,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       name: _displayName(o).split('/').last,
       mime: _mediaMime(o),
       cloudKey: o.key,
-      download: () => FulaApiService.instance.downloadObject(bucket, o.key),
+      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
+      download: () => FulaApiService.instance
+          .downloadBySourceBucket(bucket, o.key, o.sourceBucket),
     );
   }
 

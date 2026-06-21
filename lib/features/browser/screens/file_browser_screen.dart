@@ -3758,14 +3758,22 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
 
       Uint8List data;
       if (encryptionKey != null) {
-        // Download with local blox fallback to cloud
-        data = await FulaApiService.instance.downloadWithLocalFallback(
+        // Download with local blox fallback to cloud. P14.1: route by
+        // sourceBucket so an adopted AI-workspace file (sourceBucket ==
+        // 'fula-ai-workspace') decrypts via the workspace client; the AI
+        // branch fetches from fula-ai-workspace and skips the LAN fallback.
+        data = await FulaApiService.instance.downloadBySourceBucketWithLocalFallback(
           cloudFile.sourceBucket ?? bucket, // v8: item's real bucket
           cloudFile.key,
+          cloudFile.sourceBucket,
         );
       } else {
-        // Fallback to plain download if no encryption key
-        data = await FulaApiService.instance.downloadObject(cloudFile.sourceBucket ?? bucket, cloudFile.key);
+        // Fallback to plain download if no encryption key. Same P14.1 routing.
+        data = await FulaApiService.instance.downloadBySourceBucket(
+          cloudFile.sourceBucket ?? bucket,
+          cloudFile.key,
+          cloudFile.sourceBucket,
+        );
         debugPrint('Downloaded ${cloudFile.key} without decryption (no key)');
       }
 
