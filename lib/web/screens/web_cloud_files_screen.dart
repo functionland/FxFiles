@@ -1,17 +1,21 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
+import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 
 /// Raw cloud file manager ("Cloud Files"). Browses the user's buckets and the
 /// virtual folder tree inside each one — the same encrypted data the category
@@ -332,6 +336,254 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     }
   }
 
+  // ── Share / rename / move ──────────────────────────────────────────────────
+
+  /// Largest file we rename/move on web. The encrypted forest has no
+  /// server-side copy, so rename/move = download + re-upload + delete; the whole
+  /// file is held in memory, which would OOM a low-RAM tab on big files.
+  static const int _kMaxCopyBytes = 50 * 1024 * 1024;
+
+  bool _guardCopySize(FulaObject o, String verb) {
+    if (o.size > _kMaxCopyBytes) {
+      _snack('Files over 50 MB can\'t be $verb on the web yet '
+          '(it would exceed browser memory).');
+      return false;
+    }
+    return true;
+  }
+
+  String? _ct(FulaObject o) {
+    final ct = o.metadata?['contentType'];
+    return (ct != null && ct.isNotEmpty && ct != 'application/octet-stream')
+        ? ct
+        : null;
+  }
+
+  Future<void> _shareFile(FulaObject o) async {
+    final bucket = o.sourceBucket ?? _bucket!;
+    final storageKey = o.storageKey ?? o.key;
+    final binding = share_model.SnapshotBinding(
+      contentHash: o.etag ?? storageKey,
+      size: o.size,
+      modifiedAt: (o.lastModified ?? DateTime.now()).millisecondsSinceEpoch,
+      storageKey: storageKey,
+    );
+    final result = await showWebCreateShareDialog(
+      context: context,
+      bucket: bucket,
+      pathScope: o.key,
+      storageKey: storageKey,
+      fileName: o.name,
+      contentType: _ct(o),
+      snapshotBinding: binding,
+    );
+    if (result != null && mounted) {
+      await showWebShareCreatedDialog(context: context, result: result);
+    }
+  }
+
+  Future<void> _sharePublicly(FulaObject o) async {
+    if (!await _confirm(
+        'Share publicly?',
+        'This uploads "${o.name}" (${o.sizeFormatted}) to IPFS WITHOUT '
+            'encryption. Anyone with the link can access it.',
+        confirmLabel: 'Share publicly')) {
+      return;
+    }
+    if (!_guardCopySize(o, 'shared publicly')) return;
+    final bucket = o.sourceBucket ?? _bucket!;
+    _snack('Uploading "${o.name}" to IPFS…');
+    try {
+      final bytes = await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.downloadObject(bucket, o.key));
+      final result = await IpfsPublicService.instance.pinBytes(bytes, o.name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      await _showPublicLink(result.gatewayUrl, o.name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      _snack('Public share failed: ${_clean(e)}');
+    }
+  }
+
+  Future<void> _showPublicLink(String url, String fileName) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Public link'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(fileName,
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            SelectableText(url, style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          FilledButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: url));
+              if (ctx.mounted) Navigator.pop(ctx);
+              _snack('Link copied');
+            },
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('Copy link'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _renameFile(FulaObject o) async {
+    if (_isReadOnly || !_guardCopySize(o, 'renamed')) return;
+    final newName = await _promptName(
+      title: 'Rename file',
+      hint: o.name,
+      helper: 'Stays in the same folder.',
+      initial: o.name,
+      validator: (v) => _validateFileName(v, exclude: o.name),
+    );
+    if (newName == null || newName == o.name) return;
+    final bucket = o.sourceBucket ?? _bucket!;
+    await _copyDelete(bucket, o, bucket, cloudChildKey(_prefix, newName), 'Renamed');
+  }
+
+  Future<void> _moveFile(FulaObject o) async {
+    if (_isReadOnly || !_guardCopySize(o, 'moved')) return;
+    final dest = await _pickMoveDestination(o);
+    if (dest == null) return;
+    final srcBucket = o.sourceBucket ?? _bucket!;
+    final destKey = cloudChildKey(dest.prefix, o.name);
+    if (dest.bucket == srcBucket &&
+        normalizeCloudKey(destKey) == normalizeCloudKey(o.key)) {
+      _snack('Already there');
+      return;
+    }
+    await _copyDelete(srcBucket, o, dest.bucket, destKey, 'Moved');
+  }
+
+  /// Shared download → upload-to-dest → delete-source for rename + move. No
+  /// server-side copy exists for the encrypted forest, so this round-trips the
+  /// bytes (size-guarded by [_guardCopySize]).
+  Future<void> _copyDelete(String srcBucket, FulaObject o, String destBucket,
+      String destKey, String okWord) async {
+    _snack('Working…');
+    // Copy (download → re-upload). If this fails, the source is untouched.
+    try {
+      final bytes = await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.downloadObject(srcBucket, o.key));
+      await WebForegroundActivity.instance.run(() => FulaApiService.instance
+          .uploadObject(destBucket, destKey, bytes, contentType: _ct(o)));
+    } catch (e) {
+      _snack('$okWord failed: ${_clean(e)}');
+      return;
+    }
+    // Copy landed — remove the original. A failure here leaves a duplicate,
+    // not data loss, so say so precisely.
+    try {
+      await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.deleteObject(srcBucket, o.key));
+    } catch (e) {
+      _snack('Copied, but couldn\'t remove the original: ${_clean(e)}');
+      await _loadObjects(silent: true);
+      return;
+    }
+    if (!mounted) return;
+    setState(() =>
+        _objects = [for (final x in _objects) if (x.key != o.key) x]);
+    _snack(okWord);
+    await _loadObjects(silent: true);
+  }
+
+  Future<({String bucket, String prefix})?> _pickMoveDestination(
+      FulaObject o) async {
+    final writable = [
+      for (final b in _buckets)
+        if (!BucketVersionResolver.isForbiddenWriteTarget(b)) b
+    ];
+    if (writable.isEmpty) {
+      _snack('No writable buckets to move into.');
+      return null;
+    }
+    final srcBucket = o.sourceBucket ?? _bucket;
+    var selBucket = (_bucket != null && writable.contains(_bucket!))
+        ? _bucket!
+        : writable.first;
+    final folderCtrl = TextEditingController(text: _prefix);
+    final result = await showDialog<({String bucket, String prefix})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          final crossBucket = selBucket != srcBucket;
+          return AlertDialog(
+            title: Text('Move "${o.name}"'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Destination bucket',
+                      style: Theme.of(ctx).textTheme.labelMedium),
+                ),
+                DropdownButton<String>(
+                  value: selBucket,
+                  isExpanded: true,
+                  items: [
+                    for (final b in writable)
+                      DropdownMenuItem(value: b, child: Text(b))
+                  ],
+                  onChanged: (v) {
+                    if (v != null) setLocal(() => selBucket = v);
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: folderCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Folder',
+                    hintText: 'e.g. photos/2024 — blank for root',
+                  ),
+                ),
+                if (crossBucket) ...[
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 16, color: Colors.orange),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text('Moving to a different bucket.',
+                          style: Theme.of(ctx).textTheme.bodySmall),
+                    ),
+                  ]),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel')),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, (
+                  bucket: selBucket,
+                  prefix: normalizeCloudPrefix(folderCtrl.text),
+                )),
+                child: const Text('Move'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    folderCtrl.dispose();
+    return result;
+  }
+
   // ── Small helpers ────────────────────────────────────────────────────────
 
   void _snack(String msg) {
@@ -344,7 +596,8 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
   String _clean(Object? e) =>
       '$e'.replaceFirst('FulaApiException: ', '').replaceFirst('Exception: ', '');
 
-  Future<bool> _confirm(String title, String body) async {
+  Future<bool> _confirm(String title, String body,
+      {String confirmLabel = 'Delete'}) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -356,7 +609,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
               child: const Text('Cancel')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete')),
+              child: Text(confirmLabel)),
         ],
       ),
     );
@@ -382,13 +635,29 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     return null;
   }
 
+  String? _validateFileName(String v, {String? exclude}) {
+    final s = v.trim();
+    if (s.isEmpty) return 'Enter a name.';
+    if (s.contains('/')) return 'No "/" in a file name.';
+    if (s == kFolderMarkerName) return 'Reserved name.';
+    final siblings = deriveCloudFolderView(_objects, _prefix)
+        .files
+        .map((f) => f.name)
+        .toSet();
+    if (s != exclude && siblings.contains(s)) {
+      return 'A file with this name already exists here.';
+    }
+    return null;
+  }
+
   Future<String?> _promptName({
     required String title,
     required String hint,
     required String helper,
     required String? Function(String) validator,
+    String? initial,
   }) async {
-    final controller = TextEditingController();
+    final controller = TextEditingController(text: initial ?? '');
     final formKey = GlobalKey<FormState>();
     final result = await showDialog<String>(
       context: context,
@@ -438,7 +707,9 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
           tooltip: _bucket == null ? 'Back' : 'Up',
           onPressed: () {
             if (_bucket == null) {
-              Navigator.of(context).maybePop();
+              // _go used context.go (stack replaced), so there's usually
+              // nothing to pop — fall back to home.
+              context.canPop() ? context.pop() : context.go('/');
             } else {
               _up();
             }
@@ -646,6 +917,14 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
                     _open(o);
                   case 'download':
                     _download(o);
+                  case 'share':
+                    _shareFile(o);
+                  case 'sharePublic':
+                    _sharePublicly(o);
+                  case 'rename':
+                    _renameFile(o);
+                  case 'move':
+                    _moveFile(o);
                   case 'delete':
                     _deleteFile(o);
                 }
@@ -653,6 +932,14 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'open', child: Text('Open')),
                 const PopupMenuItem(value: 'download', child: Text('Download')),
+                const PopupMenuItem(
+                    value: 'share', child: Text('Share (private link)')),
+                const PopupMenuItem(
+                    value: 'sharePublic', child: Text('Share publicly')),
+                if (!_isReadOnly)
+                  const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                if (!_isReadOnly)
+                  const PopupMenuItem(value: 'move', child: Text('Move')),
                 if (!_isReadOnly)
                   const PopupMenuItem(value: 'delete', child: Text('Delete')),
               ],

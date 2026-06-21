@@ -37,7 +37,7 @@ void main() {
   group('folder markers', () {
     test('isFolderMarker matches by leaf name regardless of slashes', () {
       expect(isFolderMarker(_o('/sub/$kFolderMarkerName')), isTrue);
-      expect(isFolderMarker(_o('$kFolderMarkerName')), isTrue);
+      expect(isFolderMarker(_o(kFolderMarkerName)), isTrue);
       expect(isFolderMarker(_o('/sub/photo.jpg')), isFalse);
     });
 
@@ -137,6 +137,26 @@ void main() {
           [_o('/sub/c.txt'), _o('sub/d.txt')], 'sub/');
       expect(v.folders, isEmpty);
       expect(_fileNames(v.files), ['c.txt', 'd.txt']);
+    });
+  });
+
+  group('normalizeCloudPrefix + cloudChildKey (rename/move keys)', () {
+    test('collapses internal // runs (silent-orphan guard)', () {
+      expect(normalizeCloudPrefix('foo//bar'), 'foo/bar/');
+      expect(normalizeCloudPrefix('///a///b///'), 'a/b/');
+    });
+
+    test('cloudChildKey at root and inside a folder', () {
+      expect(cloudChildKey('', 'a.txt'), '/a.txt');
+      expect(cloudChildKey('photos/2024/', 'p.jpg'), '/photos/2024/p.jpg');
+      expect(cloudChildKey('photos/2024', 'p.jpg'), '/photos/2024/p.jpg');
+    });
+
+    test('cloudChildKey collapses // so the file stays discoverable', () {
+      final key = cloudChildKey('foo//bar', 'f.txt');
+      expect(key, '/foo/bar/f.txt');
+      final v = deriveCloudFolderView([_o(key)], 'foo/bar/');
+      expect(_fileNames(v.files), ['f.txt']);
     });
   });
 }
