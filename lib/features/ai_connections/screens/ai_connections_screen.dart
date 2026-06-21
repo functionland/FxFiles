@@ -245,9 +245,9 @@ class AiConnectionsScreen extends ConsumerWidget {
         title: Text('Disconnect ${connection.label}?'),
         content: const Text(
           'This AI loses access when its current session token expires — within '
-          'about an hour (the default), and at most 24 hours if your provider set '
-          'a longer limit. It cannot renew that token on its own, so it gets no '
-          'new access after that. Files it already stored stay in your library.',
+          'about an hour by default, and up to 24 hours at most. It cannot renew '
+          'that token on its own, so it gets no new access after that. Files it '
+          'already stored stay in your library.',
         ),
         actions: [
           TextButton(
