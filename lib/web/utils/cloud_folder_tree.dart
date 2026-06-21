@@ -37,10 +37,12 @@ bool isFolderMarker(FulaObject o) => cloudKeyName(o.key) == kFolderMarkerName;
 List<FulaObject> stripFolderMarkers(Iterable<FulaObject> objects) =>
     [for (final o in objects) if (!isFolderMarker(o)) o];
 
-/// Normalize a folder prefix: no leading '/', exactly one trailing '/'.
-/// '' stays '' (bucket root). 'a/b' → 'a/b/'. '/a/b/' → 'a/b/'.
+/// Normalize a folder prefix: no leading '/', exactly one trailing '/', and
+/// internal runs of '/' collapsed. A free-text "foo//bar" would otherwise
+/// produce an empty path segment that [deriveCloudFolderView] drops, silently
+/// orphaning a moved/created file. '' stays '' (bucket root). 'a//b' → 'a/b/'.
 String normalizeCloudPrefix(String prefix) {
-  var p = prefix.trim();
+  var p = prefix.trim().replaceAll(RegExp(r'/+'), '/');
   while (p.startsWith('/')) {
     p = p.substring(1);
   }
@@ -50,6 +52,14 @@ String normalizeCloudPrefix(String prefix) {
   }
   return p.isEmpty ? '' : '$p/';
 }
+
+/// The object key for a file named [name] directly under folder [prefix]
+/// ('' = bucket root). Always leading-slash (the existing upload convention);
+/// [prefix] is normalized (slashes collapsed) so a caller can't build a key
+/// with an empty segment the tree would hide. ('', 'a.txt') → '/a.txt';
+/// ('photos/2024/', 'p.jpg') → '/photos/2024/p.jpg'.
+String cloudChildKey(String prefix, String name) =>
+    '/${normalizeCloudPrefix(prefix)}$name';
 
 /// The immediate folders + files at [prefix] within a FLAT object list.
 ///
