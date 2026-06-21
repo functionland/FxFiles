@@ -116,6 +116,39 @@ abstract class FulaApi {
   /// correctly.
   Future<Uint8List> downloadWithLocalFallback(String bucket, String key);
 
+  /// Canonical name of the AI/MCP workspace bucket. Declared here (the
+  /// shared surface) so the routing helpers below — and the test fake,
+  /// which does NOT import `fula_api_service.dart` — can reference it.
+  /// `FulaApiService.aiWorkspaceBucket` aliases this so existing call
+  /// sites keep working with a single source of truth.
+  static const String aiWorkspaceBucket = 'fula-ai-workspace';
+
+  /// Route a download to the right client by the object's [sourceBucket].
+  ///
+  /// AI-workspace files (`sourceBucket == aiWorkspaceBucket`) decrypt only
+  /// via the workspace client, so they MUST go through
+  /// [downloadWorkspaceObject] (which fetches from [aiWorkspaceBucket]
+  /// regardless of [bucket]); everything else is the user's own content and
+  /// routes to [downloadObject].
+  ///
+  /// **`implements`, not `extends`:** this concrete body is NOT inherited by
+  /// `FulaApiService` / `FakeFulaApi` (both `implements FulaApi`); each
+  /// provides its own copy. It lives here only to document the contract.
+  Future<Uint8List> downloadBySourceBucket(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadObject(bucket, key);
+
+  /// LAN-first sibling of [downloadBySourceBucket]. The AI branch skips the
+  /// LAN fallback by design — the AI workspace is cloud-only, so there is no
+  /// local blox copy to race against.
+  Future<Uint8List> downloadBySourceBucketWithLocalFallback(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadWithLocalFallback(bucket, key);
+
   /// Upload a small file (single block, <=768 KB).
   ///
   /// Returns `(etag, contentCid)`. `contentCid` is non-null when the

@@ -982,6 +982,27 @@ class FulaApiService implements FulaApi {
     return downloadObject(bucket, key);
   }
 
+  /// Route a download by the object's [sourceBucket] (P14.1). AI-workspace
+  /// files decrypt only via the workspace client, so they go through
+  /// [downloadWorkspaceObject] (which reads from [aiWorkspaceBucket]
+  /// regardless of [bucket]); the user's own files route to [downloadObject].
+  @override
+  Future<Uint8List> downloadBySourceBucket(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadObject(bucket, key);
+
+  /// LAN-first sibling of [downloadBySourceBucket] (P14.1). The AI branch
+  /// skips the LAN fallback — the AI workspace is cloud-only, so there is no
+  /// local blox copy to try first.
+  @override
+  Future<Uint8List> downloadBySourceBucketWithLocalFallback(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadWithLocalFallback(bucket, key);
+
   /// Dispose the local blox client (e.g. on unpair or blox goes offline).
   void disposeLocalClient() {
     _localClient = null;
@@ -997,7 +1018,11 @@ class FulaApiService implements FulaApi {
   /// The bucket the AI (MCP) writes its workspace files + tag doc into. Keys
   /// are `ai/<category>/...` (category ∈ images/videos/audio/documents) and
   /// `ai/tag-metadata/ai-workspace.json`. Mirrors the MCP's grant scope `ai/`.
-  static const String aiWorkspaceBucket = 'fula-ai-workspace';
+  ///
+  /// Aliases [FulaApi.aiWorkspaceBucket] (the single source of truth, on the
+  /// shared surface) so existing `FulaApiService.aiWorkspaceBucket` call sites
+  /// keep working without a second literal that could drift.
+  static const String aiWorkspaceBucket = FulaApi.aiWorkspaceBucket;
 
   /// True if the user has at least one P13 AI-connection record. This is the
   /// gate: every AI-workspace read (category merge, tag adoption) is a no-op

@@ -390,4 +390,23 @@ class FakeFulaApi implements FulaApi {
     }
     return bytes;
   }
+
+  // ---- AI-aware download routing (P14.1) ----
+  // Mirror the real FulaApiService: route by sourceBucket to the workspace
+  // stub vs the normal download stub. `implements FulaApi` does not inherit
+  // the interface's default bodies, so these copies are the live ones.
+
+  @override
+  Future<Uint8List> downloadBySourceBucket(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == FulaApi.aiWorkspaceBucket
+          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
+          : downloadObject(bucket, key);
+
+  @override
+  Future<Uint8List> downloadBySourceBucketWithLocalFallback(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == FulaApi.aiWorkspaceBucket
+          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
+          : downloadWithLocalFallback(bucket, key);
 }
