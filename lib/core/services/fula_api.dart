@@ -137,7 +137,7 @@ abstract class FulaApi {
   Future<Uint8List> downloadBySourceBucket(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
           : downloadObject(bucket, key);
 
   /// LAN-first sibling of [downloadBySourceBucket]. The AI branch skips the
@@ -146,7 +146,7 @@ abstract class FulaApi {
   Future<Uint8List> downloadBySourceBucketWithLocalFallback(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
           : downloadWithLocalFallback(bucket, key);
 
   /// Upload a small file (single block, <=768 KB).

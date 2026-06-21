@@ -990,7 +990,7 @@ class FulaApiService implements FulaApi {
   Future<Uint8List> downloadBySourceBucket(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
           : downloadObject(bucket, key);
 
   /// LAN-first sibling of [downloadBySourceBucket] (P14.1). The AI branch
@@ -1000,7 +1000,7 @@ class FulaApiService implements FulaApi {
   Future<Uint8List> downloadBySourceBucketWithLocalFallback(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
           : downloadWithLocalFallback(bucket, key);
 
   /// Dispose the local blox client (e.g. on unpair or blox goes offline).

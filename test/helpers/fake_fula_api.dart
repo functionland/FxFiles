@@ -400,13 +400,13 @@ class FakeFulaApi implements FulaApi {
   Future<Uint8List> downloadBySourceBucket(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == FulaApi.aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
           : downloadObject(bucket, key);
 
   @override
   Future<Uint8List> downloadBySourceBucketWithLocalFallback(
           String bucket, String key, String? sourceBucket) =>
       sourceBucket == FulaApi.aiWorkspaceBucket
-          ? downloadWorkspaceObject(bucket, key)
+          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
           : downloadWithLocalFallback(bucket, key);
 }

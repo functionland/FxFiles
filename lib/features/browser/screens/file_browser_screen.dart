@@ -3785,22 +3785,30 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
       await file.parent.create(recursive: true);
       await file.writeAsBytes(data);
 
-      // Add sync state for the downloaded file
-      await LocalStorageService.instance.addSyncState(SyncState(
-        localPath: downloadPath,
-        remotePath: cloudFile.key,
-        remoteKey: cloudFile.key,
-        // v8: record the bucket the file actually lives in (e.g. images-v8),
-        // not the base category bucket — otherwise the cloud explorer for the
-        // v8 bucket can't link this freshly-downloaded file and keeps showing
-        // it as "cloud only".
-        bucket: cloudFile.sourceBucket ?? bucket,
-        status: SyncStatus.synced,
-        lastSyncedAt: DateTime.now(),
-        etag: cloudFile.etag,
-        localSize: data.length,
-        remoteSize: cloudFile.size,
-      ));
+      // Add sync state for the downloaded file.
+      // P14.1: SKIP for adopted AI-workspace files. They are surfaced FOR VIEW,
+      // not synced to the user's own forest, so recording a `synced` row for the
+      // read-only 'fula-ai-workspace' bucket would misrepresent them as the
+      // user's synced content (and leave a foreign-bucket row in the sync store).
+      // The decrypted bytes are already written to disk above, so opening still
+      // works; we just don't link it as a user-owned synced file.
+      if (cloudFile.sourceBucket != FulaApiService.aiWorkspaceBucket) {
+        await LocalStorageService.instance.addSyncState(SyncState(
+          localPath: downloadPath,
+          remotePath: cloudFile.key,
+          remoteKey: cloudFile.key,
+          // v8: record the bucket the file actually lives in (e.g. images-v8),
+          // not the base category bucket — otherwise the cloud explorer for the
+          // v8 bucket can't link this freshly-downloaded file and keeps showing
+          // it as "cloud only".
+          bucket: cloudFile.sourceBucket ?? bucket,
+          status: SyncStatus.synced,
+          lastSyncedAt: DateTime.now(),
+          etag: cloudFile.etag,
+          localSize: data.length,
+          remoteSize: cloudFile.size,
+        ));
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
