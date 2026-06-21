@@ -1,74 +1,450 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FxFiles</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0a;
-      color: #fafafa;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      max-width: 480px;
-    }
-    .logo {
-      width: 80px;
-      height: 80px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border-radius: 20px;
-      margin: 0 auto 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 2rem;
-    }
-    h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
-    p { color: #a1a1aa; line-height: 1.6; margin-bottom: 1.5rem; }
-    .stores { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .stores a {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.75rem 1.5rem;
-      background: #18181b;
-      border: 1px solid #27272a;
-      border-radius: 12px;
-      color: #fafafa;
-      text-decoration: none;
-      font-weight: 500;
-      transition: border-color 0.2s;
-    }
-    .stores a:hover { border-color: #6366f1; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FxFiles — Your Files. Your Freedom.</title>
+<meta name="description" content="The decentralized file manager with AI website builder, one-click NFT minting, end-to-end encryption, and zero data collection. Available on Windows, iOS, Android, and the web.">
+<meta property="og:title" content="FxFiles by Functionland — Your Files. Your Freedom.">
+<meta property="og:description" content="Decentralized file manager with AI superpowers. End-to-end encrypted, multi-platform, zero data collection.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='512' height='512' rx='102' fill='%230A0A0A'/%3E%3Cpath d='M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200L180 260L260 260Q290 260 290 290Q290 320 260 320L180 320L180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120L100 120Z' fill='%2306B597'/%3E%3Cpath d='M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240L392 200L350 200Z' fill='%2306B597'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add('js')</script>
+<style>
+  :root {
+    /* Coloring from the FxFiles app palette (AppColors) */
+    --bg: #0A0A0A; --bg-card: #161616; --bg-alt: #101010; --bg-hover: #1E1E1E;
+    --brand-1: #00D4AA;            /* app poolUsed — bright teal-green */
+    --brand-2: #06B597;            /* app primary green */
+    --brand-3: #049B8F;            /* app primaryLight */
+    --accent:  #187AF9;            /* app accent blue */
+    --text: #FAFAFA; --text-2: #A1A1AA; --text-3: #71717A;
+    --border: #262626; --glow: rgba(0, 212, 170, 0.18); --r: 16px;
+  }
+  *, ::before, ::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--bg); color: var(--text); line-height: 1.6; overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(0, 212, 170, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  a { color: inherit; text-decoration: none; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  section { padding: 100px 0; }
+  h1 { font-size: clamp(2.8rem, 7vw, 5rem); font-weight: 900; line-height: 1.08; letter-spacing: -0.03em; }
+  h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; }
+  h3 { font-size: 1.15rem; font-weight: 700; line-height: 1.3; }
+  .gradient-text {
+    background-image: linear-gradient(120deg, var(--brand-1), var(--brand-2), var(--brand-1));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    background-size: 200%; animation: grad-shift 8s ease infinite;
+  }
+  @keyframes grad-shift { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+
+  /* nav */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; transition: background .3s, backdrop-filter .3s, border-color .3s; border-bottom: 1px solid transparent; }
+  nav.scrolled { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(20px); border-bottom-color: var(--border); }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; }
+  .nav-brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; }
+  .nav-brand svg { width: 38px; height: 38px; border-radius: 9px; }
+  .nav-cta { display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 600; font-size: .9rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; }
+  .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 4px 24px var(--glow); }
+
+  /* hero */
+  .hero { min-height: 100vh; display: flex; align-items: center; position: relative; padding-top: 80px; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; top: -15%; left: 50%; transform: translateX(-50%); width: 900px; height: 900px; background: radial-gradient(circle, rgba(0,212,170,.10) 0%, rgba(6,181,151,.04) 35%, transparent 70%); filter: blur(60px); pointer-events: none; }
+  .hero::after { content: ""; position: absolute; top: 35%; right: -8%; width: 450px; height: 450px; background: radial-gradient(circle, rgba(24,122,249,.07) 0%, transparent 70%); filter: blur(60px); pointer-events: none; }
+  .hero-content { position: relative; z-index: 1; display: flex; align-items: center; gap: 48px; width: 100%; }
+  .hero-text { flex: 1; text-align: left; }
+  .hero-video { flex: 0 0 300px; position: relative; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5), 0 0 40px rgba(0,212,170,.08); border: 1px solid var(--border); aspect-ratio: 9 / 16; }
+  .hero-video iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .hero-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 18px; margin-bottom: 32px; background: rgba(0,212,170,.07); border: 1px solid rgba(0,212,170,.18); border-radius: 50px; font-size: .85rem; color: var(--brand-1); font-weight: 500; }
+  .hero-badge::before { content: ""; width: 7px; height: 7px; background: var(--brand-1); border-radius: 50%; }
+  .hero h1 { margin-bottom: 24px; }
+  .hero-sub { font-size: clamp(1.05rem, 2vw, 1.25rem); color: var(--text-2); max-width: 600px; margin: 0 0 32px; line-height: 1.7; }
+  .cta-primary { display: inline-flex; align-items: center; gap: 10px; padding: 15px 30px; margin-bottom: 28px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 700; font-size: 1rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; box-shadow: 0 4px 24px var(--glow); }
+  .cta-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 34px var(--glow); }
+  .cta-primary svg { width: 20px; height: 20px; }
+  .store-buttons { display: flex; flex-wrap: wrap; gap: 14px; }
+  .store-btn { display: inline-flex; align-items: center; gap: 12px; padding: 12px 22px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; transition: .3s; min-width: 175px; }
+  .store-btn:hover { border-color: var(--brand-3); background: var(--bg-hover); transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,.3); }
+  .store-btn svg { width: 26px; height: 26px; flex-shrink: 0; }
+  .store-btn .label { text-align: left; }
+  .store-btn .label small { display: block; font-size: .68rem; color: var(--text-3); line-height: 1.2; }
+  .store-btn .label strong { display: block; font-size: .92rem; font-weight: 600; line-height: 1.3; }
+
+  /* stats */
+  .stats { padding: 40px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-alt); }
+  .stats-grid { display: flex; justify-content: center; flex-wrap: wrap; gap: 36px 56px; }
+  .stat { text-align: center; }
+  .stat-value { font-size: 1.1rem; font-weight: 700; color: var(--brand-1); }
+  .stat-label { font-size: .78rem; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
+
+  /* section header */
+  .section-header { text-align: center; margin-bottom: 60px; }
+  .section-header p { color: var(--text-2); font-size: 1.1rem; max-width: 600px; margin: 16px auto 0; }
+
+  /* highlights */
+  .highlights { padding-bottom: 40px; }
+  .highlight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .highlight-card { position: relative; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); padding: 40px 32px; overflow: hidden; transition: .4s; }
+  .highlight-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--brand-1), var(--brand-2)); opacity: 0; transition: opacity .3s; }
+  .highlight-card:hover { border-color: rgba(0,212,170,.3); transform: translateY(-4px); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .highlight-card:hover::before { opacity: 1; }
+  .card-icon { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, rgba(0,212,170,.12), rgba(6,181,151,.05)); border-radius: 14px; margin-bottom: 24px; color: var(--brand-1); }
+  .card-icon svg { width: 28px; height: 28px; }
+  .highlight-card h3 { font-size: 1.3rem; margin-bottom: 12px; }
+  .highlight-card p { color: var(--text-2); font-size: .95rem; line-height: 1.65; }
+
+  /* features */
+  .features-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .feature-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); padding: 28px 24px; transition: .3s; }
+  .feature-card:hover { border-color: rgba(0,212,170,.25); transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+  .feature-icon { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(0,212,170,.07); border-radius: 11px; margin-bottom: 16px; color: var(--brand-1); }
+  .feature-icon svg { width: 22px; height: 22px; }
+  .feature-card h3 { font-size: 1rem; margin-bottom: 8px; }
+  .feature-card p { color: var(--text-2); font-size: .87rem; line-height: 1.6; }
+
+  /* privacy */
+  .privacy { background: linear-gradient(180deg, var(--bg) 0%, var(--bg-alt) 50%, var(--bg) 100%); }
+  .privacy-content { text-align: center; max-width: 700px; margin: 0 auto 60px; }
+  .privacy-content p { color: var(--text-2); font-size: 1.1rem; margin-top: 16px; }
+  .privacy-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+  .privacy-item { text-align: center; padding: 32px 20px; background: rgba(22,22,22,.5); border: 1px solid var(--border); border-radius: var(--r); }
+  .pi-icon { width: 48px; height: 48px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; background: rgba(0,212,170,.07); border-radius: 50%; color: var(--brand-1); }
+  .pi-icon svg { width: 24px; height: 24px; }
+  .privacy-item h3 { font-size: .95rem; margin-bottom: 6px; }
+  .privacy-item p { font-size: .82rem; color: var(--text-3); line-height: 1.5; }
+
+  /* platforms */
+  .platforms { text-align: center; }
+  .platforms-sub { color: var(--text-2); font-size: 1.1rem; margin-bottom: 48px; }
+  .platform-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 900px; margin: 0 auto; }
+  .platform-card { display: flex; flex-direction: column; align-items: center; padding: 40px 24px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); transition: .3s; }
+  .platform-card:hover { border-color: var(--brand-3); transform: translateY(-4px); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .platform-card svg { width: 44px; height: 44px; margin-bottom: 20px; color: var(--text); }
+  .platform-card h3 { margin-bottom: 8px; }
+  .platform-card p { font-size: .85rem; color: var(--text-3); margin-bottom: 24px; }
+  .platform-btn { display: inline-flex; padding: 10px 28px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 600; font-size: .9rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; }
+  .platform-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--glow); }
+
+  /* footer */
+  footer { padding: 40px 0; border-top: 1px solid var(--border); text-align: center; }
+  .footer-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; font-weight: 600; }
+  .footer-brand svg { width: 28px; height: 28px; border-radius: 7px; }
+  footer p { font-size: .8rem; color: var(--text-3); }
+  footer a { color: var(--brand-1); }
+  footer a:hover { text-decoration: underline; }
+
+  /* fade-up reveal — gated on .js so the page is fully visible without JS */
+  html.js .fade-up { opacity: 0; transform: translateY(30px); transition: opacity .6s ease, transform .6s ease; }
+  html.js .fade-up.visible { opacity: 1; transform: none; }
+
+  @media (max-width: 1024px) {
+    .highlight-grid { grid-template-columns: repeat(2, 1fr); }
+    .features-grid { grid-template-columns: repeat(3, 1fr); }
+    .privacy-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 768px) {
+    section { padding: 64px 0; }
+    .hero-content { flex-direction: column; text-align: center; }
+    .hero-text { text-align: center; }
+    .hero-video { flex: 0 0 auto; width: 240px; max-width: 100%; }
+    .hero-sub { margin-left: auto; margin-right: auto; }
+    .cta-primary, .store-buttons { justify-content: center; }
+    .highlight-grid { grid-template-columns: 1fr; }
+    .features-grid { grid-template-columns: repeat(2, 1fr); }
+    .platform-cards { grid-template-columns: 1fr; max-width: 400px; }
+    .stats-grid { gap: 20px 36px; }
+    .nav-cta span { display: none; }
+  }
+  @media (max-width: 480px) {
+    .features-grid { grid-template-columns: 1fr; }
+    .privacy-grid { grid-template-columns: 1fr; }
+    .store-btn { min-width: 100%; justify-content: center; }
+    .hero { min-height: auto; padding-top: 120px; padding-bottom: 60px; }
+  }
+</style>
 </head>
 <body>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="container nav-inner">
+    <a href="#" class="nav-brand">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+        <rect width="512" height="512" rx="102" fill="#0A0A0A"></rect>
+        <defs><linearGradient id="ng" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00D4AA"></stop><stop offset="100%" stop-color="#06B597"></stop></linearGradient></defs>
+        <path d="M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200 180 260 260 260Q290 260 290 290Q290 320 260 320L180 320 180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120Z" fill="url(#ng)"></path>
+        <path d="M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240 392 200Z" fill="url(#ng)"></path>
+        <path d="M392 200L392 240 432 240" fill="none" stroke="#0A0A0A" stroke-width="6" stroke-linecap="round"></path>
+      </svg>
+      FxFiles
+    </a>
+    <a href="/app/" class="nav-cta">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+      <span>Open Web App</span>
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
   <div class="container">
-    <div class="logo">&#x1F4C1;</div>
-    <h1>FxFiles</h1>
-    <p>Decentralized file manager with NFT minting, FULA storage, and cross-device sync.</p>
-    <div class="stores">
-      <a href="https://apps.apple.com/app/fxfiles/id1658500313" target="_blank">
-        <span>&#x1F34E;</span> App Store
-      </a>
-      <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank">
-        <span>&#x1F4F1;</span> Google Play
-      </a>
-      <a href="https://apps.microsoft.com/detail/9nxl9kb8fbqq" target="_blank">
-        <span>&#x1FA9F;</span> Windows
-      </a>
-      <a href="/app/">
-        <span>&#x1F310;</span> Web App
-      </a>
+    <div class="hero-content">
+      <div class="hero-text">
+        <div class="hero-badge">by Functionland</div>
+        <h1><span class="gradient-text">Your Files.<br>Your Freedom.</span></h1>
+        <p class="hero-sub">The decentralized file manager with AI superpowers. End-to-end encrypted, multi-platform, and built with zero data collection.</p>
+        <a href="/app/" class="cta-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+          Open the Web App
+        </a>
+        <div class="store-buttons">
+          <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--brand-1)"><path d="M5 3l14 9-14 9V3z"></path></svg>
+            <div class="label"><small>Get it on</small><strong>Google Play</strong></div>
+          </a>
+          <a href="https://apps.apple.com/ca/app/fxfiles/id1658500313" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--text)"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79s-2 .77-3.27.81c-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83zM13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"></path></svg>
+            <div class="label"><small>Download on the</small><strong>App Store</strong></div>
+          </a>
+          <a href="https://apps.microsoft.com/detail/9NXL9KB8FBQQ" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--accent)"><rect x="3" y="3" width="8.5" height="8.5" rx="1"></rect><rect x="12.5" y="3" width="8.5" height="8.5" rx="1"></rect><rect x="3" y="12.5" width="8.5" height="8.5" rx="1"></rect><rect x="12.5" y="12.5" width="8.5" height="8.5" rx="1"></rect></svg>
+            <div class="label"><small>Get it from</small><strong>Microsoft Store</strong></div>
+          </a>
+        </div>
+      </div>
+      <div class="hero-video">
+        <iframe src="https://www.youtube.com/embed/AwlnIHJTLTE" title="FxFiles Demo" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+      </div>
     </div>
   </div>
+</section>
+
+<!-- STATS -->
+<section class="stats">
+  <div class="container">
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-value">4 Platforms</div><div class="stat-label">Web, Windows, iOS, Android</div></div>
+      <div class="stat"><div class="stat-value">AES-256-GCM</div><div class="stat-label">End-to-End Encrypted</div></div>
+      <div class="stat"><div class="stat-value">Zero PII</div><div class="stat-label">Data Collection</div></div>
+      <div class="stat"><div class="stat-value">Decentralized</div><div class="stat-label">No Single Point of Failure</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- HIGHLIGHTS -->
+<section class="highlights">
+  <div class="container">
+    <div class="section-header fade-up">
+      <h2><span class="gradient-text">What Sets FxFiles Apart</span></h2>
+      <p>Not just another file manager. A new paradigm for how you own, create, and share your digital life.</p>
+    </div>
+    <div class="highlight-grid">
+      <div class="highlight-card fade-up">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+        </div>
+        <h3>Decentralized Storage</h3>
+        <p>No single server. No single point of failure. Your files live across a resilient network that keeps working even when servers don't. True data sovereignty, not a marketing slogan.</p>
+      </div>
+      <div class="highlight-card fade-up">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"></path><path d="M15 16v-2"></path><path d="M8 9h2"></path><path d="M20 9h2"></path><path d="M17.8 11.8 19 13"></path><path d="M15 9h.01"></path><path d="M17.8 6.2 19 5"></path><path d="m3 21 9-9"></path><path d="M12.2 6.2 11 5"></path></svg>
+        </div>
+        <h3>AI Website Builder</h3>
+        <p>Drop your files in, get a complete website out. AI analyzes your images, documents, and videos, then generates a fully functional IPFS-hosted site in seconds. One click. Done.</p>
+      </div>
+      <div class="highlight-card fade-up">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 13L2 9z"></path><path d="M11 3 8 9l4 13 4-13-3-6"></path><path d="M2 9h20"></path></svg>
+        </div>
+        <h3>One-Click NFT Minting</h3>
+        <p>Turn any file collection into an on-chain NFT. Gasless, creator-sponsored minting means zero crypto expertise required. Shareable claim links and QR codes included.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-header fade-up">
+      <h2>Packed with <span class="gradient-text">Intelligence</span></h2>
+      <p>Every feature runs on your device. Your data never leaves unless you say so.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="M9.5 12.5 11 14l3.5-3.5"></path></svg></div>
+        <h3>End-to-End Encrypted</h3>
+        <p>AES-256-GCM encryption on your device. Your files are unreadable to everyone — including us.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg></div>
+        <h3>Secure Sharing</h3>
+        <p>Passwords, expiry dates, instant revocation. End-to-end encrypted sharing fully on your terms.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></div>
+        <h3>Multi-Way Collaboration</h3>
+        <p>Shared folders where everyone contributes. Real-time sync with per-file encryption built in.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path><circle cx="12" cy="12" r="4"></circle></svg></div>
+        <h3>Face Detection</h3>
+        <p>On-device ML finds and groups faces across your photos. Nothing ever leaves your phone.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><path d="M14 2v6h6"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg></div>
+        <h3>Text Extraction</h3>
+        <p>Point at any image, extract all text instantly. On-device OCR that stays completely private.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"></path><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg></div>
+        <h3>Advanced Audio Player</h3>
+        <p>Playlists, 3-band equalizer, shuffle, repeat, and background playback. A full music player built in.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></div>
+        <h3>WhatsApp Secure Backup</h3>
+        <p>Incremental WhatsApp backup to decentralized storage. Optional password encryption for extra peace of mind.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg></div>
+        <h3>Smart Tagging</h3>
+        <p>Color-coded tags for lightning-fast organization. Tag once, find instantly across all your devices.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="2"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg></div>
+        <h3>Archive Management</h3>
+        <p>Create and extract ZIP files right in the app. Browse contents without extracting. No extra tools needed.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg></div>
+        <h3>On-Premise + Cloud</h3>
+        <p>Connect a Blox device for blazing LAN-speed access. Auto-replicate to the cloud for anywhere availability.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="m16 16-4-4-4 4"></path></svg></div>
+        <h3>Public IPFS Sharing</h3>
+        <p>One tap to publish on IPFS. Permanent, censorship-resistant links anyone can access. Your content, unstoppable.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg></div>
+        <h3>Built-in Editor &amp; Viewers</h3>
+        <p>Preview images, videos, PDFs, and text. Crop, rotate, adjust, and annotate — without leaving the app.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY -->
+<section class="privacy">
+  <div class="container">
+    <div class="privacy-content fade-up">
+      <h2>Built for <span class="gradient-text">Privacy</span>,<br>Not for Profit from Your Data</h2>
+      <p>FxFiles is designed from the ground up to never see, store, or monetize your personal information.</p>
+    </div>
+    <div class="privacy-grid">
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"></path><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"></path><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"></path><line x1="2" y1="2" x2="22" y2="22"></line></svg></div>
+        <h3>Zero Data Collection</h3>
+        <p>No PII harvested. No tracking. No analytics. No behavioral profiling. Ever.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"></rect><path d="M9 22v-4h6v4"></path><path d="M8 6h.01"></path><path d="M16 6h.01"></path><path d="M12 6h.01"></path><path d="M12 10h.01"></path><path d="M12 14h.01"></path><path d="M16 10h.01"></path><path d="M16 14h.01"></path><path d="M8 10h.01"></path><path d="M8 14h.01"></path></svg></div>
+        <h3>Corporate Ready</h3>
+        <p>Self-host your infrastructure. Configure every endpoint. White-label deployable on your terms.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><rect x="10" y="10" width="4" height="5" rx="1"></rect><path d="M10 10V8a2 2 0 1 1 4 0v2"></path></svg></div>
+        <h3>Self-Sovereign</h3>
+        <p>You hold the encryption keys. You control the data. Full digital sovereignty, not just a promise.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"></path><path d="m2 17 10 5 10-5"></path><path d="m2 12 10 5 10-5"></path></svg></div>
+        <h3>Open Protocols</h3>
+        <p>Built on IPFS, blockchain, and open standards. No vendor lock-in. Your data is always portable.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PLATFORMS -->
+<section class="platforms" id="platforms">
+  <div class="container">
+    <h2 class="fade-up"><span class="gradient-text">Available Everywhere</span></h2>
+    <p class="platforms-sub fade-up">Same powerful experience on every device you own.</p>
+    <div class="platform-cards">
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+        <h3>Web</h3>
+        <p>No install required. End-to-end encrypted file management, sharing, and uploads right in your browser.</p>
+        <a href="/app/" class="platform-btn">Open Web App</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="3"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+        <h3>Android</h3>
+        <p>Full filesystem access, background sync, auto-backup, and system tray integration.</p>
+        <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank" rel="noopener" class="platform-btn">Google Play</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="3"></rect><path d="M12 18h.01"></path></svg>
+        <h3>iOS</h3>
+        <p>Native PhotoKit integration, Apple Sign-In, Keychain security, and full iCloud compatibility.</p>
+        <a href="https://apps.apple.com/ca/app/fxfiles/id1658500313" target="_blank" rel="noopener" class="platform-btn">App Store</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        <h3>Windows</h3>
+        <p>System tray, right-click shell integration, keyboard shortcuts, and desktop-class file management.</p>
+        <a href="https://apps.microsoft.com/detail/9NXL9KB8FBQQ" target="_blank" rel="noopener" class="platform-btn">Microsoft Store</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-brand">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+        <rect width="512" height="512" rx="102" fill="#0A0A0A"></rect>
+        <defs><linearGradient id="fg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00D4AA"></stop><stop offset="100%" stop-color="#06B597"></stop></linearGradient></defs>
+        <path d="M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200 180 260 260 260Q290 260 290 290Q290 320 260 320L180 320 180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120Z" fill="url(#fg)"></path>
+        <path d="M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240 392 200Z" fill="url(#fg)"></path>
+      </svg>
+      FxFiles by <a href="https://fx.land/" target="_blank" rel="noopener">Functionland</a>
+    </div>
+    <p>© 2026 Functionland Inc. All rights reserved.</p>
+  </div>
+</footer>
+
+<script>
+  // nav background on scroll
+  var nav = document.getElementById('nav');
+  function onScroll() { nav.classList.toggle('scrolled', window.scrollY > 20); }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+  // reveal-on-scroll for .fade-up (gated by html.js so no-JS shows everything)
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    document.querySelectorAll('.fade-up').forEach(function (el) { io.observe(el); });
+  } else {
+    document.querySelectorAll('.fade-up').forEach(function (el) { el.classList.add('visible'); });
+  }
+</script>
+
 </body>
 </html>
