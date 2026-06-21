@@ -5,6 +5,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 import 'package:fula_files/features/ai_connections/providers/ai_connections_provider.dart';
+import 'package:fula_files/features/ai_connections/screens/ai_activity_screen.dart';
 
 /// P13 — "AI Connections": list saved MCP pairings and create new ones.
 ///
@@ -21,7 +22,20 @@ class AiConnectionsScreen extends ConsumerWidget {
     final state = ref.watch(aiConnectionsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('AI Connections')),
+      appBar: AppBar(
+        title: const Text('AI Connections'),
+        actions: [
+          IconButton(
+            // P16 — reach the collective "AI activity" view (what AIs have
+            // stored in the shared workspace).
+            icon: const Icon(LucideIcons.history),
+            tooltip: 'AI activity',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AiActivityScreen()),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: state.isBusy ? null : () => _onCreatePressed(context, ref),
         icon: const Icon(LucideIcons.plus),
