@@ -16,6 +16,7 @@ import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 
 /// Signed-in identity as the web shell sees it.
@@ -460,6 +461,11 @@ class WebSession extends ChangeNotifier {
     unawaited(() async {
       try {
         await WebRecentFilesService.instance.clearAll();
+      } catch (_) {}
+    }());
+    unawaited(() async {
+      try {
+        await WebThumbnailService.instance.clearAll();
       } catch (_) {}
     }());
     // Stop background audio so the previous user's track doesn't keep playing

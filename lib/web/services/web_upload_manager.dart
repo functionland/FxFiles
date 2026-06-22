@@ -7,7 +7,9 @@ import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_unload_guard.dart';
+import 'package:fula_files/web/utils/web_thumbnail_gen.dart';
 
 /// Files at or below this size take the single-shot [FulaApiService.uploadObject]
 /// path (read once, one PUT). Larger files stream chunk-by-chunk so they never
@@ -166,6 +168,26 @@ class WebUploadManager extends ChangeNotifier {
     unawaited(_pump());
   }
 
+  /// Best-effort: generate + upload a tiny thumbnail to the sibling
+  /// `<bucket>-thumbs` bucket for an image, so the grids can show it without
+  /// the full file. Never throws into the drain. [smallBytes] is the
+  /// already-read body for small uploads (avoids a re-read).
+  Future<void> _writeThumbnailSidecar(String bucket, String key, String name,
+      int size, WebPickedFile picked, Uint8List? smallBytes) async {
+    try {
+      if (isThumbsBucket(bucket)) return; // never thumbnail a thumbnail
+      if (!isThumbnailableImage(name) || size > kThumbMaxSourceBytes) return;
+      final src = smallBytes ?? await picked.readSlice(0, size);
+      final thumb = await generateImageThumbnail(src);
+      if (thumb == null) return;
+      await FulaApiService.instance
+          .uploadObject(thumbsBucketFor(bucket), key, thumb);
+      WebThumbnailService.instance.put(bucket, key, thumb);
+    } catch (e) {
+      debugPrint('WebUploadManager: thumbnail sidecar skipped: $e');
+    }
+  }
+
   WebUploadJob? _nextQueued() {
     for (final j in _jobs) {
       if (j.status == WebUploadStatus.queued) return j;
@@ -215,14 +237,15 @@ class WebUploadManager extends ChangeNotifier {
             } catch (_) {}
           }
 
+          Uint8List? smallBytes;
           if (job.size <= _kSmallUploadBytes) {
             // Small file: one read, one PUT (streaming overhead isn't worth it).
-            final bytes = await picked.readSlice(0, job.size);
+            smallBytes = await picked.readSlice(0, job.size);
             if (_epoch != epoch || job.status == WebUploadStatus.cancelled) {
               throw const _AbandonedUpload();
             }
             await FulaApiService.instance
-                .uploadObject(job.bucket, job.key, bytes);
+                .uploadObject(job.bucket, job.key, smallBytes);
           } else {
             await _streamUpload(job, picked, epoch);
           }
@@ -232,6 +255,10 @@ class WebUploadManager extends ChangeNotifier {
 
           job.status = WebUploadStatus.done;
           job.progress = 1.0;
+          // Best-effort image thumbnail sidecar — does NOT block the drain
+          // (captures `picked`, so nulling job._picked below is safe).
+          unawaited(_writeThumbnailSidecar(
+              job.bucket, job.key, job.name, job.size, picked, smallBytes));
           job._picked = null;
           completedBuckets[job.base] = job.bucket;
           (completedKeys[job.bucket] ??= <String>[]).add(job.key);

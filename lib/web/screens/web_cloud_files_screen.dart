@@ -13,9 +13,11 @@ import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
+import 'package:fula_files/web/widgets/web_thumb.dart';
 
 /// Raw cloud file manager ("Cloud Files"). Browses the user's buckets and the
 /// virtual folder tree inside each one — the same encrypted data the category
@@ -80,7 +82,9 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       final r = await FulaApiService.instance.listBucketsCached();
       if (!mounted) return;
       setState(() {
-        _buckets = [...r.buckets]..sort();
+        // Hide the sidecar thumbnail buckets (e.g. images-v8-thumbs).
+        _buckets = [for (final b in r.buckets) if (!isThumbsBucket(b)) b]
+          ..sort();
         _bucketsStale = r.stale;
         _loading = false;
       });
@@ -238,13 +242,20 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
 
   Future<void> _previewImage(FulaObject o) async {
     final bucket = o.sourceBucket ?? _bucket!;
+    final future = FulaApiService.instance.downloadObject(bucket, o.key);
+    // The full bytes download anyway — backfill a thumbnail (gated to the
+    // user's own writable bucket) so the grid shows it next time.
+    unawaited(future
+        .then((bytes) => WebThumbnailService.instance
+            .backfillFromBytes(bucket, o.key, o.name, bytes))
+        .catchError((_) {}));
     showDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 900, maxHeight: 720),
           child: FutureBuilder<Uint8List>(
-            future: FulaApiService.instance.downloadObject(bucket, o.key),
+            future: future,
             builder: (ctx, snap) {
               if (snap.connectionState != ConnectionState.done) {
                 return const SizedBox(
@@ -300,6 +311,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       setState(() =>
           _objects = [for (final x in _objects) if (x.key != o.key) x]);
       _snack('Deleted');
+      unawaited(WebThumbnailService.instance.deleteCloudThumb(bucket, o.key));
     } catch (e) {
       _snack('Delete failed: ${_clean(e)}');
     }
@@ -324,6 +336,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       for (final o in inFolder) {
         await WebForegroundActivity.instance
             .run(() => FulaApiService.instance.deleteObject(bucket, o.key));
+        unawaited(WebThumbnailService.instance.deleteCloudThumb(bucket, o.key));
       }
       if (!mounted) return;
       final deleted = inFolder.map((o) => o.key).toSet();
@@ -497,6 +510,8 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     setState(() =>
         _objects = [for (final x in _objects) if (x.key != o.key) x]);
     _snack(okWord);
+    unawaited(WebThumbnailService.instance
+        .moveCloudThumb(srcBucket, o.key, destBucket, destKey));
     await _loadObjects(silent: true);
   }
 
@@ -640,10 +655,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     if (s.isEmpty) return 'Enter a name.';
     if (s.contains('/')) return 'No "/" in a file name.';
     if (s == kFolderMarkerName) return 'Reserved name.';
-    final siblings = deriveCloudFolderView(_objects, _prefix)
-        .files
-        .map((f) => f.name)
-        .toSet();
+    final siblings = _view().files.map((f) => f.name).toSet();
     if (s != exclude && siblings.contains(s)) {
       return 'A file with this name already exists here.';
     }
@@ -861,8 +873,27 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     );
   }
 
+  // Memoized folder view: deriveCloudFolderView re-scans the whole flat list,
+  // so cache it and recompute only when the object-list identity or the prefix
+  // changes — not on every build or every rename-dialog keystroke.
+  ({List<String> folders, List<FulaObject> files})? _viewCache;
+  int? _viewObjectsId;
+  String? _viewPrefix;
+
+  ({List<String> folders, List<FulaObject> files}) _view() {
+    final id = identityHashCode(_objects);
+    if (_viewCache != null && _viewObjectsId == id && _viewPrefix == _prefix) {
+      return _viewCache!;
+    }
+    final v = deriveCloudFolderView(_objects, _prefix);
+    _viewCache = v;
+    _viewObjectsId = id;
+    _viewPrefix = _prefix;
+    return v;
+  }
+
   Widget _folderView() {
-    final view = deriveCloudFolderView(_objects, _prefix);
+    final view = _view();
     final empty = view.folders.isEmpty && view.files.isEmpty;
     if (empty) {
       return RefreshIndicator(
@@ -906,7 +937,13 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
           }
           final o = view.files[i - view.folders.length];
           return ListTile(
-            leading: Icon(_iconFor(o)),
+            leading: o.isImage
+                ? WebThumb(
+                    bucket: o.sourceBucket ?? _bucket!,
+                    objectKey: o.key,
+                    fallback: Icon(_iconFor(o)),
+                  )
+                : Icon(_iconFor(o)),
             title: Text(o.name),
             subtitle: Text(o.sizeFormatted),
             onTap: () => _open(o),
