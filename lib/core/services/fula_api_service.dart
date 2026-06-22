@@ -13,6 +13,9 @@ import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
+import 'package:fula_files/features/ai_connections/services/ai_connection_service.dart';
 import 'package:fula_files/core/utils/cloud_folder_marker.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
@@ -123,6 +126,21 @@ class FulaApiService implements FulaApi {
   fula.EncryptedClientHandle? _localClient;
   String? _localEndpoint;
   final Set<String> _localLoadedForests = {};
+
+  // ── AI workspace client (P14) ──────────────────────────────────────────────
+  // A SEPARATE encrypted client scoped to the AI's `fula-ai-workspace` bucket.
+  // It is encrypted under the dedicated *workspace secret*
+  // (blake3DeriveKey('fula:ai-workspace-secret:v1', KEK)) — NOT the user's own
+  // file secret — so it can ONLY decode what the AI (MCP) wrote, and the AI in
+  // turn can never decode the user's real files. Built LAZILY and only when an
+  // AI connection exists, so non-AI users pay nothing.
+  fula.EncryptedClientHandle? _workspaceClient;
+  final Set<String> _workspaceLoadedForests = {};
+  // Single-flight guard: cache the in-flight init Future so two concurrent
+  // category loads (e.g. the Images + Videos tabs) can't double-build the
+  // client or race a half-initialized handle. Reset to null on dispose so a
+  // later sign-in rebuilds.
+  Future<void>? _workspaceInitFuture;
 
   bool get isConfigured => _isConfigured;
   bool get isLocalEndpoint => _isLocalEndpoint;
@@ -983,12 +1001,280 @@ class FulaApiService implements FulaApi {
     return downloadObject(bucket, key);
   }
 
+  /// Route a download by the object's [sourceBucket] (P14.1). AI-workspace
+  /// files decrypt only via the workspace client, so they go through
+  /// [downloadWorkspaceObject] (which reads from [aiWorkspaceBucket]
+  /// regardless of [bucket]); the user's own files route to [downloadObject].
+  @override
+  Future<Uint8List> downloadBySourceBucket(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadObject(bucket, key);
+
+  /// LAN-first sibling of [downloadBySourceBucket] (P14.1). The AI branch
+  /// skips the LAN fallback — the AI workspace is cloud-only, so there is no
+  /// local blox copy to try first.
+  @override
+  Future<Uint8List> downloadBySourceBucketWithLocalFallback(
+          String bucket, String key, String? sourceBucket) =>
+      sourceBucket == aiWorkspaceBucket
+          ? downloadWorkspaceObject(aiWorkspaceBucket, key)
+          : downloadWithLocalFallback(bucket, key);
+
   /// Dispose the local blox client (e.g. on unpair or blox goes offline).
   void disposeLocalClient() {
     _localClient = null;
     _localEndpoint = null;
     _localLoadedForests.clear();
     debugPrint('FulaApiService: local blox client disposed');
+  }
+
+  // ============================================================================
+  // AI WORKSPACE CLIENT (P14 — read the AI/MCP's own encrypted forest)
+  // ============================================================================
+
+  /// The bucket the AI (MCP) writes its workspace files + tag doc into. Keys
+  /// are `ai/<category>/...` (category ∈ images/videos/audio/documents) and
+  /// `ai/tag-metadata/ai-workspace.json`. Mirrors the MCP's grant scope `ai/`.
+  ///
+  /// Aliases [FulaApi.aiWorkspaceBucket] (the single source of truth, on the
+  /// shared surface) so existing `FulaApiService.aiWorkspaceBucket` call sites
+  /// keep working without a second literal that could drift.
+  static const String aiWorkspaceBucket = FulaApi.aiWorkspaceBucket;
+
+  /// True if the user has at least one P13 AI-connection record. This is the
+  /// gate: every AI-workspace read (category merge, tag adoption) is a no-op
+  /// unless this returns true, so non-AI users never build the workspace client
+  /// or issue a workspace list/download. Reads secure storage (cheap) and never
+  /// throws — any failure is treated as "no AI connection".
+  @override
+  Future<bool> hasAiConnection() async {
+    try {
+      final raw = await SecureStorageService.instance
+          .read(SecureStorageKeys.aiConnections);
+      return AiConnection.decodeList(raw).isNotEmpty;
+    } catch (e) {
+      debugPrint('FulaApiService.hasAiConnection: treating as none: $e');
+      return false;
+    }
+  }
+
+  /// Lazily build the AI-workspace [EncryptedClient] under the supplied
+  /// [workspaceSecret] (= blake3DeriveKey('fula:ai-workspace-secret:v1', KEK)).
+  ///
+  /// Mirrors [initialize]'s cloud client EXACTLY for the forest-decode-relevant
+  /// settings so the forest the MCP wrote decodes byte-for-byte:
+  ///   EncryptionConfig(enableMetadataPrivacy: true,
+  ///                    obfuscationMode: ObfuscationMode.flatNamespace)
+  /// — the precise mirror of the MCP's `EncryptionConfig::from_secret_key`
+  /// (`metadata_privacy = true`, `obfuscation_mode = FlatNamespace`). The only
+  /// difference vs the cloud client is the SECRET (workspace, not the user's
+  /// own). Endpoint + access token are reused from the cloud client's last
+  /// [initialize] call: the same gateway hosts `fula-ai-workspace` and the
+  /// forest is content-addressed, so only the secret governs decode.
+  ///
+  /// SINGLE-FLIGHT: concurrent callers await the same in-flight Future, so the
+  /// client is built once even if several category views trigger it together.
+  Future<void> initializeWorkspaceClient(Uint8List workspaceSecret) async {
+    if (_workspaceClient != null) return;
+    // Coalesce concurrent inits onto one Future.
+    final inFlight = _workspaceInitFuture;
+    if (inFlight != null) return inFlight;
+
+    final future = _buildWorkspaceClient(workspaceSecret);
+    _workspaceInitFuture = future;
+    try {
+      await future;
+    } finally {
+      // Clear the latch whether we succeeded (so a future dispose+retry works)
+      // or failed (so the next attempt can retry rather than re-await a
+      // resolved-failed Future).
+      _workspaceInitFuture = null;
+    }
+  }
+
+  Future<void> _buildWorkspaceClient(Uint8List workspaceSecret) async {
+    final args = _lastInitArgs;
+    if (args == null) {
+      debugPrint(
+          'FulaApiService: cannot init workspace client — cloud client not '
+          'initialized yet');
+      return;
+    }
+    try {
+      final config = fula.FulaConfig(
+        endpoint: args.endpoint,
+        accessToken: args.accessToken,
+        timeoutSeconds: BigInt.from(60),
+        maxRetries: 3,
+        perChunkDownloadTimeoutSeconds: BigInt.from(300),
+        bufferedDownloadMaxBytes: BigInt.from(256 * 1024 * 1024),
+        // Read-only client — no health gate / block cache / gateway race
+        // needed (the workspace is small and read on-demand). Keep them off
+        // so the workspace client adds no background cost.
+        healthGateEnabled: false,
+        healthGateTtlSeconds: BigInt.from(30),
+        blockCacheEnabled: false,
+        blockCachePath: '',
+        blockCacheMaxBytes: BigInt.from(kBlockCacheMaxBytes),
+        gatewayFallbackEnabled: false,
+        gatewayFallbackUrls: const [],
+        gatewayRaceConcurrency: 3,
+        // Cold-start does not apply to the workspace client — it reads a known
+        // bucket on the configured gateway, not a user-scoped on-chain index.
+        usersIndexChainRpcUrl: '',
+        usersIndexAnchorAddress: '',
+        usersIndexIpnsName: '',
+        usersIndexUserKey: '',
+        usersIndexIpnsGatewayUrls: const [],
+        usersIndexIpfsGatewayUrls: const [],
+        // Same walkable-v8 flag as the cloud/local clients so the workspace
+        // forest the MCP wrote is read with byte-compatible pointer handling.
+        walkableV8WriterEnabled: true,
+        // The workspace client never runs the signed-entry writer.
+        encryptedUserBucketsIndexKey: Uint8List(0),
+        userEntrySigningSeed: Uint8List(0),
+      );
+
+      // EXACT mirror of the MCP's `EncryptionConfig::from_secret_key`:
+      // metadata-privacy ON + FlatNamespace obfuscation, differing only in the
+      // secret. (forest_cache_ttl_secs=60 on the Rust side is an internal cache
+      // TTL, not part of the on-disk forest format → no Dart field, irrelevant
+      // to decode. There is no chunk-threshold field on either side's
+      // EncryptionConfig; chunking is write-side and self-describing in the
+      // stored manifest, so nothing to match for a read.)
+      final encConfig = fula.EncryptionConfig(
+        secretKey: workspaceSecret,
+        enableMetadataPrivacy: true,
+        obfuscationMode: fula.ObfuscationMode.flatNamespace,
+      );
+
+      _workspaceClient =
+          await fula.createEncryptedClient(config: config, encryption: encConfig);
+      _workspaceLoadedForests.clear();
+      debugPrint('FulaApiService: AI workspace client ready');
+    } catch (e) {
+      debugPrint('FulaApiService: workspace client init failed: $e');
+      _workspaceClient = null;
+    }
+  }
+
+  /// Lazily load a forest on the workspace client (mirrors [_ensureForestLoaded]
+  /// but on `_workspaceClient`). Caller must have built the client first.
+  Future<void> _ensureWorkspaceForestLoaded(String bucket) async {
+    if (_workspaceLoadedForests.contains(bucket)) return;
+    await fula.loadForest(client: _workspaceClient!, bucket: bucket);
+    _workspaceLoadedForests.add(bucket);
+  }
+
+  /// List objects from the AI-workspace forest (mirrors [listObjects] but on
+  /// the workspace client). Each returned [FulaObject] carries
+  /// `sourceBucket = 'fula-ai-workspace'` so a merged native category view can
+  /// badge it / route its later download to the workspace client.
+  ///
+  /// GATED + lazy: returns `[]` immediately when no AI connection exists. Builds
+  /// the workspace client on first use. NEVER throws to the caller for an
+  /// AI-side problem — a missing/erroring workspace forest yields `[]` so it can
+  /// never hide the user's own content in a merged view.
+  @override
+  Future<List<FulaObject>> listWorkspaceObjects(
+    String bucket, {
+    String prefix = '',
+  }) async {
+    if (!await hasAiConnection()) return const <FulaObject>[];
+    try {
+      if (_workspaceClient == null) {
+        final secret = await _deriveWorkspaceSecretForRead();
+        if (secret == null) return const <FulaObject>[];
+        await initializeWorkspaceClient(secret);
+      }
+      if (_workspaceClient == null) return const <FulaObject>[];
+
+      await _ensureWorkspaceForestLoaded(bucket);
+      final files =
+          await fula.listFromForest(client: _workspaceClient!, bucket: bucket);
+      final filtered = prefix.isEmpty
+          ? files
+          : files.where((f) => f.originalKey.startsWith(prefix)).toList();
+      return filtered
+          .map((meta) => FulaObject(
+                key: meta.originalKey,
+                size: meta.size.toInt(),
+                lastModified: meta.modifiedAt != null
+                    ? DateTime.fromMillisecondsSinceEpoch(
+                        frbU64ToInt(meta.modifiedAt)! * 1000)
+                    : null,
+                isDirectory: false,
+                sourceBucket: aiWorkspaceBucket,
+                metadata: {
+                  'storageKey': meta.storageKey,
+                  'contentType': meta.contentType ?? '',
+                  'isEncrypted': meta.isEncrypted.toString(),
+                },
+              ))
+          .toList();
+    } catch (e) {
+      // Tolerate ANY AI-side failure (auth 403, missing bucket, decode error)
+      // as empty — never let it surface into the user's category view.
+      debugPrint('listWorkspaceObjects($bucket, "$prefix") → empty: $e');
+      // Drop the forest memo so a transient error re-attempts next time.
+      _workspaceLoadedForests.remove(bucket);
+      return const <FulaObject>[];
+    }
+  }
+
+  /// Download + decrypt a single object from the AI-workspace forest (mirrors
+  /// [downloadObject] but on the workspace client). Used to read the AI tag doc
+  /// (`ai/tag-metadata/ai-workspace.json`). GATED + lazy like
+  /// [listWorkspaceObjects]; throws [FulaApiException] on a genuine read error
+  /// (the tag-adoption caller catches it, so a failure never blocks restore).
+  @override
+  Future<Uint8List> downloadWorkspaceObject(String bucket, String key) async {
+    if (!await hasAiConnection()) {
+      throw FulaApiException('No AI connection — workspace download skipped');
+    }
+    if (_workspaceClient == null) {
+      final secret = await _deriveWorkspaceSecretForRead();
+      if (secret != null) await initializeWorkspaceClient(secret);
+    }
+    if (_workspaceClient == null) {
+      throw FulaApiException('AI workspace client unavailable');
+    }
+    try {
+      await _ensureWorkspaceForestLoaded(bucket);
+      final data =
+          await fula.getFlat(client: _workspaceClient!, bucket: bucket, path: key);
+      return Uint8List.fromList(data);
+    } catch (e) {
+      _workspaceLoadedForests.remove(bucket);
+      throw FulaApiException('Failed to download workspace object: $e');
+    }
+  }
+
+  /// Re-derive the AI-workspace secret for a READ path (lazy client build).
+  ///
+  /// Reuses P13's [AiConnectionService.deriveWorkspaceSecret] verbatim — the
+  /// SAME blake3DeriveKey-of-KEK under the load-bearing
+  /// `fula:ai-workspace-secret:v1` label that produced the secret the MCP was
+  /// handed at pairing. Calling it (rather than re-rolling the derivation here)
+  /// guarantees the read secret matches the write secret byte-for-byte. Returns
+  /// null (→ caller no-ops) if signed out / derivation fails.
+  Future<Uint8List?> _deriveWorkspaceSecretForRead() async {
+    try {
+      return await AiConnectionService.instance.deriveWorkspaceSecret();
+    } catch (e) {
+      debugPrint('FulaApiService: workspace secret derivation failed: $e');
+      return null;
+    }
+  }
+
+  /// Dispose the AI-workspace client (call on logout / sign-out).
+  void disposeWorkspaceClient() {
+    _workspaceClient = null;
+    _workspaceLoadedForests.clear();
+    _workspaceInitFuture = null;
+    debugPrint('FulaApiService: AI workspace client disposed');
   }
 
   /// Upload and encrypt a file.
@@ -1769,6 +2055,7 @@ class FulaApiService implements FulaApi {
     _cloudAccessToken = null;
     _isLocalEndpoint = false;
     disposeLocalClient();
+    disposeWorkspaceClient();
   }
 
   /// Decode the `sub` claim from a JWT WITHOUT verifying the signature.

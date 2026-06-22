@@ -25,6 +25,7 @@ import 'package:fula_files/features/sharing/providers/sharing_provider.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/settings/screens/blox_pairing_screen.dart';
 import 'package:fula_files/features/settings/screens/sync_queue_screen.dart';
+import 'package:fula_files/features/ai_connections/screens/ai_connections_screen.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
@@ -160,6 +161,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildFaceDetectionSection(),
           _buildSyncSection(settings),
           _buildSecuritySection(),
+          _buildAiConnectionsSection(),
           _buildSection(
             title: 'Display',
             children: [
@@ -960,6 +962,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ],
         );
       },
+    );
+  }
+
+  /// P13 — "AI Connections": pair an AI client (via MCP) with the user's
+  /// encrypted AI workspace. Pushes [AiConnectionsScreen], which mints the
+  /// one-time connection bundle and lists saved pairings.
+  Widget _buildAiConnectionsSection() {
+    return _buildSection(
+      title: 'AI Connections',
+      children: [
+        ListTile(
+          leading: const Icon(LucideIcons.bot),
+          title: const Text('AI Connections'),
+          subtitle: const Text('Pair an AI client (MCP) with your workspace'),
+          trailing: const Icon(LucideIcons.chevronRight),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AiConnectionsScreen()),
+            );
+          },
+        ),
+      ],
     );
   }
 
