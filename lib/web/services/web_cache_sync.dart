@@ -7,6 +7,7 @@ import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
 
 /// Cross-tab cache coherence (plan §8 multi-tab): a delete in tab A
 /// must not survive in tab B, and a sign-out anywhere must drop every
@@ -59,6 +60,7 @@ class WebCacheSync {
           // and no in-flight write can leak into the deleted box.
           WebListingCache.instance.deactivate();
           WebRecentFilesService.instance.deactivate();
+          WebThumbnailService.instance.deactivate();
           WebPrefetchScheduler.instance.reset();
           WebAudioController.instance.stopPlayback();
           onRemoteSignOut?.call();
