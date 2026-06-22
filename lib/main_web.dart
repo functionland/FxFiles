@@ -28,6 +28,7 @@ import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:web/web.dart' as web;
 
@@ -97,7 +98,10 @@ Future<void> main() async {
     return;
   }
 
-  runApp(const FxFilesWebApp());
+  // ProviderScope is required by the Riverpod-based AI Connections screens
+  // (the native app has one; the web shell otherwise uses plain widgets).
+  // Harmless for the non-Riverpod web screens.
+  runApp(const ProviderScope(child: FxFilesWebApp()));
 }
 
 Future<void> _runE2E({Object? bootError, required bool restored}) async {
