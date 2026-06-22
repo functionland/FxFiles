@@ -394,7 +394,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           title: const Text('AI Connections'),
           subtitle: const Text('Pair an AI client (MCP) with your workspace'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => context.go('/ai-connections'),
+          onTap: () => context.push('/ai-connections'),
         ),
       ],
     );
