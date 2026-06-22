@@ -5,18 +5,26 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
+import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
+import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
+import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
+import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
+import 'package:fula_files/web/widgets/web_text_viewer.dart';
 import 'package:fula_files/web/widgets/web_thumb.dart';
 
 /// Raw cloud file manager ("Cloud Files"). Browses the user's buckets and the
@@ -176,24 +184,6 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
 
   // ── Create / upload ─────────────────────────────────────────────────────────
 
-  Future<void> _newBucket() async {
-    final name = await _promptName(
-      title: 'New bucket',
-      hint: 'my-bucket',
-      helper: '3–63 chars: lowercase letters, digits, "-" or "."; '
-          'must not start with "-" or ".".',
-      validator: _validateBucketName,
-    );
-    if (name == null) return;
-    try {
-      await FulaApiService.instance.createBucket(name);
-      _snack('Bucket "$name" created');
-      _openBucket(name);
-    } catch (e) {
-      _snack('Could not create bucket: ${_clean(e)}');
-    }
-  }
-
   Future<void> _newFolder() async {
     final name = await _promptName(
       title: 'New folder',
@@ -233,10 +223,134 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
   // ── File interactions ───────────────────────────────────────────────────────
 
   Future<void> _open(FulaObject o) async {
-    if (o.isImage) {
+    final bucket = o.sourceBucket ?? _bucket!;
+    if (o.isVideo) {
+      await _previewVideo(bucket, o);
+    } else if (o.isAudio) {
+      await _openAudioPlayer(bucket, o);
+    } else if (isTextViewableName(o.key)) {
+      if (o.size > kMaxInlineTextBytes) {
+        await _download(o);
+      } else {
+        await _previewText(bucket, o);
+      }
+    } else if (o.isImage) {
       await _previewImage(o);
     } else {
-      await _download(o);
+      await _download(o); // documents/PDF/other → download (same as category tabs)
+    }
+  }
+
+  /// MIME for the media viewers: the stored content-type, else a guess by ext.
+  String _mime(FulaObject o) {
+    final ct = o.metadata?['contentType'];
+    if (ct != null && ct.isNotEmpty && ct != 'application/octet-stream') {
+      return ct;
+    }
+    final i = o.key.lastIndexOf('.');
+    switch (i < 0 ? '' : o.key.substring(i + 1).toLowerCase()) {
+      case 'mp4':
+      case 'm4v':
+        return 'video/mp4';
+      case 'webm':
+        return 'video/webm';
+      case 'mov':
+        return 'video/quicktime';
+      case 'mkv':
+        return 'video/x-matroska';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'wav':
+        return 'audio/wav';
+      case 'ogg':
+      case 'opus':
+        return 'audio/ogg';
+      case 'flac':
+        return 'audio/flac';
+      case 'aac':
+        return 'audio/aac';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  /// Video via the shared MediaPreviewDialog (blob-URL HTML5 player).
+  Future<void> _previewVideo(String bucket, FulaObject o) async {
+    _snack('Loading "${o.name}"…');
+    try {
+      final bytes = await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.downloadObject(bucket, o.key));
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => MediaPreviewDialog(
+          title: o.name,
+          bytes: bytes,
+          mimeType: _mime(o),
+          isVideo: true,
+        ),
+      );
+    } catch (e) {
+      _snack('Playback failed: ${_clean(e)}');
+    }
+  }
+
+  WebAudioTrack _audioTrack(String bucket, FulaObject o) => WebAudioTrack(
+        name: o.name,
+        mime: _mime(o),
+        cloudKey: o.key,
+        download: () => FulaApiService.instance.downloadObject(bucket, o.key),
+      );
+
+  /// Audio via the shared full-screen queue player — queue = the current
+  /// folder's audio files, starting at the tapped one.
+  Future<void> _openAudioPlayer(String bucket, FulaObject tapped) async {
+    final audio = _view().files.where((o) => o.isAudio).toList();
+    var start = audio.indexWhere((o) => o.key == tapped.key);
+    if (start < 0) {
+      audio.insert(0, tapped);
+      start = 0;
+    }
+    final c = WebAudioController.instance;
+    c.playQueue(
+      [for (final o in audio) _audioTrack(o.sourceBucket ?? bucket, o)],
+      start,
+    );
+    c.setExpanded(true);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      useSafeArea: false,
+      builder: (ctx) => const Dialog.fullscreen(child: WebAudioPlayer()),
+    );
+  }
+
+  /// Text/code via the shared full-screen WebTextViewer (download if too big).
+  Future<void> _previewText(String bucket, FulaObject o) async {
+    _snack('Loading "${o.name}"…');
+    try {
+      final bytes = await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.downloadObject(bucket, o.key));
+      if (!mounted) return;
+      if (bytes.length > kMaxInlineTextBytes) {
+        saveBytesAsDownload(o.name, bytes);
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        useSafeArea: false,
+        builder: (ctx) => Dialog.fullscreen(
+          child: WebTextViewer(
+            fileName: o.name,
+            bytes: bytes,
+            onDownload: () => saveBytesAsDownload(o.name, bytes),
+          ),
+        ),
+      );
+    } catch (e) {
+      _snack('Preview failed: ${_clean(e)}');
     }
   }
 
@@ -295,6 +409,30 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     } catch (e) {
       _snack('Download failed: ${_clean(e)}');
     }
+  }
+
+  /// Add/edit tags for [o] — reuses the category screen's tag selector +
+  /// WebTagService (tags round-trip across platforms).
+  Future<void> _editTags(FulaObject o) async {
+    final bucket = o.sourceBucket ?? _bucket!;
+    try {
+      await WebTagService.instance.load();
+    } catch (e) {
+      _snack('Could not load tags: ${_clean(e)}');
+      return;
+    }
+    if (!mounted) return;
+    final initial =
+        (WebTagService.instance.tagsForObjects(bucket, [o])[o.key] ??
+                const <FileTag>[])
+            .map((t) => t.id)
+            .toSet();
+    await showWebTagSelectorDialog(
+      context: context,
+      remoteKey: '$bucket/${o.key}',
+      fileName: o.name,
+      initialTagIds: initial,
+    );
   }
 
   Future<void> _deleteFile(FulaObject o) async {
@@ -631,17 +769,6 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     return ok == true;
   }
 
-  String? _validateBucketName(String v) {
-    final s = v.trim();
-    if (s.length < 3 || s.length > 63) return 'Use 3–63 characters.';
-    if (!RegExp(r'^[a-z0-9.-]+$').hasMatch(s)) {
-      return 'Only lowercase letters, digits, "-" and ".".';
-    }
-    if (s.startsWith('-') || s.startsWith('.')) return 'Cannot start with "-" or ".".';
-    if (_buckets.contains(s)) return 'A bucket with this name already exists.';
-    return null;
-  }
-
   String? _validateFolderName(String v) {
     final s = v.trim();
     if (s.isEmpty) return 'Enter a name.';
@@ -755,13 +882,8 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
   }
 
   Widget? _buildFab() {
-    if (_bucket == null) {
-      return FloatingActionButton.extended(
-        onPressed: _newBucket,
-        icon: const Icon(LucideIcons.folderPlus),
-        label: const Text('New bucket'),
-      );
-    }
+    // Only pre-created buckets — no bucket creation from the web UI.
+    if (_bucket == null) return null;
     if (_isReadOnly) return null;
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -954,6 +1076,8 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
                     _open(o);
                   case 'download':
                     _download(o);
+                  case 'tags':
+                    _editTags(o);
                   case 'share':
                     _shareFile(o);
                   case 'sharePublic':
@@ -969,6 +1093,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'open', child: Text('Open')),
                 const PopupMenuItem(value: 'download', child: Text('Download')),
+                const PopupMenuItem(value: 'tags', child: Text('Tags')),
                 const PopupMenuItem(
                     value: 'share', child: Text('Share (private link)')),
                 const PopupMenuItem(
