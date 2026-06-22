@@ -14,7 +14,7 @@ import 'package:fula_files/web/services/web_session.dart';
 
 /// App version label shown in About + the home footer. Kept in one place
 /// so the two stay in sync (the home footer imports this).
-const String kWebAppVersion = 'v1.11.4.11';
+const String kWebAppVersion = 'v1.11.4.18';
 
 /// In-app web Settings page. Replaces the old behavior where the gear icon
 /// opened cloud.fx.land in a new tab. Mirrors the mobile Settings screen's

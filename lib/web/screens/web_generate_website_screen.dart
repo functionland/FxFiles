@@ -13,6 +13,7 @@ typedef WebGeneratePromptResult = ({
   String websiteName,
   String category,
   List<String> styles,
+  List<String> languages,
   String palette,
   String prompt,
   bool enableTracking,
@@ -145,6 +146,7 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
   final String? initialPrompt;
   final bool initialEnableTracking;
   final ContactFormConfig? initialContactForm;
+  final List<String>? initialLanguages;
 
   const WebGenerateWebsiteScreen({
     super.key,
@@ -157,6 +159,7 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
     this.initialPrompt,
     this.initialEnableTracking = false,
     this.initialContactForm,
+    this.initialLanguages,
   });
 
   @override
@@ -185,6 +188,15 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           ? widget.initialPalette!
           : _paletteOptions.first.label;
   late bool _enableTracking = widget.initialEnableTracking;
+
+  late final List<String> _selectedLanguages = () {
+    final known = websiteLanguageAutonyms.keys.toSet();
+    final init = (widget.initialLanguages ?? const <String>[])
+        .where(known.contains)
+        .take(3)
+        .toList();
+    return init.isEmpty ? <String>['English'] : init;
+  }();
 
   late bool _contactFormEnabled = widget.initialContactForm?.enabled ?? false;
   late ContactFormChannel _channel =
@@ -290,6 +302,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       websiteName: name,
       category: _category,
       styles: <String>[_selectedStyle],
+      languages: _selectedLanguages,
       palette: _palette,
       prompt: _promptController.text.trim(),
       enableTracking: _enableTracking,
@@ -303,6 +316,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
         websiteName: _nameController.text.trim(),
         category: _category,
         styles: <String>[_selectedStyle],
+        languages: _selectedLanguages,
         palette: _palette,
         body: _promptController.text.trim(),
         contactForm: _contactFormEnabled ? _currentContactForm() : null,
@@ -497,6 +511,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+              _languagesSection(theme),
+              const SizedBox(height: 16),
               TextField(
                 controller: _promptController,
                 maxLength: 9000,
@@ -552,6 +568,77 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  void _toggleLanguage(String lang, bool selected) {
+    setState(() {
+      if (selected) {
+        if (!_selectedLanguages.contains(lang) &&
+            _selectedLanguages.length < 3) {
+          _selectedLanguages.add(lang);
+        }
+      } else {
+        _selectedLanguages.remove(lang);
+        if (_selectedLanguages.isEmpty) _selectedLanguages.add('English');
+      }
+    });
+  }
+
+  Widget _languagesSection(ThemeData theme) {
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+    final atCap = _selectedLanguages.length >= 3;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Languages · pick up to 3',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(
+          'Choosing more than one adds a language switcher to the generated '
+          'site.',
+          style: theme.textTheme.bodySmall?.copyWith(color: muted),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final entry in websiteLanguageAutonyms.entries)
+              _languageChip(theme, entry.key, entry.value, atCap),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _languageChip(
+      ThemeData theme, String lang, String autonym, bool atCap) {
+    final selected = _selectedLanguages.contains(lang);
+    final disabled = !selected && atCap;
+    final label = lang == autonym ? lang : '$lang · $autonym';
+    return FilterChip(
+      avatar: Icon(
+        Icons.language,
+        size: 16,
+        color: disabled ? theme.disabledColor : null,
+      ),
+      showCheckmark: false,
+      selectedColor: AppColors.primary.withValues(alpha: 0.18),
+      label: Text(
+        label,
+        // Non-Latin autonyms (العربية, हिन्दी, 中文, 日本語…) render via a
+        // fallback font whose glyphs overflow the tight default line box and
+        // get clipped at the chip's bottom edge. A roomier, evenly-distributed
+        // line height gives every script vertical room; Latin is unaffected.
+        style: const TextStyle(
+          height: 1.5,
+          leadingDistribution: TextLeadingDistribution.even,
+        ),
+      ),
+      selected: selected,
+      onSelected: disabled ? null : (sel) => _toggleLanguage(lang, sel),
     );
   }
 

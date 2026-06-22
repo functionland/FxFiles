@@ -1,74 +1,814 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FxFiles</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0a;
-      color: #fafafa;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FxFiles — Your Files. Your Freedom.</title>
+<meta name="description" content="The decentralized file manager with AI website builder, one-click NFT minting, end-to-end encryption, and zero data collection. Available on Windows, iOS, Android, and the web.">
+<meta property="og:title" content="FxFiles by Functionland — Your Files. Your Freedom.">
+<meta property="og:description" content="Decentralized file manager with AI superpowers. End-to-end encrypted, multi-platform, zero data collection.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+Arabic:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='512' height='512' rx='102' fill='%230A0A0A'/%3E%3Cpath d='M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200L180 260L260 260Q290 260 290 290Q290 320 260 320L180 320L180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120L100 120Z' fill='%2306B597'/%3E%3Cpath d='M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240L392 200L350 200Z' fill='%2306B597'/%3E%3C/svg%3E">
+<script>
+  /* Set js + language + direction BEFORE first paint so RTL never flashes LTR. */
+  (function () {
+    var d = document.documentElement;
+    d.classList.add('js');
+    var SUP = ['en', 'fr', 'es', 'zh', 'ar', 'fa'];
+    var lang = null;
+    try { lang = localStorage.getItem('fx_lang'); } catch (e) {}
+    if (!lang || SUP.indexOf(lang) < 0) {
+      var n = (navigator.language || 'en').toLowerCase();
+      lang = 'en';
+      for (var i = 0; i < SUP.length; i++) { if (n.indexOf(SUP[i]) === 0) { lang = SUP[i]; break; } }
     }
-    .container {
-      text-align: center;
-      padding: 2rem;
-      max-width: 480px;
-    }
-    .logo {
-      width: 80px;
-      height: 80px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border-radius: 20px;
-      margin: 0 auto 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 2rem;
-    }
-    h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
-    p { color: #a1a1aa; line-height: 1.6; margin-bottom: 1.5rem; }
-    .stores { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .stores a {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.75rem 1.5rem;
-      background: #18181b;
-      border: 1px solid #27272a;
-      border-radius: 12px;
-      color: #fafafa;
-      text-decoration: none;
-      font-weight: 500;
-      transition: border-color 0.2s;
-    }
-    .stores a:hover { border-color: #6366f1; }
-  </style>
+    d.lang = lang;
+    d.dir = (lang === 'ar' || lang === 'fa') ? 'rtl' : 'ltr';
+    window.__fxLang = lang;
+  })();
+</script>
+<style>
+  :root {
+    /* Coloring from the FxFiles app palette (AppColors) */
+    --bg: #0A0A0A; --bg-card: #161616; --bg-alt: #101010; --bg-hover: #1E1E1E;
+    --brand-1: #00D4AA;            /* app poolUsed — bright teal-green */
+    --brand-2: #06B597;            /* app primary green */
+    --brand-3: #049B8F;            /* app primaryLight */
+    --accent:  #187AF9;            /* app accent blue */
+    --text: #FAFAFA; --text-2: #A1A1AA; --text-3: #71717A;
+    --border: #262626; --glow: rgba(0, 212, 170, 0.18); --r: 16px;
+  }
+  *, ::before, ::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background-color: var(--bg); color: var(--text); line-height: 1.6; overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(0, 212, 170, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  a { color: inherit; text-decoration: none; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  section { padding: 100px 0; }
+  h1 { font-size: clamp(2.8rem, 7vw, 5rem); font-weight: 900; line-height: 1.08; letter-spacing: -0.03em; }
+  h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; }
+  h3 { font-size: 1.15rem; font-weight: 700; line-height: 1.3; }
+  .gradient-text {
+    background-image: linear-gradient(120deg, var(--brand-1), var(--brand-2), var(--brand-1));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    background-size: 200%; animation: grad-shift 8s ease infinite;
+  }
+  @keyframes grad-shift { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+
+  /* Non-Latin scripts (Arabic / Farsi / Hindi / Chinese / Japanese) sit taller
+     than Latin, so the tight Latin heading metrics crop them. Drop the
+     Latin-tuned negative tracking and give the headings a roomier line box.
+     Latin (en/fr/es) is untouched. */
+  :lang(ar) h1, :lang(fa) h1, :lang(hi) h1, :lang(zh) h1, :lang(ja) h1 {
+    line-height: 1.42; letter-spacing: normal;
+  }
+  :lang(ar) h2, :lang(fa) h2, :lang(hi) h2, :lang(zh) h2, :lang(ja) h2 {
+    line-height: 1.45; letter-spacing: normal;
+  }
+  :lang(ar) h3, :lang(fa) h3, :lang(hi) h3, :lang(zh) h3, :lang(ja) h3 {
+    line-height: 1.5;
+  }
+  /* gradient-text uses background-clip:text, so the fill paints over the font's
+     content box — non-Latin marks/descenders that overflow it render
+     transparent (glyph bottoms vanish, "cut off"). inline-block + a roomy line
+     box + vertical padding makes the fill cover the whole glyph. text-align is
+     inherited, so the hero's two centered lines stay centered. */
+  :lang(ar) .gradient-text, :lang(fa) .gradient-text, :lang(hi) .gradient-text,
+  :lang(zh) .gradient-text, :lang(ja) .gradient-text {
+    display: inline-block; line-height: 1.4; padding: 0.06em 0 0.16em;
+  }
+
+  /* nav */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; transition: background .3s, backdrop-filter .3s, border-color .3s; border-bottom: 1px solid transparent; }
+  nav.scrolled { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(20px); border-bottom-color: var(--border); }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; }
+  .nav-brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; }
+  .nav-brand svg { width: 38px; height: 38px; border-radius: 9px; }
+  .nav-actions { display: flex; align-items: center; gap: 10px; }
+  .nav-cta { display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 600; font-size: .9rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; }
+  .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 4px 24px var(--glow); }
+
+  /* language switcher */
+  .lang-select {
+    -webkit-appearance: none; appearance: none;
+    background-color: var(--bg-card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 50px;
+    padding: 9px 32px 9px 14px; font-family: inherit; font-size: .82rem; font-weight: 600; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23A1A1AA' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 11px center;
+    transition: border-color .2s;
+  }
+  .lang-select:hover { border-color: var(--brand-3); }
+  .lang-select option { background: #161616; color: var(--text); }
+  [dir="rtl"] .lang-select { padding: 9px 14px 9px 32px; background-position: left 11px center; }
+
+  /* RTL + Arabic/Persian webfont */
+  [dir="rtl"] body, [dir="rtl"] .lang-select { font-family: 'Noto Sans Arabic', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+  /* hero */
+  .hero { min-height: 100vh; display: flex; align-items: center; position: relative; padding-top: 80px; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; top: -15%; left: 50%; transform: translateX(-50%); width: 900px; height: 900px; background: radial-gradient(circle, rgba(0,212,170,.10) 0%, rgba(6,181,151,.04) 35%, transparent 70%); filter: blur(60px); pointer-events: none; }
+  .hero::after { content: ""; position: absolute; top: 35%; right: -8%; width: 450px; height: 450px; background: radial-gradient(circle, rgba(24,122,249,.07) 0%, transparent 70%); filter: blur(60px); pointer-events: none; }
+  .hero-content { position: relative; z-index: 1; display: flex; align-items: center; gap: 48px; width: 100%; }
+  .hero-text { flex: 1; text-align: start; }
+  .hero-video { flex: 0 0 300px; position: relative; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5), 0 0 40px rgba(0,212,170,.08); border: 1px solid var(--border); aspect-ratio: 9 / 16; }
+  .hero-video iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .hero-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 18px; margin-bottom: 32px; background: rgba(0,212,170,.07); border: 1px solid rgba(0,212,170,.18); border-radius: 50px; font-size: .85rem; color: var(--brand-1); font-weight: 500; }
+  .hero-badge::before { content: ""; width: 7px; height: 7px; background: var(--brand-1); border-radius: 50%; }
+  .hero h1 { margin-bottom: 24px; }
+  .hero-sub { font-size: clamp(1.05rem, 2vw, 1.25rem); color: var(--text-2); max-width: 600px; margin: 0 0 32px; line-height: 1.7; }
+  .cta-primary { display: inline-flex; align-items: center; gap: 10px; padding: 15px 30px; margin-bottom: 28px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 700; font-size: 1rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; box-shadow: 0 4px 24px var(--glow); }
+  .cta-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 34px var(--glow); }
+  .cta-primary svg { width: 20px; height: 20px; }
+  .store-buttons { display: flex; flex-wrap: wrap; gap: 14px; }
+  .store-btn { display: inline-flex; align-items: center; gap: 12px; padding: 12px 22px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; transition: .3s; min-width: 175px; }
+  .store-btn:hover { border-color: var(--brand-3); background: var(--bg-hover); transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,.3); }
+  .store-btn svg { width: 26px; height: 26px; flex-shrink: 0; }
+  .store-btn .label { text-align: start; }
+  .store-btn .label small { display: block; font-size: .68rem; color: var(--text-3); line-height: 1.2; }
+  .store-btn .label strong { display: block; font-size: .92rem; font-weight: 600; line-height: 1.3; }
+
+  /* stats */
+  .stats { padding: 40px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-alt); }
+  .stats-grid { display: flex; justify-content: center; flex-wrap: wrap; gap: 36px 56px; }
+  .stat { text-align: center; }
+  .stat-value { font-size: 1.1rem; font-weight: 700; color: var(--brand-1); }
+  .stat-label { font-size: .78rem; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
+
+  /* section header */
+  .section-header { text-align: center; margin-bottom: 60px; }
+  .section-header p { color: var(--text-2); font-size: 1.1rem; max-width: 600px; margin: 16px auto 0; }
+
+  /* highlights */
+  .highlights { padding-bottom: 40px; }
+  .highlight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .highlight-card { position: relative; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); padding: 40px 32px; overflow: hidden; transition: .4s; }
+  .highlight-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--brand-1), var(--brand-2)); opacity: 0; transition: opacity .3s; }
+  .highlight-card:hover { border-color: rgba(0,212,170,.3); transform: translateY(-4px); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .highlight-card:hover::before { opacity: 1; }
+  .card-icon { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, rgba(0,212,170,.12), rgba(6,181,151,.05)); border-radius: 14px; margin-bottom: 24px; color: var(--brand-1); }
+  .card-icon svg { width: 28px; height: 28px; }
+  .highlight-card h3 { font-size: 1.3rem; margin-bottom: 12px; }
+  .highlight-card p { color: var(--text-2); font-size: .95rem; line-height: 1.65; }
+
+  /* features */
+  .features-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .feature-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); padding: 28px 24px; transition: .3s; }
+  .feature-card:hover { border-color: rgba(0,212,170,.25); transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+  .feature-icon { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(0,212,170,.07); border-radius: 11px; margin-bottom: 16px; color: var(--brand-1); }
+  .feature-icon svg { width: 22px; height: 22px; }
+  .feature-card h3 { font-size: 1rem; margin-bottom: 8px; }
+  .feature-card p { color: var(--text-2); font-size: .87rem; line-height: 1.6; }
+
+  /* privacy */
+  .privacy { background: linear-gradient(180deg, var(--bg) 0%, var(--bg-alt) 50%, var(--bg) 100%); }
+  .privacy-content { text-align: center; max-width: 700px; margin: 0 auto 60px; }
+  .privacy-content p { color: var(--text-2); font-size: 1.1rem; margin-top: 16px; }
+  .privacy-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+  .privacy-item { text-align: center; padding: 32px 20px; background: rgba(22,22,22,.5); border: 1px solid var(--border); border-radius: var(--r); }
+  .pi-icon { width: 48px; height: 48px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; background: rgba(0,212,170,.07); border-radius: 50%; color: var(--brand-1); }
+  .pi-icon svg { width: 24px; height: 24px; }
+  .privacy-item h3 { font-size: .95rem; margin-bottom: 6px; }
+  .privacy-item p { font-size: .82rem; color: var(--text-3); line-height: 1.5; }
+
+  /* platforms */
+  .platforms { text-align: center; }
+  .platforms-sub { color: var(--text-2); font-size: 1.1rem; margin-bottom: 48px; }
+  .platform-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 900px; margin: 0 auto; }
+  .platform-card { display: flex; flex-direction: column; align-items: center; padding: 40px 24px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r); transition: .3s; }
+  .platform-card:hover { border-color: var(--brand-3); transform: translateY(-4px); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .platform-card svg { width: 44px; height: 44px; margin-bottom: 20px; color: var(--text); }
+  .platform-card h3 { margin-bottom: 8px; }
+  .platform-card p { font-size: .85rem; color: var(--text-3); margin-bottom: 24px; }
+  .platform-btn { display: inline-flex; padding: 10px 28px; background: linear-gradient(135deg, var(--brand-1), var(--brand-2)); color: #0A0A0A; font-weight: 600; font-size: .9rem; border-radius: 50px; transition: transform .2s, box-shadow .2s; }
+  .platform-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--glow); }
+
+  /* footer */
+  footer { padding: 40px 0; border-top: 1px solid var(--border); text-align: center; }
+  .footer-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; font-weight: 600; }
+  .footer-brand svg { width: 28px; height: 28px; border-radius: 7px; }
+  footer p { font-size: .8rem; color: var(--text-3); }
+  footer a { color: var(--brand-1); }
+  footer a:hover { text-decoration: underline; }
+
+  /* fade-up reveal — gated on .js so the page is fully visible without JS */
+  html.js .fade-up { opacity: 0; transform: translateY(30px); transition: opacity .6s ease, transform .6s ease; }
+  html.js .fade-up.visible { opacity: 1; transform: none; }
+
+  @media (max-width: 1024px) {
+    .highlight-grid { grid-template-columns: repeat(2, 1fr); }
+    .features-grid { grid-template-columns: repeat(3, 1fr); }
+    .privacy-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 768px) {
+    section { padding: 64px 0; }
+    .hero-content { flex-direction: column; text-align: center; }
+    .hero-text { text-align: center; }
+    .hero-video { flex: 0 0 auto; width: 240px; max-width: 100%; }
+    .hero-sub { margin-left: auto; margin-right: auto; }
+    .cta-primary, .store-buttons { justify-content: center; }
+    .highlight-grid { grid-template-columns: 1fr; }
+    .features-grid { grid-template-columns: repeat(2, 1fr); }
+    .platform-cards { grid-template-columns: 1fr; max-width: 400px; }
+    .stats-grid { gap: 20px 36px; }
+    .nav-cta span { display: none; }
+  }
+  @media (max-width: 480px) {
+    .features-grid { grid-template-columns: 1fr; }
+    .privacy-grid { grid-template-columns: 1fr; }
+    .store-btn { min-width: 100%; justify-content: center; }
+    .hero { min-height: auto; padding-top: 120px; padding-bottom: 60px; }
+  }
+</style>
 </head>
 <body>
-  <div class="container">
-    <div class="logo">&#x1F4C1;</div>
-    <h1>FxFiles</h1>
-    <p>Decentralized file manager with NFT minting, FULA storage, and cross-device sync.</p>
-    <div class="stores">
-      <a href="https://apps.apple.com/app/fxfiles/id1658500313" target="_blank">
-        <span>&#x1F34E;</span> App Store
-      </a>
-      <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank">
-        <span>&#x1F4F1;</span> Google Play
-      </a>
-      <a href="https://apps.microsoft.com/detail/9nxl9kb8fbqq" target="_blank">
-        <span>&#x1FA9F;</span> Windows
-      </a>
-      <a href="/app/">
-        <span>&#x1F310;</span> Web App
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="container nav-inner">
+    <a href="#" class="nav-brand">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="512" height="512" rx="102" fill="#0A0A0A"></rect>
+        <defs><linearGradient id="ng" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00D4AA"></stop><stop offset="100%" stop-color="#06B597"></stop></linearGradient></defs>
+        <path d="M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200 180 260 260 260Q290 260 290 290Q290 320 260 320L180 320 180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120Z" fill="url(#ng)"></path>
+        <path d="M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240 392 200Z" fill="url(#ng)"></path>
+        <path d="M392 200L392 240 432 240" fill="none" stroke="#0A0A0A" stroke-width="6" stroke-linecap="round"></path>
+      </svg>
+      FxFiles
+    </a>
+    <div class="nav-actions">
+      <select id="langSelect" class="lang-select" aria-label="Language">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+        <option value="es">Español</option>
+        <option value="zh">中文</option>
+        <option value="ar">العربية</option>
+        <option value="fa">فارسی</option>
+      </select>
+      <a href="/app/" class="nav-cta">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+        <span data-i18n="nav_cta">Open Web App</span>
       </a>
     </div>
   </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-content">
+      <div class="hero-text">
+        <div class="hero-badge" data-i18n="hero_badge">by Functionland</div>
+        <h1 data-i18n="hero_title"><span class="gradient-text">Your Files.<br>Your Freedom.</span></h1>
+        <p class="hero-sub" data-i18n="hero_sub">The decentralized file manager with AI superpowers. End-to-end encrypted, multi-platform, and built with zero data collection.</p>
+        <a href="/app/" class="cta-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+          <span data-i18n="hero_cta">Open the Web App</span>
+        </a>
+        <div class="store-buttons">
+          <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--brand-1)" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"></path></svg>
+            <div class="label"><small data-i18n="sb_gp_pre">Get it on</small><strong>Google Play</strong></div>
+          </a>
+          <a href="https://apps.apple.com/ca/app/fxfiles/id1658500313" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--text)" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79s-2 .77-3.27.81c-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83zM13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"></path></svg>
+            <div class="label"><small data-i18n="sb_as_pre">Download on the</small><strong>App Store</strong></div>
+          </a>
+          <a href="https://apps.microsoft.com/detail/9NXL9KB8FBQQ" target="_blank" rel="noopener" class="store-btn">
+            <svg viewBox="0 0 24 24" fill="var(--accent)" aria-hidden="true"><rect x="3" y="3" width="8.5" height="8.5" rx="1"></rect><rect x="12.5" y="3" width="8.5" height="8.5" rx="1"></rect><rect x="3" y="12.5" width="8.5" height="8.5" rx="1"></rect><rect x="12.5" y="12.5" width="8.5" height="8.5" rx="1"></rect></svg>
+            <div class="label"><small data-i18n="sb_ms_pre">Get it from</small><strong>Microsoft Store</strong></div>
+          </a>
+        </div>
+      </div>
+      <div class="hero-video">
+        <iframe src="https://www.youtube.com/embed/AwlnIHJTLTE" title="FxFiles Demo" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<section class="stats">
+  <div class="container">
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-value" data-i18n="stat1_v">4 Platforms</div><div class="stat-label" data-i18n="stat1_l">Web, Windows, iOS, Android</div></div>
+      <div class="stat"><div class="stat-value">AES-256-GCM</div><div class="stat-label" data-i18n="stat2_l">End-to-End Encrypted</div></div>
+      <div class="stat"><div class="stat-value" data-i18n="stat3_v">Zero PII</div><div class="stat-label" data-i18n="stat3_l">Data Collection</div></div>
+      <div class="stat"><div class="stat-value" data-i18n="stat4_v">Decentralized</div><div class="stat-label" data-i18n="stat4_l">No Single Point of Failure</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- HIGHLIGHTS -->
+<section class="highlights">
+  <div class="container">
+    <div class="section-header fade-up">
+      <h2 data-i18n="hl_head"><span class="gradient-text">What Sets FxFiles Apart</span></h2>
+      <p data-i18n="hl_sub">Not just another file manager. A new paradigm for how you own, create, and share your digital life.</p>
+    </div>
+    <div class="highlight-grid">
+      <div class="highlight-card fade-up">
+        <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg></div>
+        <h3 data-i18n="hl1_t">Decentralized Storage</h3>
+        <p data-i18n="hl1_b">No single server. No single point of failure. Your files live across a resilient network that keeps working even when servers don't. True data sovereignty, not a marketing slogan.</p>
+      </div>
+      <div class="highlight-card fade-up">
+        <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"></path><path d="M15 16v-2"></path><path d="M8 9h2"></path><path d="M20 9h2"></path><path d="M17.8 11.8 19 13"></path><path d="M15 9h.01"></path><path d="M17.8 6.2 19 5"></path><path d="m3 21 9-9"></path><path d="M12.2 6.2 11 5"></path></svg></div>
+        <h3 data-i18n="hl2_t">AI Website Builder</h3>
+        <p data-i18n="hl2_b">Drop your files in, get a complete website out. AI analyzes your images, documents, and videos, then generates a fully functional IPFS-hosted site in seconds. One click. Done.</p>
+      </div>
+      <div class="highlight-card fade-up">
+        <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 13L2 9z"></path><path d="M11 3 8 9l4 13 4-13-3-6"></path><path d="M2 9h20"></path></svg></div>
+        <h3 data-i18n="hl3_t">One-Click NFT Minting</h3>
+        <p data-i18n="hl3_b">Turn any file collection into an on-chain NFT. Gasless, creator-sponsored minting means zero crypto expertise required. Shareable claim links and QR codes included.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-header fade-up">
+      <h2 data-i18n="feat_head">Packed with <span class="gradient-text">Intelligence</span></h2>
+      <p data-i18n="feat_sub">Every feature runs on your device. Your data never leaves unless you say so.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="M9.5 12.5 11 14l3.5-3.5"></path></svg></div>
+        <h3 data-i18n="f1_t">End-to-End Encrypted</h3>
+        <p data-i18n="f1_b">AES-256-GCM encryption on your device. Your files are unreadable to everyone — including us.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg></div>
+        <h3 data-i18n="f2_t">Secure Sharing</h3>
+        <p data-i18n="f2_b">Passwords, expiry dates, instant revocation. End-to-end encrypted sharing fully on your terms.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></div>
+        <h3 data-i18n="f3_t">Multi-Way Collaboration</h3>
+        <p data-i18n="f3_b">Shared folders where everyone contributes. Real-time sync with per-file encryption built in.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path><circle cx="12" cy="12" r="4"></circle></svg></div>
+        <h3 data-i18n="f4_t">Face Detection</h3>
+        <p data-i18n="f4_b">On-device ML finds and groups faces across your photos. Nothing ever leaves your phone.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><path d="M14 2v6h6"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg></div>
+        <h3 data-i18n="f5_t">Text Extraction</h3>
+        <p data-i18n="f5_b">Point at any image, extract all text instantly. On-device OCR that stays completely private.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"></path><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg></div>
+        <h3 data-i18n="f6_t">Advanced Audio Player</h3>
+        <p data-i18n="f6_b">Playlists, 3-band equalizer, shuffle, repeat, and background playback. A full music player built in.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></div>
+        <h3 data-i18n="f7_t">WhatsApp Secure Backup</h3>
+        <p data-i18n="f7_b">Incremental WhatsApp backup to decentralized storage. Optional password encryption for extra peace of mind.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg></div>
+        <h3 data-i18n="f8_t">Smart Tagging</h3>
+        <p data-i18n="f8_b">Color-coded tags for lightning-fast organization. Tag once, find instantly across all your devices.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="2"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg></div>
+        <h3 data-i18n="f9_t">Archive Management</h3>
+        <p data-i18n="f9_b">Create and extract ZIP files right in the app. Browse contents without extracting. No extra tools needed.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg></div>
+        <h3 data-i18n="f10_t">On-Premise + Cloud</h3>
+        <p data-i18n="f10_b">Connect a Blox device for blazing LAN-speed access. Auto-replicate to the cloud for anywhere availability.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="m16 16-4-4-4 4"></path></svg></div>
+        <h3 data-i18n="f11_t">Public IPFS Sharing</h3>
+        <p data-i18n="f11_b">One tap to publish on IPFS. Permanent, censorship-resistant links anyone can access. Your content, unstoppable.</p>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg></div>
+        <h3 data-i18n="f12_t">Built-in Editor &amp; Viewers</h3>
+        <p data-i18n="f12_b">Preview images, videos, PDFs, and text. Crop, rotate, adjust, and annotate — without leaving the app.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY -->
+<section class="privacy">
+  <div class="container">
+    <div class="privacy-content fade-up">
+      <h2 data-i18n="priv_head">Built for <span class="gradient-text">Privacy</span>,<br>Not for Profit from Your Data</h2>
+      <p data-i18n="priv_sub">FxFiles is designed from the ground up to never see, store, or monetize your personal information.</p>
+    </div>
+    <div class="privacy-grid">
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"></path><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"></path><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"></path><line x1="2" y1="2" x2="22" y2="22"></line></svg></div>
+        <h3 data-i18n="p1_t">Zero Data Collection</h3>
+        <p data-i18n="p1_b">No PII harvested. No tracking. No analytics. No behavioral profiling. Ever.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"></rect><path d="M9 22v-4h6v4"></path><path d="M8 6h.01"></path><path d="M16 6h.01"></path><path d="M12 6h.01"></path><path d="M12 10h.01"></path><path d="M12 14h.01"></path><path d="M16 10h.01"></path><path d="M16 14h.01"></path><path d="M8 10h.01"></path><path d="M8 14h.01"></path></svg></div>
+        <h3 data-i18n="p2_t">Corporate Ready</h3>
+        <p data-i18n="p2_b">Self-host your infrastructure. Configure every endpoint. White-label deployable on your terms.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><rect x="10" y="10" width="4" height="5" rx="1"></rect><path d="M10 10V8a2 2 0 1 1 4 0v2"></path></svg></div>
+        <h3 data-i18n="p3_t">Self-Sovereign</h3>
+        <p data-i18n="p3_b">You hold the encryption keys. You control the data. Full digital sovereignty, not just a promise.</p>
+      </div>
+      <div class="privacy-item fade-up">
+        <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"></path><path d="m2 17 10 5 10-5"></path><path d="m2 12 10 5 10-5"></path></svg></div>
+        <h3 data-i18n="p4_t">Open Protocols</h3>
+        <p data-i18n="p4_b">Built on IPFS, blockchain, and open standards. No vendor lock-in. Your data is always portable.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PLATFORMS -->
+<section class="platforms" id="platforms">
+  <div class="container">
+    <h2 class="fade-up" data-i18n="plat_head"><span class="gradient-text">Available Everywhere</span></h2>
+    <p class="platforms-sub fade-up" data-i18n="plat_sub">Same powerful experience on every device you own.</p>
+    <div class="platform-cards">
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"></path></svg>
+        <h3 data-i18n="plat_web_t">Web</h3>
+        <p data-i18n="plat_web_b">No install required. End-to-end encrypted file management, sharing, and uploads right in your browser.</p>
+        <a href="/app/" class="platform-btn" data-i18n="plat_web_btn">Open Web App</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="3"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+        <h3 data-i18n="plat_and_t">Android</h3>
+        <p data-i18n="plat_and_b">Full filesystem access, background sync, auto-backup, and system tray integration.</p>
+        <a href="https://play.google.com/store/apps/details?id=land.fx.files" target="_blank" rel="noopener" class="platform-btn">Google Play</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="3"></rect><path d="M12 18h.01"></path></svg>
+        <h3 data-i18n="plat_ios_t">iOS</h3>
+        <p data-i18n="plat_ios_b">Native PhotoKit integration, Apple Sign-In, Keychain security, and full iCloud compatibility.</p>
+        <a href="https://apps.apple.com/ca/app/fxfiles/id1658500313" target="_blank" rel="noopener" class="platform-btn">App Store</a>
+      </div>
+      <div class="platform-card fade-up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        <h3 data-i18n="plat_win_t">Windows</h3>
+        <p data-i18n="plat_win_b">System tray, right-click shell integration, keyboard shortcuts, and desktop-class file management.</p>
+        <a href="https://apps.microsoft.com/detail/9NXL9KB8FBQQ" target="_blank" rel="noopener" class="platform-btn">Microsoft Store</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-brand">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="512" height="512" rx="102" fill="#0A0A0A"></rect>
+        <defs><linearGradient id="fg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00D4AA"></stop><stop offset="100%" stop-color="#06B597"></stop></linearGradient></defs>
+        <path d="M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200 180 260 260 260Q290 260 290 290Q290 320 260 320L180 320 180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120Z" fill="url(#fg)"></path>
+        <path d="M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240 392 200Z" fill="url(#fg)"></path>
+      </svg>
+      <span><bdi>FxFiles</bdi> <span data-i18n="footer_by">by</span> <a href="https://fx.land/" target="_blank" rel="noopener"><bdi>Functionland</bdi></a></span>
+    </div>
+    <p><bdi>© 2026 Functionland Inc.</bdi> <span data-i18n="footer_rights">All rights reserved.</span></p>
+  </div>
+</footer>
+
+<script>
+  /* ---------------------------------------------------------------------------
+   * Translations. English is also the HTML default (works with JS disabled).
+   * Values may contain trusted markup (<br>, <span class='gradient-text'>, and
+   * <bdi> to keep Latin/technical tokens correctly ordered inside RTL text).
+   * NOTE: fr/es/zh/ar/fa are a first careful pass — recommend a native-speaker
+   * review before this is treated as final marketing copy.
+   * ------------------------------------------------------------------------- */
+  var I18N = {
+    en: {
+      nav_cta: "Open Web App",
+      hero_badge: "by Functionland",
+      hero_title: "<span class='gradient-text'>Your Files.<br>Your Freedom.</span>",
+      hero_sub: "The decentralized file manager with AI superpowers. End-to-end encrypted, multi-platform, and built with zero data collection.",
+      hero_cta: "Open the Web App",
+      sb_gp_pre: "Get it on", sb_as_pre: "Download on the", sb_ms_pre: "Get it from",
+      stat1_v: "4 Platforms", stat1_l: "Web, Windows, iOS, Android",
+      stat2_l: "End-to-End Encrypted",
+      stat3_v: "Zero PII", stat3_l: "Data Collection",
+      stat4_v: "Decentralized", stat4_l: "No Single Point of Failure",
+      hl_head: "<span class='gradient-text'>What Sets FxFiles Apart</span>",
+      hl_sub: "Not just another file manager. A new paradigm for how you own, create, and share your digital life.",
+      hl1_t: "Decentralized Storage", hl1_b: "No single server. No single point of failure. Your files live across a resilient network that keeps working even when servers don't. True data sovereignty, not a marketing slogan.",
+      hl2_t: "AI Website Builder", hl2_b: "Drop your files in, get a complete website out. AI analyzes your images, documents, and videos, then generates a fully functional IPFS-hosted site in seconds. One click. Done.",
+      hl3_t: "One-Click NFT Minting", hl3_b: "Turn any file collection into an on-chain NFT. Gasless, creator-sponsored minting means zero crypto expertise required. Shareable claim links and QR codes included.",
+      feat_head: "Packed with <span class='gradient-text'>Intelligence</span>",
+      feat_sub: "Every feature runs on your device. Your data never leaves unless you say so.",
+      f1_t: "End-to-End Encrypted", f1_b: "AES-256-GCM encryption on your device. Your files are unreadable to everyone — including us.",
+      f2_t: "Secure Sharing", f2_b: "Passwords, expiry dates, instant revocation. End-to-end encrypted sharing fully on your terms.",
+      f3_t: "Multi-Way Collaboration", f3_b: "Shared folders where everyone contributes. Real-time sync with per-file encryption built in.",
+      f4_t: "Face Detection", f4_b: "On-device ML finds and groups faces across your photos. Nothing ever leaves your phone.",
+      f5_t: "Text Extraction", f5_b: "Point at any image, extract all text instantly. On-device OCR that stays completely private.",
+      f6_t: "Advanced Audio Player", f6_b: "Playlists, 3-band equalizer, shuffle, repeat, and background playback. A full music player built in.",
+      f7_t: "WhatsApp Secure Backup", f7_b: "Incremental WhatsApp backup to decentralized storage. Optional password encryption for extra peace of mind.",
+      f8_t: "Smart Tagging", f8_b: "Color-coded tags for lightning-fast organization. Tag once, find instantly across all your devices.",
+      f9_t: "Archive Management", f9_b: "Create and extract ZIP files right in the app. Browse contents without extracting. No extra tools needed.",
+      f10_t: "On-Premise + Cloud", f10_b: "Connect a Blox device for blazing LAN-speed access. Auto-replicate to the cloud for anywhere availability.",
+      f11_t: "Public IPFS Sharing", f11_b: "One tap to publish on IPFS. Permanent, censorship-resistant links anyone can access. Your content, unstoppable.",
+      f12_t: "Built-in Editor & Viewers", f12_b: "Preview images, videos, PDFs, and text. Crop, rotate, adjust, and annotate — without leaving the app.",
+      priv_head: "Built for <span class='gradient-text'>Privacy</span>,<br>Not for Profit from Your Data",
+      priv_sub: "FxFiles is designed from the ground up to never see, store, or monetize your personal information.",
+      p1_t: "Zero Data Collection", p1_b: "No PII harvested. No tracking. No analytics. No behavioral profiling. Ever.",
+      p2_t: "Corporate Ready", p2_b: "Self-host your infrastructure. Configure every endpoint. White-label deployable on your terms.",
+      p3_t: "Self-Sovereign", p3_b: "You hold the encryption keys. You control the data. Full digital sovereignty, not just a promise.",
+      p4_t: "Open Protocols", p4_b: "Built on IPFS, blockchain, and open standards. No vendor lock-in. Your data is always portable.",
+      plat_head: "<span class='gradient-text'>Available Everywhere</span>",
+      plat_sub: "Same powerful experience on every device you own.",
+      plat_web_t: "Web", plat_web_b: "No install required. End-to-end encrypted file management, sharing, and uploads right in your browser.", plat_web_btn: "Open Web App",
+      plat_and_t: "Android", plat_and_b: "Full filesystem access, background sync, auto-backup, and system tray integration.",
+      plat_ios_t: "iOS", plat_ios_b: "Native PhotoKit integration, Apple Sign-In, Keychain security, and full iCloud compatibility.",
+      plat_win_t: "Windows", plat_win_b: "System tray, right-click shell integration, keyboard shortcuts, and desktop-class file management.",
+      footer_by: "by", footer_rights: "All rights reserved."
+    },
+    fr: {
+      nav_cta: "Ouvrir l'app web",
+      hero_badge: "par Functionland",
+      hero_title: "<span class='gradient-text'>Vos fichiers.<br>Votre liberté.</span>",
+      hero_sub: "Le gestionnaire de fichiers décentralisé doté de superpouvoirs d'IA. Chiffré de bout en bout, multiplateforme et conçu sans aucune collecte de données.",
+      hero_cta: "Ouvrir l'application web",
+      sb_gp_pre: "Disponible sur", sb_as_pre: "Télécharger sur l'", sb_ms_pre: "Disponible sur le",
+      stat1_v: "4 plateformes", stat1_l: "Web, Windows, iOS, Android",
+      stat2_l: "Chiffré de bout en bout",
+      stat3_v: "Zéro donnée perso", stat3_l: "Collecte de données",
+      stat4_v: "Décentralisé", stat4_l: "Aucun point de défaillance unique",
+      hl_head: "<span class='gradient-text'>Ce qui distingue FxFiles</span>",
+      hl_sub: "Pas un simple gestionnaire de fichiers de plus. Un nouveau paradigme pour posséder, créer et partager votre vie numérique.",
+      hl1_t: "Stockage décentralisé", hl1_b: "Aucun serveur unique. Aucun point de défaillance unique. Vos fichiers vivent sur un réseau résilient qui continue de fonctionner même quand les serveurs tombent. Une vraie souveraineté des données, pas un slogan marketing.",
+      hl2_t: "Créateur de sites par IA", hl2_b: "Déposez vos fichiers, obtenez un site web complet. L'IA analyse vos images, documents et vidéos, puis génère en quelques secondes un site entièrement fonctionnel hébergé sur IPFS. Un clic. C'est fait.",
+      hl3_t: "Création de NFT en un clic", hl3_b: "Transformez n'importe quelle collection de fichiers en NFT on-chain. La frappe sans frais de gas, parrainée par le créateur, ne demande aucune expertise crypto. Liens de réclamation et QR codes partageables inclus.",
+      feat_head: "Bourré d'<span class='gradient-text'>intelligence</span>",
+      feat_sub: "Chaque fonction s'exécute sur votre appareil. Vos données ne le quittent jamais, sauf si vous le décidez.",
+      f1_t: "Chiffré de bout en bout", f1_b: "Chiffrement AES-256-GCM sur votre appareil. Vos fichiers sont illisibles pour tous — y compris nous.",
+      f2_t: "Partage sécurisé", f2_b: "Mots de passe, dates d'expiration, révocation instantanée. Un partage chiffré de bout en bout, entièrement selon vos règles.",
+      f3_t: "Collaboration multidirectionnelle", f3_b: "Des dossiers partagés où chacun contribue. Synchronisation en temps réel avec chiffrement par fichier intégré.",
+      f4_t: "Détection de visages", f4_b: "Une IA sur l'appareil détecte et regroupe les visages dans vos photos. Rien ne quitte jamais votre téléphone.",
+      f5_t: "Extraction de texte", f5_b: "Visez n'importe quelle image, extrayez tout le texte instantanément. Une OCR sur l'appareil qui reste totalement privée.",
+      f6_t: "Lecteur audio avancé", f6_b: "Playlists, égaliseur 3 bandes, lecture aléatoire, répétition et lecture en arrière-plan. Un vrai lecteur de musique intégré.",
+      f7_t: "Sauvegarde sécurisée WhatsApp", f7_b: "Sauvegarde incrémentielle de WhatsApp vers un stockage décentralisé. Chiffrement par mot de passe en option pour plus de tranquillité.",
+      f8_t: "Étiquetage intelligent", f8_b: "Des étiquettes colorées pour une organisation ultra-rapide. Étiquetez une fois, retrouvez instantanément sur tous vos appareils.",
+      f9_t: "Gestion d'archives", f9_b: "Créez et extrayez des fichiers ZIP directement dans l'app. Parcourez le contenu sans extraire. Aucun outil supplémentaire requis.",
+      f10_t: "Sur site + cloud", f10_b: "Connectez un appareil Blox pour un accès ultrarapide en LAN. Réplication automatique vers le cloud pour une disponibilité partout.",
+      f11_t: "Partage public IPFS", f11_b: "Publiez sur IPFS en un geste. Des liens permanents et résistants à la censure, accessibles à tous. Votre contenu, inarrêtable.",
+      f12_t: "Éditeur et lecteurs intégrés", f12_b: "Prévisualisez images, vidéos, PDF et texte. Recadrez, pivotez, ajustez et annotez — sans quitter l'app.",
+      priv_head: "Conçu pour la <span class='gradient-text'>confidentialité</span>,<br>pas pour profiter de vos données",
+      priv_sub: "FxFiles est conçu dès le départ pour ne jamais voir, stocker ou monétiser vos informations personnelles.",
+      p1_t: "Zéro collecte de données", p1_b: "Aucune donnée personnelle collectée. Aucun pistage. Aucune analyse. Aucun profilage comportemental. Jamais.",
+      p2_t: "Prêt pour l'entreprise", p2_b: "Hébergez votre propre infrastructure. Configurez chaque point de terminaison. Déployable en marque blanche selon vos conditions.",
+      p3_t: "Autosouverain", p3_b: "Vous détenez les clés de chiffrement. Vous contrôlez les données. Une souveraineté numérique totale, pas une simple promesse.",
+      p4_t: "Protocoles ouverts", p4_b: "Bâti sur IPFS, la blockchain et des standards ouverts. Aucun verrouillage propriétaire. Vos données restent toujours portables.",
+      plat_head: "<span class='gradient-text'>Disponible partout</span>",
+      plat_sub: "La même expérience puissante sur chacun de vos appareils.",
+      plat_web_t: "Web", plat_web_b: "Aucune installation requise. Gestion, partage et envoi de fichiers chiffrés de bout en bout, directement dans votre navigateur.", plat_web_btn: "Ouvrir l'app web",
+      plat_and_t: "Android", plat_and_b: "Accès complet au système de fichiers, synchronisation en arrière-plan, sauvegarde automatique et intégration à la barre des tâches.",
+      plat_ios_t: "iOS", plat_ios_b: "Intégration native à PhotoKit, connexion avec Apple, sécurité Keychain et compatibilité complète avec iCloud.",
+      plat_win_t: "Windows", plat_win_b: "Barre des tâches, intégration au menu clic droit, raccourcis clavier et gestion de fichiers de classe bureau.",
+      footer_by: "par", footer_rights: "Tous droits réservés."
+    },
+    es: {
+      nav_cta: "Abrir app web",
+      hero_badge: "por Functionland",
+      hero_title: "<span class='gradient-text'>Tus archivos.<br>Tu libertad.</span>",
+      hero_sub: "El gestor de archivos descentralizado con superpoderes de IA. Cifrado de extremo a extremo, multiplataforma y creado sin recopilación de datos.",
+      hero_cta: "Abrir la app web",
+      sb_gp_pre: "Disponible en", sb_as_pre: "Descárgalo en el", sb_ms_pre: "Consíguelo en",
+      stat1_v: "4 plataformas", stat1_l: "Web, Windows, iOS, Android",
+      stat2_l: "Cifrado de extremo a extremo",
+      stat3_v: "Cero datos personales", stat3_l: "Recopilación de datos",
+      stat4_v: "Descentralizado", stat4_l: "Sin punto único de fallo",
+      hl_head: "<span class='gradient-text'>Lo que distingue a FxFiles</span>",
+      hl_sub: "No es solo otro gestor de archivos. Un nuevo paradigma para poseer, crear y compartir tu vida digital.",
+      hl1_t: "Almacenamiento descentralizado", hl1_b: "Sin un único servidor. Sin un único punto de fallo. Tus archivos viven en una red resiliente que sigue funcionando incluso cuando los servidores no. Verdadera soberanía de los datos, no un eslogan de marketing.",
+      hl2_t: "Creador de webs con IA", hl2_b: "Suelta tus archivos y obtén un sitio web completo. La IA analiza tus imágenes, documentos y vídeos, y genera en segundos un sitio totalmente funcional alojado en IPFS. Un clic. Listo.",
+      hl3_t: "Acuñación de NFT en un clic", hl3_b: "Convierte cualquier colección de archivos en un NFT on-chain. La acuñación sin gas, patrocinada por el creador, no requiere conocimientos de cripto. Incluye enlaces de reclamación y códigos QR para compartir.",
+      feat_head: "Repleto de <span class='gradient-text'>inteligencia</span>",
+      feat_sub: "Cada función se ejecuta en tu dispositivo. Tus datos nunca salen, a menos que tú lo digas.",
+      f1_t: "Cifrado de extremo a extremo", f1_b: "Cifrado AES-256-GCM en tu dispositivo. Tus archivos son ilegibles para todos, incluidos nosotros.",
+      f2_t: "Compartir seguro", f2_b: "Contraseñas, fechas de caducidad, revocación instantánea. Compartir cifrado de extremo a extremo totalmente bajo tus condiciones.",
+      f3_t: "Colaboración multidireccional", f3_b: "Carpetas compartidas donde todos aportan. Sincronización en tiempo real con cifrado por archivo integrado.",
+      f4_t: "Detección de rostros", f4_b: "La IA en el dispositivo encuentra y agrupa rostros en tus fotos. Nada sale nunca de tu teléfono.",
+      f5_t: "Extracción de texto", f5_b: "Apunta a cualquier imagen y extrae todo el texto al instante. OCR en el dispositivo que se mantiene totalmente privado.",
+      f6_t: "Reproductor de audio avanzado", f6_b: "Listas de reproducción, ecualizador de 3 bandas, aleatorio, repetición y reproducción en segundo plano. Un reproductor de música completo integrado.",
+      f7_t: "Copia segura de WhatsApp", f7_b: "Copia de seguridad incremental de WhatsApp en almacenamiento descentralizado. Cifrado con contraseña opcional para mayor tranquilidad.",
+      f8_t: "Etiquetado inteligente", f8_b: "Etiquetas de colores para una organización ultrarrápida. Etiqueta una vez y encuentra al instante en todos tus dispositivos.",
+      f9_t: "Gestión de archivos comprimidos", f9_b: "Crea y extrae archivos ZIP directamente en la app. Explora el contenido sin extraer. No hacen falta herramientas adicionales.",
+      f10_t: "Local + nube", f10_b: "Conecta un dispositivo Blox para un acceso a la velocidad de la LAN. Replicación automática a la nube para tener disponibilidad en cualquier lugar.",
+      f11_t: "Compartir público por IPFS", f11_b: "Publica en IPFS con un toque. Enlaces permanentes y resistentes a la censura a los que cualquiera puede acceder. Tu contenido, imparable.",
+      f12_t: "Editor y visores integrados", f12_b: "Previsualiza imágenes, vídeos, PDF y texto. Recorta, gira, ajusta y anota, sin salir de la app.",
+      priv_head: "Creado para la <span class='gradient-text'>privacidad</span>,<br>no para lucrar con tus datos",
+      priv_sub: "FxFiles está diseñado desde cero para nunca ver, almacenar ni monetizar tu información personal.",
+      p1_t: "Cero recopilación de datos", p1_b: "Sin datos personales recopilados. Sin seguimiento. Sin analíticas. Sin perfilado de comportamiento. Nunca.",
+      p2_t: "Listo para empresas", p2_b: "Aloja tu propia infraestructura. Configura cada endpoint. Desplegable en marca blanca según tus condiciones.",
+      p3_t: "Autosoberano", p3_b: "Tú tienes las claves de cifrado. Tú controlas los datos. Soberanía digital total, no solo una promesa.",
+      p4_t: "Protocolos abiertos", p4_b: "Construido sobre IPFS, blockchain y estándares abiertos. Sin dependencia de un proveedor. Tus datos siempre son portables.",
+      plat_head: "<span class='gradient-text'>Disponible en todas partes</span>",
+      plat_sub: "La misma experiencia potente en cada dispositivo que tienes.",
+      plat_web_t: "Web", plat_web_b: "Sin instalación. Gestión, uso compartido y subida de archivos cifrados de extremo a extremo, directamente en tu navegador.", plat_web_btn: "Abrir app web",
+      plat_and_t: "Android", plat_and_b: "Acceso completo al sistema de archivos, sincronización en segundo plano, copia automática e integración con la bandeja del sistema.",
+      plat_ios_t: "iOS", plat_ios_b: "Integración nativa con PhotoKit, inicio de sesión con Apple, seguridad de Keychain y compatibilidad total con iCloud.",
+      plat_win_t: "Windows", plat_win_b: "Bandeja del sistema, integración con el menú contextual, atajos de teclado y gestión de archivos de nivel escritorio.",
+      footer_by: "por", footer_rights: "Todos los derechos reservados."
+    },
+    zh: {
+      nav_cta: "打开网页版",
+      hero_badge: "由 Functionland 出品",
+      hero_title: "<span class='gradient-text'>你的文件。<br>你的自由。</span>",
+      hero_sub: "拥有 AI 超能力的去中心化文件管理器。端到端加密、跨平台，并且从设计之初就坚持零数据收集。",
+      hero_cta: "打开网页应用",
+      sb_gp_pre: "下载于", sb_as_pre: "下载于", sb_ms_pre: "获取于",
+      stat1_v: "4 个平台", stat1_l: "Web、Windows、iOS、Android",
+      stat2_l: "端到端加密",
+      stat3_v: "零个人信息", stat3_l: "数据收集",
+      stat4_v: "去中心化", stat4_l: "没有单点故障",
+      hl_head: "<span class='gradient-text'>FxFiles 的与众不同之处</span>",
+      hl_sub: "不只是又一个文件管理器，而是你拥有、创作和分享数字生活的全新范式。",
+      hl1_t: "去中心化存储", hl1_b: "没有单一服务器，没有单点故障。你的文件分布在一个有韧性的网络中，即使服务器宕机也能继续工作。真正的数据主权，而非营销口号。",
+      hl2_t: "AI 网站生成器", hl2_b: "放入你的文件，得到一个完整网站。AI 分析你的图片、文档和视频，几秒内生成一个托管在 IPFS 上、功能完整的网站。一键搞定。",
+      hl3_t: "一键铸造 NFT", hl3_b: "把任意文件集合变成链上 NFT。由创作者赞助的免 Gas 铸造，无需任何加密知识。还包含可分享的领取链接和二维码。",
+      feat_head: "充满<span class='gradient-text'>智能</span>",
+      feat_sub: "每项功能都在你的设备上运行。除非你允许，你的数据永不外传。",
+      f1_t: "端到端加密", f1_b: "在你的设备上进行 AES-256-GCM 加密。你的文件对任何人都不可读——包括我们。",
+      f2_t: "安全分享", f2_b: "密码、有效期、即时撤销。端到端加密的分享，完全按你的规则来。",
+      f3_t: "多方协作", f3_b: "人人都能参与贡献的共享文件夹。内置实时同步与逐文件加密。",
+      f4_t: "人脸识别", f4_b: "设备端机器学习在你的照片中查找并归类人脸。一切都不会离开你的手机。",
+      f5_t: "文字提取", f5_b: "对准任意图片，立即提取全部文字。完全私密的设备端 OCR。",
+      f6_t: "高级音频播放器", f6_b: "播放列表、三段均衡器、随机播放、循环和后台播放。内置一个完整的音乐播放器。",
+      f7_t: "WhatsApp 安全备份", f7_b: "将 WhatsApp 增量备份到去中心化存储。可选的密码加密，让你更安心。",
+      f8_t: "智能标签", f8_b: "彩色标签让整理快如闪电。标记一次，在你所有设备上即时找到。",
+      f9_t: "压缩包管理", f9_b: "在应用内直接创建和解压 ZIP 文件。无需解压即可浏览内容。无需额外工具。",
+      f10_t: "本地 + 云端", f10_b: "连接 Blox 设备，享受 LAN 极速访问。自动复制到云端，随时随地都能用。",
+      f11_t: "公开 IPFS 分享", f11_b: "一键发布到 IPFS。永久、抗审查的链接，任何人都能访问。你的内容，无法被阻挡。",
+      f12_t: "内置编辑器与查看器", f12_b: "预览图片、视频、PDF 和文本。裁剪、旋转、调整和标注——无需离开应用。",
+      priv_head: "为<span class='gradient-text'>隐私</span>而生，<br>而非从你的数据中牟利",
+      priv_sub: "FxFiles 从根本上设计为永不查看、存储或将你的个人信息变现。",
+      p1_t: "零数据收集", p1_b: "不采集个人信息。不追踪。不做分析。不做行为画像。永远不会。",
+      p2_t: "企业就绪", p2_b: "自托管你的基础设施。配置每一个端点。可按你的条件进行白标部署。",
+      p3_t: "自主掌控", p3_b: "加密密钥由你持有，数据由你掌控。完整的数字主权，而不仅仅是一句承诺。",
+      p4_t: "开放协议", p4_b: "构建于 IPFS、区块链和开放标准之上。绝无厂商锁定。你的数据始终可迁移。",
+      plat_head: "<span class='gradient-text'>随处可用</span>",
+      plat_sub: "在你拥有的每台设备上，都是同样强大的体验。",
+      plat_web_t: "网页版", plat_web_b: "无需安装。在浏览器中直接进行端到端加密的文件管理、分享和上传。", plat_web_btn: "打开网页版",
+      plat_and_t: "Android", plat_and_b: "完整的文件系统访问、后台同步、自动备份以及系统托盘集成。",
+      plat_ios_t: "iOS", plat_ios_b: "原生 PhotoKit 集成、Apple 登录、Keychain 安全保护，以及完整的 iCloud 兼容性。",
+      plat_win_t: "Windows", plat_win_b: "系统托盘、右键 Shell 集成、键盘快捷键，以及桌面级的文件管理。",
+      footer_by: "出品方", footer_rights: "保留所有权利。"
+    },
+    ar: {
+      nav_cta: "افتح تطبيق الويب",
+      hero_badge: "من <bdi>Functionland</bdi>",
+      hero_title: "<span class='gradient-text'>ملفاتك.<br>حريتك.</span>",
+      hero_sub: "مدير الملفات اللامركزي بقدرات <bdi>AI</bdi> خارقة. مشفّر من طرف إلى طرف، يعمل على منصات متعددة، ومبنيّ بلا أي جمع للبيانات.",
+      hero_cta: "افتح تطبيق الويب",
+      sb_gp_pre: "احصل عليه من", sb_as_pre: "نزّله من", sb_ms_pre: "احصل عليه من",
+      stat1_v: "4 منصات", stat1_l: "<bdi>Web</bdi>، <bdi>Windows</bdi>، <bdi>iOS</bdi>، <bdi>Android</bdi>",
+      stat2_l: "تشفير من طرف إلى طرف",
+      stat3_v: "صفر بيانات شخصية", stat3_l: "جمع البيانات",
+      stat4_v: "لامركزي", stat4_l: "لا نقطة فشل واحدة",
+      hl_head: "<span class='gradient-text'>ما الذي يميّز <bdi>FxFiles</bdi></span>",
+      hl_sub: "ليس مجرد مدير ملفات آخر، بل نموذج جديد لكيفية امتلاكك وإنشائك ومشاركتك لحياتك الرقمية.",
+      hl1_t: "تخزين لامركزي", hl1_b: "لا خادم واحد. لا نقطة فشل واحدة. تعيش ملفاتك عبر شبكة مرنة تستمر في العمل حتى عند تعطّل الخوادم. سيادة حقيقية على البيانات، وليست شعارًا تسويقيًا.",
+      hl2_t: "منشئ مواقع بالذكاء الاصطناعي", hl2_b: "أسقِط ملفاتك واحصل على موقع متكامل. يحلّل <bdi>AI</bdi> صورك ومستنداتك ومقاطعك، ثم يُنشئ خلال ثوانٍ موقعًا كامل الوظائف مستضافًا على <bdi>IPFS</bdi>. نقرة واحدة. وانتهى الأمر.",
+      hl3_t: "سكّ <bdi>NFT</bdi> بنقرة واحدة", hl3_b: "حوّل أي مجموعة ملفات إلى <bdi>NFT</bdi> على السلسلة. سكٌّ بلا رسوم غاز وبرعاية المُنشئ يعني عدم الحاجة لأي خبرة في العملات المشفّرة. يتضمّن روابط مطالبة ورموز <bdi>QR</bdi> قابلة للمشاركة.",
+      feat_head: "مليء <span class='gradient-text'>بالذكاء</span>",
+      feat_sub: "تعمل كل ميزة على جهازك. لا تغادر بياناتك أبدًا إلا إذا سمحت أنت بذلك.",
+      f1_t: "تشفير من طرف إلى طرف", f1_b: "تشفير <bdi>AES-256-GCM</bdi> على جهازك. ملفاتك غير قابلة للقراءة من أي أحد — بما في ذلك نحن.",
+      f2_t: "مشاركة آمنة", f2_b: "كلمات مرور، وتواريخ انتهاء، وإلغاء فوري. مشاركة مشفّرة من طرف إلى طرف وفق شروطك بالكامل.",
+      f3_t: "تعاون متعدد الأطراف", f3_b: "مجلدات مشتركة يساهم فيها الجميع. مزامنة فورية مع تشفير لكل ملف على حدة.",
+      f4_t: "كشف الوجوه", f4_b: "يكتشف التعلّم الآلي على الجهاز الوجوه ويجمّعها عبر صورك. لا شيء يغادر هاتفك أبدًا.",
+      f5_t: "استخراج النص", f5_b: "وجّه نحو أي صورة، واستخرج كل النص فورًا. <bdi>OCR</bdi> على الجهاز يبقى خاصًّا تمامًا.",
+      f6_t: "مشغّل صوتي متقدّم", f6_b: "قوائم تشغيل، ومعادل صوت من 3 نطاقات، وتشغيل عشوائي، وتكرار، وتشغيل في الخلفية. مشغّل موسيقى متكامل مدمج.",
+      f7_t: "نسخ احتياطي آمن لـ <bdi>WhatsApp</bdi>", f7_b: "نسخ احتياطي تزايدي لـ <bdi>WhatsApp</bdi> إلى تخزين لامركزي. تشفير اختياري بكلمة مرور لمزيد من الاطمئنان.",
+      f8_t: "وسوم ذكية", f8_b: "وسوم ملوّنة لتنظيم فائق السرعة. ضع الوسم مرة واحدة، واعثر عليه فورًا عبر كل أجهزتك.",
+      f9_t: "إدارة الأرشيف", f9_b: "أنشئ ملفات <bdi>ZIP</bdi> واستخرجها داخل التطبيق مباشرة. تصفّح المحتويات دون استخراج. لا حاجة لأدوات إضافية.",
+      f10_t: "محلي + سحابي", f10_b: "اربط جهاز <bdi>Blox</bdi> للوصول بسرعة الشبكة المحلية <bdi>LAN</bdi> الفائقة. تكرار تلقائي إلى السحابة لإتاحته في أي مكان.",
+      f11_t: "مشاركة عامة عبر <bdi>IPFS</bdi>", f11_b: "انشر على <bdi>IPFS</bdi> بلمسة واحدة. روابط دائمة ومقاومة للرقابة يمكن للجميع الوصول إليها. محتواك، لا يمكن إيقافه.",
+      f12_t: "محرّر وعارضات مدمجة", f12_b: "عاين الصور والفيديو وملفات <bdi>PDF</bdi> والنصوص. اقتصّ ودوّر واضبط وعلّق — دون مغادرة التطبيق.",
+      priv_head: "مبنيّ من أجل <span class='gradient-text'>الخصوصية</span>،<br>لا للربح من بياناتك",
+      priv_sub: "صُمّم <bdi>FxFiles</bdi> من الأساس بحيث لا يرى معلوماتك الشخصية أو يخزّنها أو يحقّق منها ربحًا أبدًا.",
+      p1_t: "صفر جمع للبيانات", p1_b: "لا جمع لأي بيانات شخصية. لا تتبّع. لا تحليلات. لا تنميط سلوكي. أبدًا.",
+      p2_t: "جاهز للمؤسسات", p2_b: "استضِف بنيتك التحتية بنفسك. اضبط كل نقطة وصول. قابل للنشر بعلامتك الخاصة وفق شروطك.",
+      p3_t: "سيادة ذاتية", p3_b: "أنت تملك مفاتيح التشفير. أنت تتحكّم في البيانات. سيادة رقمية كاملة، وليست مجرد وعد.",
+      p4_t: "بروتوكولات مفتوحة", p4_b: "مبنيّ على <bdi>IPFS</bdi> والبلوك تشين والمعايير المفتوحة. لا احتكار من مورّد واحد. بياناتك قابلة للنقل دائمًا.",
+      plat_head: "<span class='gradient-text'>متوفّر في كل مكان</span>",
+      plat_sub: "التجربة القوية نفسها على كل جهاز تملكه.",
+      plat_web_t: "الويب", plat_web_b: "لا حاجة للتثبيت. إدارة ومشاركة ورفع ملفات مشفّرة من طرف إلى طرف، مباشرة في متصفّحك.", plat_web_btn: "افتح تطبيق الويب",
+      plat_and_t: "<bdi>Android</bdi>", plat_and_b: "وصول كامل لنظام الملفات، ومزامنة في الخلفية، ونسخ احتياطي تلقائي، وتكامل مع شريط النظام.",
+      plat_ios_t: "<bdi>iOS</bdi>", plat_ios_b: "تكامل أصلي مع <bdi>PhotoKit</bdi>، وتسجيل الدخول عبر <bdi>Apple</bdi>، وأمان <bdi>Keychain</bdi>، وتوافق كامل مع <bdi>iCloud</bdi>.",
+      plat_win_t: "<bdi>Windows</bdi>", plat_win_b: "شريط النظام، وتكامل مع قائمة النقر بالزر الأيمن، واختصارات لوحة المفاتيح، وإدارة ملفات بمستوى سطح المكتب.",
+      footer_by: "من", footer_rights: "جميع الحقوق محفوظة."
+    },
+    fa: {
+      nav_cta: "باز کردن نسخهٔ وب",
+      hero_badge: "از <bdi>Functionland</bdi>",
+      hero_title: "<span class='gradient-text'>فایل‌های شما.<br>آزادی شما.</span>",
+      hero_sub: "مدیر فایل غیرمتمرکز با ابرقدرت‌های <bdi>AI</bdi>. رمزگذاری سرتا‌سری، چندسکویی، و ساخته‌شده بدون هیچ جمع‌آوری داده.",
+      hero_cta: "باز کردن برنامهٔ وب",
+      sb_gp_pre: "دریافت از", sb_as_pre: "دانلود از", sb_ms_pre: "دریافت از",
+      stat1_v: "۴ سکو", stat1_l: "<bdi>Web</bdi>، <bdi>Windows</bdi>، <bdi>iOS</bdi>، <bdi>Android</bdi>",
+      stat2_l: "رمزگذاری سرتاسری",
+      stat3_v: "صفر دادهٔ شخصی", stat3_l: "جمع‌آوری داده",
+      stat4_v: "غیرمتمرکز", stat4_l: "بدون نقطهٔ خرابی واحد",
+      hl_head: "<span class='gradient-text'>چه چیزی <bdi>FxFiles</bdi> را متمایز می‌کند</span>",
+      hl_sub: "نه فقط یک مدیر فایل دیگر؛ بلکه الگویی تازه برای مالکیت، آفرینش و هم‌رسانی زندگی دیجیتالتان.",
+      hl1_t: "ذخیره‌سازی غیرمتمرکز", hl1_b: "نه سروری یگانه، نه نقطهٔ خرابی واحد. فایل‌های شما روی شبکه‌ای تاب‌آور زندگی می‌کنند که حتی وقتی سرورها از کار می‌افتند به کار ادامه می‌دهد. حاکمیت واقعی بر داده، نه یک شعار تبلیغاتی.",
+      hl2_t: "سازندهٔ وب‌سایت با هوش مصنوعی", hl2_b: "فایل‌هایتان را رها کنید و یک وب‌سایت کامل بگیرید. <bdi>AI</bdi> تصاویر، اسناد و ویدیوهای شما را تحلیل می‌کند و در چند ثانیه سایتی کاملاً کارا میزبانی‌شده روی <bdi>IPFS</bdi> می‌سازد. یک کلیک. تمام.",
+      hl3_t: "ضرب <bdi>NFT</bdi> با یک کلیک", hl3_b: "هر مجموعه فایلی را به یک <bdi>NFT</bdi> روی زنجیره تبدیل کنید. ضرب بدون کارمزد گس و با حمایت سازنده یعنی هیچ نیازی به تخصص رمزارز نیست. شامل لینک‌های دریافت و کدهای <bdi>QR</bdi> قابل‌اشتراک.",
+      feat_head: "سرشار از <span class='gradient-text'>هوش</span>",
+      feat_sub: "هر قابلیت روی دستگاه خودتان اجرا می‌شود. داده‌هایتان هرگز خارج نمی‌شوند، مگر آنکه شما بخواهید.",
+      f1_t: "رمزگذاری سرتاسری", f1_b: "رمزگذاری <bdi>AES-256-GCM</bdi> روی دستگاه شما. فایل‌هایتان برای همه ناخواناست — از جمله برای ما.",
+      f2_t: "هم‌رسانی امن", f2_b: "گذرواژه، تاریخ انقضا و لغو فوری. هم‌رسانی رمزگذاری‌شدهٔ سرتاسری، کاملاً بر اساس شرایط شما.",
+      f3_t: "همکاری چندجانبه", f3_b: "پوشه‌های مشترکی که همه در آن مشارکت می‌کنند. هم‌گام‌سازی بی‌درنگ با رمزگذاری جداگانه برای هر فایل.",
+      f4_t: "تشخیص چهره", f4_b: "یادگیری ماشین روی دستگاه، چهره‌ها را در عکس‌هایتان می‌یابد و گروه‌بندی می‌کند. هیچ‌چیز هرگز از گوشی شما خارج نمی‌شود.",
+      f5_t: "استخراج متن", f5_b: "روی هر تصویری نشانه بگیرید و فوراً تمام متن را استخراج کنید. <bdi>OCR</bdi> روی دستگاه که کاملاً خصوصی می‌ماند.",
+      f6_t: "پخش‌کنندهٔ صوتی پیشرفته", f6_b: "فهرست‌های پخش، اکولایزر ۳ باندی، پخش تصادفی، تکرار و پخش در پس‌زمینه. یک پخش‌کنندهٔ موسیقی کامل و توکار.",
+      f7_t: "پشتیبان‌گیری امن <bdi>WhatsApp</bdi>", f7_b: "پشتیبان‌گیری افزایشی <bdi>WhatsApp</bdi> روی فضای ذخیره‌سازی غیرمتمرکز. رمزگذاری اختیاری با گذرواژه برای آسودگی بیشتر.",
+      f8_t: "برچسب‌گذاری هوشمند", f8_b: "برچسب‌های رنگی برای سازمان‌دهی برق‌آسا. یک‌بار برچسب بزنید و فوراً در همهٔ دستگاه‌هایتان پیدا کنید.",
+      f9_t: "مدیریت بایگانی", f9_b: "فایل‌های <bdi>ZIP</bdi> را مستقیماً در برنامه بسازید و استخراج کنید. محتوا را بدون استخراج مرور کنید. بدون نیاز به ابزار اضافی.",
+      f10_t: "درون‌سازمانی + ابری", f10_b: "یک دستگاه <bdi>Blox</bdi> وصل کنید تا دسترسی با سرعت شبکهٔ محلی <bdi>LAN</bdi> داشته باشید. تکثیر خودکار روی ابر برای دسترسی از هر جا.",
+      f11_t: "هم‌رسانی عمومی <bdi>IPFS</bdi>", f11_b: "با یک لمس روی <bdi>IPFS</bdi> منتشر کنید. لینک‌های دائمی و مقاوم در برابر سانسور که همه می‌توانند به آن‌ها دسترسی داشته باشند. محتوای شما، توقف‌ناپذیر.",
+      f12_t: "ویرایشگر و نمایشگرهای توکار", f12_b: "تصاویر، ویدیوها، <bdi>PDF</bdi> و متن را پیش‌نمایش کنید. برش بزنید، بچرخانید، تنظیم کنید و یادداشت بگذارید — بدون خروج از برنامه.",
+      priv_head: "ساخته‌شده برای <span class='gradient-text'>حریم خصوصی</span>،<br>نه برای سودجویی از داده‌های شما",
+      priv_sub: "<bdi>FxFiles</bdi> از پایه چنان طراحی شده که هرگز اطلاعات شخصی شما را نبیند، ذخیره نکند یا از آن کسب درآمد نکند.",
+      p1_t: "صفر جمع‌آوری داده", p1_b: "هیچ دادهٔ شخصی‌ای برداشت نمی‌شود. نه ردیابی. نه تحلیل. نه پروفایل‌سازی رفتاری. هرگز.",
+      p2_t: "آمادهٔ سازمان", p2_b: "زیرساخت خود را میزبانی کنید. هر نقطهٔ اتصال را پیکربندی کنید. قابل استقرار با برند سفید بر اساس شرایط شما.",
+      p3_t: "خودمختار", p3_b: "کلیدهای رمزگذاری در دست شماست. کنترل داده با شماست. حاکمیت دیجیتال کامل، نه فقط یک وعده.",
+      p4_t: "پروتکل‌های باز", p4_b: "ساخته‌شده بر پایهٔ <bdi>IPFS</bdi>، بلاک‌چین و استانداردهای باز. بدون وابستگی به فروشنده. داده‌های شما همیشه قابل‌انتقال‌اند.",
+      plat_head: "<span class='gradient-text'>همه‌جا در دسترس</span>",
+      plat_sub: "همان تجربهٔ قدرتمند روی هر دستگاهی که دارید.",
+      plat_web_t: "وب", plat_web_b: "بدون نیاز به نصب. مدیریت، هم‌رسانی و بارگذاری فایل‌های رمزگذاری‌شدهٔ سرتاسری، مستقیماً در مرورگر شما.", plat_web_btn: "باز کردن نسخهٔ وب",
+      plat_and_t: "<bdi>Android</bdi>", plat_and_b: "دسترسی کامل به سیستم فایل، هم‌گام‌سازی در پس‌زمینه، پشتیبان‌گیری خودکار و یکپارچگی با سینی سیستم.",
+      plat_ios_t: "<bdi>iOS</bdi>", plat_ios_b: "یکپارچگی بومی با <bdi>PhotoKit</bdi>، ورود با <bdi>Apple</bdi>، امنیت <bdi>Keychain</bdi> و سازگاری کامل با <bdi>iCloud</bdi>.",
+      plat_win_t: "<bdi>Windows</bdi>", plat_win_b: "سینی سیستم، یکپارچگی با منوی راست‌کلیک، میان‌برهای صفحه‌کلید و مدیریت فایل در سطح دسکتاپ.",
+      footer_by: "از", footer_rights: "همهٔ حقوق محفوظ است."
+    }
+  };
+
+  var RTL = { ar: 1, fa: 1 };
+
+  function setLang(lang) {
+    if (!I18N[lang]) lang = 'en';
+    var dict = I18N[lang];
+    var d = document.documentElement;
+    d.lang = lang;
+    d.dir = RTL[lang] ? 'rtl' : 'ltr';
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      var v = dict[el.getAttribute('data-i18n')];
+      if (v != null) el.innerHTML = v;            // values are author-trusted markup
+    });
+    try { localStorage.setItem('fx_lang', lang); } catch (e) {}
+    var sel = document.getElementById('langSelect');
+    if (sel) sel.value = lang;
+  }
+
+  try {
+    setLang(window.__fxLang || 'en');
+    var langSel = document.getElementById('langSelect');
+    if (langSel) langSel.addEventListener('change', function () { setLang(this.value); });
+
+    // nav background on scroll
+    var nav = document.getElementById('nav');
+    var onScroll = function () { nav.classList.toggle('scrolled', window.scrollY > 20); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+
+    // reveal-on-scroll for .fade-up (gated by html.js so no-JS shows everything)
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+        });
+      }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+      document.querySelectorAll('.fade-up').forEach(function (el) { io.observe(el); });
+    } else {
+      document.querySelectorAll('.fade-up').forEach(function (el) { el.classList.add('visible'); });
+    }
+  } catch (err) {
+    // A script error must never leave the page blank: reveal everything the
+    // html.js/.fade-up rule would otherwise keep hidden.
+    document.querySelectorAll('.fade-up').forEach(function (el) { el.classList.add('visible'); });
+  }
+</script>
+
 </body>
 </html>

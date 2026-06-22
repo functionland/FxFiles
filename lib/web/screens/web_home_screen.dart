@@ -341,7 +341,10 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                               }
                               // Storage indicator like mobile (#6): a "STORAGE"
                               // section with a Cloud progress bar (web omits Phone).
-                              return WebStorageSection(info: snap.data!);
+                              return WebStorageSection(
+                                info: snap.data!,
+                                onTap: () => _go('/cloud-files'),
+                              );
                             },
                           ),
                         ),

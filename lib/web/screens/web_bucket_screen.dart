@@ -26,8 +26,11 @@ import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
+import 'package:fula_files/web/utils/cloud_folder_tree.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_thumb.dart';
 import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
@@ -192,7 +195,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     DateTime? fetchedAt,
   }) {
     final objects = sortObjects(
-      raw.map((o) => o.withSourceBucket(bucket)).toList(),
+      // Hide folder-keep markers: Cloud Files can create folders in this same
+      // bucket, and the marker object must never render as a file here.
+      stripFolderMarkers(raw).map((o) => o.withSourceBucket(bucket)).toList(),
       _sortBy,
       _sortAscending,
     );
@@ -725,6 +730,26 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
   }
 
+  /// Leading slot: a lazy thumbnail for images (fetched from the small sidecar,
+  /// never the full file), the type icon otherwise / as fallback.
+  Widget _leadingFor(FulaObject o) {
+    final icon = Icon(_isImage(o)
+        ? Icons.image_outlined
+        : _isVideo(o)
+            ? Icons.movie_outlined
+            : _isAudio(o)
+                ? Icons.audiotrack_outlined
+                : _isText(o)
+                    ? Icons.article_outlined
+                    : Icons.insert_drive_file_outlined);
+    if (!_isImage(o)) return icon;
+    return WebThumb(
+      bucket: o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base),
+      objectKey: o.key,
+      fallback: icon,
+    );
+  }
+
   Future<void> _preview(FulaObject o) async {
     if (_isVideo(o) || _isAudio(o)) {
       await _previewMedia(o);
@@ -753,6 +778,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
     unawaited(future.then((bytes) {
       _recordRecent(o, bucket, imageBytes: bytes);
+      WebThumbnailService.instance.backfillFromBytes(bucket, o.key, o.name, bytes);
     }).catchError((_) {}));
     showDialog<void>(
       context: context,
@@ -1055,15 +1081,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
                   final o = _objects![i];
                   final tags = _fileTags[o.key] ?? const <FileTag>[];
                   return ListTile(
-                    leading: Icon(_isImage(o)
-                        ? Icons.image_outlined
-                        : _isVideo(o)
-                            ? Icons.movie_outlined
-                            : _isAudio(o)
-                                ? Icons.audiotrack_outlined
-                                : _isText(o)
-                                    ? Icons.article_outlined
-                                    : Icons.insert_drive_file_outlined),
+                    leading: _leadingFor(o),
                     title: Text(_displayName(o),
                         overflow: TextOverflow.ellipsis),
                     subtitle: Column(

@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 import 'package:fula_files/features/ai_connections/services/ai_connection_service.dart';
+import 'package:fula_files/core/utils/cloud_folder_marker.dart';
 
 // Re-export commonly used types for convenience (only non-conflicting ones)
 export 'package:fula_client/fula_client.dart' show
@@ -684,6 +685,24 @@ class FulaApiService implements FulaApi {
         throw FulaApiException('Failed to create bucket: $e');
       }
     }
+  }
+
+  /// Materialize a folder by writing a hidden keep-marker under it. Folders are
+  /// virtual key-prefixes in the encrypted forest (there is no `mkdir`), so an
+  /// empty folder needs at least one object. The marker is hidden from every
+  /// file view (see stripFolderMarkers). [folderPath] is the full path within
+  /// [bucket] (e.g. 'photos/2024'); leading/trailing slashes are tolerated.
+  /// Inherits uploadObject's legacy-write guard (refuses gc-damaged buckets).
+  Future<void> createFolder(String bucket, String folderPath) async {
+    final clean = folderPath.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    if (clean.isEmpty) {
+      throw FulaApiException('Folder path cannot be empty');
+    }
+    await uploadObject(
+      bucket,
+      '/$clean/$kFolderMarkerName',
+      Uint8List.fromList(folderMarkerBytes()),
+    );
   }
 
   Future<bool> bucketExists(String bucket) async {

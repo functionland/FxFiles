@@ -7,6 +7,7 @@ import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
 import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
 import 'package:fula_files/web/screens/web_bucket_screen.dart';
+import 'package:fula_files/web/screens/web_cloud_files_screen.dart';
 import 'package:fula_files/web/screens/web_collab_detail_screen.dart';
 import 'package:fula_files/web/screens/web_home_screen.dart';
 import 'package:fula_files/web/screens/web_nft_claim_screen.dart';
@@ -66,6 +67,10 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/search',
         builder: (context, state) => const WebSearchScreen(),
+      ),
+      GoRoute(
+        path: '/cloud-files',
+        builder: (context, state) => const WebCloudFilesScreen(),
       ),
       GoRoute(
         path: '/b/:base',

@@ -460,6 +460,7 @@ String extractUserPrompt(String stored) {
   String websiteName,
   String category,
   List<String> styles,
+  List<String> languages,
   String palette,
   String userBody,
   ContactFormConfig? contactForm,

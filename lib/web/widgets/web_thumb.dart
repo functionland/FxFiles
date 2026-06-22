@@ -1,0 +1,89 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+
+import 'package:fula_files/web/services/web_thumbnail_service.dart';
+
+/// A small image thumbnail for the file grids at ([bucket],[objectKey]).
+///
+/// Shows the cached thumbnail instantly if present; otherwise — after a short
+/// debounce so a fast-scrolled-past row never triggers a fetch — lazily pulls
+/// the ~10 KB sidecar via [WebThumbnailService] (which is concurrency-capped
+/// and de-duped). Falls back to [fallback] (a type icon) while loading or when
+/// no thumbnail exists. The full file is never downloaded here.
+class WebThumb extends StatefulWidget {
+  final String bucket;
+  final String objectKey;
+  final double size;
+  final Widget fallback;
+
+  const WebThumb({
+    super.key,
+    required this.bucket,
+    required this.objectKey,
+    required this.fallback,
+    this.size = 40,
+  });
+
+  @override
+  State<WebThumb> createState() => _WebThumbState();
+}
+
+class _WebThumbState extends State<WebThumb> {
+  static const Duration _debounceDelay = Duration(milliseconds: 250);
+  Uint8List? _bytes;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _bytes = WebThumbnailService.instance.peek(widget.bucket, widget.objectKey);
+    if (_bytes == null) _schedule();
+  }
+
+  @override
+  void didUpdateWidget(WebThumb old) {
+    super.didUpdateWidget(old);
+    // A virtualized list row was recycled for a different file.
+    if (old.bucket != widget.bucket || old.objectKey != widget.objectKey) {
+      _timer?.cancel();
+      _bytes =
+          WebThumbnailService.instance.peek(widget.bucket, widget.objectKey);
+      if (_bytes == null) _schedule();
+    }
+  }
+
+  void _schedule() {
+    _timer?.cancel();
+    _timer = Timer(_debounceDelay, () async {
+      final b = await WebThumbnailService.instance
+          .get(widget.bucket, widget.objectKey);
+      if (!mounted || b == null) return;
+      setState(() => _bytes = b);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel(); // scrolled away before the debounce fired → never fetch
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = _bytes;
+    if (b == null) return widget.fallback;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: Image.memory(
+        b,
+        width: widget.size,
+        height: widget.size,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => widget.fallback,
+      ),
+    );
+  }
+}

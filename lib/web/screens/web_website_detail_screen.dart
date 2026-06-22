@@ -196,6 +196,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       websiteName: result.websiteName,
       category: result.category,
       styles: result.styles,
+      languages: result.languages,
       palette: result.palette,
       body: result.prompt,
       contactForm: result.contactForm,
@@ -260,6 +261,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
           initialPrompt: seededPrompt,
           initialEnableTracking: gen.trackingEnabled,
           initialContactForm: parsed.contactForm,
+          initialLanguages: parsed.languages,
         ),
       ),
     );
