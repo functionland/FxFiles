@@ -2,6 +2,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/core/services/wallet_service.dart'
     show walletNavigatorKey;
+import 'package:fula_files/features/ai_connections/screens/ai_connections_screen.dart';
 import 'package:fula_files/web/screens/web_api_config_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
@@ -26,7 +27,7 @@ import 'package:fula_files/web/screens/web_websites_screen.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// Web-shell router. Deliberately defines ONLY the cloud routes — the
-/// native app's local-file/sync/AI routes never enter the web compile
+/// native app's local-file/sync routes never enter the web compile
 /// graph (structural feature gating). Hash URL strategy (Flutter web
 /// default) keeps GitHub Pages happy without 404 rewrites.
 GoRouter buildWebRouter() {
@@ -71,6 +72,10 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/cloud-files',
         builder: (context, state) => const WebCloudFilesScreen(),
+      ),
+      GoRoute(
+        path: '/ai-connections',
+        builder: (context, state) => const AiConnectionsScreen(),
       ),
       GoRoute(
         path: '/b/:base',

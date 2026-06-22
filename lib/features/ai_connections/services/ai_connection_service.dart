@@ -7,8 +7,7 @@ import 'package:fula_client/fula_client.dart' as fula;
 
 import 'package:uuid/uuid.dart';
 
-import 'package:fula_files/core/services/auth_core.dart';
-import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/user_id.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
@@ -69,7 +68,14 @@ class AiConnectionService {
   ///
   /// Throws [StateError] if the user is signed out (no KEK available).
   Future<Uint8List> deriveWorkspaceSecret() async {
-    final kek = await AuthService.instance.getEncryptionKey();
+    // Web-safe: read the KEK directly from secure storage (the same place the
+    // native AuthService.getEncryptionKey reads it), avoiding the native FFI
+    // auth layer so this compiles for web.
+    final storedKek = await SecureStorageService.instance.read(
+      SecureStorageKeys.encryptionKey,
+    );
+    final kek =
+        (storedKek == null || storedKek.isEmpty) ? null : base64Decode(storedKek);
     if (kek == null) {
       throw StateError(
         'No encryption key available. Please sign in before creating an AI connection.',
@@ -90,13 +96,15 @@ class AiConnectionService {
   ///
   /// Throws [StateError] if the user is signed out.
   Future<Uint8List> ownerPublicKey() async {
-    final pub = await AuthService.instance.getPublicKey();
-    if (pub == null) {
+    // Web-safe: the native AuthService.getPublicKey() just delegates to
+    // FulaApiService.getPublicKey() (the fula-client keypair pubkey) — the
+    // SAME recipient key, byte-identical on native, and web-compilable.
+    if (!FulaApiService.instance.isConfigured) {
       throw StateError(
         'Owner public key not available. Please sign in before creating an AI connection.',
       );
     }
-    return pub;
+    return FulaApiService.instance.getPublicKey();
   }
 
   /// Mint a short-lived, scoped MCP gateway JWT via P11's issuer endpoint
@@ -121,7 +129,7 @@ class AiConnectionService {
         'No session token. Please sign in before creating an AI connection.',
       );
     }
-    final baseUrl = await AuthCore.issuerBaseUrl();
+    final baseUrl = await _issuerBaseUrl();
     final client = httpClient ?? http.Client();
     try {
       final response = await client
@@ -199,7 +207,17 @@ class AiConnectionService {
     final stored = await SecureStorageService.instance
         .read(SecureStorageKeys.apiGatewayUrl);
     if (stored != null && stored.isNotEmpty) return stored;
-    return AuthCore.defaultS3GatewayUrl;
+    return 'https://s3.cloud.fx.land';
+  }
+
+  /// Web-safe inline of AuthCore.issuerBaseUrl() (the billing-server override,
+  /// else the cloud.fx.land default) — avoids importing the FFI auth_core.
+  Future<String> _issuerBaseUrl() async {
+    final stored = await SecureStorageService.instance.read(
+      SecureStorageKeys.billingServerUrl,
+    );
+    if (stored != null && stored.isNotEmpty) return stored;
+    return 'https://cloud.fx.land';
   }
 
   /// Orchestrate steps 2–5 and return the one-time bundle JSON string.
@@ -214,7 +232,7 @@ class AiConnectionService {
     final ownerPub = await ownerPublicKey();
     final jwt = await mintScopedJwt();
     final endpoint = await _resolveEndpoint();
-    final storageApiUrl = await AuthCore.issuerBaseUrl();
+    final storageApiUrl = await _issuerBaseUrl();
     // FxFiles' canonical per-user id (sha256(base64(pubkey))[..16]). Reused
     // verbatim so it matches what the MCP stamps onto tag metadata and what
     // FxFiles derives elsewhere — do NOT re-roll the hash/slice here.
