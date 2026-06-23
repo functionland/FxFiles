@@ -376,6 +376,105 @@ class AiConnectionService {
     return jsonEncode(bundle);
   }
 
+  /// Build the HOSTED-connect **capability** JSON string (H5). PURE (no I/O):
+  /// every value is passed in, so this is fully unit-testable without FFI or the
+  /// network.
+  ///
+  /// This is a DIFFERENT wire contract from [buildBundleJson]. It MUST match the
+  /// Cloudflare Worker's `validateCapability` (`pinning-service/cloudflare/
+  /// src/capability.ts`, H2), which accepts EXACTLY these FIVE required,
+  /// non-empty string fields and rejects the request if any is missing:
+  ///
+  ///   workspace_secret  — base64 of the 32-byte AI-workspace secret
+  ///   mcp_secret        — base64 of the 32-byte MCP X25519 SECRET key
+  ///   refresh_token     — the Layer-1 connection refresh credential (the
+  ///                       server's `refreshToken`, NOT the scoped jwt)
+  ///   refresh_url       — `{issuerBase}/api/mcp/tokens/refresh-connection`
+  ///   endpoint          — the S3 storage gateway URL
+  ///
+  /// DELIBERATE DIFFERENCES from the local bundle (do NOT reuse [buildBundleJson]
+  /// here — the shapes diverge):
+  ///   - The keys are `workspace_secret` / `mcp_secret` (NOT the `_b64` suffix
+  ///     the local bundle uses), even though the VALUES are base64.
+  ///   - There is NO `owner_public_b64` and NO `user_id`: the Worker derives the
+  ///     user identity from the OAuth access token, and owner-share is a separate
+  ///     concern (H3b). `refresh_url`/`endpoint` MUST be https (Worker-enforced).
+  ///
+  /// NOTE the key direction (the one catastrophic swap to avoid):
+  ///   mcp_secret = base64(MCP **secret** key)  ← the SECRET, never the public.
+  String buildCapabilityJson({
+    required String endpoint,
+    required Uint8List workspaceSecret,
+    required Uint8List mcpSecretKey,
+    required String refreshToken,
+    required String refreshUrl,
+  }) {
+    final capability = <String, dynamic>{
+      'workspace_secret': base64Encode(workspaceSecret),
+      // base64 of the 32-byte MCP X25519 SECRET key (NOT the public key).
+      'mcp_secret': base64Encode(mcpSecretKey),
+      'refresh_token': refreshToken,
+      'refresh_url': refreshUrl,
+      'endpoint': endpoint,
+    };
+    return jsonEncode(capability);
+  }
+
+  /// Deliver a hosted capability to the user's Worker (H5 step 3).
+  ///
+  /// `POST {workerUrl}/capability` with `Authorization: Bearer <workerToken>` and
+  /// the [capabilityJson] body (the 5-field [buildCapabilityJson] contract). The
+  /// Worker validates the token against its own OAuth KV, seals the capability via
+  /// OpenBao, and returns **204 No Content** on success.
+  ///
+  /// [workerUrl] is the Worker base (e.g. `https://fula-mcp.<user>.workers.dev`);
+  /// the `/capability` path is appended. The Worker token + the capability body
+  /// are SECRETS in transit — they are never persisted by FxFiles (the Worker
+  /// custodies the capability, OpenBao-sealed).
+  ///
+  /// [httpClient] is injected for tests. Throws [Exception] on any non-2xx
+  /// response (fail-closed: a failed delivery must not be recorded as a working
+  /// connection).
+  Future<void> deliverCapability({
+    required String workerUrl,
+    required String workerToken,
+    required String capabilityJson,
+    http.Client? httpClient,
+  }) async {
+    final base = _normalizeWorkerBase(workerUrl);
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client
+          .post(
+            Uri.parse('$base/capability'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $workerToken',
+            },
+            body: capabilityJson,
+          )
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(
+          'Worker rejected the capability: ${response.statusCode} - ${response.body}',
+        );
+      }
+    } finally {
+      if (httpClient == null) client.close();
+    }
+  }
+
+  /// Strip a single trailing slash from a Worker base URL so `'$base/capability'`
+  /// never produces a `//capability` path.
+  static String _normalizeWorkerBase(String workerUrl) {
+    var s = workerUrl.trim();
+    while (s.endsWith('/')) {
+      s = s.substring(0, s.length - 1);
+    }
+    return s;
+  }
+
   /// Resolve the S3 gateway endpoint for the bundle: the user's configured
   /// gateway override, else the default S3 gateway.
   Future<String> _resolveEndpoint() async {
@@ -447,6 +546,120 @@ class AiConnectionService {
     await _persist([...existing, record]);
 
     return bundle;
+  }
+
+  /// Orchestrate the HOSTED-connect flow (H5) and persist a hosted record.
+  ///
+  /// Delivers the SAME capability the local bundle carries — but to a user-run
+  /// Cloudflare **Worker** instead of showing a paste-bundle. Steps:
+  ///   1. Run the Worker's OAuth (the [fetchWorkerToken] seam, below) to obtain a
+  ///      Worker ACCESS TOKEN bound to the user's verified Google identity.
+  ///   2. Generate a fresh MCP keypair, derive the workspace secret, and mint a
+  ///      Layer-1 connection ([mintConnectionToken]) → scoped jwt + the SEPARATE
+  ///      refreshToken credential + connectionId.
+  ///   3. Build the 5-field capability ([buildCapabilityJson]) and `POST` it to
+  ///      `{workerUrl}/capability` with the Worker token as Bearer ([deliverCapability]);
+  ///      the Worker seals it (OpenBao) and returns 204.
+  ///   4. Persist ONLY the NON-secret hosted record (kind=hosted, workerUrl,
+  ///      connectionId, public key, label). The Worker token, the refresh token,
+  ///      the workspace secret and the mcp secret are all transient — NEVER stored.
+  ///
+  /// SECRETS BOUNDARY (honest): "no secrets persisted" is the guarantee FxFiles
+  /// makes. The capability body itself IS secret in transit to the Worker, which
+  /// then custodies it OpenBao-sealed (H2) — that custody is the Worker's
+  /// responsibility, not FxFiles'.
+  ///
+  /// HARD-FAIL: if minting fails, the OAuth is cancelled, or the Worker rejects
+  /// the capability (non-2xx), this THROWS and persists NOTHING — a failed
+  /// hosted-connect must never leave a half-recorded connection. (A connection
+  /// that was minted but failed to deliver lapses by Layer-1 expiry / can be
+  /// re-attempted; we do not persist it, so disconnect has nothing to revoke.)
+  ///
+  /// [fetchWorkerToken] is the injected web-auth seam: given the validated
+  /// [workerUrl], it runs the OAuth 2.1 + PKCE handshake (production: external
+  /// browser + `fxfiles://auth-callback` deep link — see `HostedOauthClient`) and
+  /// returns the Worker access token. Tests inject a fake that returns a canned
+  /// token WITHOUT any real network/browser, so this orchestration is exercised
+  /// offline. The REAL handshake against a deployed Worker is verifiable only
+  /// post-deploy (H4).
+  ///
+  /// [httpClient] is injected for tests (covers the mint + the capability POST).
+  Future<AiConnection> createHostedConnection({
+    required String label,
+    required String workerUrl,
+    required Future<String> Function(String workerUrl) fetchWorkerToken,
+    http.Client? httpClient,
+  }) async {
+    final normalizedWorkerUrl = _normalizeWorkerBase(workerUrl);
+    if (!_isHttpsUrl(normalizedWorkerUrl)) {
+      throw ArgumentError('The hosted Worker URL must be an https:// URL.');
+    }
+
+    // 1. Worker OAuth → access token (injected seam; real handshake = H4).
+    final workerToken = await fetchWorkerToken(normalizedWorkerUrl);
+    if (workerToken.isEmpty) {
+      throw StateError('The hosted AI sign-in did not return an access token.');
+    }
+
+    // 2. Mint the Layer-1 connection + derive the workspace secret.
+    final keypair = await generateMcpKeypair();
+    final workspaceSecret = await deriveWorkspaceSecret();
+    final endpoint = await _resolveEndpoint();
+    final issuerBase = await _issuerBaseUrl();
+
+    final minted = await mintConnectionToken(
+      mcpPublicKeyB64: base64Encode(keypair.publicKey),
+      httpClient: httpClient,
+    );
+    final refreshToken = minted.refreshToken;
+    if (refreshToken == null || refreshToken.isEmpty) {
+      // The hosted Worker auto-refreshes the gateway token server-side; without
+      // a refresh credential it could not keep the connection alive past the
+      // scoped token's life. Fail closed rather than deliver a dead capability.
+      throw StateError(
+        'The server did not issue a connection refresh credential; cannot '
+        'deliver a hosted capability. (Is the issuer up to date?)',
+      );
+    }
+
+    // 3. Build the 5-field capability and deliver it to the Worker (Bearer).
+    final capabilityJson = buildCapabilityJson(
+      endpoint: endpoint,
+      workspaceSecret: workspaceSecret,
+      mcpSecretKey: keypair.secretKey,
+      refreshToken: refreshToken,
+      refreshUrl: '$issuerBase/api/mcp/tokens/refresh-connection',
+    );
+    await deliverCapability(
+      workerUrl: normalizedWorkerUrl,
+      workerToken: workerToken,
+      capabilityJson: capabilityJson,
+      httpClient: httpClient,
+    );
+
+    // 4. Persist ONLY the non-secret hosted record. No secrets (no workerToken,
+    //    refreshToken, workspaceSecret, mcpSecret).
+    final record = AiConnection(
+      id: const Uuid().v4(),
+      label: label,
+      mcpPublicKeyB64: base64Encode(keypair.publicKey),
+      createdAt: DateTime.now(),
+      connectionId: minted.connectionId,
+      kind: AiConnectionKind.hosted,
+      workerUrl: normalizedWorkerUrl,
+    );
+    final existing = await listConnections();
+    await _persist([...existing, record]);
+
+    return record;
+  }
+
+  /// True iff [s] parses as an absolute `https://` URL with a non-empty host.
+  static bool _isHttpsUrl(String s) {
+    final uri = Uri.tryParse(s);
+    return uri != null &&
+        uri.scheme == 'https' &&
+        uri.host.isNotEmpty;
   }
 
   /// List the persisted (non-secret) connection records.

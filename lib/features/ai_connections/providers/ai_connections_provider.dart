@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 import 'package:fula_files/features/ai_connections/services/ai_connection_service.dart';
+import 'package:fula_files/features/ai_connections/services/hosted_oauth_client.dart';
 
 /// Immutable UI state for the AI Connections screen.
 @immutable
@@ -73,6 +74,35 @@ class AiConnectionsNotifier extends Notifier<AiConnectionsState> {
     } catch (e) {
       state = state.copyWith(isBusy: false, error: e.toString());
       return null;
+    }
+  }
+
+  /// Connect a HOSTED AI (H5): run the Worker's OAuth, mint a Layer-1 connection,
+  /// and deliver the capability to `{workerUrl}/capability`. On success persists a
+  /// hosted [AiConnection] (no secrets) and returns true; on failure sets
+  /// [AiConnectionsState.error] and returns false (nothing is persisted).
+  ///
+  /// [fetchWorkerToken] is the injected web-auth seam (defaults to the real
+  /// [HostedOauthClient] external-browser + PKCE flow). Tests inject a fake.
+  Future<bool> createHostedConnection({
+    required String label,
+    required String workerUrl,
+    Future<String> Function(String workerUrl)? fetchWorkerToken,
+  }) async {
+    state = state.copyWith(isBusy: true, error: null);
+    try {
+      await _service.createHostedConnection(
+        label: label,
+        workerUrl: workerUrl,
+        fetchWorkerToken:
+            fetchWorkerToken ?? (url) => HostedOauthClient().authenticate(url),
+      );
+      final connections = await _service.listConnections();
+      state = state.copyWith(connections: connections, isBusy: false);
+      return true;
+    } catch (e) {
+      state = state.copyWith(isBusy: false, error: e.toString());
+      return false;
     }
   }
 

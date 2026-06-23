@@ -37,9 +37,9 @@ class AiConnectionsScreen extends ConsumerWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: state.isBusy ? null : () => _onCreatePressed(context, ref),
+        onPressed: state.isBusy ? null : () => _onConnectPressed(context, ref),
         icon: const Icon(LucideIcons.plus),
-        label: const Text('Create'),
+        label: const Text('Connect'),
       ),
       body: _buildBody(context, ref, state),
     );
@@ -59,10 +59,12 @@ class AiConnectionsScreen extends ConsumerWidget {
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Text(
-            'Pair an AI client (via MCP) with your encrypted AI workspace. '
-            'Creating a connection generates a one-time bundle you copy into '
-            'your AI client. The bundle is shown only once — only the public '
-            'key is saved here.',
+            'Pair an AI client (via MCP) with your encrypted AI workspace.\n'
+            '• Connect an AI — generates a one-time bundle you paste into a '
+            'local AI client (Claude Desktop, a CLI). Shown only once.\n'
+            '• Connect a hosted AI — sign in to your own hosted Worker so a web '
+            'AI (Claude.ai, ChatGPT) can reach your workspace through it.\n'
+            'Either way, only the public key is saved here — no secrets.',
             style: TextStyle(fontSize: 13),
           ),
         ),
@@ -82,12 +84,24 @@ class AiConnectionsScreen extends ConsumerWidget {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) {
                     final c = state.connections[i];
+                    final isHosted = c.kind == AiConnectionKind.hosted;
                     return ListTile(
-                      leading: const Icon(LucideIcons.bot),
-                      title: Text(c.label),
+                      leading: Icon(
+                        isHosted ? LucideIcons.cloud : LucideIcons.bot,
+                      ),
+                      title: Row(
+                        children: [
+                          Flexible(child: Text(c.label)),
+                          if (isHosted) ...[
+                            const SizedBox(width: 8),
+                            const _HostedChip(),
+                          ],
+                        ],
+                      ),
                       subtitle: Text(
                         'Added ${_formatDate(c.createdAt)}\n'
-                        'Key ${_shortKey(c.mcpPublicKeyB64)}',
+                        'Key ${_shortKey(c.mcpPublicKeyB64)}'
+                        '${isHosted && c.workerUrl != null ? '\n${c.workerUrl}' : ''}',
                       ),
                       isThreeLine: true,
                       trailing: IconButton(
@@ -103,6 +117,44 @@ class AiConnectionsScreen extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// The "Connect" entry point — choose between the local paste-bundle flow and
+  /// the hosted-Worker flow (H5).
+  Future<void> _onConnectPressed(BuildContext context, WidgetRef ref) async {
+    final choice = await showModalBottomSheet<_ConnectChoice>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.bot),
+              title: const Text('Connect an AI'),
+              subtitle: const Text(
+                'Local client (Claude Desktop, a CLI) — copy a one-time bundle.',
+              ),
+              onTap: () => Navigator.of(context).pop(_ConnectChoice.local),
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.cloud),
+              title: const Text('Connect a hosted AI'),
+              subtitle: const Text(
+                'Web AI (Claude.ai, ChatGPT) — sign in to your hosted Worker.',
+              ),
+              onTap: () => Navigator.of(context).pop(_ConnectChoice.hosted),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || choice == null) return;
+    switch (choice) {
+      case _ConnectChoice.local:
+        await _onCreatePressed(context, ref);
+      case _ConnectChoice.hosted:
+        await _onCreateHostedPressed(context, ref);
+    }
   }
 
   Future<void> _onCreatePressed(BuildContext context, WidgetRef ref) async {
@@ -122,6 +174,112 @@ class AiConnectionsScreen extends ConsumerWidget {
       return;
     }
     await _showBundleDialog(context, bundle);
+  }
+
+  /// Hosted-connect (H5): prompt for the Worker URL (https) + a label, then run
+  /// the OAuth + capability-delivery flow via the provider.
+  Future<void> _onCreateHostedPressed(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final details = await _promptForHostedDetails(context);
+    if (details == null) return;
+
+    if (!context.mounted) return;
+    // Surface that an external sign-in is about to open.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Opening hosted AI sign-in…'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    final ok = await ref.read(aiConnectionsProvider.notifier).createHostedConnection(
+          label: details.label,
+          workerUrl: details.workerUrl,
+        );
+
+    if (!context.mounted) return;
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Connected ${details.label}.')),
+      );
+    } else {
+      final err = ref.read(aiConnectionsProvider).error;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(err ?? 'Failed to connect the hosted AI.'),
+        ),
+      );
+    }
+  }
+
+  /// Prompt for the hosted Worker URL + a label. Validates the URL is https
+  /// before returning; returns null if the user cancels.
+  Future<_HostedDetails?> _promptForHostedDetails(BuildContext context) {
+    final urlController = TextEditingController();
+    final labelController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    return showDialog<_HostedDetails>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Connect a hosted AI'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: urlController,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Hosted Worker URL',
+                  hintText: 'https://fula-mcp.<you>.workers.dev',
+                ),
+                validator: (v) {
+                  final t = (v ?? '').trim();
+                  final uri = Uri.tryParse(t);
+                  if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+                    return 'Enter a valid https:// URL';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: labelController,
+                decoration: const InputDecoration(
+                  labelText: 'Name',
+                  hintText: 'e.g. Claude.ai',
+                ),
+                validator: (v) =>
+                    (v ?? '').trim().isEmpty ? 'Enter a name' : null,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() ?? false) {
+                Navigator.of(context).pop(
+                  _HostedDetails(
+                    workerUrl: urlController.text.trim(),
+                    label: labelController.text.trim(),
+                  ),
+                );
+              }
+            },
+            child: const Text('Sign in'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<String?> _promptForLabel(BuildContext context) {
@@ -312,10 +470,44 @@ class _EmptyState extends StatelessWidget {
           const Text('No AI connections yet'),
           const SizedBox(height: 4),
           const Text(
-            'Tap Create to pair an AI client.',
+            'Tap Connect to pair a local or hosted AI client.',
             style: TextStyle(fontSize: 13),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Which connect flow the user picked from the "Connect" chooser.
+enum _ConnectChoice { local, hosted }
+
+/// The validated inputs for a hosted-connect attempt.
+class _HostedDetails {
+  const _HostedDetails({required this.workerUrl, required this.label});
+  final String workerUrl;
+  final String label;
+}
+
+/// A small "Hosted" badge shown on hosted connection rows.
+class _HostedChip extends StatelessWidget {
+  const _HostedChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        'Hosted',
+        style: TextStyle(
+          fontSize: 11,
+          color: scheme.onSecondaryContainer,
+        ),
       ),
     );
   }
