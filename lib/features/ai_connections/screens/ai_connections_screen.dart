@@ -223,24 +223,26 @@ class AiConnectionsScreen extends ConsumerWidget {
     WidgetRef ref,
     AiConnection connection,
   ) async {
-    // HONEST disconnect (L1d). Disconnect now performs a SERVER-SIDE connection
-    // revoke before deleting the local record: the service POSTs
-    // `/api/mcp/connections/:id/revoke` (by the persisted connectionId, with
-    // session-JWT auth). Where the gateway enforces revocation the AI's access
-    // is cut within ~30s; otherwise it lapses at the scoped token's expiry at
-    // the latest (the AI cannot self-renew once revoked). The revoke SOFT-FAILS
-    // — if it errors (offline / signed out) the local record is still removed.
-    // Records created before L1d (no connectionId) skip the revoke and remain
-    // expiry-bound. The copy below states exactly this; it must stay truthful.
+    // HONEST, HARD-FAIL disconnect (L1d). Disconnect performs a SERVER-SIDE
+    // connection revoke and removes the local record ONLY when that revoke
+    // succeeds: the service POSTs `/api/mcp/connections/:id/revoke` (by the
+    // persisted connectionId, session-JWT auth). On success the gateway cuts the
+    // AI's access within ~30s and the AI cannot self-renew. It REQUIRES reaching
+    // the server — if the revoke fails (offline / signed out / server error) the
+    // record is KEPT and the AI still has access until a successful disconnect.
+    // Records created before L1d (no connectionId) have no server connection to
+    // revoke and are removed locally. The copy below states exactly this; it
+    // must stay truthful (do NOT claim access always ends at token expiry — that
+    // is false once the connection holds a refresh token).
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Disconnect ${connection.label}?'),
         content: const Text(
-          'This revokes the connection on the server. Access is cut within about '
-          '30 seconds where revocation is enforced, and at the latest when its '
-          'current token expires. The AI cannot renew its access after that. '
-          'Files it already stored stay in your library.',
+          'This revokes the AI\'s access on the server — it loses access within '
+          'about 30 seconds and cannot reconnect on its own. This needs to reach '
+          'the server: if it fails, the AI still has access until you '
+          'successfully disconnect. Files it already stored stay in your library.',
         ),
         actions: [
           TextButton(
@@ -254,10 +256,30 @@ class AiConnectionsScreen extends ConsumerWidget {
         ],
       ),
     );
-    if (confirmed == true) {
-      await ref
-          .read(aiConnectionsProvider.notifier)
-          .deleteConnection(connection.id);
+    if (confirmed != true) return;
+
+    final ok = await ref
+        .read(aiConnectionsProvider.notifier)
+        .deleteConnection(connection.id);
+
+    if (!context.mounted) return;
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Disconnected ${connection.label}.')),
+      );
+    } else {
+      // Hard-fail: the connection is still in the list. Surface the truthful
+      // error so the user does not believe a failed disconnect succeeded.
+      final err = ref.read(aiConnectionsProvider).error;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            err ??
+                "Couldn't disconnect — the AI may still have access. "
+                    'Check your connection and try again.',
+          ),
+        ),
+      );
     }
   }
 

@@ -473,7 +473,7 @@ void main() {
     });
   });
 
-  group('L1d deleteConnection → server revoke + soft-fail', () {
+  group('L1d deleteConnection → server revoke + HARD-FAIL', () {
     AiConnection record(String id, String label, {String? connectionId}) =>
         AiConnection(
           id: id,
@@ -483,8 +483,8 @@ void main() {
           connectionId: connectionId,
         );
 
-    test('revokes by connectionId (POST .../connections/:id/revoke, bearer auth) '
-        'then deletes the record', () async {
+    test('revoke SUCCEEDS (POST .../connections/:id/revoke, bearer auth) → the '
+        'local record is deleted', () async {
       // Seed the SESSION JWT — revokeConnection reads it; without it the revoke
       // throws StateError before ever hitting the mock.
       await SecureStorageService.instance
@@ -500,7 +500,11 @@ void main() {
       http.Request? captured;
       final mock = MockClient((request) async {
         captured = request;
-        return http.Response('{}', 200);
+        // Server contract: fresh revoke → 200 { revoked:true, alreadyRevoked:false }.
+        return http.Response(
+          jsonEncode({'revoked': true, 'alreadyRevoked': false}),
+          200,
+        );
       });
 
       await service.deleteConnection('id1', httpClient: mock);
@@ -521,7 +525,11 @@ void main() {
       expect(decoded.map((e) => e['id']), ['id2']);
     });
 
-    test('SOFT-FAIL: a non-2xx revoke still deletes the local record', () async {
+    test('HARD-FAIL: a non-2xx revoke does NOT delete the record and rethrows',
+        () async {
+      // The whole point of L1d hard-fail: a failed server revoke must leave the
+      // connection in place (the AI may still hold a working refresh_token), and
+      // the error must propagate so the UI can surface it.
       await SecureStorageService.instance
           .write(SecureStorageKeys.jwtToken, 'session-jwt');
       await SecureStorageService.instance.write(
@@ -535,17 +543,75 @@ void main() {
         return http.Response('server boom', 500);
       });
 
-      // Must NOT throw — the revoke error is swallowed.
-      await service.deleteConnection('id1', httpClient: mock);
+      // Must THROW — the revoke failure is NOT swallowed.
+      await expectLater(
+        service.deleteConnection('id1', httpClient: mock),
+        throwsA(isA<Exception>()),
+      );
 
       expect(called, isTrue);
+      // Record is STILL present — disconnect did not "succeed".
+      final raw = await SecureStorageService.instance
+          .read(SecureStorageKeys.aiConnections);
+      final remaining = AiConnection.decodeList(raw);
+      expect(remaining.map((c) => c.id), ['id1']);
+    });
+
+    test('HARD-FAIL: signed out (no session JWT) does NOT delete and throws '
+        'StateError before any request', () async {
+      // No session JWT seeded. This is the canonical silent-leak scenario: the
+      // user thinks they disconnected while the AI keeps renewing. revokeConnection
+      // throws StateError BEFORE issuing any request, so the record must remain.
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.aiConnections,
+        AiConnection.encodeList([record('id1', 'A', connectionId: 'conn-1')]),
+      );
+
+      var called = false;
+      final mock = MockClient((_) async {
+        called = true;
+        return http.Response('{}', 200);
+      });
+
+      await expectLater(
+        service.deleteConnection('id1', httpClient: mock),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(called, isFalse, reason: 'no JWT → no request is ever made');
+      final raw = await SecureStorageService.instance
+          .read(SecureStorageKeys.aiConnections);
+      expect(AiConnection.decodeList(raw).map((c) => c.id), ['id1']);
+    });
+
+    test('IDEMPOTENT: already-revoked (200 { alreadyRevoked:true }) is treated '
+        'as success → record deleted', () async {
+      // Server contract (L1a app.ts): an already-revoked / unknown id still
+      // returns HTTP 200 (alreadyRevoked:true) — there is NO 404. A retry after a
+      // partial success must therefore succeed and remove the record, never stick.
+      await SecureStorageService.instance
+          .write(SecureStorageKeys.jwtToken, 'session-jwt');
+      await SecureStorageService.instance.write(
+        SecureStorageKeys.aiConnections,
+        AiConnection.encodeList([record('id1', 'A', connectionId: 'conn-1')]),
+      );
+
+      final mock = MockClient(
+        (_) async => http.Response(
+          jsonEncode({'revoked': true, 'alreadyRevoked': true}),
+          200,
+        ),
+      );
+
+      await service.deleteConnection('id1', httpClient: mock);
+
       final raw = await SecureStorageService.instance
           .read(SecureStorageKeys.aiConnections);
       expect(AiConnection.decodeList(raw), isEmpty);
     });
 
-    test('record without connectionId: revoke is NOT called, record deleted',
-        () async {
+    test('legacy record without connectionId: revoke is NOT called, record '
+        'deleted locally', () async {
       await SecureStorageService.instance
           .write(SecureStorageKeys.jwtToken, 'session-jwt');
       await SecureStorageService.instance.write(

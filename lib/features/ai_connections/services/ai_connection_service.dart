@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:fula_client/fula_client.dart' as fula;
 
@@ -275,9 +274,23 @@ class AiConnectionService {
   /// enforcement enabled the connection's access is cut within ~30s; otherwise
   /// it lapses at the scoped token's expiry at the latest.
   ///
-  /// [httpClient] is injected for tests. Throws [StateError] with no session
-  /// JWT; throws [Exception] on a non-2xx response. The disconnect path catches
-  /// both so a revoke failure never blocks deleting the local record.
+  /// IDEMPOTENT by server contract (L1a `app.ts`): the endpoint returns HTTP
+  /// **200** `{ revoked: true, alreadyRevoked: <bool> }` for ANY id the caller
+  /// owns — freshly revoked OR already revoked. The DB update is
+  /// `... WHERE user_id=? AND id=? AND NOT revoked`, so an already-revoked id
+  /// (and an unknown / not-owned id) matches zero rows yet still 200s with
+  /// `alreadyRevoked: true`. There is **no 404 path**. A retry after a partial
+  /// success therefore 200s and is SUCCESS — disconnect never gets stuck.
+  ///
+  /// HARD-FAIL contract: this throws on a genuine failure so the caller keeps
+  /// the local record (the AI may still have a working refresh_token):
+  ///   - [StateError] when there is no session JWT (signed out) — thrown before
+  ///     any request, so an offline/signed-out disconnect never silently drops
+  ///     the record;
+  ///   - [Exception] on a non-2xx response (401/5xx) or a network/timeout error.
+  /// A 2xx (including the already-revoked 200) returns normally = success.
+  ///
+  /// [httpClient] is injected for tests.
   Future<void> revokeConnection(
     String connectionId, {
     http.Client? httpClient,
@@ -446,14 +459,29 @@ class AiConnectionService {
   /// Disconnect: revoke the connection server-side (L1d), then delete the local
   /// record by [id].
   ///
-  /// If the record carries a [AiConnection.connectionId], this first POSTs the
-  /// server-side revoke (`/api/mcp/connections/:id/revoke`, session-JWT auth) so
-  /// the connection is cut server-side — within ~30s where gateway revocation is
-  /// enforced, otherwise at token expiry at the latest. Records with no
-  /// connectionId (legacy / older issuer) skip the revoke and just delete.
+  /// HARD-FAIL (security-correctness): the local record is removed ONLY when the
+  /// AI's access has actually been cut server-side. The honest control flow:
   ///
-  /// SOFT-FAIL: a revoke error (offline, signed out, non-2xx) is logged and
-  /// SWALLOWED — the local record is still deleted so disconnect never blocks.
+  ///   - Record HAS a [AiConnection.connectionId]: POST the server revoke
+  ///     (`/api/mcp/connections/:id/revoke`, session-JWT auth) FIRST.
+  ///       * SUCCESS (2xx — incl. the idempotent already-revoked 200) → delete
+  ///         the local record. Access is cut within ~30s where the gateway
+  ///         enforces revocation; the AI cannot self-renew once revoked.
+  ///       * FAILURE (signed out → [StateError]; non-2xx / network / timeout →
+  ///         [Exception]) → do NOT delete; **rethrow**. The connection stays in
+  ///         the list so the UI can surface it: an offline/failed disconnect
+  ///         must not silently leave the AI with a working refresh_token while
+  ///         the user believes they disconnected.
+  ///   - Record has NO connectionId (legacy / pre-L1d / older issuer): there is
+  ///     no server connection to revoke, so delete locally. Such a record's
+  ///     access is bound to its scoped token's expiry — that's the honest
+  ///     behaviour for a record that never registered a server connection.
+  ///
+  /// Idempotency: a retry after a partial success is safe — the server returns a
+  /// 2xx (already-revoked) which this treats as success (see [revokeConnection]),
+  /// so a stuck-forever disconnect is impossible for a caller who can
+  /// authenticate.
+  ///
   /// [httpClient] is injected for tests.
   Future<void> deleteConnection(String id, {http.Client? httpClient}) async {
     final connections = await listConnections();
@@ -467,16 +495,10 @@ class AiConnectionService {
 
     final connectionId = target?.connectionId;
     if (connectionId != null && connectionId.isNotEmpty) {
-      try {
-        await revokeConnection(connectionId, httpClient: httpClient);
-      } catch (e) {
-        // Soft-fail: offline / signed out / server error must NOT block the
-        // local disconnect. Log and proceed to delete the record.
-        debugPrint(
-          'AiConnectionService.deleteConnection: server revoke of '
-          'connection $connectionId failed (deleting locally anyway): $e',
-        );
-      }
+      // HARD-FAIL: revoke must succeed before we drop the local record. Any
+      // failure (StateError when signed out, Exception on non-2xx/network)
+      // propagates so the record is kept and the UI surfaces it.
+      await revokeConnection(connectionId, httpClient: httpClient);
     }
 
     final remaining = connections.where((c) => c.id != id).toList();
