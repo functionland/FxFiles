@@ -54,6 +54,10 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
   // The WHOLE current bucket, flat (raw — includes keep-markers, which the
   // tree derivation hides from the file view).
   List<FulaObject> _objects = const [];
+  // objectKey → tags for the current bucket (category-tabs / native parity:
+  // file rows show compact tag chips). Refreshed after each listing + edit;
+  // cleared on bucket switch so a stale chip can't flash on the next bucket.
+  Map<String, List<FileTag>> _fileTags = const {};
 
   bool _loading = true;
   String? _error;
@@ -122,6 +126,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
         _objects = objs;
         _loading = false;
       });
+      _refreshTags(bucket, objs); // best-effort chip data; never blocks listing
     } catch (e) {
       if (!mounted) return;
       final msg = '$e';
@@ -130,6 +135,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       if (msg.contains('NoSuchBucket') || msg.contains('bucket not found')) {
         setState(() {
           _objects = const [];
+          _fileTags = const {};
           _loading = false;
         });
       } else {
@@ -141,6 +147,19 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     }
   }
 
+  /// Best-effort tag-chip data for the current bucket — never blocks or fails
+  /// the listing (mirror of WebBucketScreen._refreshTags). One pass over the
+  /// whole flat bucket covers every folder; rows look up `_fileTags[o.key]`.
+  Future<void> _refreshTags(String bucket, List<FulaObject> objects) async {
+    try {
+      await WebTagService.instance.load();
+      final tags = WebTagService.instance.tagsForObjects(bucket, objects);
+      if (mounted) setState(() => _fileTags = tags);
+    } catch (e) {
+      debugPrint('WebCloudFilesScreen: tag load skipped: $e');
+    }
+  }
+
   // ── Navigation ─────────────────────────────────────────────────────────────
 
   void _openBucket(String bucket) {
@@ -148,6 +167,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       _bucket = bucket;
       _prefix = '';
       _objects = const [];
+      _fileTags = const {};
     });
     _loadObjects();
   }
@@ -161,6 +181,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       _bucket = null;
       _prefix = '';
       _objects = const [];
+      _fileTags = const {};
     });
     _loadBuckets();
   }
@@ -433,6 +454,9 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       fileName: o.name,
       initialTagIds: initial,
     );
+    // Reflect any tag change as updated chips (the dialog already synced the
+    // in-memory manifest, so this needs no force-reload).
+    if (mounted) _refreshTags(bucket, _objects);
   }
 
   Future<void> _deleteFile(FulaObject o) async {
@@ -1058,6 +1082,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
             );
           }
           final o = view.files[i - view.folders.length];
+          final tags = _fileTags[o.key] ?? const <FileTag>[];
           return ListTile(
             leading: o.isImage
                 ? WebThumb(
@@ -1067,7 +1092,17 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
                   )
                 : Icon(_iconFor(o)),
             title: Text(o.name),
-            subtitle: Text(o.sizeFormatted),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(o.sizeFormatted),
+                if (tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: _TagChipRow(tags: tags),
+                  ),
+              ],
+            ),
             onTap: () => _open(o),
             trailing: PopupMenuButton<String>(
               onSelected: (v) {
@@ -1118,6 +1153,58 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     if (o.isAudio) return LucideIcons.music;
     if (o.isDocument) return LucideIcons.fileText;
     return LucideIcons.file;
+  }
+}
+
+/// Compact tag chips under a file row — duplicated from WebBucketScreen's
+/// _TagChipRow (itself a mirror of the native TagChipRow(compact: true) in
+/// lib/features/tags/widgets/tag_chip.dart): up to two solid mini-chips plus a
+/// "+N" overflow marker. Kept identical by eye; extract a shared widget if a
+/// third consumer appears (rule-of-three).
+class _TagChipRow extends StatelessWidget {
+  final List<FileTag> tags;
+  static const int _maxVisible = 2;
+
+  const _TagChipRow({required this.tags});
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = tags.take(_maxVisible).toList();
+    final rest = tags.length - visible.length;
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      children: [
+        for (final t in visible)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Color(t.colorValue).withValues(alpha: 0.8),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              t.name,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        if (rest > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '+$rest',
+              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+            ),
+          ),
+      ],
+    );
   }
 }
 
