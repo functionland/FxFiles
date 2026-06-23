@@ -76,8 +76,9 @@ class AiConnectionsNotifier extends Notifier<AiConnectionsState> {
     }
   }
 
-  /// Delete a saved connection record (does not revoke the remote token — that
-  /// happens by token expiry).
+  /// Disconnect a saved connection: the service revokes it server-side (L1d)
+  /// when the record has a connectionId, then deletes the local record. A revoke
+  /// failure soft-fails (the local record is still removed).
   Future<void> deleteConnection(String id) async {
     state = state.copyWith(isBusy: true, error: null);
     try {

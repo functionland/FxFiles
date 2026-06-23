@@ -223,31 +223,24 @@ class AiConnectionsScreen extends ConsumerWidget {
     WidgetRef ref,
     AiConnection connection,
   ) async {
-    // HONEST disconnect (P16). Deleting the connection record removes the only
-    // copy of this pairing FxFiles holds — but it does NOT instantly cut the AI
-    // off. The AI is carrying a short-lived, scoped session JWT and CANNOT
-    // renew it (the issuer's refresh endpoint rejects MCP tokens → 401), so it
-    // keeps working until that token reaches its `exp` — about an hour by
-    // default, at most 24h if the instance configured a longer TTL — and then
-    // is permanently locked out. The copy below states exactly that; it must
-    // NOT imply instant revocation.
-    //
-    // FOLLOW-UP (documented, not built here): true ~instant revocation needs a
-    // SERVER-SIDE connection-revoke. Three pieces: (1) bind the minted token's
-    // `jti` to the connection's `mcp_pub_b64` at mint time; (2) add a
-    // `DELETE /api/mcp/tokens/connection/{mcp_pub_b64}` endpoint that blocklists
-    // that jti; (3) gate the gateway's check behind a `FULA_MCP_REVOCATION_ENABLED`
-    // flag → ~30s revoke once enabled. Until then this disconnect is
-    // expiry-bound, and the dialog says so truthfully.
+    // HONEST disconnect (L1d). Disconnect now performs a SERVER-SIDE connection
+    // revoke before deleting the local record: the service POSTs
+    // `/api/mcp/connections/:id/revoke` (by the persisted connectionId, with
+    // session-JWT auth). Where the gateway enforces revocation the AI's access
+    // is cut within ~30s; otherwise it lapses at the scoped token's expiry at
+    // the latest (the AI cannot self-renew once revoked). The revoke SOFT-FAILS
+    // — if it errors (offline / signed out) the local record is still removed.
+    // Records created before L1d (no connectionId) skip the revoke and remain
+    // expiry-bound. The copy below states exactly this; it must stay truthful.
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Disconnect ${connection.label}?'),
         content: const Text(
-          'This AI loses access when its current session token expires — within '
-          'about an hour by default, and up to 24 hours at most. It cannot renew '
-          'that token on its own, so it gets no new access after that. Files it '
-          'already stored stay in your library.',
+          'This revokes the connection on the server. Access is cut within about '
+          '30 seconds where revocation is enforced, and at the latest when its '
+          'current token expires. The AI cannot renew its access after that. '
+          'Files it already stored stay in your library.',
         ),
         actions: [
           TextButton(
