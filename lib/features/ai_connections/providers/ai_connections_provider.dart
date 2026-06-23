@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 import 'package:fula_files/features/ai_connections/services/ai_connection_service.dart';
 import 'package:fula_files/features/ai_connections/services/hosted_oauth_client.dart';
+import 'package:fula_files/features/ai_connections/services/web_hosted_oauth.dart';
 
 /// Immutable UI state for the AI Connections screen.
 @immutable
@@ -84,6 +85,17 @@ class AiConnectionsNotifier extends Notifier<AiConnectionsState> {
   ///
   /// [fetchWorkerToken] is the injected web-auth seam (defaults to the real
   /// [HostedOauthClient] external-browser + PKCE flow). Tests inject a fake.
+  ///
+  /// WEB (kIsWeb, real flow — no injected [fetchWorkerToken]): the custom-scheme
+  /// callback can't return to a browser tab, so instead of the native
+  /// external-browser handshake this STARTS a same-tab OAuth redirect
+  /// ([startWebHostedOauth]): it DCR-registers, parks a pending transaction in
+  /// sessionStorage, and navigates the tab to the AS. The page then UNLOADS, so
+  /// this call does not return on the success path — the connection is actually
+  /// built post-redirect by `completeWebHostedOauthIfPending` (wired into the
+  /// web home init). If START throws BEFORE navigating (e.g. DCR fails), the
+  /// page stays and the error is surfaced here (returns false). The native path
+  /// and the test path (injected [fetchWorkerToken]) are UNCHANGED.
   Future<bool> createHostedConnection({
     required String label,
     required String workerUrl,
@@ -91,6 +103,12 @@ class AiConnectionsNotifier extends Notifier<AiConnectionsState> {
   }) async {
     state = state.copyWith(isBusy: true, error: null);
     try {
+      if (kIsWeb && fetchWorkerToken == null) {
+        // START the web same-tab redirect. On success the page unloads here and
+        // nothing below runs; completion happens after the redirect.
+        await startWebHostedOauth(label: label, workerUrl: workerUrl);
+        return true;
+      }
       await _service.createHostedConnection(
         label: label,
         workerUrl: workerUrl,

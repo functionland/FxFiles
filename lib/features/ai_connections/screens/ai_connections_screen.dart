@@ -217,7 +217,10 @@ class AiConnectionsScreen extends ConsumerWidget {
   /// Prompt for the hosted Worker URL + a label. Validates the URL is https
   /// before returning; returns null if the user cancels.
   Future<_HostedDetails?> _promptForHostedDetails(BuildContext context) {
-    final urlController = TextEditingController();
+    // Pre-fill the single official hosted Worker, kept editable for
+    // self-hosters who run their own Worker.
+    final urlController =
+        TextEditingController(text: 'https://mcp.cloud.fx.land');
     final labelController = TextEditingController();
     final formKey = GlobalKey<FormState>();
     return showDialog<_HostedDetails>(
@@ -235,7 +238,7 @@ class AiConnectionsScreen extends ConsumerWidget {
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'Hosted Worker URL',
-                  hintText: 'https://fula-mcp.<you>.workers.dev',
+                  hintText: 'https://mcp.cloud.fx.land',
                 ),
                 validator: (v) {
                   final t = (v ?? '').trim();
