@@ -15,6 +15,30 @@ import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
 /// Result of generating a fresh MCP X25519 keypair.
 typedef McpKeypair = ({Uint8List publicKey, Uint8List secretKey});
 
+/// Result of minting a CONNECTION token (L1d) — the connection-aware variant of
+/// [AiConnectionService.mintScopedJwt].
+///
+/// Beyond the scoped gateway `jwt`, a connection mint (one that sends
+/// `mcp_pub_b64`) returns two extra credentials the server registered for this
+/// connection:
+///   - [refreshToken]: a SEPARATE random refresh credential (NOT the jwt, NOT
+///     the user's session JWT). The MCP later POSTs it to the issuer's
+///     `/api/mcp/tokens/refresh-connection` to auto-renew its scoped jwt. It is
+///     placed in the one-time bundle as `refresh_token` and is NEVER persisted.
+///   - [connectionId]: the server's connection uuid. Persisted in the
+///     [AiConnection] record (non-secret) so disconnect can revoke the
+///     connection server-side.
+///
+/// Both are NULLABLE: an older issuer that doesn't understand `mcp_pub_b64`
+/// returns only `token`, so the bundle simply omits the refresh fields and the
+/// record stores a null connectionId (the legacy expiry-bound behaviour).
+typedef McpConnectionToken = ({
+  String jwt,
+  String? refreshToken,
+  String? connectionId,
+  int? expiresAt,
+});
+
 /// P13 — "AI Connections": builds the MCP **connection bundle** and persists the
 /// non-secret pairing record.
 ///
@@ -165,6 +189,141 @@ class AiConnectionService {
     }
   }
 
+  /// Mint a scoped gateway JWT AND register a server-side **connection** (L1d).
+  ///
+  /// Same endpoint + bearer-session-JWT auth as [mintScopedJwt], but the body
+  /// additionally carries `mcp_pub_b64` = base64 of THIS connection's X25519
+  /// PUBLIC key (NOT the secret). On a server that understands it, that
+  /// registers a connection and the JSON response includes, beyond
+  /// `token`/`jti`/`expiresAt`, a separate `refreshToken` credential and a
+  /// `connectionId` uuid (CONTRACT: pinning-service `feat/mcp-connection-lifecycle`).
+  ///
+  /// Returns an [McpConnectionToken]. `refreshToken`/`connectionId` are NULLABLE
+  /// (only `token` is required) so an older issuer that ignores `mcp_pub_b64`
+  /// still works — the caller then omits the bundle's refresh fields and stores
+  /// a null connectionId.
+  ///
+  /// [httpClient] is injected for tests. Throws [StateError] with no session
+  /// JWT; throws [Exception] on a non-2xx response or a missing `token`.
+  Future<McpConnectionToken> mintConnectionToken({
+    required String mcpPublicKeyB64,
+    http.Client? httpClient,
+    int? ttlSeconds,
+  }) async {
+    final sessionJwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    if (sessionJwt == null || sessionJwt.isEmpty) {
+      throw StateError(
+        'No session token. Please sign in before creating an AI connection.',
+      );
+    }
+    final baseUrl = await _issuerBaseUrl();
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client
+          .post(
+            Uri.parse('$baseUrl/api/mcp/tokens'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $sessionJwt',
+            },
+            // `mcp_pub_b64` registers the connection server-side and unlocks the
+            // refreshToken + connectionId in the response. It is the connection's
+            // PUBLIC key (base64) — never the secret.
+            body: jsonEncode({
+              'mcp_pub_b64': mcpPublicKeyB64,
+              if (ttlSeconds != null) 'ttlSeconds': ttlSeconds,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(
+          'Failed to mint MCP token: ${response.statusCode} - ${response.body}',
+        );
+      }
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final token = decoded['token'];
+      if (token is! String || token.isEmpty) {
+        throw Exception('MCP token response missing "token" field.');
+      }
+      final refreshToken = decoded['refreshToken'];
+      final connectionId = decoded['connectionId'];
+      final expiresAt = decoded['expiresAt'];
+      return (
+        jwt: token,
+        refreshToken: (refreshToken is String && refreshToken.isNotEmpty)
+            ? refreshToken
+            : null,
+        connectionId: (connectionId is String && connectionId.isNotEmpty)
+            ? connectionId
+            : null,
+        expiresAt: expiresAt is int ? expiresAt : null,
+      );
+    } finally {
+      // Only close clients we created; never close an injected (test) client.
+      if (httpClient == null) client.close();
+    }
+  }
+
+  /// Revoke a server-side MCP connection by its [connectionId] (L1d).
+  ///
+  /// POSTs to `{issuerBase}/api/mcp/connections/:id/revoke` with the user's
+  /// SESSION JWT as bearer auth (same auth as the mint). With gateway revocation
+  /// enforcement enabled the connection's access is cut within ~30s; otherwise
+  /// it lapses at the scoped token's expiry at the latest.
+  ///
+  /// IDEMPOTENT by server contract (L1a `app.ts`): the endpoint returns HTTP
+  /// **200** `{ revoked: true, alreadyRevoked: <bool> }` for ANY id the caller
+  /// owns — freshly revoked OR already revoked. The DB update is
+  /// `... WHERE user_id=? AND id=? AND NOT revoked`, so an already-revoked id
+  /// (and an unknown / not-owned id) matches zero rows yet still 200s with
+  /// `alreadyRevoked: true`. There is **no 404 path**. A retry after a partial
+  /// success therefore 200s and is SUCCESS — disconnect never gets stuck.
+  ///
+  /// HARD-FAIL contract: this throws on a genuine failure so the caller keeps
+  /// the local record (the AI may still have a working refresh_token):
+  ///   - [StateError] when there is no session JWT (signed out) — thrown before
+  ///     any request, so an offline/signed-out disconnect never silently drops
+  ///     the record;
+  ///   - [Exception] on a non-2xx response (401/5xx) or a network/timeout error.
+  /// A 2xx (including the already-revoked 200) returns normally = success.
+  ///
+  /// [httpClient] is injected for tests.
+  Future<void> revokeConnection(
+    String connectionId, {
+    http.Client? httpClient,
+  }) async {
+    final sessionJwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    if (sessionJwt == null || sessionJwt.isEmpty) {
+      throw StateError('No session token; cannot revoke MCP connection.');
+    }
+    final baseUrl = await _issuerBaseUrl();
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client
+          .post(
+            Uri.parse(
+              '$baseUrl/api/mcp/connections/${Uri.encodeComponent(connectionId)}/revoke',
+            ),
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $sessionJwt',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw Exception(
+          'Failed to revoke MCP connection: ${response.statusCode} - ${response.body}',
+        );
+      }
+    } finally {
+      if (httpClient == null) client.close();
+    }
+  }
+
   /// Build the MCP connection bundle JSON string. PURE (no I/O): every value is
   /// passed in, so this is fully unit-testable without FFI or the network.
   ///
@@ -172,11 +331,19 @@ class AiConnectionService {
   /// (`fula-api/crates/fula-mcp/src/capability.rs`) — field names + base64 are
   /// load-bearing (Rust `#[derive(Deserialize)]`). Required fields:
   ///   endpoint, jwt, workspace_secret_b64, mcp_secret_b64, owner_public_b64.
-  /// Optional: user_id, storage_api_url.
+  /// Optional: user_id, storage_api_url, refresh_token, refresh_url.
   ///
   /// NOTE the key direction (the one catastrophic swap to avoid):
   ///   mcp_secret_b64  = base64(MCP **secret** key)
   ///   owner_public_b64 = base64(owner **public** key)
+  ///
+  /// L1d connection-lifecycle fields (snake_case, read by the MCP at
+  /// `fula-mcp` — keys `refresh_token` + `refresh_url`):
+  ///   - [refreshToken]: the server's SEPARATE refresh credential (the
+  ///     `refreshToken` from the connection mint — NOT the `jwt`/session JWT).
+  ///   - [refreshUrl]: `{issuerBase}/api/mcp/tokens/refresh-connection`.
+  /// Both are emitted ONLY when [refreshToken] is non-null/non-empty, so an
+  /// older mint (no refresh credential) yields a backward-compatible bundle.
   String buildBundleJson({
     required String endpoint,
     required String jwt,
@@ -185,7 +352,10 @@ class AiConnectionService {
     required Uint8List ownerPublicKey,
     String? userId,
     String? storageApiUrl,
+    String? refreshToken,
+    String? refreshUrl,
   }) {
+    final hasRefresh = refreshToken != null && refreshToken.isNotEmpty;
     final bundle = <String, dynamic>{
       'endpoint': endpoint,
       'jwt': jwt,
@@ -197,6 +367,11 @@ class AiConnectionService {
       if (userId != null && userId.isNotEmpty) 'user_id': userId,
       if (storageApiUrl != null && storageApiUrl.isNotEmpty)
         'storage_api_url': storageApiUrl,
+      // The server's separate refresh credential + the refresh endpoint, so the
+      // MCP can auto-renew its scoped jwt. Omitted together when absent.
+      if (hasRefresh) 'refresh_token': refreshToken,
+      if (hasRefresh && refreshUrl != null && refreshUrl.isNotEmpty)
+        'refresh_url': refreshUrl,
     };
     return jsonEncode(bundle);
   }
@@ -230,30 +405,43 @@ class AiConnectionService {
     final keypair = await generateMcpKeypair();
     final workspaceSecret = await deriveWorkspaceSecret();
     final ownerPub = await ownerPublicKey();
-    final jwt = await mintScopedJwt();
     final endpoint = await _resolveEndpoint();
-    final storageApiUrl = await _issuerBaseUrl();
+    final issuerBase = await _issuerBaseUrl();
     // FxFiles' canonical per-user id (sha256(base64(pubkey))[..16]). Reused
     // verbatim so it matches what the MCP stamps onto tag metadata and what
     // FxFiles derives elsewhere — do NOT re-roll the hash/slice here.
     final userId = await deriveUserId();
 
+    // Mint the scoped jwt AND register the connection: send mcp_pub_b64 (the
+    // connection's PUBLIC key) so the server returns the separate refreshToken
+    // credential + the connectionId.
+    final minted = await mintConnectionToken(
+      mcpPublicKeyB64: base64Encode(keypair.publicKey),
+    );
+
     final bundle = buildBundleJson(
       endpoint: endpoint,
-      jwt: jwt,
+      jwt: minted.jwt,
       workspaceSecret: workspaceSecret,
       mcpSecretKey: keypair.secretKey,
       ownerPublicKey: ownerPub,
       userId: userId,
-      storageApiUrl: storageApiUrl,
+      storageApiUrl: issuerBase,
+      // The server's separate refresh credential (NOT the jwt) + the refresh
+      // endpoint, so the MCP can auto-renew. Omitted by buildBundleJson when
+      // refreshToken is null (older issuer).
+      refreshToken: minted.refreshToken,
+      refreshUrl: '$issuerBase/api/mcp/tokens/refresh-connection',
     );
 
-    // Persist ONLY the record — public key + label + id + createdAt. No secrets.
+    // Persist ONLY the non-secret record — public key + label + id + createdAt +
+    // the server connectionId (for revoke). NO secrets (no refreshToken/jwt).
     final record = AiConnection(
       id: const Uuid().v4(),
       label: label,
       mcpPublicKeyB64: base64Encode(keypair.publicKey),
       createdAt: DateTime.now(),
+      connectionId: minted.connectionId,
     );
     final existing = await listConnections();
     await _persist([...existing, record]);
@@ -268,11 +456,52 @@ class AiConnectionService {
     return AiConnection.decodeList(raw);
   }
 
-  /// Delete a persisted connection record by id. (Does not revoke the remote
-  /// token — that lapses on its short exp.)
-  Future<void> deleteConnection(String id) async {
-    final remaining =
-        (await listConnections()).where((c) => c.id != id).toList();
+  /// Disconnect: revoke the connection server-side (L1d), then delete the local
+  /// record by [id].
+  ///
+  /// HARD-FAIL (security-correctness): the local record is removed ONLY when the
+  /// AI's access has actually been cut server-side. The honest control flow:
+  ///
+  ///   - Record HAS a [AiConnection.connectionId]: POST the server revoke
+  ///     (`/api/mcp/connections/:id/revoke`, session-JWT auth) FIRST.
+  ///       * SUCCESS (2xx — incl. the idempotent already-revoked 200) → delete
+  ///         the local record. Access is cut within ~30s where the gateway
+  ///         enforces revocation; the AI cannot self-renew once revoked.
+  ///       * FAILURE (signed out → [StateError]; non-2xx / network / timeout →
+  ///         [Exception]) → do NOT delete; **rethrow**. The connection stays in
+  ///         the list so the UI can surface it: an offline/failed disconnect
+  ///         must not silently leave the AI with a working refresh_token while
+  ///         the user believes they disconnected.
+  ///   - Record has NO connectionId (legacy / pre-L1d / older issuer): there is
+  ///     no server connection to revoke, so delete locally. Such a record's
+  ///     access is bound to its scoped token's expiry — that's the honest
+  ///     behaviour for a record that never registered a server connection.
+  ///
+  /// Idempotency: a retry after a partial success is safe — the server returns a
+  /// 2xx (already-revoked) which this treats as success (see [revokeConnection]),
+  /// so a stuck-forever disconnect is impossible for a caller who can
+  /// authenticate.
+  ///
+  /// [httpClient] is injected for tests.
+  Future<void> deleteConnection(String id, {http.Client? httpClient}) async {
+    final connections = await listConnections();
+    AiConnection? target;
+    for (final c in connections) {
+      if (c.id == id) {
+        target = c;
+        break;
+      }
+    }
+
+    final connectionId = target?.connectionId;
+    if (connectionId != null && connectionId.isNotEmpty) {
+      // HARD-FAIL: revoke must succeed before we drop the local record. Any
+      // failure (StateError when signed out, Exception on non-2xx/network)
+      // propagates so the record is kept and the UI surfaces it.
+      await revokeConnection(connectionId, httpClient: httpClient);
+    }
+
+    final remaining = connections.where((c) => c.id != id).toList();
     await _persist(remaining);
   }
 
