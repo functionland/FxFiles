@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/features/ai_connections/models/ai_connection.dart';
@@ -23,6 +24,20 @@ class AiConnectionsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        // Always offer a back affordance. When this screen was pushed (native,
+        // or web Settings -> here) pop normally; after the hosted-AI OAuth
+        // redirect the screen is the go_router root (nothing to pop), so fall
+        // back to the home shell instead of stranding the user.
+        leading: BackButton(
+          onPressed: () {
+            final nav = Navigator.of(context);
+            if (nav.canPop()) {
+              nav.pop();
+            } else {
+              context.go('/');
+            }
+          },
+        ),
         title: const Text('AI Connections'),
         actions: [
           IconButton(
@@ -221,7 +236,8 @@ class AiConnectionsScreen extends ConsumerWidget {
     // self-hosters who run their own Worker.
     final urlController =
         TextEditingController(text: 'https://mcp.cloud.fx.land');
-    final labelController = TextEditingController();
+    // Default name so the user can connect with a single tap; still editable.
+    final labelController = TextEditingController(text: 'Hosted AI');
     final formKey = GlobalKey<FormState>();
     return showDialog<_HostedDetails>(
       context: context,
