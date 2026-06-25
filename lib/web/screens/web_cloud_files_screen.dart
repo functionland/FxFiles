@@ -643,10 +643,12 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     final dest = await _pickMoveDestination(o);
     if (dest == null) return;
     final srcBucket = o.sourceBucket ?? _bucket!;
-    // Moving INTO the AI bucket must use an `ai/<category>/<name>` key (matching
-    // the MCP writer) so the AI's category tools find it; else the chosen folder.
+    // Moving INTO the AI bucket uses an `ai/<category>/<unique>-<name>` key so the
+    // AI's category tools find it; the unique prefix mirrors the MCP writer's uuid
+    // and prevents a same-named move from silently clobbering an existing AI file
+    // (the source is deleted by the move, so a collision would be data loss).
     final destKey = dest.bucket == FulaApiService.aiWorkspaceBucket
-        ? 'ai/${_aiCategoryForFile(o.name)}/${o.name}'
+        ? 'ai/${_aiCategoryForFile(o.name)}/${DateTime.now().microsecondsSinceEpoch}-${o.name}'
         : cloudChildKey(dest.prefix, o.name);
     if (dest.bucket == srcBucket &&
         normalizeCloudKey(destKey) == normalizeCloudKey(o.key)) {
