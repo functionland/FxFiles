@@ -8,7 +8,9 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
+import 'package:fula_files/core/services/ai_workspace_move.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
+import 'package:fula_files/core/services/file_service.dart' show FileCategory;
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_audio_controller.dart';
@@ -119,8 +121,16 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
       });
     }
     try {
-      final objs = await WebForegroundActivity.instance
-          .run(() => FulaApiService.instance.listObjects(bucket));
+      // The AI workspace is encrypted with the workspace secret (not the master
+      // KEK) and its files live in the forest under `ai/`. Route it through the
+      // workspace client so the bucket view actually decrypts + lists them (and
+      // tags each `sourceBucket='fula-ai-workspace'` so open/move route correctly);
+      // every other bucket uses the normal master-KEK listing unchanged.
+      final objs = await WebForegroundActivity.instance.run(() =>
+          bucket == FulaApiService.aiWorkspaceBucket
+              ? FulaApiService.instance
+                  .listWorkspaceObjects(bucket, prefix: 'ai/')
+              : FulaApiService.instance.listObjects(bucket));
       if (!mounted) return;
       setState(() {
         _objects = objs;
@@ -633,7 +643,11 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     final dest = await _pickMoveDestination(o);
     if (dest == null) return;
     final srcBucket = o.sourceBucket ?? _bucket!;
-    final destKey = cloudChildKey(dest.prefix, o.name);
+    // Moving INTO the AI bucket must use an `ai/<category>/<name>` key (matching
+    // the MCP writer) so the AI's category tools find it; else the chosen folder.
+    final destKey = dest.bucket == FulaApiService.aiWorkspaceBucket
+        ? 'ai/${_aiCategoryForFile(o.name)}/${o.name}'
+        : cloudChildKey(dest.prefix, o.name);
     if (dest.bucket == srcBucket &&
         normalizeCloudKey(destKey) == normalizeCloudKey(o.key)) {
       _snack('Already there');
@@ -642,36 +656,77 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     await _copyDelete(srcBucket, o, dest.bucket, destKey, 'Moved');
   }
 
+  /// The AI-workspace SINGULAR category segment for a file, by extension —
+  /// matching what the MCP writer uses (classify.ts / classify.rs) so a moved-in
+  /// file lands where the AI's category tools expect it.
+  String _aiCategoryForFile(String name) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot >= 0 ? name.substring(dot + 1) : '';
+    switch (FileCategory.fromExtension(ext)) {
+      case FileCategory.images:
+        return 'image';
+      case FileCategory.videos:
+        return 'video';
+      case FileCategory.audio:
+        return 'audio';
+      case FileCategory.documents:
+        return 'document';
+      default:
+        return 'file'; // downloads/archives/starred/other → generic AI 'file'
+    }
+  }
+
   /// Shared download → upload-to-dest → delete-source for rename + move. No
   /// server-side copy exists for the encrypted forest, so this round-trips the
   /// bytes (size-guarded by [_guardCopySize]).
   Future<void> _copyDelete(String srcBucket, FulaObject o, String destBucket,
       String destKey, String okWord) async {
     _snack('Working…');
-    // Copy (download → re-upload). If this fails, the source is untouched.
-    try {
-      final bytes = await WebForegroundActivity.instance
-          .run(() => FulaApiService.instance.downloadObject(srcBucket, o.key));
-      await WebForegroundActivity.instance.run(() => FulaApiService.instance
-          .uploadObject(destBucket, destKey, bytes, contentType: _ct(o)));
-    } catch (e) {
-      _snack('$okWord failed: ${_clean(e)}');
-      return;
-    }
-    // Copy landed — remove the original. A failure here leaves a duplicate,
-    // not data loss, so say so precisely.
-    try {
-      await WebForegroundActivity.instance
-          .run(() => FulaApiService.instance.deleteObject(srcBucket, o.key));
-    } catch (e) {
-      _snack('Copied, but couldn\'t remove the original: ${_clean(e)}');
-      await _loadObjects(silent: true);
-      return;
-    }
+    // The copy → (revoke-verify) → delete → (revoke-verify-gone) orchestration
+    // lives in [aiAwareMove] (UI-free + unit-tested); here we just map its result.
+    final result = await WebForegroundActivity.instance.run(
+      () => aiAwareMove(
+        FulaApiService.instance,
+        srcBucket: srcBucket,
+        srcKey: o.key,
+        destBucket: destBucket,
+        destKey: destKey,
+        contentType: _ct(o),
+      ),
+    );
     if (!mounted) return;
+    final srcIsAi = srcBucket == FulaApiService.aiWorkspaceBucket;
+    switch (result) {
+      case AiMoveResult.copyFailed:
+        _snack('$okWord failed.');
+        return;
+      case AiMoveResult.verifyFailed:
+        _snack('$okWord aborted — the moved copy did not verify; '
+            'the original is kept.');
+        return;
+      case AiMoveResult.deleteFailed:
+        _snack(srcIsAi
+            ? 'REVOKE INCOMPLETE — the AI can still read "${o.name}". Retry.'
+            : 'Copied, but couldn\'t remove the original.');
+        await _loadObjects(silent: true);
+        return;
+      case AiMoveResult.revokeIncomplete:
+        _snack('REVOKE INCOMPLETE — "${o.name}" is still in the AI '
+            'workspace. Retry.');
+        await _loadObjects(silent: true);
+        return;
+      case AiMoveResult.moved:
+      case AiMoveResult.grantedToAi:
+      case AiMoveResult.revokedFromAi:
+        break; // success
+    }
     setState(() =>
         _objects = [for (final x in _objects) if (x.key != o.key) x]);
-    _snack(okWord);
+    _snack(switch (result) {
+      AiMoveResult.grantedToAi => 'Moved in — AI can now access it',
+      AiMoveResult.revokedFromAi => 'Moved out — AI access removed',
+      _ => okWord,
+    });
     unawaited(WebThumbnailService.instance
         .moveCloudThumb(srcBucket, o.key, destBucket, destKey));
     await _loadObjects(silent: true);

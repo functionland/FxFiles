@@ -278,6 +278,21 @@ abstract class FulaApi {
   /// error; the tag-adoption caller catches it so a failure never blocks restore.
   Future<Uint8List> downloadWorkspaceObject(String bucket, String key);
 
+  /// Upload + encrypt a file INTO the AI-workspace forest (the GRANT primitive
+  /// for moving a file into the AI bucket): written under the workspace secret +
+  /// forest-indexed, so the AI can list + read it. Throws on a genuine error.
+  Future<void> uploadWorkspaceObject(
+    String bucket,
+    String key,
+    Uint8List bytes, {
+    String? contentType,
+  });
+
+  /// Delete an object from the AI-workspace forest (the REVOKE primitive for
+  /// moving a file out of the AI bucket): removes BOTH the ciphertext and the
+  /// forest index entry, so the AI can no longer enumerate OR read it.
+  Future<void> deleteWorkspaceObject(String bucket, String key);
+
   // share/collab APIs deliberately not in this interface yet — those
   // scenarios are skeleton-only in this round. Adding them later is
   // an additive change to this surface + the concrete service +

@@ -409,4 +409,50 @@ class FakeFulaApi implements FulaApi {
       sourceBucket == FulaApi.aiWorkspaceBucket
           ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
           : downloadWithLocalFallback(bucket, key);
+
+  // ---- AI-aware WRITE / DELETE (move-as-access-control) ----
+  /// Bytes written via [uploadWorkspaceObject], keyed `"$bucket:$key"`.
+  final Map<String, Uint8List> workspaceUploadResponseFor = <String, Uint8List>{};
+  final Map<String, int> workspaceUploadCalls = <String, int>{};
+  final Map<String, int> workspaceDeleteCalls = <String, int>{};
+
+  @override
+  Future<void> uploadWorkspaceObject(
+    String bucket,
+    String key,
+    Uint8List bytes, {
+    String? contentType,
+  }) async {
+    if (!aiConnectionExists) {
+      throw FulaApiException('FakeFulaApi: no AI connection (upload)');
+    }
+    final composite = '$bucket:$key';
+    workspaceUploadCalls[composite] = (workspaceUploadCalls[composite] ?? 0) + 1;
+    workspaceUploadResponseFor[composite] = bytes;
+    // Mirror the real forest-tracked put: make it READABLE + ENUMERABLE.
+    workspaceDownloadResponseFor[composite] = bytes;
+    final list = objectsResponseFor[bucket] ?? const <FulaObject>[];
+    if (!list.any((o) => o.key == key)) {
+      objectsResponseFor[bucket] = [
+        ...list,
+        FulaObject(key: key, size: bytes.length),
+      ];
+    }
+  }
+
+  @override
+  Future<void> deleteWorkspaceObject(String bucket, String key) async {
+    if (!aiConnectionExists) {
+      throw FulaApiException('FakeFulaApi: no AI connection (delete)');
+    }
+    final composite = '$bucket:$key';
+    workspaceDeleteCalls[composite] = (workspaceDeleteCalls[composite] ?? 0) + 1;
+    // Mirror delete_flat removing the forest entry + the blob: a post-delete
+    // list / read no longer surfaces it (the revoke is real).
+    workspaceDownloadResponseFor.remove(composite);
+    final list = objectsResponseFor[bucket];
+    if (list != null) {
+      objectsResponseFor[bucket] = [for (final o in list) if (o.key != key) o];
+    }
+  }
 }

@@ -42,25 +42,45 @@ import 'package:fula_files/core/services/legacy_listing_cache.dart';
 ///    so a user's own object with a colliding key always overwrites an AI entry.
 ///    (AI keys `ai/images/x.jpg` and user keys `x.jpg` are disjoint, so a
 ///    collision can't actually occur — this is zero-cost belt-and-suspenders.)
-///  - VALIDATED: only keys shaped `ai/<base>/...` are admitted. The MCP is an
+///  - VALIDATED: only keys shaped `ai/<aiCategory>/...` (with the AI category
+///    mapped to THIS FxFiles view, below) are admitted. The MCP is an
 ///    independently-versioned writer; a malformed or off-category key is DROPPED
 ///    rather than mis-filed.
+///
+/// CATEGORY MAPPING: the hosted MCP + the local fula-mcp write SINGULAR category
+/// segments — `ai/document/`, `ai/note/`, `ai/image/`, … (cloudflare `classify.ts`
+/// / fula-mcp `classify.rs`). FxFiles' category views are PLURAL (`documents`,
+/// `images`, … = `FileCategory.bucketName`). [_aiCategoriesForBase] bridges them,
+/// and folds the AI categories that have no `FileCategory` of their own
+/// (note/link → documents, screenshot → images, file → other) into the closest view.
+const Map<String, List<String>> _aiCategoriesForBase = {
+  'images': ['image', 'screenshot'],
+  'videos': ['video'],
+  'audio': ['audio'],
+  'documents': ['document', 'note', 'link'],
+  'other': ['file', 'other'],
+  // 'downloads' / 'archives' / 'starred' have no AI-workspace counterpart.
+};
+
 Future<void> _mergeAiWorkspaceInto(
   FulaApi api,
   String base,
   Map<String, FulaObject> byKey,
 ) async {
+  final aiCats = _aiCategoriesForBase[base];
+  if (aiCats == null || aiCats.isEmpty) return; // no AI category maps to this view
   if (!await api.hasAiConnection()) return;
-  // listWorkspaceObjects never throws — tolerant by contract.
+  // listWorkspaceObjects never throws — tolerant by contract. List the whole `ai/`
+  // scope once, then admit only the AI categories that belong in THIS view.
   final aiItems = await api.listWorkspaceObjects(
     FulaApiService.aiWorkspaceBucket,
-    prefix: 'ai/$base/',
+    prefix: 'ai/',
   );
+  final cats = aiCats.toSet();
   for (final o in aiItems) {
     final parts = o.key.split('/');
-    // Require exactly `ai/<base>/<name...>` — drop anything else.
-    if (parts.length < 3 || parts[0] != 'ai' || parts[1] != base) {
-      debugPrint('listCategory: dropping off-shape AI key "${o.key}"');
+    // Require exactly `ai/<aiCategory>/<name...>` with a category in this view.
+    if (parts.length < 3 || parts[0] != 'ai' || !cats.contains(parts[1])) {
       continue;
     }
     // Already tagged sourceBucket='fula-ai-workspace' by listWorkspaceObjects.

@@ -1252,6 +1252,69 @@ class FulaApiService implements FulaApi {
     }
   }
 
+  /// Upload + encrypt a file INTO the AI-workspace forest via the workspace
+  /// client (mirrors [uploadObject] on `_workspaceClient`, forest-tracked so the
+  /// object is enumerable). The GRANT primitive for moving a file INTO the AI
+  /// bucket: written under the workspace secret + indexed, so the AI can list +
+  /// read it. GATED + lazy like [downloadWorkspaceObject].
+  @override
+  Future<void> uploadWorkspaceObject(
+    String bucket,
+    String key,
+    Uint8List bytes, {
+    String? contentType,
+  }) async {
+    if (!await hasAiConnection()) {
+      throw FulaApiException('No AI connection — workspace upload skipped');
+    }
+    if (_workspaceClient == null) {
+      final secret = await _deriveWorkspaceSecretForRead();
+      if (secret != null) await initializeWorkspaceClient(secret);
+    }
+    if (_workspaceClient == null) {
+      throw FulaApiException('AI workspace client unavailable');
+    }
+    try {
+      await _ensureWorkspaceForestLoaded(bucket);
+      await fula.putFlat(
+        client: _workspaceClient!,
+        bucket: bucket,
+        path: key,
+        data: bytes.toList(),
+        contentType: contentType,
+      );
+    } catch (e) {
+      _workspaceLoadedForests.remove(bucket);
+      throw FulaApiException('Failed to upload workspace object: $e');
+    }
+  }
+
+  /// Delete an object from the AI-workspace forest via the workspace client
+  /// (mirrors [deleteObject] on `_workspaceClient`). The REVOKE primitive for
+  /// moving a file OUT of the AI bucket: `deleteFlat` removes BOTH the ciphertext
+  /// AND the forest index entry, so a compromised MCP can no longer enumerate OR
+  /// read the file.
+  @override
+  Future<void> deleteWorkspaceObject(String bucket, String key) async {
+    if (!await hasAiConnection()) {
+      throw FulaApiException('No AI connection — workspace delete skipped');
+    }
+    if (_workspaceClient == null) {
+      final secret = await _deriveWorkspaceSecretForRead();
+      if (secret != null) await initializeWorkspaceClient(secret);
+    }
+    if (_workspaceClient == null) {
+      throw FulaApiException('AI workspace client unavailable');
+    }
+    try {
+      await _ensureWorkspaceForestLoaded(bucket);
+      await fula.deleteFlat(client: _workspaceClient!, bucket: bucket, path: key);
+    } catch (e) {
+      _workspaceLoadedForests.remove(bucket);
+      throw FulaApiException('Failed to delete workspace object: $e');
+    }
+  }
+
   /// Re-derive the AI-workspace secret for a READ path (lazy client build).
   ///
   /// Reuses P13's [AiConnectionService.deriveWorkspaceSecret] verbatim — the
