@@ -33,48 +33,91 @@ void main() {
   tearDown(() => BucketVersionResolver.enabled = false);
 
   group('category merge surfaces AI-workspace items (native views)', () {
-    test('images view includes the ai/images item; documents view its doc; '
-        'each tagged sourceBucket=fula-ai-workspace', () async {
+    test('SINGULAR AI categories map to the PLURAL FxFiles views; each tagged '
+        'sourceBucket=fula-ai-workspace', () async {
       final fake = FakeFulaApi();
       fake.aiConnectionExists = true; // an AI connection exists
       // The user's own files in each category.
       fake.objectsResponseFor['images'] = [obj('photo.jpg')];
       fake.objectsResponseFor['documents'] = [obj('resume.pdf')];
-      // The AI workspace holds items for BOTH categories under ai/<cat>/.
+      // The AI/MCP writes SINGULAR category segments (ai/image/, ai/document/, …
+      // per classify.ts / classify.rs) — NOT the app's plural category names.
       fake.objectsResponseFor[_ws] = [
-        obj('ai/images/sketch.png'),
-        obj('ai/documents/notes.md'),
+        obj('ai/image/sketch.png'),
+        obj('ai/document/notes.md'),
       ];
 
       final images = await listCategoryMerged(fake, 'images');
       final documents = await listCategoryMerged(fake, 'documents');
 
-      // Images view: the user's own photo + ONLY the ai/images item (the
-      // ai/documents item must be routed away by the per-category prefix).
+      // Images view: the user's own photo + ONLY the ai/image item (the
+      // ai/document item must be routed to the documents view, not here).
       final imgKeys = images.map((o) => o.key).toSet();
-      expect(imgKeys, containsAll(<String>['photo.jpg', 'ai/images/sketch.png']));
-      expect(imgKeys.contains('ai/documents/notes.md'), isFalse,
-          reason: 'documents AI item must NOT leak into the images view');
+      expect(imgKeys, containsAll(<String>['photo.jpg', 'ai/image/sketch.png']));
+      expect(imgKeys.contains('ai/document/notes.md'), isFalse,
+          reason: 'a document AI item must NOT leak into the images view');
       final imgSrc = {for (final o in images) o.key: o.sourceBucket};
-      expect(imgSrc['ai/images/sketch.png'], _ws,
+      expect(imgSrc['ai/image/sketch.png'], _ws,
           reason: 'AI item carries sourceBucket=fula-ai-workspace');
       expect(imgSrc['photo.jpg'], 'images',
           reason: "the user's own item keeps its real bucket");
 
-      // Documents view: the user's own pdf + ONLY the ai/documents doc.
+      // Documents view: the user's own pdf + ONLY the ai/document doc.
       final docKeys = documents.map((o) => o.key).toSet();
       expect(docKeys,
-          containsAll(<String>['resume.pdf', 'ai/documents/notes.md']));
-      expect(docKeys.contains('ai/images/sketch.png'), isFalse);
+          containsAll(<String>['resume.pdf', 'ai/document/notes.md']));
+      expect(docKeys.contains('ai/image/sketch.png'), isFalse);
       final docSrc = {for (final o in documents) o.key: o.sourceBucket};
-      expect(docSrc['ai/documents/notes.md'], _ws);
+      expect(docSrc['ai/document/notes.md'], _ws);
+    });
+
+    test('homeless AI categories fold into the closest view: '
+        'note/link→documents, screenshot→images, file/other→other', () async {
+      final fake = FakeFulaApi();
+      fake.aiConnectionExists = true;
+      fake.objectsResponseFor[_ws] = [
+        obj('ai/note/todo.txt'),
+        obj('ai/link/bookmark.url'),
+        obj('ai/screenshot/cap.png'),
+        obj('ai/file/blob.bin'),
+        obj('ai/other/misc.dat'),
+      ];
+
+      final docs =
+          (await listCategoryMerged(fake, 'documents')).map((o) => o.key).toSet();
+      final imgs =
+          (await listCategoryMerged(fake, 'images')).map((o) => o.key).toSet();
+      final other =
+          (await listCategoryMerged(fake, 'other')).map((o) => o.key).toSet();
+
+      expect(docs,
+          containsAll(<String>['ai/note/todo.txt', 'ai/link/bookmark.url']));
+      expect(imgs, contains('ai/screenshot/cap.png'));
+      expect(other,
+          containsAll(<String>['ai/file/blob.bin', 'ai/other/misc.dat']));
+      // No cross-leak between the folded views.
+      expect(docs.contains('ai/screenshot/cap.png'), isFalse);
+      expect(imgs.contains('ai/note/todo.txt'), isFalse);
+    });
+
+    test('a view with NO AI mapping (downloads) never lists the workspace',
+        () async {
+      final fake = FakeFulaApi();
+      fake.aiConnectionExists = true;
+      fake.objectsResponseFor['downloads'] = [obj('setup.exe')];
+      fake.objectsResponseFor[_ws] = [obj('ai/document/x.md')];
+
+      final downloads = await listCategoryMerged(fake, 'downloads');
+      expect(downloads.map((o) => o.key), <String>['setup.exe']);
+      expect(fake.listWorkspaceObjectsCalls[_ws], isNull,
+          reason: 'downloads maps to no AI category — short-circuit, no list');
     });
 
     test('GATE: no AI connection ⇒ the workspace is never listed', () async {
       final fake = FakeFulaApi();
       // aiConnectionExists defaults to FALSE (non-AI user).
       fake.objectsResponseFor['images'] = [obj('photo.jpg')];
-      fake.objectsResponseFor[_ws] = [obj('ai/images/sketch.png')]; // ignored
+      fake.objectsResponseFor[_ws] = [obj('ai/image/sketch.png')]; // ignored
 
       final images = await listCategoryMerged(fake, 'images');
 
@@ -84,32 +127,27 @@ void main() {
           reason: 'the gate must short-circuit before any workspace list call');
     });
 
-    test('off-shape / off-category AI keys are dropped, not mis-filed',
-        () async {
+    test('off-category AI keys are dropped, not mis-filed', () async {
       final fake = FakeFulaApi();
       fake.aiConnectionExists = true;
       fake.objectsResponseFor['images'] = [obj('photo.jpg')];
-      // The prefix filter (ai/images/) already constrains the list, but assert
-      // the helper's own validation by feeding a well-formed item only and
-      // confirming a sibling-category key does not appear in images.
       fake.objectsResponseFor[_ws] = [
-        obj('ai/images/ok.png'),
-        obj('ai/videos/clip.mp4'), // different category — must not reach images
+        obj('ai/image/ok.png'),
+        obj('ai/video/clip.mp4'), // different category — must not reach images
       ];
 
       final images = await listCategoryMerged(fake, 'images');
       final keys = images.map((o) => o.key).toSet();
-      expect(keys.contains('ai/images/ok.png'), isTrue);
-      expect(keys.contains('ai/videos/clip.mp4'), isFalse);
+      expect(keys.contains('ai/image/ok.png'), isTrue);
+      expect(keys.contains('ai/video/clip.mp4'), isFalse);
     });
 
     test('AI read failure is tolerated — user content still shows', () async {
       final fake = FakeFulaApi();
       fake.aiConnectionExists = true;
       fake.objectsResponseFor['images'] = [obj('photo.jpg')];
-      // listObjectsErrorFor targets the workspace bucket; the fake's
-      // listWorkspaceObjects reads objectsResponseFor (empty here), so simulate
-      // "AI empty" — the user's own bucket must be unaffected either way.
+      // The fake's listWorkspaceObjects returns objectsResponseFor (empty here),
+      // so simulate "AI empty" — the user's own bucket must be unaffected.
       fake.objectsResponseFor[_ws] = const <FulaObject>[];
 
       final images = await listCategoryMerged(fake, 'images');
