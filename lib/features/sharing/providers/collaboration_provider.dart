@@ -208,6 +208,36 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
     }
   }
 
+  /// Remove a file from a collaboration group.
+  ///
+  /// Non-destructive by DEFAULT ([deleteFromStorage] = false): the file's
+  /// entry is tombstoned out of the group manifest but the underlying cloud
+  /// object is kept, so the file remains in its category and any other shares.
+  /// Pass `deleteFromStorage: true` only to also purge a collab-uploaded blob.
+  Future<bool> removeFile(
+    String groupId,
+    String fileId, {
+    bool deleteFromStorage = false,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      await _service.removeFileFromGroup(
+        groupId: groupId,
+        fileId: fileId,
+        deleteFromStorage: deleteFromStorage,
+      );
+      await _syncToCloud();
+      await loadGroups();
+      return true;
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forSync(e),
+      );
+      return false;
+    }
+  }
+
   /// Download a file from a collaboration group
   Future<Uint8List?> downloadFile(String groupId, CollaborationFile file) async {
     try {

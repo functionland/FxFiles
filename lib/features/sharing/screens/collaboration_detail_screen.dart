@@ -8,6 +8,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
+import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
 
 class CollaborationDetailScreen extends ConsumerStatefulWidget {
   final String groupId;
@@ -160,68 +161,13 @@ class _CollaborationDetailScreenState
     );
   }
 
-  /// Compute folders and files visible at _currentPath
-  ({List<String> folders, List<CollaborationFile> files}) _itemsAtPath(CollaborationGroup group) {
-    final folderSet = <String>{};
-    final filesHere = <CollaborationFile>[];
-
-    for (final file in group.files) {
-      // Only collab-uploaded files use pathScope as folder path.
-      // Fula files have pathScope as storage key — show at root.
-      final filePath = file.encType == 'collab' ? (file.pathScope ?? '') : '';
-      final isFolder = file.contentType == 'application/x-directory';
-
-      if (_currentPath.isEmpty) {
-        if (filePath.isEmpty) {
-          if (!isFolder) filesHere.add(file);
-        } else {
-          folderSet.add(filePath.split('/')[0]);
-        }
-      } else {
-        if (filePath == _currentPath && !isFolder) {
-          filesHere.add(file);
-        } else if (filePath.startsWith('$_currentPath/')) {
-          final remainder = filePath.substring(_currentPath.length + 1);
-          folderSet.add(remainder.split('/')[0]);
-        }
-      }
-    }
-
-    // Also pick up explicit folder markers at this level
-    for (final file in group.files) {
-      if (file.contentType == 'application/x-directory' && file.pathScope != null) {
-        final parent = file.pathScope!.contains('/')
-            ? file.pathScope!.substring(0, file.pathScope!.lastIndexOf('/'))
-            : '';
-        if (parent == _currentPath) {
-          final name = file.pathScope!.substring(parent.isEmpty ? 0 : parent.length + 1);
-          if (name.isNotEmpty && !name.contains('/')) {
-            folderSet.add(name);
-          }
-        }
-      }
-    }
-
-    final sortedFolders = folderSet.toList()..sort((a, b) => a.compareTo(b));
-    filesHere.sort((a, b) => a.addedAt.compareTo(b.addedAt));
-    return (folders: sortedFolders, files: filesHere);
-  }
-
-  int _countFolderFiles(CollaborationGroup group, String folderPath) {
-    return group.files.where((f) {
-      final p = f.encType == 'collab' ? (f.pathScope ?? '') : '';
-      return (p == folderPath || p.startsWith('$folderPath/')) &&
-          f.contentType != 'application/x-directory';
-    }).length;
-  }
-
   Widget _buildFileList(
     BuildContext context,
     CollaborationGroup group,
     bool isOwner,
   ) {
     final theme = Theme.of(context);
-    final items = _itemsAtPath(group);
+    final items = collabItemsAtPath(group, _currentPath);
     final totalFiles = group.files.where((f) => f.contentType != 'application/x-directory').length;
 
     final headerWidgets = <Widget>[];
@@ -391,7 +337,7 @@ class _CollaborationDetailScreenState
         if (itemIndex < items.folders.length) {
           final folderName = items.folders[itemIndex];
           final folderPath = _currentPath.isEmpty ? folderName : '$_currentPath/$folderName';
-          final fileCount = _countFolderFiles(group, folderPath);
+          final fileCount = collabCountFolderFiles(group, folderPath);
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
             color: theme.brightness == Brightness.dark
@@ -485,21 +431,70 @@ class _CollaborationDetailScreenState
                 ),
               ],
             ),
-            trailing: isDownloading
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Icon(
-                    LucideIcons.download,
-                    size: 18,
-                    color: theme.colorScheme.primary,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                isDownloading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        LucideIcons.download,
+                        size: 18,
+                        color: theme.colorScheme.primary,
+                      ),
+                if (isOwner)
+                  IconButton(
+                    tooltip: 'Remove from group',
+                    icon: Icon(LucideIcons.x,
+                        size: 18, color: theme.colorScheme.outline),
+                    onPressed:
+                        isDownloading ? null : () => _removeFile(file),
                   ),
+              ],
+            ),
           ),
         );
       },
     );
+  }
+
+  /// Remove a file from the group WITHOUT deleting the underlying cloud object
+  /// (`deleteFromStorage: false`) — the file stays in its category and any
+  /// other shares; only its membership in this collaboration is revoked.
+  Future<void> _removeFile(CollaborationFile file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove file?'),
+        content: Text(
+          '"${file.fileName}" will be removed from this group. '
+          'The original file stays in your cloud storage.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final ok = await ref
+        .read(collaborationProvider.notifier)
+        .removeFile(widget.groupId, file.id, deleteFromStorage: false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'File removed' : 'Remove failed')),
+      );
+    }
   }
 
   Future<void> _downloadFile(CollaborationFile file) async {
