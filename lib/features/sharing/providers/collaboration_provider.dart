@@ -141,6 +141,36 @@ class CollaborationNotifier extends Notifier<CollaborationState> {
     }
   }
 
+  /// Add every file in a cloud folder to the group (REQ2).
+  ///
+  /// Delegates to [CollaborationService.addFolderToGroup] (enumerate + loop
+  /// addFileToGroup preserving pathScope), then syncs + reloads. Returns
+  /// `(added, skipped)`, or null on failure (error surfaced in state).
+  Future<({int added, int skipped})?> addFolder({
+    required String groupId,
+    required String bucket,
+    required String folderPrefix,
+  }) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      final result = await _service.addFolderToGroup(
+        groupId: groupId,
+        bucket: bucket,
+        folderPrefix: folderPrefix,
+      );
+      await _syncToCloud();
+      await loadGroups();
+      return result;
+    } catch (e, stack) {
+      debugPrint('[CollabProvider] addFolder failed: $e\n$stack');
+      state = state.copyWith(
+        isLoading: false,
+        error: ErrorMessages.forSync(e),
+      );
+      return null;
+    }
+  }
+
   /// Accept a collaboration link
   Future<AcceptedCollaboration?> acceptCollaborationLink(String url) async {
     state = state.copyWith(isLoading: true, error: null);

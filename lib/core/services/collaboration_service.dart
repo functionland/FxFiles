@@ -329,6 +329,70 @@ class CollaborationService {
     return collabFile;
   }
 
+  /// Add every file under [folderPrefix] in [bucket] to the group (REQ2).
+  ///
+  /// Enumerates the cloud folder via `listObjects(prefix)` and loops
+  /// [addFileToGroup], PRESERVING each object's `pathScope` (its storage key)
+  /// so the per-file fula share token binds to the right object. Directories and
+  /// the hidden `.fula_keep` folder markers are skipped, as are files already in
+  /// the group (idempotent re-add). A per-file failure is non-fatal — it is
+  /// counted as skipped and the rest continue.
+  ///
+  /// [folderPrefix] is a key prefix inside [bucket] (`''` = the whole bucket).
+  /// Returns `(added, skipped)`. Each [addFileToGroup] re-publishes the manifest,
+  /// so this is O(n) manifest writes — fine for typical folders; a future
+  /// optimization could batch a single manifest write.
+  Future<({int added, int skipped})> addFolderToGroup({
+    required String groupId,
+    required String bucket,
+    required String folderPrefix,
+  }) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    if (outgoing == null) {
+      throw CollaborationException('Group not found: $groupId');
+    }
+    _assertNotExpired(outgoing.group);
+
+    final objects = await fula_service.FulaApiService.instance
+        .listObjects(bucket, prefix: folderPrefix);
+    final files = objects
+        .where((o) => !o.isDirectory && !o.key.endsWith('.fula_keep'))
+        .toList();
+
+    // pathScopes already in the group at the start → skip (idempotent).
+    final existing = outgoing.group.files
+        .map((f) => f.pathScope)
+        .whereType<String>()
+        .toSet();
+
+    var added = 0;
+    var skipped = 0;
+    for (final obj in files) {
+      final pathScope = obj.key;
+      if (existing.contains(pathScope)) {
+        skipped++;
+        continue;
+      }
+      try {
+        await addFileToGroup(
+          groupId: groupId,
+          pathScope: pathScope,
+          bucket: obj.sourceBucket ?? bucket,
+          fileName: obj.name,
+          fileSize: obj.size,
+          contentType: obj.metadata?['content-type'],
+        );
+        added++;
+      } catch (e) {
+        debugPrint('[CollabService] addFolderToGroup: skipped ${obj.key}: $e');
+        skipped++;
+      }
+    }
+    debugPrint('[CollabService] addFolderToGroup($bucket/$folderPrefix): '
+        'added=$added skipped=$skipped');
+    return (added: added, skipped: skipped);
+  }
+
   /// Parse manifest data, handling both plaintext JSON and encrypted formats.
   /// Tries JSON first, then decrypts if linkSecretKey is available.
   Future<CollaborationGroup?> _parseManifestData(Uint8List data, String groupId, Uint8List? linkSecretKey) async {

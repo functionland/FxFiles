@@ -7,6 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
+import 'package:fula_files/core/services/file_service.dart' show FileCategory;
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
 import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
@@ -99,6 +100,16 @@ class _CollaborationDetailScreenState
               final isSyncing = entry?.syncEnabled ?? false;
 
               return [
+                const PopupMenuItem(
+                  value: 'add_folder',
+                  child: Row(
+                    children: [
+                      Icon(LucideIcons.folderPlus, size: 18),
+                      SizedBox(width: 8),
+                      Text('Add Folder'),
+                    ],
+                  ),
+                ),
                 if (_isDesktop) ...[
                   PopupMenuItem(
                     value: 'assign_folder',
@@ -570,6 +581,10 @@ class _CollaborationDetailScreenState
       );
       return;
     }
+    if (action == 'add_folder') {
+      await _addFolder();
+      return;
+    }
     if (action == 'revoke') {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -661,6 +676,103 @@ class _CollaborationDetailScreenState
         content: Text('Navigate to your cloud files and share them to this group'),
       ),
     );
+  }
+
+  /// REQ2: add every file in a chosen cloud folder to the group. Pick a category
+  /// (bucket) + an optional subfolder, then enumerate + add (preserving each
+  /// file's pathScope) via the collaboration provider.
+  Future<void> _addFolder() async {
+    var category = FileCategory.documents;
+    final prefixController = TextEditingController();
+    const categories = [
+      FileCategory.images,
+      FileCategory.videos,
+      FileCategory.audio,
+      FileCategory.documents,
+      FileCategory.downloads,
+      FileCategory.archives,
+    ];
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Add a Folder'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'All files in this cloud folder will be added to the group.',
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<FileCategory>(
+                initialValue: category,
+                decoration: const InputDecoration(
+                  labelText: 'Category',
+                  border: OutlineInputBorder(),
+                ),
+                items: categories
+                    .map((c) => DropdownMenuItem(
+                          value: c,
+                          child: Text(
+                              c.name[0].toUpperCase() + c.name.substring(1)),
+                        ))
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) category = v;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: prefixController,
+                decoration: const InputDecoration(
+                  labelText: 'Subfolder (optional)',
+                  hintText: 'e.g. trip-2024/photos',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      // Folder semantics: scope to the prefix as a directory.
+      var prefix = prefixController.text.trim();
+      if (prefix.isNotEmpty && !prefix.endsWith('/')) prefix = '$prefix/';
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Adding folder…')),
+      );
+      final result = await ref.read(collaborationProvider.notifier).addFolder(
+            groupId: widget.groupId,
+            bucket: category.bucketName,
+            folderPrefix: prefix,
+          );
+      if (!mounted) return;
+      final String msg;
+      if (result == null) {
+        msg = ref.read(collaborationProvider).error ?? 'Failed to add folder';
+      } else if (result.added == 0) {
+        msg = 'No new files found in that folder';
+      } else {
+        msg = 'Added ${result.added} file${result.added == 1 ? '' : 's'}'
+            '${result.skipped > 0 ? ' (${result.skipped} skipped)' : ''}';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } finally {
+      prefixController.dispose();
+    }
   }
 
   IconData _getFileIcon(String? contentType) {
