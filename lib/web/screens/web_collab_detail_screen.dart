@@ -8,6 +8,7 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
+import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 
@@ -288,8 +289,17 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
             PopupMenuButton<String>(
               onSelected: (v) {
                 if (v == 'revoke') _revokeGroup();
+                if (v == 'share_ai') {
+                  showShareWithAiDialog(
+                    context,
+                    groupId: widget.groupId,
+                    groupName: _group?.name ?? 'this group',
+                  );
+                }
               },
               itemBuilder: (ctx) => const [
+                PopupMenuItem(
+                    value: 'share_ai', child: Text('Share with AI Agent')),
                 PopupMenuItem(value: 'revoke', child: Text('Revoke Group')),
               ],
             ),

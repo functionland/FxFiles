@@ -425,6 +425,19 @@ class CollabAiPairingService {
     );
   }
 
+  /// The Method-1 collaboration LINK for [groupId], or null if this user is not
+  /// the group owner / the link cannot be built. The link already carries the
+  /// link secret in its `sk` fragment, so it is the working fallback when the
+  /// wrapped-secret binding is unavailable.
+  Future<String?> fallbackCollabUrl(String groupId) async {
+    try {
+      final outgoing = await _requireOutgoing(groupId);
+      return CollaborationService.instance.generateCollaborationLink(outgoing);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Best-effort log-safe summary (NEVER logs secrets).
   @visibleForTesting
   static String describeForLog(CollabAiPairing p) =>

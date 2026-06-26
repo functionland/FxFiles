@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
 import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
+import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
 
 class CollaborationDetailScreen extends ConsumerStatefulWidget {
   final String groupId;
@@ -42,7 +43,8 @@ class _CollaborationDetailScreenState
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(collaborationProvider);
+    // Subscribe so the screen rebuilds when the collaboration state changes.
+    ref.watch(collaborationProvider);
     final notifier = ref.read(collaborationProvider.notifier);
     final group = notifier.getGroup(widget.groupId);
     final isOwner = notifier.isOwner(widget.groupId);
@@ -86,7 +88,7 @@ class _CollaborationDetailScreenState
             onPressed: _isRefreshing ? null : _refreshGroup,
           ),
           PopupMenuButton<String>(
-            onSelected: (value) => _handleMenuAction(value, notifier),
+            onSelected: (value) => _handleMenuAction(value, notifier, group.name),
             itemBuilder: (context) {
               final allGroups = ref.read(collaborationProvider).allGroups;
               CollabGroupEntry? entry;
@@ -132,6 +134,17 @@ class _CollaborationDetailScreenState
                     ),
                   const PopupMenuDivider(),
                 ],
+                if (isOwner)
+                  const PopupMenuItem(
+                    value: 'share_ai',
+                    child: Row(
+                      children: [
+                        Icon(LucideIcons.bot, size: 18),
+                        SizedBox(width: 8),
+                        Text('Share with AI Agent'),
+                      ],
+                    ),
+                  ),
                 if (isOwner)
                   const PopupMenuItem(
                     value: 'revoke',
@@ -547,7 +560,16 @@ class _CollaborationDetailScreenState
     }
   }
 
-  void _handleMenuAction(String action, CollaborationNotifier notifier) async {
+  void _handleMenuAction(
+      String action, CollaborationNotifier notifier, String groupName) async {
+    if (action == 'share_ai') {
+      await showShareWithAiDialog(
+        context,
+        groupId: widget.groupId,
+        groupName: groupName,
+      );
+      return;
+    }
     if (action == 'revoke') {
       final confirmed = await showDialog<bool>(
         context: context,
