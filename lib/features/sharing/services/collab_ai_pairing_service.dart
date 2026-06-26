@@ -147,6 +147,13 @@ class CollabAiPairingService {
   @visibleForTesting
   static CollabLinkSecretWrapper get unsupportedWrapper => _unsupportedWrap;
 
+  /// Collapse whitespace + truncate a server response body so an error message
+  /// never renders multi-line / attacker-influenced text at full length.
+  static String _clip(String s, [int max = 200]) {
+    final one = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return one.length <= max ? one : '${one.substring(0, max)}…';
+  }
+
   /// Web-safe issuer base (billing-server override, else cloud.fx.land) — mirrors
   /// `AiConnectionService` so the mint/authorize/refresh all target one origin.
   Future<String> _issuerBaseUrl() async {
@@ -222,10 +229,17 @@ class CollabAiPairingService {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw CollabPairingException(
           'Failed to authorize group for the AI agent: '
-          '${response.statusCode} - ${response.body}',
+          '${response.statusCode} - ${_clip(response.body)}',
         );
       }
-      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final Map<String, dynamic> decoded;
+      try {
+        decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {
+        throw CollabPairingException(
+          'Authorization response was not valid JSON.',
+        );
+      }
       final collabToken = decoded['collabToken'];
       if (collabToken is! String || collabToken.isEmpty) {
         throw CollabPairingException(
@@ -376,6 +390,14 @@ class CollabAiPairingService {
       pathScope: '/collab/$groupId',
       expiresAtUnix: expiresAtUnix,
     );
+    // Defensive: a wrapper must never yield an empty token — that would emit a
+    // capability the MCP can't recover a link secret from. Fail BEFORE any
+    // server mutation (mint / authorize).
+    if (wrappedLinkSecret.trim().isEmpty) {
+      throw CollabPairingException(
+        'Internal error: the link-secret wrap produced an empty token.',
+      );
+    }
 
     // Register (or refresh) the AI connection bound to its pubkey → connectionId
     // + the separate refresh credential. Reuses the existing L1d mint.

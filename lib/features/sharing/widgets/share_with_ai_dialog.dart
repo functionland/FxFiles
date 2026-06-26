@@ -240,10 +240,16 @@ class _ShareWithAiDialogState extends State<_ShareWithAiDialog> {
         const SizedBox(height: 12),
         _copyBox(theme, _showHosted ? 'Hosted config' : 'Desktop config', config),
         const SizedBox(height: 16),
-        Text('Or share the collaboration link (works without setup):',
-            style: theme.textTheme.bodySmall),
+        Text(
+          'Or share the collaboration link — note it carries the RAW group key '
+          'in its fragment (less protected than the wrapped key in the config '
+          'above); prefer the config when your agent supports it.',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.outline),
+        ),
         const SizedBox(height: 6),
-        _copyBox(theme, 'Collaboration link', _result!.fallbackCollabUrl),
+        _copyBox(
+            theme, 'Collaboration link (raw group key)', _result!.fallbackCollabUrl),
       ],
     );
   }
