@@ -130,7 +130,7 @@ class CollabAiPairingService {
     required Uint8List recipientPublicKey,
     required String pathScope,
     int? expiresAtUnix,
-  }) {
+  }) async {
     throw CollabPairingUnsupported(
       'Wrapping the group link secret for an AI agent needs a fula_client '
       'binding that the pinned build ($_pinnedFulaClient) does not expose '
@@ -141,6 +141,11 @@ class CollabAiPairingService {
   }
 
   static const String _pinnedFulaClient = 'fula_client 0.6.16';
+
+  /// The fail-closed default wrapper, exposed so tests can assert it throws
+  /// [CollabPairingUnsupported] (the named-dependency contract).
+  @visibleForTesting
+  static CollabLinkSecretWrapper get unsupportedWrapper => _unsupportedWrap;
 
   /// Web-safe issuer base (billing-server override, else cloud.fx.land) — mirrors
   /// `AiConnectionService` so the mint/authorize/refresh all target one origin.

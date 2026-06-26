@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
+import 'package:fula_files/features/sharing/utils/collab_folder_add.dart';
 
 /// Gateway base URL for collaboration links
 const String kCollabGatewayBaseUrl = 'https://cloud.fx.land';
@@ -355,28 +356,21 @@ class CollaborationService {
 
     final objects = await fula_service.FulaApiService.instance
         .listObjects(bucket, prefix: folderPrefix);
-    final files = objects
-        .where((o) => !o.isDirectory && !o.key.endsWith('.fula_keep'))
-        .toList();
 
     // pathScopes already in the group at the start → skip (idempotent).
     final existing = outgoing.group.files
         .map((f) => f.pathScope)
         .whereType<String>()
         .toSet();
+    final plan = planCollabFolderAdd(objects, existing);
 
     var added = 0;
-    var skipped = 0;
-    for (final obj in files) {
-      final pathScope = obj.key;
-      if (existing.contains(pathScope)) {
-        skipped++;
-        continue;
-      }
+    var skipped = plan.skipped;
+    for (final obj in plan.toAdd) {
       try {
         await addFileToGroup(
           groupId: groupId,
-          pathScope: pathScope,
+          pathScope: obj.key,
           bucket: obj.sourceBucket ?? bucket,
           fileName: obj.name,
           fileSize: obj.size,
