@@ -1,9 +1,11 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:fula_client/fula_client.dart' as fula;
 import 'package:http/http.dart' as http;
 
 import 'package:fula_files/core/models/collaboration_group.dart';
+import 'package:fula_files/core/platform/frb_u64.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
@@ -19,47 +21,43 @@ const String kFulaMcpNpmPackage = '@functionland/fula-mcp';
 /// Signature of the function that wraps the group's 32-byte **link secret** as a
 /// `wrapped_link_secret` string for an AI agent's X25519 public key.
 ///
+/// PRODUCTION IMPL ([CollabAiPairingService.realWrapper]) calls the published
+/// `fula_client` 0.6.18 binding
+/// `wrapSecretForRecipient(secret, recipientPublicKey, pathScope, expiresInSeconds)
+/// -> ShareToken JSON`. Tests inject a fake via [pairGroupWithAi].
+///
 /// CONTRACT (the consumer is `fula-api/crates/fula-mcp/src/capability.rs`): the
 /// returned string MUST be a `serde_json` serialization of a fula **v5
 /// `ShareToken`** (`fula_crypto::sharing::ShareToken`) whose wrapped DEK *is* the
 /// 32-byte [linkSecret], addressed to [recipientPublicKey]. The MCP recovers it
 /// with `ShareRecipient::accept_share(token) -> accepted.dek` (identity.rs
-/// `accept_link_secret`). Equivalent Rust producer:
-///
-/// ```rust
-/// let dek = DekKey::from_bytes(&link_secret)?;
-/// let token = ShareBuilder::new(&owner, &recipient_pk, &dek)
-///     .path_scope(path_scope)        // e.g. "/collab/<groupId>"
-///     .expires_at(expires_at_unix)   // optional
-///     .build()?;                     // version = 5, recipient-pk-bound AAD
-/// serde_json::to_string(&token)?
-/// ```
+/// `accept_link_secret`).
 ///
 /// The v5 wrap is fula-INTERNAL HPKE with a canonical, length-prefixed binary
 /// AAD binding every token field + the recipient public key
 /// (`fula_crypto::sharing::build_share_token_aad`, domain-tag
-/// `b"fula:v5:share-token|"`). It is NOT a generic ECIES and MUST NOT be
-/// hand-reimplemented — the consumer rejects any non-v5 shape (and the strict
-/// AAD makes a byte-imperfect clone fail with a generic auth error).
+/// `b"fula:v5:share-token|"`); the sender keypair is generated EPHEMERALLY inside
+/// fula-crypto (the AAD binds the RECIPIENT key, not the sender). It is NOT a
+/// generic ECIES and MUST NOT be hand-reimplemented — the consumer rejects any
+/// non-v5 shape (and the strict AAD makes a byte-imperfect clone fail).
+///
+/// [expiresInSeconds] is a **TTL — seconds-from-now**, matching the binding's
+/// `expires_in_seconds` (NOT an absolute Unix timestamp). `null` ⇒ never expires.
 typedef CollabLinkSecretWrapper = Future<String> Function({
   required Uint8List linkSecret,
   required Uint8List recipientPublicKey,
   required String pathScope,
-  int? expiresAtUnix,
+  int? expiresInSeconds,
 });
 
-/// Thrown when the cryptographic wrap of the link secret cannot be produced.
+/// Signals that the cryptographic wrap of the link secret cannot be produced, so
+/// the caller should fall back to the Method-1 collaboration LINK.
 ///
-/// The pinned `fula_client` (0.6.16) exposes ONLY a FILE-scoped
-/// `createShareToken(bucket, storageKey, recipientPublicKey)` that wraps an
-/// existing object's DEK fetched from S3 metadata. It has NO binding to wrap an
-/// ARBITRARY 32-byte secret into a v5 `ShareToken`, which is exactly what
-/// `wrapped_link_secret` requires. Producing it therefore needs a new fula_client
-/// FFI binding (the single named upstream dependency) — e.g.
-/// `createShareTokenForSecret(recipientPublicKey, dek32, pathScope, expiresAt)
-/// -> tokenJson`. Until that lands, this is the fail-closed seam: the rest of the
-/// pairing (registration, group authorization, capability shape, platform config,
-/// UI) is complete and the Method-1 collaboration LINK remains a working fallback.
+/// As of `fula_client` 0.6.18 the wrap IS supported — the default wrapper
+/// ([CollabAiPairingService.realWrapper]) calls `wrapSecretForRecipient`. This
+/// type is retained as a defensive seam: an injected wrapper (or a hypothetical
+/// future binding-less build) may still throw it, and the "Share with AI Agent"
+/// dialog catches it to offer the collaboration link instead of a hard error.
 class CollabPairingUnsupported implements Exception {
   final String message;
   CollabPairingUnsupported(this.message);
@@ -122,30 +120,51 @@ class CollabAiPairingService {
   CollabAiPairingService._();
   static final CollabAiPairingService instance = CollabAiPairingService._();
 
-  /// The fail-closed default wrapper. Replace by passing [wrapLinkSecret] to
-  /// [pairGroupWithAi] (tests inject a fake; production wires the fula_client
-  /// binding here once it exists).
-  static Future<String> _unsupportedWrap({
+  /// The production wrapper: wraps the group's 32-byte [linkSecret] for the AI
+  /// agent's [recipientPublicKey] as a fula **v5 ShareToken** JSON via the
+  /// published `fula_client` 0.6.18 binding [fula.wrapSecretForRecipient]. This is
+  /// the default for [pairGroupWithAi]; tests inject a fake.
+  ///
+  /// Fail-closed: a non-32-byte secret or recipient key, or a non-positive TTL, is
+  /// rejected with [CollabPairingException] BEFORE the FFI call. (The Rust side
+  /// also rejects non-32-byte inputs; this guard just yields a clean message and
+  /// never reaches FFI in the unit-test environment.) The wrapped secret is the
+  /// EXACT 32 link-secret bytes — the MCP recovers them verbatim via
+  /// `accept_link_secret`.
+  static Future<String> _realWrap({
     required Uint8List linkSecret,
     required Uint8List recipientPublicKey,
     required String pathScope,
-    int? expiresAtUnix,
+    int? expiresInSeconds,
   }) async {
-    throw CollabPairingUnsupported(
-      'Wrapping the group link secret for an AI agent needs a fula_client '
-      'binding that the pinned build ($_pinnedFulaClient) does not expose '
-      '(e.g. createShareTokenForSecret(recipientPublicKey, dek32, pathScope, '
-      'expiresAt) -> v5 ShareToken JSON). Until it lands, share this group with '
-      'the AI using the collaboration link instead.',
+    if (linkSecret.length != 32) {
+      throw CollabPairingException(
+        'Internal error: group link secret is ${linkSecret.length} bytes '
+        '(need 32); refusing to wrap.',
+      );
+    }
+    if (recipientPublicKey.length != 32) {
+      throw CollabPairingException(
+        'AI agent id decodes to ${recipientPublicKey.length} bytes (need 32).',
+      );
+    }
+    if (expiresInSeconds != null && expiresInSeconds <= 0) {
+      throw CollabPairingException('Collaboration has expired.');
+    }
+    return fula.wrapSecretForRecipient(
+      secret: linkSecret,
+      recipientPublicKey: recipientPublicKey,
+      pathScope: pathScope,
+      // i64 seconds-from-now via FRB: int natively, BigInt on web.
+      expiresInSeconds: intToFrbU64(expiresInSeconds),
     );
   }
 
-  static const String _pinnedFulaClient = 'fula_client 0.6.16';
-
-  /// The fail-closed default wrapper, exposed so tests can assert it throws
-  /// [CollabPairingUnsupported] (the named-dependency contract).
+  /// The production wrapper, exposed so tests can assert its fail-closed input
+  /// validation. The real binding's happy path is FFI (proven by
+  /// `flutter build web`), not exercised under `flutter test`.
   @visibleForTesting
-  static CollabLinkSecretWrapper get unsupportedWrapper => _unsupportedWrap;
+  static CollabLinkSecretWrapper get realWrapper => _realWrap;
 
   /// Collapse whitespace + truncate a server response body so an error message
   /// never renders multi-line / attacker-influenced text at full length.
@@ -346,19 +365,19 @@ class CollabAiPairingService {
   /// binding the AI pubkey) → authorize the group ([authorizeCollabGroups]) →
   /// build the capability + both platform configs.
   ///
-  /// [wrapLinkSecret] defaults to the fail-closed seam ([_unsupportedWrap]); inject
-  /// a real wrapper (or a test fake) to exercise the full flow. [httpClient] is
-  /// injected for tests.
+  /// [wrapLinkSecret] defaults to the real wrapper ([realWrapper], which calls the
+  /// `fula_client` 0.6.18 binding); inject a fake to exercise the flow under test.
+  /// [httpClient] is injected for tests.
   ///
-  /// Throws [CollabPairingUnsupported] from the wrap seam when the binding is
-  /// absent, or [CollabPairingException] for any other failure.
+  /// Throws [CollabPairingException] on any failure (and would surface
+  /// [CollabPairingUnsupported] only if an injected wrapper threw it).
   Future<CollabAiPairing> pairGroupWithAi({
     required String groupId,
     required String fulaId,
     CollabLinkSecretWrapper? wrapLinkSecret,
     http.Client? httpClient,
   }) async {
-    final wrap = wrapLinkSecret ?? _unsupportedWrap;
+    final wrap = wrapLinkSecret ?? _realWrap;
 
     final outgoing = await _requireOutgoing(groupId);
     final group = outgoing.group;
@@ -379,16 +398,25 @@ class CollabAiPairingService {
       );
     }
 
-    final expiresAtUnix = group.expiresAt != null
-        ? group.expiresAt!.millisecondsSinceEpoch ~/ 1000
-        : null;
+    // The group expiry is ABSOLUTE; the wrap wants a TTL (seconds-from-now), so
+    // convert here. _requireOutgoing already rejected an expired group, so a
+    // non-null expiry is in the future — a degenerate non-positive TTL (clock
+    // skew) fails closed rather than minting a token that outlives the group.
+    int? expiresInSeconds;
+    if (group.expiresAt != null) {
+      final secs = group.expiresAt!.difference(DateTime.now()).inSeconds;
+      if (secs <= 0) {
+        throw CollabPairingException('Collaboration has expired.');
+      }
+      expiresInSeconds = secs;
+    }
 
-    // Wrap the link secret for the AI pubkey (fail-closed seam — see typedef).
+    // Wrap the link secret for the AI pubkey (see [CollabLinkSecretWrapper]).
     final wrappedLinkSecret = await wrap(
       linkSecret: linkSecret,
       recipientPublicKey: recipientPublicKey,
       pathScope: '/collab/$groupId',
-      expiresAtUnix: expiresAtUnix,
+      expiresInSeconds: expiresInSeconds,
     );
     // Defensive: a wrapper must never yield an empty token — that would emit a
     // capability the MCP can't recover a link secret from. Fail BEFORE any

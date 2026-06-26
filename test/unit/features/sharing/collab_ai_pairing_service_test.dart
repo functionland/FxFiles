@@ -6,7 +6,9 @@
 //     survive intact.
 //  3. FULA-id encode/decode — a cross-impl known-answer matching the Rust
 //     fula-mcp `encode_fula_id`.
-//  4. the fail-closed wrap seam throws the named-dependency error.
+//  4. the REAL wrap seam (realWrapper, fula_client 0.6.18) fails closed on a
+//     non-32-byte secret / recipient key / elapsed TTL BEFORE the FFI call. The
+//     happy-path FFI wrap is proven by `flutter build web`, not unit tests.
 //  5. authorizeCollabGroups — server PR #69 POST, via MockClient + the mocked
 //     secure-storage channel.
 
@@ -162,22 +164,41 @@ void main() {
     });
   });
 
-  group('wrap seam (fail-closed)', () {
-    test('default wrapper throws CollabPairingUnsupported naming the binding',
-        () async {
+  group('wrap seam (real binding, fula_client 0.6.18)', () {
+    // The happy-path wrap is FFI (RustLib), so it can't run under `flutter test`
+    // — it is proven by `flutter build web`. Here we assert the REAL wrapper's
+    // fail-closed input guards, which run BEFORE the FFI call.
+    test('realWrapper rejects a non-32-byte link secret before FFI', () async {
       await expectLater(
-        CollabAiPairingService.unsupportedWrapper(
-          linkSecret: Uint8List(32),
+        CollabAiPairingService.realWrapper(
+          linkSecret: Uint8List(16),
           recipientPublicKey: Uint8List(32),
           pathScope: '/collab/g',
         ),
-        throwsA(
-          isA<CollabPairingUnsupported>().having(
-            (e) => e.message,
-            'message',
-            allOf(contains('fula_client'), contains('createShareTokenForSecret')),
-          ),
+        throwsA(isA<CollabPairingException>()),
+      );
+    });
+
+    test('realWrapper rejects a non-32-byte recipient key before FFI', () async {
+      await expectLater(
+        CollabAiPairingService.realWrapper(
+          linkSecret: Uint8List(32),
+          recipientPublicKey: Uint8List(31),
+          pathScope: '/collab/g',
         ),
+        throwsA(isA<CollabPairingException>()),
+      );
+    });
+
+    test('realWrapper rejects an already-elapsed TTL before FFI', () async {
+      await expectLater(
+        CollabAiPairingService.realWrapper(
+          linkSecret: Uint8List(32),
+          recipientPublicKey: Uint8List(32),
+          pathScope: '/collab/g',
+          expiresInSeconds: 0,
+        ),
+        throwsA(isA<CollabPairingException>()),
       );
     });
   });
