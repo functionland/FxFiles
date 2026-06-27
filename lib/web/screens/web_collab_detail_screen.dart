@@ -7,6 +7,8 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
+import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 
@@ -32,7 +34,25 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
   bool _busy = false;
   String? _error;
 
+  /// Current folder path within the group (`''` = root). Folders are derived
+  /// client-side from each file's `pathScope` via [collabItemsAtPath] — the
+  /// same shared util the native screen uses, so the trees match.
+  String _currentPath = '';
+
   bool get _isOwner => _outgoing != null;
+
+  void _openFolder(String name) {
+    setState(() {
+      _currentPath = _currentPath.isEmpty ? name : '$_currentPath/$name';
+    });
+  }
+
+  void _goUp() {
+    setState(() {
+      final i = _currentPath.lastIndexOf('/');
+      _currentPath = i >= 0 ? _currentPath.substring(0, i) : '';
+    });
+  }
 
   @override
   void initState() {
@@ -173,9 +193,12 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
     );
     if (confirmed != true) return;
     try {
+      // Non-destructive: keep the underlying cloud object (the file stays in
+      // its category and any other shares); only drop it from this group.
       await CollaborationService.instance.removeFileFromGroup(
         groupId: widget.groupId,
         fileId: file.id,
+        deleteFromStorage: false,
       );
       await _load();
     } catch (e) {
@@ -234,14 +257,22 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final group = _group;
-    final files = group?.files ?? const <CollaborationFile>[];
+    final inSubfolder = _currentPath.isNotEmpty;
+    final items = group == null
+        ? (folders: const <String>[], files: const <CollaborationFile>[])
+        : collabItemsAtPath(group, _currentPath);
+    final hasAnyFiles = (group?.files ?? const <CollaborationFile>[])
+        .any((f) => f.contentType != 'application/x-directory');
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.go('/shared'),
+          tooltip: inSubfolder ? 'Up one folder' : 'Back',
+          onPressed: inSubfolder ? _goUp : () => context.go('/shared'),
         ),
-        title: Text(group?.name ?? 'Collaboration'),
+        title: Text(
+          inSubfolder ? _currentPath.split('/').last : (group?.name ?? 'Collaboration'),
+        ),
         actions: [
           if (_isOwner)
             IconButton(
@@ -258,8 +289,17 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
             PopupMenuButton<String>(
               onSelected: (v) {
                 if (v == 'revoke') _revokeGroup();
+                if (v == 'share_ai') {
+                  showShareWithAiDialog(
+                    context,
+                    groupId: widget.groupId,
+                    groupName: _group?.name ?? 'this group',
+                  );
+                }
               },
               itemBuilder: (ctx) => const [
+                PopupMenuItem(
+                    value: 'share_ai', child: Text('Share with AI Agent')),
                 PopupMenuItem(value: 'revoke', child: Text('Revoke Group')),
               ],
             ),
@@ -274,7 +314,7 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
           ? Center(child: Text('Could not load group.\n$_error'))
           : _loading
               ? const Center(child: CircularProgressIndicator())
-              : files.isEmpty
+              : (group == null || (!hasAnyFiles && !inSubfolder))
                   ? Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -292,43 +332,107 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
                         ],
                       ),
                     )
-                  : ListView.builder(
+                  : ListView(
                       padding: const EdgeInsets.only(bottom: 96),
-                      itemCount: files.length,
-                      itemBuilder: (ctx, i) {
-                        final f = files[i];
-                        return ListTile(
-                          leading: const Icon(
-                              Icons.insert_drive_file_outlined),
-                          title: Text(f.fileName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                            '${_fmtSize(f.fileSize)}  ·  '
-                            '${f.addedAt.toLocal().toString().split('.').first}',
-                            style: const TextStyle(fontSize: 12),
+                      children: [
+                        if (inSubfolder) _breadcrumb(theme),
+                        ...items.folders
+                            .map((name) => _folderTile(theme, group, name)),
+                        if (items.folders.isEmpty && items.files.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.all(32),
+                            child: Center(
+                              child: Text('This folder is empty',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                      color: theme.colorScheme.outline)),
+                            ),
                           ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'Download',
-                                icon:
-                                    const Icon(Icons.download, size: 20),
-                                onPressed: () => _download(f),
-                              ),
-                              if (_isOwner)
-                                IconButton(
-                                  tooltip: 'Remove',
-                                  icon:
-                                      const Icon(LucideIcons.x, size: 18),
-                                  onPressed: () => _removeFile(f),
-                                ),
-                            ],
-                          ),
-                        );
-                      },
+                        ...items.files.map((f) => _fileTile(theme, f)),
+                      ],
                     ),
+    );
+  }
+
+  Widget _breadcrumb(ThemeData theme) {
+    final segments = _currentPath.split('/');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          GestureDetector(
+            onTap: () => setState(() => _currentPath = ''),
+            child: Text('Root',
+                style: TextStyle(color: theme.colorScheme.primary, fontSize: 13)),
+          ),
+          ...List.generate(segments.length, (i) {
+            final path = segments.sublist(0, i + 1).join('/');
+            final isLast = i == segments.length - 1;
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(' / ',
+                    style:
+                        TextStyle(color: theme.colorScheme.outline, fontSize: 13)),
+                GestureDetector(
+                  onTap: isLast ? null : () => setState(() => _currentPath = path),
+                  child: Text(
+                    segments[i],
+                    style: TextStyle(
+                      color: isLast
+                          ? theme.colorScheme.onSurface
+                          : theme.colorScheme.primary,
+                      fontWeight: isLast ? FontWeight.w600 : FontWeight.normal,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _folderTile(ThemeData theme, CollaborationGroup group, String name) {
+    final folderPath = _currentPath.isEmpty ? name : '$_currentPath/$name';
+    final count = collabCountFolderFiles(group, folderPath);
+    return ListTile(
+      leading: const Icon(LucideIcons.folderOpen, color: Colors.amber),
+      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text('$count file${count == 1 ? '' : 's'}',
+          style: const TextStyle(fontSize: 12)),
+      trailing: const Icon(LucideIcons.chevronRight, size: 18),
+      onTap: () => _openFolder(name),
+    );
+  }
+
+  Widget _fileTile(ThemeData theme, CollaborationFile f) {
+    return ListTile(
+      leading: const Icon(Icons.insert_drive_file_outlined),
+      title: Text(f.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        '${_fmtSize(f.fileSize)}  ·  '
+        '${f.addedAt.toLocal().toString().split('.').first}',
+        style: const TextStyle(fontSize: 12),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Download',
+            icon: const Icon(Icons.download, size: 20),
+            onPressed: () => _download(f),
+          ),
+          if (_isOwner)
+            IconButton(
+              tooltip: 'Remove',
+              icon: const Icon(LucideIcons.x, size: 18),
+              onPressed: () => _removeFile(f),
+            ),
+        ],
+      ),
     );
   }
 }

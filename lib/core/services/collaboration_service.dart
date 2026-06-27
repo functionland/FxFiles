@@ -11,6 +11,7 @@ import 'package:fula_files/core/services/fula_api_service.dart' as fula_service;
 import 'package:fula_client/fula_client.dart' as fula;
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
+import 'package:fula_files/features/sharing/utils/collab_folder_add.dart';
 
 /// Gateway base URL for collaboration links
 const String kCollabGatewayBaseUrl = 'https://cloud.fx.land';
@@ -327,6 +328,63 @@ class CollaborationService {
     await _updateOutgoingCollaboration(updated);
 
     return collabFile;
+  }
+
+  /// Add every file under [folderPrefix] in [bucket] to the group (REQ2).
+  ///
+  /// Enumerates the cloud folder via `listObjects(prefix)` and loops
+  /// [addFileToGroup], PRESERVING each object's `pathScope` (its storage key)
+  /// so the per-file fula share token binds to the right object. Directories and
+  /// the hidden `.fula_keep` folder markers are skipped, as are files already in
+  /// the group (idempotent re-add). A per-file failure is non-fatal — it is
+  /// counted as skipped and the rest continue.
+  ///
+  /// [folderPrefix] is a key prefix inside [bucket] (`''` = the whole bucket).
+  /// Returns `(added, skipped)`. Each [addFileToGroup] re-publishes the manifest,
+  /// so this is O(n) manifest writes — fine for typical folders; a future
+  /// optimization could batch a single manifest write.
+  Future<({int added, int skipped})> addFolderToGroup({
+    required String groupId,
+    required String bucket,
+    required String folderPrefix,
+  }) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    if (outgoing == null) {
+      throw CollaborationException('Group not found: $groupId');
+    }
+    _assertNotExpired(outgoing.group);
+
+    final objects = await fula_service.FulaApiService.instance
+        .listObjects(bucket, prefix: folderPrefix);
+
+    // pathScopes already in the group at the start → skip (idempotent).
+    final existing = outgoing.group.files
+        .map((f) => f.pathScope)
+        .whereType<String>()
+        .toSet();
+    final plan = planCollabFolderAdd(objects, existing);
+
+    var added = 0;
+    var skipped = plan.skipped;
+    for (final obj in plan.toAdd) {
+      try {
+        await addFileToGroup(
+          groupId: groupId,
+          pathScope: obj.key,
+          bucket: obj.sourceBucket ?? bucket,
+          fileName: obj.name,
+          fileSize: obj.size,
+          contentType: obj.metadata?['content-type'],
+        );
+        added++;
+      } catch (e) {
+        debugPrint('[CollabService] addFolderToGroup: skipped ${obj.key}: $e');
+        skipped++;
+      }
+    }
+    debugPrint('[CollabService] addFolderToGroup($bucket/$folderPrefix): '
+        'added=$added skipped=$skipped');
+    return (added: added, skipped: skipped);
   }
 
   /// Parse manifest data, handling both plaintext JSON and encrypted formats.

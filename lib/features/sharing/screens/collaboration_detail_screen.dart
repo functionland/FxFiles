@@ -7,7 +7,10 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
+import 'package:fula_files/core/services/file_service.dart' show FileCategory;
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
+import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
+import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
 
 class CollaborationDetailScreen extends ConsumerStatefulWidget {
   final String groupId;
@@ -41,7 +44,8 @@ class _CollaborationDetailScreenState
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(collaborationProvider);
+    // Subscribe so the screen rebuilds when the collaboration state changes.
+    ref.watch(collaborationProvider);
     final notifier = ref.read(collaborationProvider.notifier);
     final group = notifier.getGroup(widget.groupId);
     final isOwner = notifier.isOwner(widget.groupId);
@@ -85,7 +89,7 @@ class _CollaborationDetailScreenState
             onPressed: _isRefreshing ? null : _refreshGroup,
           ),
           PopupMenuButton<String>(
-            onSelected: (value) => _handleMenuAction(value, notifier),
+            onSelected: (value) => _handleMenuAction(value, notifier, group.name),
             itemBuilder: (context) {
               final allGroups = ref.read(collaborationProvider).allGroups;
               CollabGroupEntry? entry;
@@ -96,6 +100,16 @@ class _CollaborationDetailScreenState
               final isSyncing = entry?.syncEnabled ?? false;
 
               return [
+                const PopupMenuItem(
+                  value: 'add_folder',
+                  child: Row(
+                    children: [
+                      Icon(LucideIcons.folderPlus, size: 18),
+                      SizedBox(width: 8),
+                      Text('Add Folder'),
+                    ],
+                  ),
+                ),
                 if (_isDesktop) ...[
                   PopupMenuItem(
                     value: 'assign_folder',
@@ -133,6 +147,17 @@ class _CollaborationDetailScreenState
                 ],
                 if (isOwner)
                   const PopupMenuItem(
+                    value: 'share_ai',
+                    child: Row(
+                      children: [
+                        Icon(LucideIcons.bot, size: 18),
+                        SizedBox(width: 8),
+                        Text('Share with AI Agent'),
+                      ],
+                    ),
+                  ),
+                if (isOwner)
+                  const PopupMenuItem(
                     value: 'revoke',
                     child: Row(
                       children: [
@@ -160,68 +185,13 @@ class _CollaborationDetailScreenState
     );
   }
 
-  /// Compute folders and files visible at _currentPath
-  ({List<String> folders, List<CollaborationFile> files}) _itemsAtPath(CollaborationGroup group) {
-    final folderSet = <String>{};
-    final filesHere = <CollaborationFile>[];
-
-    for (final file in group.files) {
-      // Only collab-uploaded files use pathScope as folder path.
-      // Fula files have pathScope as storage key — show at root.
-      final filePath = file.encType == 'collab' ? (file.pathScope ?? '') : '';
-      final isFolder = file.contentType == 'application/x-directory';
-
-      if (_currentPath.isEmpty) {
-        if (filePath.isEmpty) {
-          if (!isFolder) filesHere.add(file);
-        } else {
-          folderSet.add(filePath.split('/')[0]);
-        }
-      } else {
-        if (filePath == _currentPath && !isFolder) {
-          filesHere.add(file);
-        } else if (filePath.startsWith('$_currentPath/')) {
-          final remainder = filePath.substring(_currentPath.length + 1);
-          folderSet.add(remainder.split('/')[0]);
-        }
-      }
-    }
-
-    // Also pick up explicit folder markers at this level
-    for (final file in group.files) {
-      if (file.contentType == 'application/x-directory' && file.pathScope != null) {
-        final parent = file.pathScope!.contains('/')
-            ? file.pathScope!.substring(0, file.pathScope!.lastIndexOf('/'))
-            : '';
-        if (parent == _currentPath) {
-          final name = file.pathScope!.substring(parent.isEmpty ? 0 : parent.length + 1);
-          if (name.isNotEmpty && !name.contains('/')) {
-            folderSet.add(name);
-          }
-        }
-      }
-    }
-
-    final sortedFolders = folderSet.toList()..sort((a, b) => a.compareTo(b));
-    filesHere.sort((a, b) => a.addedAt.compareTo(b.addedAt));
-    return (folders: sortedFolders, files: filesHere);
-  }
-
-  int _countFolderFiles(CollaborationGroup group, String folderPath) {
-    return group.files.where((f) {
-      final p = f.encType == 'collab' ? (f.pathScope ?? '') : '';
-      return (p == folderPath || p.startsWith('$folderPath/')) &&
-          f.contentType != 'application/x-directory';
-    }).length;
-  }
-
   Widget _buildFileList(
     BuildContext context,
     CollaborationGroup group,
     bool isOwner,
   ) {
     final theme = Theme.of(context);
-    final items = _itemsAtPath(group);
+    final items = collabItemsAtPath(group, _currentPath);
     final totalFiles = group.files.where((f) => f.contentType != 'application/x-directory').length;
 
     final headerWidgets = <Widget>[];
@@ -391,7 +361,7 @@ class _CollaborationDetailScreenState
         if (itemIndex < items.folders.length) {
           final folderName = items.folders[itemIndex];
           final folderPath = _currentPath.isEmpty ? folderName : '$_currentPath/$folderName';
-          final fileCount = _countFolderFiles(group, folderPath);
+          final fileCount = collabCountFolderFiles(group, folderPath);
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
             color: theme.brightness == Brightness.dark
@@ -485,21 +455,70 @@ class _CollaborationDetailScreenState
                 ),
               ],
             ),
-            trailing: isDownloading
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Icon(
-                    LucideIcons.download,
-                    size: 18,
-                    color: theme.colorScheme.primary,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                isDownloading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        LucideIcons.download,
+                        size: 18,
+                        color: theme.colorScheme.primary,
+                      ),
+                if (isOwner)
+                  IconButton(
+                    tooltip: 'Remove from group',
+                    icon: Icon(LucideIcons.x,
+                        size: 18, color: theme.colorScheme.outline),
+                    onPressed:
+                        isDownloading ? null : () => _removeFile(file),
                   ),
+              ],
+            ),
           ),
         );
       },
     );
+  }
+
+  /// Remove a file from the group WITHOUT deleting the underlying cloud object
+  /// (`deleteFromStorage: false`) — the file stays in its category and any
+  /// other shares; only its membership in this collaboration is revoked.
+  Future<void> _removeFile(CollaborationFile file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove file?'),
+        content: Text(
+          '"${file.fileName}" will be removed from this group. '
+          'The original file stays in your cloud storage.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final ok = await ref
+        .read(collaborationProvider.notifier)
+        .removeFile(widget.groupId, file.id, deleteFromStorage: false);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'File removed' : 'Remove failed')),
+      );
+    }
   }
 
   Future<void> _downloadFile(CollaborationFile file) async {
@@ -552,7 +571,20 @@ class _CollaborationDetailScreenState
     }
   }
 
-  void _handleMenuAction(String action, CollaborationNotifier notifier) async {
+  void _handleMenuAction(
+      String action, CollaborationNotifier notifier, String groupName) async {
+    if (action == 'share_ai') {
+      await showShareWithAiDialog(
+        context,
+        groupId: widget.groupId,
+        groupName: groupName,
+      );
+      return;
+    }
+    if (action == 'add_folder') {
+      await _addFolder();
+      return;
+    }
     if (action == 'revoke') {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -644,6 +676,103 @@ class _CollaborationDetailScreenState
         content: Text('Navigate to your cloud files and share them to this group'),
       ),
     );
+  }
+
+  /// REQ2: add every file in a chosen cloud folder to the group. Pick a category
+  /// (bucket) + an optional subfolder, then enumerate + add (preserving each
+  /// file's pathScope) via the collaboration provider.
+  Future<void> _addFolder() async {
+    var category = FileCategory.documents;
+    final prefixController = TextEditingController();
+    const categories = [
+      FileCategory.images,
+      FileCategory.videos,
+      FileCategory.audio,
+      FileCategory.documents,
+      FileCategory.downloads,
+      FileCategory.archives,
+    ];
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Add a Folder'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'All files in this cloud folder will be added to the group.',
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<FileCategory>(
+                initialValue: category,
+                decoration: const InputDecoration(
+                  labelText: 'Category',
+                  border: OutlineInputBorder(),
+                ),
+                items: categories
+                    .map((c) => DropdownMenuItem(
+                          value: c,
+                          child: Text(
+                              c.name[0].toUpperCase() + c.name.substring(1)),
+                        ))
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) category = v;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: prefixController,
+                decoration: const InputDecoration(
+                  labelText: 'Subfolder (optional)',
+                  hintText: 'e.g. trip-2024/photos',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      // Folder semantics: scope to the prefix as a directory.
+      var prefix = prefixController.text.trim();
+      if (prefix.isNotEmpty && !prefix.endsWith('/')) prefix = '$prefix/';
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Adding folder…')),
+      );
+      final result = await ref.read(collaborationProvider.notifier).addFolder(
+            groupId: widget.groupId,
+            bucket: category.bucketName,
+            folderPrefix: prefix,
+          );
+      if (!mounted) return;
+      final String msg;
+      if (result == null) {
+        msg = ref.read(collaborationProvider).error ?? 'Failed to add folder';
+      } else if (result.added == 0) {
+        msg = 'No new files found in that folder';
+      } else {
+        msg = 'Added ${result.added} file${result.added == 1 ? '' : 's'}'
+            '${result.skipped > 0 ? ' (${result.skipped} skipped)' : ''}';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } finally {
+      prefixController.dispose();
+    }
   }
 
   IconData _getFileIcon(String? contentType) {

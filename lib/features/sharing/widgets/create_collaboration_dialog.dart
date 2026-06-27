@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +7,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/features/sharing/providers/collaboration_provider.dart';
+import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
 
 /// Show the create collaboration group dialog.
 ///
@@ -50,6 +50,7 @@ class _CreateCollaborationDialogState
   bool _isLoading = false;
   String? _error;
   String? _generatedLink;
+  String? _createdGroupId; // Set once the group is created (for AI sharing).
   String? _localFolderPath; // Desktop: optional local folder for sync
 
   // Files selected for the group (added from cloud browser)
@@ -133,6 +134,16 @@ class _CreateCollaborationDialogState
             },
             child: const Text('Copy Link'),
           ),
+          if (_createdGroupId != null)
+            TextButton.icon(
+              onPressed: () => showShareWithAiDialog(
+                context,
+                groupId: _createdGroupId!,
+                groupName: _nameController.text.trim(),
+              ),
+              icon: const Icon(LucideIcons.bot, size: 16),
+              label: const Text('Share with AI'),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context, _generatedLink),
             child: const Text('Done'),
@@ -369,15 +380,21 @@ class _CreateCollaborationDialogState
           );
 
       if (link != null && mounted) {
+        // Extract the group ID from the link (for folder sync + AI sharing).
+        String? groupId;
+        try {
+          final payload = CollaborationService.parseCollaborationLink(link);
+          groupId = payload?['g'] as String?;
+        } catch (e) {
+          debugPrint('[CreateCollabDialog] Could not parse group id: $e');
+        }
+
         // If a local folder was selected, assign it and start sync
-        if (_localFolderPath != null) {
-          // Extract group ID from the link
+        if (_localFolderPath != null && groupId != null) {
           try {
-            final payload = CollaborationService.parseCollaborationLink(link);
-            if (payload != null) {
-              final groupId = payload['g'] as String;
-              await ref.read(collaborationProvider.notifier).assignFolder(groupId, _localFolderPath!);
-            }
+            await ref
+                .read(collaborationProvider.notifier)
+                .assignFolder(groupId, _localFolderPath!);
           } catch (e) {
             debugPrint('[CreateCollabDialog] Folder assignment failed: $e');
           }
@@ -385,6 +402,7 @@ class _CreateCollaborationDialogState
 
         setState(() {
           _generatedLink = link;
+          _createdGroupId = groupId;
           _isLoading = false;
         });
       } else {
