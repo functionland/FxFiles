@@ -85,8 +85,6 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
                 const Divider(height: 1),
                 _syncQueueSection(context),
                 const Divider(height: 1),
-                _aiConnectionsSection(context),
-                const Divider(height: 1),
                 _otherSection(context),
                 const Divider(height: 1),
                 _aboutSection(context),
@@ -378,23 +376,6 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           subtitle: const Text('Manage in-progress and queued uploads'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.go('/sync-queue'),
-        ),
-      ],
-    );
-  }
-
-  // AI Connections — pair an AI client (MCP) with the user's encrypted
-  // workspace. Mirrors the native settings entry; reuses AiConnectionsScreen.
-  Widget _aiConnectionsSection(BuildContext context) {
-    return _Section(
-      label: 'AI CONNECTIONS',
-      children: [
-        ListTile(
-          leading: const Icon(Icons.smart_toy_outlined),
-          title: const Text('AI Connections'),
-          subtitle: const Text('Pair an AI client (MCP) with your workspace'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => context.push('/ai-connections'),
         ),
       ],
     );

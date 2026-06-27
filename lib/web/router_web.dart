@@ -2,7 +2,6 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/core/services/wallet_service.dart'
     show walletNavigatorKey;
-import 'package:fula_files/features/ai_connections/screens/ai_connections_screen.dart';
 import 'package:fula_files/web/screens/web_api_config_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
@@ -72,10 +71,6 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/cloud-files',
         builder: (context, state) => const WebCloudFilesScreen(),
-      ),
-      GoRoute(
-        path: '/ai-connections',
-        builder: (context, state) => const AiConnectionsScreen(),
       ),
       GoRoute(
         path: '/b/:base',
