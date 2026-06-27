@@ -44,7 +44,6 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
-import 'package:fula_files/features/ai_connections/services/web_hosted_oauth.dart';
 import 'package:fula_files/web/app_web.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_features.dart';
@@ -68,13 +67,6 @@ String get _e2eSeed => !_e2eEnabled
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // CAPTURE (hosted-AI web OAuth): read ?code/state/iss/error from the redirect
-  // URL and strip the query, BEFORE the hash router can rewrite the location.
-  // The query precedes the # fragment, so it survives hash routing only if read
-  // this early. No-op when this is not an OAuth redirect (normal startup). The
-  // actual connection is completed later, from the post-login web home init.
-  captureWebOauthRedirect();
 
   Object? bootError;
   var restored = false;

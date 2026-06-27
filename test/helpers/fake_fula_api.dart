@@ -335,124 +335,13 @@ class FakeFulaApi implements FulaApi {
             .toList();
   }
 
-  // ---- AI workspace (P14) ----
-
-  /// Gate flag: whether the user has an AI connection. Defaults to FALSE so the
-  /// common (non-AI) test path exercises the no-op gate. Set true to simulate
-  /// "an AI connection exists" and unlock the workspace list/download stubs.
-  bool aiConnectionExists = false;
-
-  /// Per-`(bucket, key)` byte payloads for [downloadWorkspaceObject]. Same key
-  /// format as [downloadResponseFor]: `"$bucket:$key"`.
-  Map<String, Uint8List> workspaceDownloadResponseFor = <String, Uint8List>{};
-
-  int hasAiConnectionCalls = 0;
-  final Map<String, int> listWorkspaceObjectsCalls = <String, int>{};
-  final Map<String, int> downloadWorkspaceCalls = <String, int>{};
-
-  @override
-  Future<bool> hasAiConnection() async {
-    hasAiConnectionCalls++;
-    return aiConnectionExists;
-  }
-
-  @override
-  Future<List<FulaObject>> listWorkspaceObjects(
-    String bucket, {
-    String prefix = '',
-  }) async {
-    // Honor the gate EXACTLY like the real FulaApiService: no connection → no
-    // read, return empty. (Keeps real/fake gate semantics identical so a test
-    // can't pass a path the real code never reaches.)
-    if (!aiConnectionExists) return const <FulaObject>[];
-    listWorkspaceObjectsCalls[bucket] =
-        (listWorkspaceObjectsCalls[bucket] ?? 0) + 1;
-    final all = objectsResponseFor[bucket] ?? const <FulaObject>[];
-    final filtered =
-        prefix.isEmpty ? all : all.where((f) => f.key.startsWith(prefix));
-    // Tag with the workspace bucket, mirroring the real implementation.
-    return filtered.map((o) => o.withSourceBucket(bucket)).toList();
-  }
-
-  @override
-  Future<Uint8List> downloadWorkspaceObject(String bucket, String key) async {
-    if (!aiConnectionExists) {
-      throw FulaApiException('FakeFulaApi: no AI connection');
-    }
-    final composite = '$bucket:$key';
-    downloadWorkspaceCalls[composite] =
-        (downloadWorkspaceCalls[composite] ?? 0) + 1;
-    final bytes = workspaceDownloadResponseFor[composite];
-    if (bytes == null) {
-      throw FulaApiException(
-        'FakeFulaApi.downloadWorkspaceObject: no stub for "$composite"',
-      );
-    }
-    return bytes;
-  }
-
-  // ---- AI-aware download routing (P14.1) ----
-  // Mirror the real FulaApiService: route by sourceBucket to the workspace
-  // stub vs the normal download stub. `implements FulaApi` does not inherit
-  // the interface's default bodies, so these copies are the live ones.
-
   @override
   Future<Uint8List> downloadBySourceBucket(
           String bucket, String key, String? sourceBucket) =>
-      sourceBucket == FulaApi.aiWorkspaceBucket
-          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
-          : downloadObject(bucket, key);
+      downloadObject(bucket, key);
 
   @override
   Future<Uint8List> downloadBySourceBucketWithLocalFallback(
           String bucket, String key, String? sourceBucket) =>
-      sourceBucket == FulaApi.aiWorkspaceBucket
-          ? downloadWorkspaceObject(FulaApi.aiWorkspaceBucket, key)
-          : downloadWithLocalFallback(bucket, key);
-
-  // ---- AI-aware WRITE / DELETE (move-as-access-control) ----
-  /// Bytes written via [uploadWorkspaceObject], keyed `"$bucket:$key"`.
-  final Map<String, Uint8List> workspaceUploadResponseFor = <String, Uint8List>{};
-  final Map<String, int> workspaceUploadCalls = <String, int>{};
-  final Map<String, int> workspaceDeleteCalls = <String, int>{};
-
-  @override
-  Future<void> uploadWorkspaceObject(
-    String bucket,
-    String key,
-    Uint8List bytes, {
-    String? contentType,
-  }) async {
-    if (!aiConnectionExists) {
-      throw FulaApiException('FakeFulaApi: no AI connection (upload)');
-    }
-    final composite = '$bucket:$key';
-    workspaceUploadCalls[composite] = (workspaceUploadCalls[composite] ?? 0) + 1;
-    workspaceUploadResponseFor[composite] = bytes;
-    // Mirror the real forest-tracked put: make it READABLE + ENUMERABLE.
-    workspaceDownloadResponseFor[composite] = bytes;
-    final list = objectsResponseFor[bucket] ?? const <FulaObject>[];
-    if (!list.any((o) => o.key == key)) {
-      objectsResponseFor[bucket] = [
-        ...list,
-        FulaObject(key: key, size: bytes.length),
-      ];
-    }
-  }
-
-  @override
-  Future<void> deleteWorkspaceObject(String bucket, String key) async {
-    if (!aiConnectionExists) {
-      throw FulaApiException('FakeFulaApi: no AI connection (delete)');
-    }
-    final composite = '$bucket:$key';
-    workspaceDeleteCalls[composite] = (workspaceDeleteCalls[composite] ?? 0) + 1;
-    // Mirror delete_flat removing the forest entry + the blob: a post-delete
-    // list / read no longer surfaces it (the revoke is real).
-    workspaceDownloadResponseFor.remove(composite);
-    final list = objectsResponseFor[bucket];
-    if (list != null) {
-      objectsResponseFor[bucket] = [for (final o in list) if (o.key != key) o];
-    }
-  }
+      downloadWithLocalFallback(bucket, key);
 }

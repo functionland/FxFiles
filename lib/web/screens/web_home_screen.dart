@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -8,7 +6,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
-import 'package:fula_files/features/ai_connections/services/web_hosted_oauth.dart';
 import 'package:fula_files/web/screens/web_settings_screen.dart' show kWebAppVersion;
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
@@ -68,26 +65,6 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     // Self-delays per device class (§8.1), yields to foreground ops, and is
     // idempotent across home revisits.
     WebPrefetchScheduler.instance.start();
-    // COMPLETE the hosted-AI web OAuth, IF a code was captured at startup AND a
-    // pending txn is in sessionStorage. Placed HERE because the user's KEK +
-    // pinning session are guaranteed available once signed in (which is exactly
-    // what createHostedConnection needs). Idempotent + fail-closed: it clears
-    // the one-shot state on every outcome and shows its own success/failure
-    // SnackBar, so a no-op on a normal sign-in is silent. Fire-and-forget.
-    unawaited(_completeHostedOauthIfAny());
-  }
-
-  /// Drive the post-redirect hosted-AI OAuth completion (web only; a no-op
-  /// stub on native). Logged but never allowed to throw into initState.
-  Future<void> _completeHostedOauthIfAny() async {
-    try {
-      final outcome = await completeWebHostedOauthIfPending();
-      if (outcome != WebOauthCompleteOutcome.none) {
-        debugPrint('hosted OAuth completion: $outcome');
-      }
-    } catch (e) {
-      debugPrint('hosted OAuth completion error: $e');
-    }
   }
 
   void _onSession() {
