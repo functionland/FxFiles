@@ -10,7 +10,7 @@ import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/core/utils/user_id.dart';
-import 'package:fula_files/features/ai_connections/services/ai_connection_service.dart';
+import 'package:fula_files/features/sharing/services/mcp_connection_minter.dart';
 
 /// Official hosted MCP Worker base (Method-2 hosted transport).
 const String kHostedMcpBaseUrl = 'https://mcp.cloud.fx.land';
@@ -174,7 +174,7 @@ class CollabAiPairingService {
   }
 
   /// Web-safe issuer base (billing-server override, else cloud.fx.land) — mirrors
-  /// `AiConnectionService` so the mint/authorize/refresh all target one origin.
+  /// `McpConnectionMinter` so the mint/authorize/refresh all target one origin.
   Future<String> _issuerBaseUrl() async {
     final stored = await SecureStorageService.instance
         .read(SecureStorageKeys.billingServerUrl);
@@ -284,9 +284,9 @@ class CollabAiPairingService {
   ///
   /// The shape MUST match `fula-api/crates/fula-mcp/src/capability.rs`'s
   /// `CapabilityBundleJson` (snake_case field names are load-bearing — Rust
-  /// `#[derive(Deserialize)]`). This is a THIRD capability shape, DISTINCT from
-  /// `AiConnectionService.buildBundleJson` / `buildCapabilityJson` (the workspace
-  /// model) — do NOT reuse those.
+  /// `#[derive(Deserialize)]`). This is the collaboration-specific capability
+  /// shape — keep it matched to capability.rs's `CapabilityBundleJson`; it is
+  /// DISTINCT from the per-connection bundle shape and must not be conflated.
   ///
   /// Required: `webui_base, group_id, manifest_bucket, manifest_key,
   /// wrapped_link_secret`. Optional (emitted only when non-empty):
@@ -361,7 +361,7 @@ class CollabAiPairingService {
   ///
   /// Steps: resolve the owner group + link secret → decode the `FULA-…` id to the
   /// AI's X25519 pubkey → wrap the link secret for it ([wrapLinkSecret] seam) →
-  /// register/refresh the AI connection ([AiConnectionService.mintConnectionToken],
+  /// register/refresh the AI connection ([McpConnectionMinter.mintConnectionToken],
   /// binding the AI pubkey) → authorize the group ([authorizeCollabGroups]) →
   /// build the capability + both platform configs.
   ///
@@ -429,7 +429,7 @@ class CollabAiPairingService {
 
     // Register (or refresh) the AI connection bound to its pubkey → connectionId
     // + the separate refresh credential. Reuses the existing L1d mint.
-    final minted = await AiConnectionService.instance.mintConnectionToken(
+    final minted = await McpConnectionMinter.instance.mintConnectionToken(
       mcpPublicKeyB64: base64Encode(recipientPublicKey),
       httpClient: httpClient,
     );
