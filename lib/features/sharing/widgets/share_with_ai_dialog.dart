@@ -175,6 +175,17 @@ class _ShareWithAiDialogState extends State<_ShareWithAiDialog> {
             ],
           ),
         ),
+        const SizedBox(height: 12),
+        // How to connect a web AI + get its Fula id (Flow A + Flow B step 2).
+        _noteBox(
+          theme,
+          LucideIcons.info,
+          'To connect a web AI (Claude / ChatGPT): add a custom connector for the '
+          'URL below and sign in with the SAME Google account as FxFiles. Then ask '
+          'the AI "What is your Fula identity?" and paste the FULA-… id it returns.',
+        ),
+        const SizedBox(height: 8),
+        _copyBox(theme, 'Connector URL', '$kHostedMcpBaseUrl/mcp'),
         const SizedBox(height: 16),
         TextField(
           controller: _idController,
@@ -218,14 +229,12 @@ class _ShareWithAiDialogState extends State<_ShareWithAiDialog> {
   }
 
   Widget _buildResult(ThemeData theme) {
-    final config =
-        _showHosted ? _result!.hostedConfig : _result!.localStdioConfig;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'The group is authorized. Add this configuration to your AI agent:',
+          'The group "${widget.groupName}" is authorized for this AI.',
           style: theme.textTheme.bodyMedium,
         ),
         const SizedBox(height: 12),
@@ -238,12 +247,12 @@ class _ShareWithAiDialogState extends State<_ShareWithAiDialog> {
           onSelectionChanged: (s) => setState(() => _showHosted = s.first),
         ),
         const SizedBox(height: 12),
-        _copyBox(theme, _showHosted ? 'Hosted config' : 'Desktop config', config),
+        ...(_showHosted ? _buildHostedResult(theme) : _buildDesktopResult(theme)),
         const SizedBox(height: 16),
         Text(
-          'Or share the collaboration link — note it carries the RAW group key '
-          'in its fragment (less protected than the wrapped key in the config '
-          'above); prefer the config when your agent supports it.',
+          'Or share the collaboration link — note it carries the RAW group key in '
+          'its fragment (less protected than the wrapped key above); prefer the '
+          'connector / config when your agent supports it.',
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.outline),
         ),
@@ -252,6 +261,47 @@ class _ShareWithAiDialogState extends State<_ShareWithAiDialog> {
             theme, 'Collaboration link (raw group key)', _result!.fallbackCollabUrl),
       ],
     );
+  }
+
+  /// Desktop (local-stdio): the AI client reads the capability from an env var, so
+  /// we hand the user the config to paste.
+  List<Widget> _buildDesktopResult(ThemeData theme) {
+    return [
+      Text('Add this configuration to your desktop AI agent:',
+          style: theme.textTheme.bodySmall),
+      const SizedBox(height: 8),
+      _copyBox(theme, 'Desktop config', _result!.localStdioConfig),
+    ];
+  }
+
+  /// Mobile / Web (hosted connector): delivery is via the hosted service (C1) —
+  /// there is NO config to paste when the bundle was delivered. If delivery
+  /// failed, the hosted browser path is unavailable, so point at Desktop / the link.
+  List<Widget> _buildHostedResult(ThemeData theme) {
+    if (_result!.bundleDelivered) {
+      return [
+        _noteBox(
+          theme,
+          LucideIcons.cloud,
+          'Your AI is connected to this group via the hosted Fula connector — '
+          'nothing to paste. Make sure it added the connector below (signed in '
+          'with the same Google account), then try: "List the files in my Fula '
+          'collaboration" or "Save this note to my Fula group."',
+        ),
+        const SizedBox(height: 8),
+        _copyBox(theme, 'Connector URL', '$kHostedMcpBaseUrl/mcp'),
+      ];
+    }
+    return [
+      _noteBox(
+        theme,
+        LucideIcons.alertTriangle,
+        'Couldn\'t set up the hosted (browser) connection'
+        '${_result!.bundleError != null ? ': ${_result!.bundleError}' : ''}. '
+        'Share the collaboration link below instead (or use the Desktop option '
+        'on a computer).',
+      ),
+    ];
   }
 
   Widget _noteBox(ThemeData theme, IconData icon, String text) {

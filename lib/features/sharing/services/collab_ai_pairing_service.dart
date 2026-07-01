@@ -100,11 +100,25 @@ class CollabAiPairing {
   /// the group without the wrapped-secret binding.
   final String fallbackCollabUrl;
 
+  /// True iff the wrapped link secret + pointers were successfully uploaded to
+  /// pinning-webui (C1: `POST /api/mcp/connections/bundle`). This is REQUIRED for
+  /// the HOSTED browser AI path — the Worker fetches the bundle by the agent's
+  /// pubkey (C2) with no env var. The DESKTOP local-stdio config carries the
+  /// capability itself and works regardless, so a false here NEVER fails pairing;
+  /// it only means the dialog must not claim the hosted AI is ready.
+  final bool bundleDelivered;
+
+  /// A short, secret-free reason the C1 upload failed (shown in the dialog when
+  /// the hosted path is unavailable), or null on success.
+  final String? bundleError;
+
   const CollabAiPairing({
     required this.capabilityJson,
     required this.localStdioConfig,
     required this.hostedConfig,
     required this.fallbackCollabUrl,
+    this.bundleDelivered = false,
+    this.bundleError,
   });
 }
 
@@ -279,6 +293,68 @@ class CollabAiPairingService {
     }
   }
 
+  /// Upload the delivered collab bundle to pinning-webui (C1:
+  /// `POST {issuerBase}/api/mcp/connections/bundle`, session-JWT auth) so the
+  /// HOSTED MCP Worker can fetch it BY PUBKEY (C2) — the browser-AI path that
+  /// CANNOT receive an env-var capability. Pins the exact connection via
+  /// [connectionId]; the server additionally requires [groupId] to already be
+  /// authorized on that connection, so this MUST run AFTER [authorizeCollabGroups].
+  ///
+  /// `wrapped_link_secret` is CIPHERTEXT (the v5 ShareToken) — safe to store.
+  /// `webui_base` is intentionally OMITTED: the server derives it from its own
+  /// request origin (never a client value). Throws [CollabPairingException] on a
+  /// missing session JWT or a non-2xx / malformed response — the caller treats a
+  /// failure as "hosted path unavailable" WITHOUT failing the whole pairing (the
+  /// desktop config still works). [httpClient] is injected for tests.
+  Future<void> uploadCollabBundle({
+    required String connectionId,
+    required String mcpPublicKeyB64,
+    required String groupId,
+    required String manifestBucket,
+    required String manifestKey,
+    required String wrappedLinkSecret,
+    http.Client? httpClient,
+  }) async {
+    final sessionJwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    if (sessionJwt == null || sessionJwt.isEmpty) {
+      throw CollabPairingException(
+        'Not signed in. Please sign in before sharing with an AI agent.',
+      );
+    }
+    final base = await _issuerBaseUrl();
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await client
+          .post(
+            Uri.parse('$base/api/mcp/connections/bundle'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $sessionJwt',
+            },
+            // `webui_base` is omitted on purpose (C2 derives it server-side).
+            body: jsonEncode({
+              'mcp_pub_b64': mcpPublicKeyB64,
+              'connection_id': connectionId,
+              'group_id': groupId,
+              'manifest_bucket': manifestBucket,
+              'manifest_key': manifestKey,
+              'wrapped_link_secret': wrappedLinkSecret,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw CollabPairingException(
+          'Failed to deliver the AI bundle to the hosted service: '
+          '${response.statusCode} - ${_clip(response.body)}',
+        );
+      }
+    } finally {
+      if (httpClient == null) client.close();
+    }
+  }
+
   /// Build the MCP **collaboration** capability JSON. PURE (no I/O) — every value
   /// is passed in, so it is fully unit-testable.
   ///
@@ -448,6 +524,31 @@ class CollabAiPairingService {
       httpClient: httpClient,
     );
 
+    // Deliver the bundle to pinning-webui (C1) so a HOSTED browser AI can fetch it
+    // by pubkey (C2) with no env var. NON-FATAL: the desktop local-stdio config
+    // below carries the capability itself and works without C1, so a failure here
+    // only disables the hosted "ready" path (surfaced via `bundleDelivered`) — it
+    // must never fail the whole pairing (which would regress the working desktop flow).
+    bool bundleDelivered = false;
+    String? bundleError;
+    try {
+      await uploadCollabBundle(
+        connectionId: connectionId,
+        mcpPublicKeyB64: base64Encode(recipientPublicKey),
+        groupId: groupId,
+        manifestBucket: group.manifestBucket,
+        manifestKey: group.manifestKey,
+        wrappedLinkSecret: wrappedLinkSecret,
+        httpClient: httpClient,
+      );
+      bundleDelivered = true;
+    } catch (e) {
+      bundleError = e is CollabPairingException ? e.message : e.toString();
+      if (kDebugMode) {
+        debugPrint('[collab-ai] hosted bundle upload failed (desktop path unaffected): $bundleError');
+      }
+    }
+
     final issuerBase = await _issuerBaseUrl();
     String? userId;
     try {
@@ -477,6 +578,8 @@ class CollabAiPairingService {
       localStdioConfig: buildLocalStdioMcpConfig(capabilityJson),
       hostedConfig: buildHostedMcpConfig(capabilityJson),
       fallbackCollabUrl: fallbackUrl,
+      bundleDelivered: bundleDelivered,
+      bundleError: bundleError,
     );
   }
 

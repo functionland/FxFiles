@@ -318,4 +318,123 @@ void main() {
       );
     });
   });
+
+  group('uploadCollabBundle (C1 — hosted delivery)', () {
+    late Map<String, String> store;
+
+    setUp(() async {
+      store = <String, String>{};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_secureStorageChannel, (call) async {
+        final args =
+            (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
+        switch (call.method) {
+          case 'read':
+            return store[args['key'] as String];
+          case 'write':
+            store[args['key'] as String] = args['value'] as String;
+            return null;
+          case 'delete':
+            store.remove(args['key'] as String);
+            return null;
+          case 'deleteAll':
+            store.clear();
+            return null;
+          case 'containsKey':
+            return store.containsKey(args['key'] as String);
+          case 'readAll':
+            return Map<String, String>.from(store);
+          default:
+            return null;
+        }
+      });
+      await SecureStorageService.instance.init();
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_secureStorageChannel, null);
+    });
+
+    // REAL-shaped manifest values (what CollaborationService produces) so this
+    // test doubles as a lock on the S1 C1 validator: bucket 'fula-metadata'
+    // matches ^[A-Za-z0-9][A-Za-z0-9._-]*$ and the key has no leading '/' / '..'.
+    const realBucket = 'fula-metadata';
+    const realKey = '.fula/collab/g1/manifest.json';
+    final pubB64 = base64Encode(
+        Uint8List.fromList(List<int>.generate(32, (i) => i + 1)));
+
+    test('POSTs the bundle to /api/mcp/connections/bundle (session JWT; webui_base omitted)',
+        () async {
+      await SecureStorageService.instance
+          .write(SecureStorageKeys.jwtToken, 'test-jwt');
+      http.Request? seen;
+      final client = MockClient((req) async {
+        seen = req;
+        return http.Response(
+          jsonEncode({'ok': true, 'connectionId': 'conn-1', 'groupId': 'g1'}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      await CollabAiPairingService.instance.uploadCollabBundle(
+        connectionId: 'conn-1',
+        mcpPublicKeyB64: pubB64,
+        groupId: 'g1',
+        manifestBucket: realBucket,
+        manifestKey: realKey,
+        wrappedLinkSecret: '{"id":"tok","version":5}',
+        httpClient: client,
+      );
+
+      expect(seen!.method, 'POST');
+      expect(seen!.url.path, '/api/mcp/connections/bundle');
+      expect(seen!.headers['Authorization'], 'Bearer test-jwt');
+      final body = jsonDecode(seen!.body) as Map<String, dynamic>;
+      expect(body['mcp_pub_b64'], pubB64);
+      expect(body['connection_id'], 'conn-1');
+      expect(body['group_id'], 'g1');
+      expect(body['manifest_bucket'], realBucket);
+      expect(body['manifest_key'], realKey);
+      expect(body['wrapped_link_secret'], '{"id":"tok","version":5}');
+      // webui_base is intentionally NOT sent (C2 derives it server-side).
+      expect(body.containsKey('webui_base'), isFalse);
+    });
+
+    test('throws when not signed in (no session jwt)', () async {
+      final client = MockClient((_) async => http.Response('{}', 200));
+      await expectLater(
+        CollabAiPairingService.instance.uploadCollabBundle(
+          connectionId: 'conn-1',
+          mcpPublicKeyB64: pubB64,
+          groupId: 'g1',
+          manifestBucket: realBucket,
+          manifestKey: realKey,
+          wrappedLinkSecret: '{}',
+          httpClient: client,
+        ),
+        throwsA(isA<CollabPairingException>()),
+      );
+    });
+
+    test('throws on a non-2xx (e.g. 409 group-not-authorized)', () async {
+      await SecureStorageService.instance
+          .write(SecureStorageKeys.jwtToken, 'test-jwt');
+      final client = MockClient((_) async => http.Response(
+          'bundle group_id is not authorized on this connection', 409));
+      await expectLater(
+        CollabAiPairingService.instance.uploadCollabBundle(
+          connectionId: 'conn-1',
+          mcpPublicKeyB64: pubB64,
+          groupId: 'g1',
+          manifestBucket: realBucket,
+          manifestKey: realKey,
+          wrappedLinkSecret: '{}',
+          httpClient: client,
+        ),
+        throwsA(isA<CollabPairingException>()),
+      );
+    });
+  });
 }
