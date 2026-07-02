@@ -503,6 +503,24 @@ class CollabAiPairingService {
       );
     }
 
+    // Guarantee the authorize precondition: the server rejects authorizing a
+    // group it doesn't know (collab_manifests). createGroup syncs the manifest
+    // best-effort at creation, but that can fail silently — so (re)register it
+    // here, idempotently, BEFORE any server mutation. Surface the real HTTP
+    // status + body so a failure is diagnosable, not an opaque "Unknown group".
+    final serverSync =
+        await CollaborationService.instance.syncGroupToServerChecked(groupId);
+    if (!serverSync.ok) {
+      final code = serverSync.statusCode;
+      final detail = serverSync.detail;
+      throw CollabPairingException(
+        'Could not register the collaboration with the server'
+        '${code != null ? ' (HTTP $code)' : ''}'
+        '${(detail != null && detail.isNotEmpty) ? ': $detail' : ''}. '
+        'Check your connection (and that the collaboration finished creating), then try again.',
+      );
+    }
+
     // Register (or refresh) the AI connection bound to its pubkey → connectionId
     // + the separate refresh credential. Reuses the existing L1d mint.
     final minted = await McpConnectionMinter.instance.mintConnectionToken(

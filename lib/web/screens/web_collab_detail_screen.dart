@@ -280,6 +280,16 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
               icon: const Icon(LucideIcons.link),
               onPressed: _copyLink,
             ),
+          if (_isOwner)
+            IconButton(
+              tooltip: 'Share with AI Agent',
+              icon: const Icon(LucideIcons.bot),
+              onPressed: () => showShareWithAiDialog(
+                context,
+                groupId: widget.groupId,
+                groupName: _group?.name ?? 'this group',
+              ),
+            ),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
@@ -289,17 +299,8 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
             PopupMenuButton<String>(
               onSelected: (v) {
                 if (v == 'revoke') _revokeGroup();
-                if (v == 'share_ai') {
-                  showShareWithAiDialog(
-                    context,
-                    groupId: widget.groupId,
-                    groupName: _group?.name ?? 'this group',
-                  );
-                }
               },
               itemBuilder: (ctx) => const [
-                PopupMenuItem(
-                    value: 'share_ai', child: Text('Share with AI Agent')),
                 PopupMenuItem(value: 'revoke', child: Text('Revoke Group')),
               ],
             ),

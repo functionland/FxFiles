@@ -915,8 +915,11 @@ class CollaborationService {
     await _syncManifestToServer(group, linkSecretKey: linkSecretKey);
   }
 
-  /// Push manifest to server for portal access (encrypted if key available)
-  Future<void> _syncManifestToServer(CollaborationGroup group, {Uint8List? linkSecretKey}) async {
+  /// Push manifest to the server DB (collab_manifests) so the portal AND the
+  /// AI-authorize path can find the group. Returns the outcome: best-effort
+  /// callers (uploads) ignore it; AI pairing REQUIRES ok and surfaces the error.
+  Future<({bool ok, int? statusCode, String? detail})> _syncManifestToServer(
+      CollaborationGroup group, {Uint8List? linkSecretKey}) async {
     try {
       final url = '$kCollabGatewayBaseUrl/api/collab/${group.id}/manifest-sync';
 
@@ -940,12 +943,30 @@ class CollaborationService {
       ).timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         debugPrint('[CollabService] Manifest synced to server for group ${group.id}');
-      } else {
-        debugPrint('[CollabService] Server manifest sync failed: ${response.statusCode} ${response.body}');
+        return (ok: true, statusCode: 200, detail: null);
       }
+      debugPrint('[CollabService] Server manifest sync failed: ${response.statusCode} ${response.body}');
+      final b = response.body;
+      return (ok: false, statusCode: response.statusCode, detail: b.length > 200 ? b.substring(0, 200) : b);
     } catch (e) {
       debugPrint('[CollabService] Server manifest sync error (non-fatal): $e');
+      return (ok: false, statusCode: null, detail: e.toString());
     }
+  }
+
+  /// Register (upsert) [groupId]'s manifest on the server DB and REPORT the
+  /// outcome — for callers (AI pairing) that must NOT proceed if the group is
+  /// not server-registered (the AI-authorize endpoint rejects unknown groups).
+  /// Idempotent. On failure returns the server's status + a body snippet so the
+  /// caller can surface a precise, diagnosable error instead of a later opaque
+  /// "Unknown collab group".
+  Future<({bool ok, int? statusCode, String? detail})> syncGroupToServerChecked(
+      String groupId) async {
+    final outgoing = await _findOutgoingCollab(groupId);
+    if (outgoing == null) {
+      return (ok: false, statusCode: null, detail: 'group not found in local outgoing collaborations');
+    }
+    return _syncManifestToServer(outgoing.group, linkSecretKey: outgoing.linkSecretKey);
   }
 
   Future<void> _ensureBucketExists() async {
