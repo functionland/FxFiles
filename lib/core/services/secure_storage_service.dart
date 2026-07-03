@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class SecureStorageService {
@@ -35,7 +36,40 @@ class SecureStorageService {
   }
 
   Future<void> write(String key, String value) async {
-    await _storage.write(key: key, value: value);
+    try {
+      await _storage.write(key: key, value: value);
+    } on PlatformException catch (e) {
+      // iOS Keychain errSecDuplicateItem (-25299): a pre-existing item whose
+      // `kSecAttrAccessible` class differs from the current one (written by an
+      // older app version, or left behind by a prior install — the iOS Keychain
+      // survives app uninstall) makes flutter_secure_storage's existence check
+      // (which queries WITH accessibility) miss, so it falls through to
+      // `SecItemAdd`, which collides on the primary key (account + service).
+      //
+      // The plugin's `delete` deliberately strips accessibility and sweeps BOTH
+      // synchronizable states (see performDelete: "delete without accessibility
+      // constraints… regardless of how items were originally stored"), so it DOES
+      // remove the stale item by primary key. Delete then rewrite adds it clean.
+      //
+      // This is strictly per-key: it only ever touches the key being written (a
+      // re-derivable sign-in value), never other secrets. Single retry, no loop.
+      if (!_isKeychainDuplicate(e)) rethrow;
+      try {
+        await _storage.delete(key: key);
+      } catch (_) {
+        // best-effort: attempt the rewrite regardless
+      }
+      await _storage.write(key: key, value: value);
+    }
+  }
+
+  /// True when [e] is the iOS Keychain "item already exists" failure
+  /// (errSecDuplicateItem, OSStatus -25299), however flutter_secure_storage packed
+  /// it into the PlatformException (code / message / details vary by version).
+  bool _isKeychainDuplicate(PlatformException e) {
+    if (e.details is int && e.details == -25299) return true;
+    final blob = '${e.code} ${e.message ?? ''} ${e.details ?? ''}'.toLowerCase();
+    return blob.contains('-25299') || blob.contains('already exists');
   }
 
   Future<String?> read(String key) async {
