@@ -7,6 +7,7 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/models/share_token.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
+import 'package:fula_files/core/services/cloud_collaboration_storage_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
@@ -56,10 +57,48 @@ class _WebSharedScreenState extends State<WebSharedScreen>
     try {
       final outgoing = await WebShareService.listOutgoingShares();
       final accepted = await WebShareService.listAcceptedShares();
-      final outCollabs =
-          await CollaborationService.instance.getOutgoingCollaborations();
-      final accCollabs =
+      // Sync collaborations with the per-user cloud index so groups created on
+      // ANOTHER device / browser / incognito show up here. The web screen used
+      // to read only THIS browser's local storage and never touched
+      // CloudCollaborationStorageService, so a group created on web was neither
+      // uploaded to nor pulled from `.fula/collaborations/{userId}.json` — it
+      // stayed invisible on every other device even though its manifest + files
+      // are in the cloud (still reachable via the share link / AI MCP). This
+      // mirrors the native CollaborationNotifier's cloud sync.
+      List<OutgoingCollaboration> outCollabs;
+      try {
+        final localOut =
+            await CollaborationService.instance.getOutgoingCollaborations();
+        // MERGE (download cloud + union with local + upload the merge). It is
+        // never a destructive overwrite, so a device holding only a subset of
+        // groups can't clobber groups created elsewhere.
+        outCollabs = await CloudCollaborationStorageService.instance
+            .syncCollaborations(localOut);
+        if (outCollabs.length != localOut.length) {
+          await CollaborationService.instance
+              .importOutgoingCollaborations(outCollabs);
+        }
+      } catch (_) {
+        // Cloud sync is best-effort; fall back to local so the tab still loads.
+        outCollabs =
+            await CollaborationService.instance.getOutgoingCollaborations();
+      }
+
+      var accCollabs =
           await CollaborationService.instance.getAcceptedCollaborations();
+      if (accCollabs.isEmpty) {
+        try {
+          final cloudAcc = await CloudCollaborationStorageService.instance
+              .downloadAcceptedCollaborations();
+          if (cloudAcc.isNotEmpty) {
+            await CollaborationService.instance
+                .importAcceptedCollaborations(cloudAcc);
+            accCollabs = cloudAcc;
+          }
+        } catch (_) {
+          // best-effort
+        }
+      }
       if (mounted) {
         setState(() {
           _outgoing = outgoing;
