@@ -466,10 +466,11 @@ class WebsiteService {
       if (totalUploadedBytes + fileSize > _maxTotalUploadBytes) {
         final mb = (fileSize / (1024 * 1024)).toStringAsFixed(1);
         final usedMb = (totalUploadedBytes / (1024 * 1024)).toStringAsFixed(1);
-        debugPrint('Asset ${asset.fileName} skipped (would exceed 50MB total: ${usedMb}MB used, ${mb}MB more)');
+        final capMb = (_maxTotalUploadBytes / (1024 * 1024)).toStringAsFixed(0);
+        debugPrint('Asset ${asset.fileName} skipped (would exceed ${capMb}MB total: ${usedMb}MB used, ${mb}MB more)');
         asset.uploaded = false;
         failedCount++;
-        skipReasons.add('${asset.fileName}: 50MB total cap reached');
+        skipReasons.add('${asset.fileName}: ${capMb}MB total cap reached');
         continue;
       }
 

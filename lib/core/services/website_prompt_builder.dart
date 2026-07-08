@@ -26,10 +26,20 @@ const int kWebsiteMaxParsedContentBytes = 100000; // 100KB backend limit
 const int kWebsiteMaxImageBytes = 5 * 1024 * 1024; //  5MB
 const int kWebsiteMaxBinaryDocBytes = 32 * 1024 * 1024; // 32MB
 const int kWebsiteMaxTextBytes = 10 * 1024 * 1024; // 10MB
+// Video is uploaded to S3 for hosting and referenced by URL only — its bytes
+// are NEVER sent to the AI backend (unlike images/docs, which are base64'd into
+// the request), so this cap governs upload/hosting size, not the request budget.
+// Sized to comfortably fit the "100MB+" clips users embed in generated sites
+// while leaving headroom under the per-job total for a few other assets.
+const int kWebsiteMaxVideoBytes = 150 * 1024 * 1024; // 150MB
 
 // Per-job aggregate caps. Backend mirrors these as defence in depth.
 const int kWebsiteMaxFilesPerJob = 10;
-const int kWebsiteMaxTotalUploadBytes = 50 * 1024 * 1024; // 50MB total
+// Raised from 50MB to fit one large (100MB+) video plus ~50MB of other assets.
+// NOTE: _uploadAssetUnencrypted buffers the whole file in memory before the PUT,
+// so a very large video is a memory consideration — most acute on the web build
+// (a chunked/streaming upload is the real fix; tracked as a follow-up).
+const int kWebsiteMaxTotalUploadBytes = 200 * 1024 * 1024; // 200MB total
 
 /// Per-file size cap for [ext] (dot-prefixed, e.g. '.png'). Returns 0
 /// for extensions that can't be usefully forwarded — callers skip them.
@@ -54,6 +64,16 @@ int websiteMaxFileSizeBytesForExt(String ext) {
     case '.htm':
     case '.xml':
       return kWebsiteMaxTextBytes;
+    // Browser-playable video only — these embed in an HTML5 <video> and stream
+    // from the range-capable gateway. Containers browsers can't reliably play
+    // (.mkv/.avi/.wmv/.flv) are intentionally omitted so users don't publish a
+    // clip that won't play in a visitor's browser.
+    case '.mp4':
+    case '.webm':
+    case '.mov':
+    case '.m4v':
+    case '.ogv':
+      return kWebsiteMaxVideoBytes;
     default:
       return 0;
   }
@@ -73,8 +93,13 @@ File strategy:
 
 Hosting constraints (IPFS — static only):
 - Use ONLY relative paths for internal refs (e.g. href="./style.css", src="./script.js").
-- NO external CDN links, NO server-side code, NO forms with action URLs.
-- All provided asset URLs are already hosted — use them exactly as-is (img src="https://...").
+- The site must be SELF-CONTAINED: NO server-side code, NO forms with action URLs, and NO external links of any kind — no CDN scripts, styles, fonts, or images — with the SINGLE exception of the YouTube/Vimeo video iframe described below.
+- All provided asset URLs are already hosted — use them exactly as-is. For an IMAGE asset use <img src="https://..." style="max-width:100%">. For a VIDEO asset (an attached file whose type is video), NEVER use an <img> — embed a native HTML5 player that streams from the URL:
+  <video controls preload="metadata" playsinline style="max-width:100%;height:auto"><source src="https://...ASSET_URL..." type="video/mp4"></video>
+  (set the <source> type to match the file: video/mp4 for .mp4/.m4v/.mov, video/webm for .webm, video/ogg for .ogv).
+- YOUTUBE/VIMEO EMBED (the ONLY permitted external resource): if the user's request references a YouTube (youtube.com / youtu.be) or Vimeo (vimeo.com) link, embed it as a RESPONSIVE 16:9 iframe, not a plain link. The iframe src MUST be exactly https://www.youtube.com/embed/<id> or https://player.vimeo.com/video/<id> and NO other host; if the user's link is neither YouTube nor Vimeo, do NOT embed it. Extract the id and wrap so it scales:
+  <div style="position:relative;width:100%;max-width:720px;margin:auto;aspect-ratio:16/9"><iframe src="https://www.youtube.com/embed/VIDEO_ID" style="position:absolute;inset:0;width:100%;height:100%;border:0" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen></iframe></div>
+  (youtu.be/ID or youtube.com/watch?v=ID -> https://www.youtube.com/embed/ID ; vimeo.com/ID -> https://player.vimeo.com/video/ID).
 
 Images (CRITICAL — must fit container on every viewport):
 - Every image MUST fit fully inside its container on both mobile (narrow portrait) and desktop (wide) — never cropped off, cut, or overflowing the container box.

@@ -579,9 +579,11 @@ class WebWebsiteService extends ChangeNotifier {
         continue;
       }
       if (totalUploadedBytes + bytes.length > kWebsiteMaxTotalUploadBytes) {
+        final capMb =
+            (kWebsiteMaxTotalUploadBytes / (1024 * 1024)).toStringAsFixed(0);
         asset.uploaded = false;
         failedCount++;
-        skipReasons.add('${asset.fileName}: 50MB total cap reached');
+        skipReasons.add('${asset.fileName}: ${capMb}MB total cap reached');
         continue;
       }
 
