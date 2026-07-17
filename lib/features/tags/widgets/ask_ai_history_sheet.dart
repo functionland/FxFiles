@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'package:fula_files/core/models/ask_ai_history.dart';
 import 'package:fula_files/core/services/ask_ai_history_service.dart';
@@ -119,9 +120,9 @@ class _AskAiHistorySheetState extends ConsumerState<AskAiHistorySheet> {
                           childrenPadding: const EdgeInsets.all(16),
                           expandedCrossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            SelectableText(
-                              item.response,
-                              style: Theme.of(context).textTheme.bodyMedium,
+                            MarkdownBody(
+                              data: item.response,
+                              selectable: true,
                             ),
                             const SizedBox(height: 12),
                             Row(

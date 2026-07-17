@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_markdown: ^0.7.3
   
   # State Management
   flutter_riverpod: ^3.0.3

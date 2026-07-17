@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
@@ -128,9 +129,9 @@ class _AskAiInputAreaState extends ConsumerState<AskAiInputArea> {
                   Expanded(
                     child: SingleChildScrollView(
                       controller: scrollController,
-                      child: SelectableText(
-                        text,
-                        style: Theme.of(context).textTheme.bodyMedium,
+                      child: MarkdownBody(
+                        data: text,
+                        selectable: true,
                       ),
                     ),
                   ),

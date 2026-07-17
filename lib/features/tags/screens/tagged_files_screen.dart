@@ -5,7 +5,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/ask_ai_context.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
-import 'package:fula_files/features/tags/widgets/ask_ai_input_area.dart';
+import 'package:fula_files/features/tags/widgets/tag_ask_ai_sheet.dart';
 import 'package:fula_files/shared/utils/tagged_file_utils.dart';
 import 'package:fula_files/shared/widgets/tagged_file_thumbnail.dart';
 
@@ -112,15 +112,24 @@ class TaggedFilesScreen extends ConsumerWidget {
               ),
             ),
           ),
-          if (currentTag != null)
-            taggedFilesAsync.maybeWhen(
-              data: (taggedFiles) => AskAiInputArea(
-                aiContext: TagAskAiContext(currentTag, taggedFiles),
-              ),
-              orElse: () => const SizedBox.shrink(),
-            ),
+          ),
         ],
       ),
+      floatingActionButton: currentTag != null
+          ? taggedFilesAsync.maybeWhen(
+              data: (taggedFiles) {
+                if (taggedFiles.isEmpty) return null;
+                return FloatingActionButton(
+                  onPressed: () {
+                    TagAskAiSheet.show(context, currentTag, taggedFiles);
+                  },
+                  backgroundColor: Colors.purple,
+                  child: const Icon(LucideIcons.bot, color: Colors.white),
+                );
+              },
+              orElse: () => null,
+            )
+          : null,
     );
   }
 

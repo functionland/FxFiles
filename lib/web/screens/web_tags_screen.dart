@@ -5,6 +5,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/features/tags/widgets/tag_ask_ai_sheet.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 
@@ -449,6 +450,15 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
                         );
                       },
                     ),
+      floatingActionButton: (tag != null && files.isNotEmpty)
+          ? FloatingActionButton(
+              onPressed: () {
+                TagAskAiSheet.show(context, tag, files);
+              },
+              backgroundColor: Colors.purple,
+              child: const Icon(LucideIcons.bot, color: Colors.white),
+            )
+          : null,
     );
   }
 }
