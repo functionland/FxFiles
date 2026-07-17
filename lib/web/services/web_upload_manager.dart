@@ -180,8 +180,17 @@ class WebUploadManager extends ChangeNotifier {
       final src = smallBytes ?? await picked.readSlice(0, size);
       final thumb = await generateImageThumbnail(src);
       if (thumb == null) return;
-      await FulaApiService.instance
-          .uploadObject(thumbsBucketFor(bucket), key, thumb);
+      final thumbsBucket = thumbsBucketFor(bucket);
+      try {
+        await FulaApiService.instance.uploadObject(thumbsBucket, key, thumb);
+      } catch (e) {
+        if (e.toString().contains('NoSuchBucket')) {
+          await FulaApiService.instance.createBucket(thumbsBucket);
+          await FulaApiService.instance.uploadObject(thumbsBucket, key, thumb);
+        } else {
+          rethrow;
+        }
+      }
       WebThumbnailService.instance.put(bucket, key, thumb);
     } catch (e) {
       debugPrint('WebUploadManager: thumbnail sidecar skipped: $e');

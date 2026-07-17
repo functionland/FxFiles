@@ -144,8 +144,17 @@ class WebThumbnailService {
     try {
       final bytes = await FulaApiService.instance
           .downloadObject(thumbsBucketFor(srcBucket), srcKey);
-      await FulaApiService.instance
-          .uploadObject(thumbsBucketFor(dstBucket), dstKey, bytes);
+      final dstThumbsBucket = thumbsBucketFor(dstBucket);
+      try {
+        await FulaApiService.instance.uploadObject(dstThumbsBucket, dstKey, bytes);
+      } catch (e) {
+        if (e.toString().contains('NoSuchBucket')) {
+          await FulaApiService.instance.createBucket(dstThumbsBucket);
+          await FulaApiService.instance.uploadObject(dstThumbsBucket, dstKey, bytes);
+        } else {
+          rethrow;
+        }
+      }
       put(dstBucket, dstKey, bytes);
     } catch (_) {/* no src thumb / dest not writable */}
     await deleteCloudThumb(srcBucket, srcKey);
@@ -167,8 +176,17 @@ class WebThumbnailService {
       if (thumb == null) return;
       put(bucket, key, thumb); // local cache → shows on next view
       if (!BucketVersionResolver.isForbiddenWriteTarget(bucket)) {
-        await FulaApiService.instance
-            .uploadObject(thumbsBucketFor(bucket), key, thumb);
+        final tb = thumbsBucketFor(bucket);
+        try {
+          await FulaApiService.instance.uploadObject(tb, key, thumb);
+        } catch (e) {
+          if (e.toString().contains('NoSuchBucket')) {
+            await FulaApiService.instance.createBucket(tb);
+            await FulaApiService.instance.uploadObject(tb, key, thumb);
+          } else {
+            rethrow;
+          }
+        }
       }
     } catch (e) {
       debugPrint('WebThumbnailService.backfillFromBytes: $e');
