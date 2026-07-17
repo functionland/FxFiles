@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/models/ask_ai_context.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
+import 'package:fula_files/features/tags/widgets/ask_ai_input_area.dart';
 import 'package:fula_files/shared/utils/tagged_file_utils.dart';
 import 'package:fula_files/shared/widgets/tagged_file_thumbnail.dart';
 
@@ -53,58 +55,71 @@ class TaggedFilesScreen extends ConsumerWidget {
             ),
         ],
       ),
-      body: taggedFilesAsync.when(
-        data: (taggedFiles) {
-          if (taggedFiles.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(LucideIcons.fileX, size: 64, color: Colors.grey[400]),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No files with this tag',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.grey[600],
+      body: Column(
+        children: [
+          Expanded(
+            child: taggedFilesAsync.when(
+              data: (taggedFiles) {
+                if (taggedFiles.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(LucideIcons.fileX, size: 64, color: Colors.grey[400]),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No files with this tag',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Files tagged with "${currentTag?.name ?? 'this tag'}" will appear here',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.grey[500],
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Files tagged with "${currentTag?.name ?? 'this tag'}" will appear here',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Colors.grey[500],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            );
-          }
+                  );
+                }
 
-          return ListView.builder(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: taggedFiles.length,
-            itemBuilder: (context, index) {
-              final taggedFile = taggedFiles[index];
-              return _TaggedFileTile(
-                taggedFile: taggedFile,
-                onTap: () => openTaggedFile(context, taggedFile),
-                onRemoveTag: () => _removeTag(context, ref, taggedFile),
-              );
-            },
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(LucideIcons.alertCircle, size: 48, color: Colors.red[300]),
-              const SizedBox(height: 16),
-              Text('Error: $error'),
-            ],
+                return ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: taggedFiles.length,
+                  itemBuilder: (context, index) {
+                    final taggedFile = taggedFiles[index];
+                    return _TaggedFileTile(
+                      taggedFile: taggedFile,
+                      onTap: () => openTaggedFile(context, taggedFile),
+                      onRemoveTag: () => _removeTag(context, ref, taggedFile),
+                    );
+                  },
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stack) => Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(LucideIcons.alertCircle, size: 48, color: Colors.red[300]),
+                    const SizedBox(height: 16),
+                    Text('Error: $error'),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
+          if (currentTag != null)
+            taggedFilesAsync.maybeWhen(
+              data: (taggedFiles) => AskAiInputArea(
+                aiContext: TagAskAiContext(currentTag, taggedFiles),
+              ),
+              orElse: () => const SizedBox.shrink(),
+            ),
+        ],
       ),
     );
   }

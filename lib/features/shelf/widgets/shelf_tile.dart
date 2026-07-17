@@ -15,6 +15,7 @@ import 'package:fula_files/features/shelf/providers/shelf_suggestions_provider.d
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
 import 'package:fula_files/features/tags/widgets/tag_selector_dialog.dart';
+import 'package:fula_files/features/shelf/widgets/shelf_ask_ai_sheet.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
 
 /// Grid tile for a single [ShelfItem]. Layout: 1:1 thumbnail on top,
@@ -453,6 +454,17 @@ class _ActionsMenuButton extends StatelessWidget {
                   remoteKey: item.remoteKey,
                   fileName: item.originalName,
                 );
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(LucideIcons.bot, color: Colors.purple),
+              title: const Text('Ask AI'),
+              subtitle: const Text('Ask questions about this item'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                if (!context.mounted) return;
+                ShelfAskAiSheet.show(context, item);
               },
             ),
             const Divider(height: 1),
