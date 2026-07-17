@@ -399,9 +399,9 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
                 if (!context.mounted) return;
 
                 final rKey = item.remoteKey ?? 'dump://${item.id}';
-                final initial = WebTagService.instance.tags
-                    .where((t) => t.files.any((f) => f.remoteKey == rKey || f.remoteKey == item.remoteKey))
-                    .map((t) => t.id)
+                final initial = WebTagService.instance.taggedFiles
+                    .where((f) => f.remoteKey == rKey || f.remoteKey == item.remoteKey)
+                    .map((f) => f.tagId)
                     .toSet();
 
                 await showWebTagSelectorDialog(
