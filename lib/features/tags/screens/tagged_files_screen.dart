@@ -112,7 +112,6 @@ class TaggedFilesScreen extends ConsumerWidget {
               ),
             ),
           ),
-          ),
         ],
       ),
       floatingActionButton: currentTag != null
