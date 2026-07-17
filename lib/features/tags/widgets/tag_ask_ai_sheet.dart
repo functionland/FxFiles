@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:fula_files/core/models/file_tag.dart';
-import 'package:fula_files/core/models/tagged_file.dart';
 import 'package:fula_files/core/models/ask_ai_context.dart';
 import 'package:fula_files/features/tags/widgets/ask_ai_input_area.dart';
 
