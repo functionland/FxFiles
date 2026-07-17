@@ -287,7 +287,7 @@ class AuthService {
     try {
       await _ensureGoogleInitialized();
       final authz = await _googleSignIn.authorizationClient.authorizeScopes(
-        ['https://www.googleapis.com/auth/forms.body'],
+        ['https://www.googleapis.com/auth/drive.file'],
       );
       return authz != null;
     } catch (e) {
@@ -300,7 +300,7 @@ class AuthService {
     try {
       await _ensureGoogleInitialized();
       final authz = await _googleSignIn.authorizationClient.authorizationForScopes(
-        ['https://www.googleapis.com/auth/forms.body'],
+        ['https://www.googleapis.com/auth/drive.file'],
       );
       return authz?.accessToken;
     } catch (e) {
