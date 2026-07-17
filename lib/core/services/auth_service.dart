@@ -280,18 +280,20 @@ class AuthService {
       return false;
     }
     try {
+      await _ensureGoogleInitialized();
       final authz = await _googleSignIn.authorizationClient.authorizeScopes(
         ['https://www.googleapis.com/auth/forms.body'],
       );
       return authz != null;
     } catch (e) {
       debugPrint('Error requesting forms scope: $e');
-      return false;
+      throw Exception('Failed to request Google Forms permission: $e');
     }
   }
 
   Future<String?> getGoogleAccessToken() async {
     try {
+      await _ensureGoogleInitialized();
       final authz = await _googleSignIn.authorizationClient.authorizationForScopes(
         ['https://www.googleapis.com/auth/forms.body'],
       );

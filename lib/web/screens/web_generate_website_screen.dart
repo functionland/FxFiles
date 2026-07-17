@@ -302,6 +302,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       }
 
       if (contactForm.channel == ContactFormChannel.sheets) {
+        bool isLoadingShown = false;
         try {
           final granted = await AuthService.instance.requestFormsScope();
           if (!mounted) return;
@@ -318,11 +319,12 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
             barrierDismissible: false,
             builder: (ctx) => const Center(child: CircularProgressIndicator()),
           );
+          isLoadingShown = true;
 
           final token = await AuthService.instance.getGoogleAccessToken();
           if (!mounted) return;
           if (token == null) {
-            Navigator.of(context).pop();
+            if (isLoadingShown) Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                   content: Text('Failed to get Google authorization token.')),
@@ -337,7 +339,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           );
 
           if (!mounted) return;
-          Navigator.of(context).pop(); // dismiss loading
+          if (isLoadingShown) Navigator.of(context).pop(); // dismiss loading
 
           contactForm = ContactFormConfig(
             enabled: contactForm.enabled,
@@ -349,7 +351,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           );
         } catch (e) {
           if (!mounted) return;
-          Navigator.of(context).pop();
+          if (isLoadingShown) Navigator.of(context).pop();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Error creating form: $e')),
           );
