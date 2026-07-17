@@ -154,7 +154,10 @@ class AuthService {
     String? clientId;
     String? serverClientId;
 
-    if (Platform.isAndroid) {
+    if (kIsWeb) {
+      clientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId = null;
+    } else if (Platform.isAndroid) {
       // Android: clientId is auto-detected, only serverClientId needed for idToken
       serverClientId =
           _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
@@ -179,7 +182,9 @@ class AuthService {
 
   /// Check if Google Sign-In is properly configured
   bool get isGoogleSignInConfigured {
-    if (Platform.isAndroid) {
+    if (kIsWeb) {
+      return _googleServerClientId.isNotEmpty;
+    } else if (Platform.isAndroid) {
       return _googleServerClientId.isNotEmpty;
     } else if (Platform.isIOS) {
       return _googleClientIdIOS.isNotEmpty;
