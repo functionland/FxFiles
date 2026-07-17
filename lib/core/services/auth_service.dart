@@ -276,8 +276,7 @@ class AuthService {
   }
 
   Future<bool> requestFormsScope() async {
-    if (PlatformCapabilities.isDesktop ||
-        _currentUser?.provider != AuthProvider.google) {
+    if (PlatformCapabilities.isDesktop) {
       return false;
     }
     try {
@@ -292,8 +291,6 @@ class AuthService {
   }
 
   Future<String?> getGoogleAccessToken() async {
-    if (_currentUser?.provider != AuthProvider.google) return null;
-
     try {
       final authz = await _googleSignIn.authorizationClient.authorizationForScopes(
         ['https://www.googleapis.com/auth/forms.body'],
