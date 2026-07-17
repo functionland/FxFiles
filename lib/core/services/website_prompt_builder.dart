@@ -258,6 +258,19 @@ String _fieldControlLabel(ContactFormFieldType t) {
 /// authorization (overriding the "NO forms" system constraint), the field
 /// spec, and the verbatim HTML+JS snippet the generator must embed unchanged.
 String buildWebsiteContactFormBlock(ContactFormConfig cfg) {
+  if (cfg.channel == ContactFormChannel.sheets) {
+    final b = StringBuffer()
+      ..writeln('=== CONTACT FORM (auto-added) ===')
+      ..writeln('The user requested a Google Forms-based contact form. The form has already been created.')
+      ..writeln('Embed the following Google Form URL as an iframe inside the website.')
+      ..writeln('You MUST ensure the iframe is responsive, taking 100% width and a reasonable minimum height (e.g. min-height: 600px).')
+      ..writeln('Do NOT generate a custom HTML <form>, just embed this iframe EXACTLY:')
+      ..writeln()
+      ..writeln('<iframe src="${cfg.destination}?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>')
+      ..writeln('=== END CONTACT FORM ===');
+    return b.toString();
+  }
+
   final isEmail = cfg.channel == ContactFormChannel.email;
   final channelWord = isEmail ? 'Email' : 'WhatsApp';
   final appWord = isEmail ? 'mail app' : 'WhatsApp';

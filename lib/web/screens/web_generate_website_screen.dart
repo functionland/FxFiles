@@ -4,7 +4,10 @@ import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/contact_form_config.dart';
+import 'package:fula_files/core/services/website_service.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
+import 'package:fula_files/core/services/auth_service.dart';
+import 'package:fula_files/core/services/google_forms_service.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
 
 /// Result returned when the user taps Publish — same shape as the
@@ -263,7 +266,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       if (digits.length < 7 || digits.length > 15) {
         return 'Enter a valid WhatsApp number (7–15 digits, with country code).';
       }
-    } else {
+    } else if (cfg.channel == ContactFormChannel.email) {
       final at = dest.indexOf('@');
       final emailOk = at > 0 &&
           at != dest.length - 1 &&
@@ -284,30 +287,89 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     return null;
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) return;
 
-    final contactForm = _currentContactForm();
+    var contactForm = _currentContactForm();
     if (contactForm.enabled) {
       final error = _validateContactForm(contactForm);
       if (error != null) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error)));
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(error)));
+        }
         return;
+      }
+
+      if (contactForm.channel == ContactFormChannel.sheets) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => const Center(child: CircularProgressIndicator()),
+        );
+
+        try {
+          final granted = await AuthService.instance.requestFormsScope();
+          if (!mounted) return;
+          if (!granted) {
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Google Forms permission is required.')),
+            );
+            return;
+          }
+
+          final token = await AuthService.instance.getGoogleAccessToken();
+          if (!mounted) return;
+          if (token == null) {
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Failed to get Google authorization token.')),
+            );
+            return;
+          }
+
+          final responderUri = await GoogleFormsService.instance.createForm(
+            title: contactForm.title,
+            fields: contactForm.usableFields,
+            accessToken: token,
+          );
+
+          if (!mounted) return;
+          Navigator.of(context).pop(); // dismiss loading
+
+          contactForm = ContactFormConfig(
+            enabled: contactForm.enabled,
+            channel: contactForm.channel,
+            destination: responderUri,
+            emailSubject: contactForm.emailSubject,
+            title: contactForm.title,
+            fields: contactForm.fields,
+          );
+        } catch (e) {
+          if (!mounted) return;
+          Navigator.of(context).pop();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error creating form: $e')),
+          );
+          return;
+        }
       }
     }
 
-    Navigator.of(context).pop<WebGeneratePromptResult>((
-      websiteName: name,
-      category: _category,
-      styles: <String>[_selectedStyle],
-      languages: _selectedLanguages,
-      palette: _palette,
-      prompt: _promptController.text.trim(),
-      enableTracking: _enableTracking,
-      contactForm: contactForm.enabled ? contactForm : null,
-    ));
+    if (mounted) {
+      Navigator.of(context).pop<WebGeneratePromptResult>((
+        websiteName: name,
+        category: _category,
+        styles: <String>[_selectedStyle],
+        languages: _selectedLanguages,
+        palette: _palette,
+        prompt: _promptController.text.trim(),
+        enableTracking: _enableTracking,
+        contactForm: contactForm.enabled ? contactForm : null,
+      ));
+    }
   }
 
   void _showPromptPreview() {
@@ -738,26 +800,32 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                   value: ContactFormChannel.email,
                   label: Text('Email'),
                 ),
+                ButtonSegment(
+                  value: ContactFormChannel.sheets,
+                  label: Text('Sheets'),
+                ),
               ],
               selected: {_channel},
               showSelectedIcon: false,
               onSelectionChanged: (s) =>
                   setState(() => _channel = s.first),
             ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _destinationController,
-              decoration: InputDecoration(
-                labelText: _channel == ContactFormChannel.whatsapp
-                    ? 'WhatsApp number'
-                    : 'Destination email',
-                hintText: _channel == ContactFormChannel.whatsapp
-                    ? 'e.g. +1 555 123 4567'
-                    : 'you@example.com',
-                border: const OutlineInputBorder(),
-                isDense: true,
+            if (_channel != ContactFormChannel.sheets) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: _destinationController,
+                decoration: InputDecoration(
+                  labelText: _channel == ContactFormChannel.whatsapp
+                      ? 'WhatsApp number'
+                      : 'Destination email',
+                  hintText: _channel == ContactFormChannel.whatsapp
+                      ? 'e.g. +1 555 123 4567'
+                      : 'you@example.com',
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
               ),
-            ),
+            ],
             if (_channel == ContactFormChannel.email) ...[
               const SizedBox(height: 8),
               TextField(
@@ -773,13 +841,16 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
             const SizedBox(height: 10),
             TextField(
               controller: _titleController,
-              decoration: const InputDecoration(
-                labelText: 'Message header (optional)',
+              decoration: InputDecoration(
+                labelText: _channel == ContactFormChannel.sheets
+                    ? 'Google Form title (optional)'
+                    : 'Message header (optional)',
                 hintText: 'e.g. your website name',
-                helperText: 'Added as "#Title: …" atop each message. '
-                    'Defaults to the website name; clear to omit.',
+                helperText: _channel == ContactFormChannel.sheets
+                    ? 'The title displayed at the top of the Google Form.'
+                    : 'Added as "#Title: …" atop each message. Defaults to the website name; clear to omit.',
                 helperMaxLines: 3,
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
                 isDense: true,
               ),
             ),

@@ -262,6 +262,25 @@ class AuthService {
     }
   }
 
+  Future<bool> requestFormsScope() async {
+    if (PlatformCapabilities.isDesktop || _currentUser?.provider != AuthProvider.google) {
+      return false;
+    }
+    final granted = await _googleSignIn.requestScopes(['https://www.googleapis.com/auth/forms.body']);
+    return granted;
+  }
+
+  Future<String?> getGoogleAccessToken() async {
+    if (_currentUser?.provider != AuthProvider.google) return null;
+    
+    // For google_sign_in v7, currentUser getter on the plugin returns the current GoogleSignInAccount
+    final account = _googleSignIn.currentUser;
+    if (account == null) return null;
+    
+    final auth = await account.authentication;
+    return auth.accessToken;
+  }
+
   Future<void> _handleGoogleSignIn(
     GoogleSignInAccount account, {
     String? idToken,

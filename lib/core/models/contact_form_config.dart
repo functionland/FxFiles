@@ -16,7 +16,7 @@ import 'dart:convert';
 /// send the same JSON as a `contact_form` request field instead.
 
 /// Channel the contact form routes the visitor's message to.
-enum ContactFormChannel { whatsapp, email }
+enum ContactFormChannel { whatsapp, email, sheets }
 
 /// Input type for a single contact-form field.
 enum ContactFormFieldType { text, multiline, number, email, multiSelect }
