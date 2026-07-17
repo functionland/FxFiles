@@ -302,23 +302,22 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       }
 
       if (contactForm.channel == ContactFormChannel.sheets) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => const Center(child: CircularProgressIndicator()),
-        );
-
         try {
           final granted = await AuthService.instance.requestFormsScope();
           if (!mounted) return;
           if (!granted) {
-            Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                   content: Text('Google Forms permission is required.')),
             );
             return;
           }
+
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => const Center(child: CircularProgressIndicator()),
+          );
 
           final token = await AuthService.instance.getGoogleAccessToken();
           if (!mounted) return;
