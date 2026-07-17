@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_filex/open_filex.dart';
@@ -32,6 +33,7 @@ String? lookupIosAssetId(String virtualPath) {
 Future<String?> resolveTaggedFilePath(TaggedFile file) async {
   final path = file.localPath;
   if (path == null) return null;
+  if (kIsWeb) return null; // local paths don't exist on web
 
   if (Platform.isIOS && !path.startsWith('/')) {
     // First try Documents-relative resolution (handles "Imported/foo.jpg").
@@ -84,7 +86,7 @@ Future<void> openTaggedFile(BuildContext context, TaggedFile file) async {
   // Mirror the lookup that resolveTaggedFilePath does internally so the
   // failure-mode snackbar can distinguish "no asset id at all" from "asset
   // id found but the photo is gone".
-  final isVirtual = Platform.isIOS && !originalPath.startsWith('/');
+  final isVirtual = !kIsWeb && Platform.isIOS && !originalPath.startsWith('/');
   final effectiveAssetId = isVirtual
       ? (file.iosAssetId ?? lookupIosAssetId(originalPath))
       : null;

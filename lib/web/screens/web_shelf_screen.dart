@@ -13,7 +13,12 @@ import 'package:fula_files/web/services/web_camera_capture.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_shelf_service.dart';
+import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
+import 'package:fula_files/features/shelf/widgets/shelf_ask_ai_sheet.dart';
+import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 
 /// Mirror of lib/features/shelf/screens/shelf_screen.dart (view-only):
 /// same grid metrics (180px cells, 0.70 aspect), tile anatomy
@@ -356,6 +361,136 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
     );
   }
 
+  Future<void> _recordAudio() async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const _RecordAudioDialog(),
+    );
+    if (result == true) {
+      _load(force: true);
+    }
+  }
+
+  Future<void> _openActions(BuildContext context, ShelfItem item) async {
+    final theme = Theme.of(context);
+    await showAdaptiveSheet<void>(
+      context: context,
+      builder: (sheetCtx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.tag),
+              title: const Text('Tags'),
+              subtitle: const Text('Add or manage tags'),
+              onTap: () async {
+                Navigator.pop(sheetCtx);
+                if (!context.mounted) return;
+                
+                try {
+                  await WebTagService.instance.load();
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load tags: $e')));
+                  }
+                  return;
+                }
+                if (!context.mounted) return;
+
+                final rKey = item.remoteKey ?? 'dump://${item.id}';
+                final initial = WebTagService.instance.tags
+                    .where((t) => t.files.any((f) => f.remoteKey == rKey || f.remoteKey == item.remoteKey))
+                    .map((t) => t.id)
+                    .toSet();
+
+                await showWebTagSelectorDialog(
+                  context: context,
+                  remoteKey: rKey,
+                  fileName: item.originalName,
+                  initialTagIds: initial,
+                );
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(LucideIcons.bot, color: Colors.purple),
+              title: const Text('Ask AI'),
+              subtitle: const Text('Ask questions about this item'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                if (!context.mounted) return;
+                ShelfAskAiSheet.show(context, item);
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(
+                LucideIcons.trash2,
+                color: theme.colorScheme.error,
+              ),
+              title: Text(
+                'Remove from Shelf',
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+              subtitle: const Text(
+                'Also removes from cloud. Can\'t be undone.',
+              ),
+              onTap: () async {
+                Navigator.pop(sheetCtx);
+                if (!context.mounted) return;
+                await _confirmAndDelete(context, item);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmAndDelete(BuildContext context, ShelfItem item) async {
+    final theme = Theme.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Remove from Shelf?'),
+        content: const Text(
+          'This item will be removed from this device and from cloud '
+          'storage. This can\'t be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: theme.colorScheme.error,
+              foregroundColor: theme.colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && context.mounted) {
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      try {
+        await WebShelfService.instance.deleteItem(item);
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Removed from Shelf')),
+        );
+        _load(force: true);
+      } catch (e) {
+        messenger?.showSnackBar(
+          SnackBar(content: Text('Failed to remove: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _addAudioFlow() async {
     final cap = await showDialog<CapturedFile>(
       context: context,
@@ -473,52 +608,72 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
                         final item = _items![i];
                         return Card(
                           clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => _open(item),
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.stretch,
-                              children: [
-                                AspectRatio(
-                                  aspectRatio: 1,
-                                  child: Container(
-                                    color: theme.colorScheme
-                                        .surfaceContainerHighest,
-                                    child: Icon(
-                                      _categoryIcon(item),
-                                      size: 40,
-                                      color: theme.colorScheme.primary,
-                                    ),
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.all(8),
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: InkWell(
+                                  onTap: () => _open(item),
                                   child: Column(
                                     crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                        CrossAxisAlignment.stretch,
                                     children: [
-                                      Text(
-                                        item.autoTitle ?? item.originalName,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(
-                                                fontWeight:
-                                                    FontWeight.w600),
+                                      AspectRatio(
+                                        aspectRatio: 1,
+                                        child: Container(
+                                          color: theme.colorScheme
+                                              .surfaceContainerHighest,
+                                          child: Icon(
+                                            _categoryIcon(item),
+                                            size: 40,
+                                            color: theme.colorScheme.primary,
+                                          ),
+                                        ),
                                       ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        item.autoDescription ??
-                                            '${_fmtSize(item.sizeBytes)} · ${item.category.name}',
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: theme.textTheme.bodySmall,
+                                      Padding(
+                                        padding: const EdgeInsets.all(8),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              item.autoTitle ?? item.originalName,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodyMedium
+                                                  ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w600),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              item.autoDescription ??
+                                                  '${_fmtSize(item.sizeBytes)} · ${item.category.name}',
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodySmall,
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
-                              ],
-                            ),
+                              ),
+                              Positioned(
+                                top: 4,
+                                right: 4,
+                                child: IconButton(
+                                  icon: const Icon(LucideIcons.moreVertical, size: 16),
+                                  color: Colors.white,
+                                  style: IconButton.styleFrom(
+                                    backgroundColor: Colors.black.withValues(alpha: 0.55),
+                                    minimumSize: const Size(28, 28),
+                                    padding: const EdgeInsets.all(4),
+                                  ),
+                                  onPressed: () => _openActions(ctx, item),
+                                ),
+                              ),
+                            ],
                           ),
                         );
                       },

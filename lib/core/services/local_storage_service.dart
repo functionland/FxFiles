@@ -9,6 +9,7 @@ import 'package:fula_files/core/models/playlist.dart';
 import 'package:fula_files/core/models/sync_task.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/shelf_storage_service.dart';
+import 'package:fula_files/core/services/ask_ai_history_service.dart';
 
 class LocalStorageService {
   LocalStorageService._();
@@ -87,6 +88,12 @@ class LocalStorageService {
       await ShelfStorageService.instance.init();
     } catch (e) {
       debugPrint('Failed to init ShelfStorageService: $e');
+    }
+
+    try {
+      await AskAiHistoryService.instance.init();
+    } catch (e) {
+      debugPrint('Failed to init AskAiHistoryService: $e');
     }
 
     _isInitialized = true;
@@ -481,5 +488,6 @@ class LocalStorageService {
     await _starredFilesBox?.clear();
     await _folderSyncBox?.clear();
     await _syncQueueBox?.clear();
+    await AskAiHistoryService.instance.clearAll();
   }
 }

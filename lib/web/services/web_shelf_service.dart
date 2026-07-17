@@ -138,6 +138,26 @@ class WebShelfService {
     return item;
   }
 
+  Future<void> deleteItem(ShelfItem item) async {
+    final uid = await _userId();
+    final key = shelfManifestKey(uid);
+    final current = await _readCurrentForWrite(key);
+    
+    current.removeWhere((i) => i.id == item.id);
+    final order = current.map((i) => i.id).toList();
+    
+    await _uploadManifest(current, order, uid, key);
+    
+    if (item.remoteKey != null) {
+      try {
+        final bucket = item.sourceBucket ?? 'dump';
+        await FulaApiService.instance.deleteObject(bucket, item.remoteKey!);
+      } catch (e) {
+        debugPrint('Failed to delete shelf body blob: $e');
+      }
+    }
+  }
+
   // ------------------------------------------------------------- read/write
 
   /// Read the CURRENT shelf authoritatively, prepend [item], write the
