@@ -40,7 +40,8 @@ enum AuthProvider { google, apple }
 // 3. Configure OAuth consent screen
 //
 // Note: For Android, clientId is auto-detected from the signing config
-const String _googleClientIdIOS = '1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com'; // iOS OAuth Client ID
+const String _googleClientIdIOS =
+    '1095513138272-41oj756pperrsh5aqumh3nktvankcdel.apps.googleusercontent.com'; // iOS OAuth Client ID
 // Web Client ID (used as serverClientId to mint idTokens the issuer
 // accepts). Single-sourced with the web shell in AuthCore.
 const String _googleServerClientId = AuthCore.googleWebClientId;
@@ -61,22 +62,22 @@ class AuthUser {
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'email': email,
-    'displayName': displayName,
-    'photoUrl': photoUrl,
-    'provider': provider.name,
-  };
+        'id': id,
+        'email': email,
+        'displayName': displayName,
+        'photoUrl': photoUrl,
+        'provider': provider.name,
+      };
 
   factory AuthUser.fromJson(Map<String, dynamic> json) => AuthUser(
-    id: json['id'],
-    email: json['email'],
-    displayName: json['displayName'],
-    photoUrl: json['photoUrl'],
-    provider: AuthProvider.values.firstWhere(
-      (e) => e.name == json['provider'],
-    ),
-  );
+        id: json['id'],
+        email: json['email'],
+        displayName: json['displayName'],
+        photoUrl: json['photoUrl'],
+        provider: AuthProvider.values.firstWhere(
+          (e) => e.name == json['provider'],
+        ),
+      );
 }
 
 class AuthService {
@@ -124,9 +125,11 @@ class AuthService {
   Future<bool> hasStoredCredentials() async {
     if (_currentUser != null) return true;
     try {
-      final userJson = await SecureStorageService.instance.readJson(
-        SecureStorageKeys.userCredentials,
-      ).timeout(const Duration(seconds: 2));
+      final userJson = await SecureStorageService.instance
+          .readJson(
+            SecureStorageKeys.userCredentials,
+          )
+          .timeout(const Duration(seconds: 2));
       return userJson != null;
     } catch (e) {
       debugPrint('hasStoredCredentials check failed: $e');
@@ -153,14 +156,18 @@ class AuthService {
 
     if (Platform.isAndroid) {
       // Android: clientId is auto-detected, only serverClientId needed for idToken
-      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId =
+          _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     } else if (Platform.isIOS) {
       clientId = _googleClientIdIOS.isNotEmpty ? _googleClientIdIOS : null;
-      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId =
+          _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     } else {
       // Desktop (Windows/macOS/Linux): use server client ID for browser-based OAuth
-      clientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
-      serverClientId = _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      clientId =
+          _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
+      serverClientId =
+          _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
 
     await _googleSignIn.initialize(
@@ -188,13 +195,15 @@ class AuthService {
         SecureStorageKeys.userCredentials,
       );
 
-      debugPrint('AuthService: userJson = ${userJson != null ? "found" : "null"}');
+      debugPrint(
+          'AuthService: userJson = ${userJson != null ? "found" : "null"}');
 
       if (userJson != null) {
         _setCurrentUser(AuthUser.fromJson(userJson));
         debugPrint('AuthService: Restored user: ${_currentUser!.email}');
         await _deriveEncryptionKey();
-        debugPrint('AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
+        debugPrint(
+            'AuthService: After _deriveEncryptionKey, key is ${_encryptionKey == null ? "null" : "set"}');
         await _initializeFulaClient();
         // Re-link cloud mappings and restore tags for reinstall persistence (runs in background)
         if (FulaApiService.instance.isConfigured && !skipHeavyOperations) {
@@ -223,13 +232,15 @@ class AuthService {
   Future<AuthUser?> signInWithGoogle() async {
     try {
       if (PlatformCapabilities.isDesktop) {
-        throw Exception('Google Sign-In is not available on desktop. Please use "Get API Key" to connect your account.');
+        throw Exception(
+            'Google Sign-In is not available on desktop. Please use "Get API Key" to connect your account.');
       }
 
       await _ensureGoogleInitialized();
 
       if (!_googleSignIn.supportsAuthenticate()) {
-        debugPrint('Google Sign-In: authenticate not supported on this platform');
+        debugPrint(
+            'Google Sign-In: authenticate not supported on this platform');
         throw Exception('Google Sign-In not supported on this device');
       }
 
@@ -255,30 +266,43 @@ class AuthService {
       debugPrint('Google Sign-In error: $e');
       // Check for common Credential Manager errors
       final errorStr = e.toString();
-      if (errorStr.contains('GetCredentialResponse') || errorStr.contains('CredMan')) {
-        throw Exception('Google Sign-In configuration error. Please check SHA-1 fingerprint and OAuth client IDs in Google Cloud Console.');
+      if (errorStr.contains('GetCredentialResponse') ||
+          errorStr.contains('CredMan')) {
+        throw Exception(
+            'Google Sign-In configuration error. Please check SHA-1 fingerprint and OAuth client IDs in Google Cloud Console.');
       }
       rethrow;
     }
   }
 
   Future<bool> requestFormsScope() async {
-    if (PlatformCapabilities.isDesktop || _currentUser?.provider != AuthProvider.google) {
+    if (PlatformCapabilities.isDesktop ||
+        _currentUser?.provider != AuthProvider.google) {
       return false;
     }
-    final granted = await _googleSignIn.requestScopes(['https://www.googleapis.com/auth/forms.body']);
-    return granted;
+    try {
+      final authz = await _googleSignIn.authorizationClient.authorizeScopes(
+        ['https://www.googleapis.com/auth/forms.body'],
+      );
+      return authz != null;
+    } catch (e) {
+      debugPrint('Error requesting forms scope: $e');
+      return false;
+    }
   }
 
   Future<String?> getGoogleAccessToken() async {
     if (_currentUser?.provider != AuthProvider.google) return null;
-    
-    // For google_sign_in v7, currentUser getter on the plugin returns the current GoogleSignInAccount
-    final account = _googleSignIn.currentUser;
-    if (account == null) return null;
-    
-    final auth = await account.authentication;
-    return auth.accessToken;
+
+    try {
+      final authz = await _googleSignIn.authorizationClient.authorizationForScopes(
+        ['https://www.googleapis.com/auth/forms.body'],
+      );
+      return authz?.accessToken;
+    } catch (e) {
+      debugPrint('Error getting google access token: $e');
+      return null;
+    }
   }
 
   Future<void> _handleGoogleSignIn(
@@ -344,7 +368,8 @@ class AuthService {
         ShelfStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
-      debugPrint('Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
+      debugPrint(
+          'Google Sign-In: Fula initialization failed (sign-in still succeeded): $e');
       // Sign-in succeeded, but Fula features won't work until RustLib is properly initialized
     }
   }
@@ -502,7 +527,8 @@ class AuthService {
         ShelfStorageService.instance.restoreFromCloud();
       }
     } catch (e) {
-      debugPrint('Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
+      debugPrint(
+          'Apple Sign-In: Fula initialization failed (sign-in still succeeded): $e');
       // Sign-in succeeded, but Fula features won't work until RustLib is properly initialized
     }
   }
@@ -620,7 +646,8 @@ class AuthService {
   /// Initialize the fula_client with the derived encryption key
   Future<void> _initializeFulaClient() async {
     debugPrint('AuthService: _initializeFulaClient called');
-    debugPrint('AuthService: _encryptionKey is ${_encryptionKey == null ? "null" : "set (${_encryptionKey!.length} bytes)"}');
+    debugPrint(
+        'AuthService: _encryptionKey is ${_encryptionKey == null ? "null" : "set (${_encryptionKey!.length} bytes)"}');
 
     if (_encryptionKey == null) {
       debugPrint('Cannot initialize FulaApiService: no encryption key');
@@ -701,12 +728,14 @@ class AuthService {
 
     // If no current user, try to restore the session first
     if (_currentUser == null) {
-      debugPrint('AuthService: No current user, attempting to restore session...');
+      debugPrint(
+          'AuthService: No current user, attempting to restore session...');
       final hasSession = await checkExistingSession();
       debugPrint('AuthService: Session restore result: $hasSession');
       // checkExistingSession already calls _initializeFulaClient if successful
       if (hasSession && FulaApiService.instance.isConfigured) {
-        debugPrint('AuthService: FulaApiService already initialized via session restore');
+        debugPrint(
+            'AuthService: FulaApiService already initialized via session restore');
         return;
       }
     }
@@ -715,7 +744,8 @@ class AuthService {
     if (_encryptionKey == null) {
       debugPrint('AuthService: No encryption key, calling getEncryptionKey()');
       await getEncryptionKey();
-      debugPrint('AuthService: After getEncryptionKey(), _encryptionKey is ${_encryptionKey == null ? "null" : "set"}');
+      debugPrint(
+          'AuthService: After getEncryptionKey(), _encryptionKey is ${_encryptionKey == null ? "null" : "set"}');
     }
     await _initializeFulaClient();
 
@@ -741,7 +771,8 @@ class AuthService {
     final stored = await SecureStorageService.instance.read(
       SecureStorageKeys.encryptionKey,
     );
-    debugPrint('AuthService: Stored encryption key = ${stored != null ? "found" : "null"}');
+    debugPrint(
+        'AuthService: Stored encryption key = ${stored != null ? "found" : "null"}');
 
     if (stored != null) {
       _encryptionKey = base64Decode(stored);
@@ -754,7 +785,8 @@ class AuthService {
       return _encryptionKey;
     }
 
-    debugPrint('AuthService: Cannot get encryption key - no stored key and no current user');
+    debugPrint(
+        'AuthService: Cannot get encryption key - no stored key and no current user');
     return null;
   }
 
@@ -838,14 +870,15 @@ class AuthService {
   /// material — Mode A `oauthSub`, Mode B `oauthSub` (read from
   /// SecureStorage), `effectiveUserId`, and `usersIndexUserKey` are
   /// all non-confidential.
-  Future<({
-    String mode,
-    String? provider,
-    String? oauthSub,
-    String? effectiveUserId,
-    String? email,
-    String? usersIndexUserKey,
-  })?> getDerivationInputs() async {
+  Future<
+      ({
+        String mode,
+        String? provider,
+        String? oauthSub,
+        String? effectiveUserId,
+        String? email,
+        String? usersIndexUserKey,
+      })?> getDerivationInputs() async {
     if (_currentUser == null) return null;
 
     final modeVersion = await SecureStorageService.instance.read(
@@ -866,20 +899,19 @@ class AuthService {
       );
       final jwtSub = AuthCore.extractJwtSub(jwt);
       if (jwtSub != null && jwtSub.isNotEmpty) {
-        usersIndexUserKey =
-            await fula.deriveUserKeyFromJwtSub(jwtSub: jwtSub);
+        usersIndexUserKey = await fula.deriveUserKeyFromJwtSub(jwtSub: jwtSub);
       }
     } catch (e) {
-      debugPrint('AuthService.getDerivationInputs: JWT-sub deriveUserKey failed: $e');
+      debugPrint(
+          'AuthService.getDerivationInputs: JWT-sub deriveUserKey failed: $e');
     }
 
     if (mode == 'A') {
       final pinned = await SecureStorageService.instance.read(
         SecureStorageKeys.derivationEmail,
       );
-      final email = (pinned != null && pinned.isNotEmpty)
-          ? pinned
-          : _currentUser!.email;
+      final email =
+          (pinned != null && pinned.isNotEmpty) ? pinned : _currentUser!.email;
 
       // Email-keyed fallback only makes sense for Mode A: master keys
       // Mode A users by email-hash. Mode B/C key by the seed-derived
@@ -888,7 +920,8 @@ class AuthService {
         try {
           usersIndexUserKey = await fula.deriveUserKeyFromEmail(email: email);
         } catch (e) {
-          debugPrint('AuthService.getDerivationInputs: email deriveUserKey failed: $e');
+          debugPrint(
+              'AuthService.getDerivationInputs: email deriveUserKey failed: $e');
           usersIndexUserKey = null;
         }
       }
@@ -1157,7 +1190,8 @@ class AuthService {
   /// persisted to disk — it's used once for KDF + signing, then dropped.
   ///
   /// On `GoogleSignInExceptionCode.canceled`, returns `null`.
-  Future<({AuthUser user, bool hasModeA})?> signInGoogleModeB({required String password}) async {
+  Future<({AuthUser user, bool hasModeA})?> signInGoogleModeB(
+      {required String password}) async {
     if (PlatformCapabilities.isDesktop) {
       throw Exception(
         'Google Sign-In is not available on desktop. '
@@ -1195,7 +1229,8 @@ class AuthService {
 
   /// Mode B convenience for Apple Sign-In. Returns
   /// `(user: AuthUser, hasModeA: bool)` on success, `null` on user cancel.
-  Future<({AuthUser user, bool hasModeA})?> signInAppleModeB({required String password}) async {
+  Future<({AuthUser user, bool hasModeA})?> signInAppleModeB(
+      {required String password}) async {
     try {
       final credential = await SignInWithApple.getAppleIDCredential(
         scopes: const [
@@ -1286,7 +1321,8 @@ class AuthService {
 
       // Clear NFT wallet state and secure storage key
       NftWalletService.instance.clear();
-      await SecureStorageService.instance.delete(SecureStorageKeys.nftWalletPrivateKey);
+      await SecureStorageService.instance
+          .delete(SecureStorageKeys.nftWalletPrivateKey);
 
       // Clear NFT collections, received NFTs, and tags (user-specific data)
       await NftService.instance.clearAll();
@@ -1353,7 +1389,8 @@ class AuthService {
           final account = await result.timeout(
             const Duration(seconds: 5),
             onTimeout: () {
-              debugPrint('Google lightweight auth timed out in reauthenticate - likely Android 16 Credential Manager issue');
+              debugPrint(
+                  'Google lightweight auth timed out in reauthenticate - likely Android 16 Credential Manager issue');
               return null;
             },
           );

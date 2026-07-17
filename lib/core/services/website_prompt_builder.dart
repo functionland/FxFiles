@@ -180,8 +180,7 @@ const Map<String, String> websitePaletteInstructions = {
 
 final RegExp _categoryLinePattern =
     RegExp(r'^Category:\s*(.*)$', multiLine: true);
-final RegExp _stylesLinePattern =
-    RegExp(r'^Styles:\s*(.*)$', multiLine: true);
+final RegExp _stylesLinePattern = RegExp(r'^Styles:\s*(.*)$', multiLine: true);
 final RegExp _paletteLinePattern =
     RegExp(r'^Palette:\s*(.*)$', multiLine: true);
 final RegExp _contactFormLinePattern =
@@ -261,12 +260,17 @@ String buildWebsiteContactFormBlock(ContactFormConfig cfg) {
   if (cfg.channel == ContactFormChannel.sheets) {
     final b = StringBuffer()
       ..writeln('=== CONTACT FORM (auto-added) ===')
-      ..writeln('The user requested a Google Forms-based contact form. The form has already been created.')
-      ..writeln('Embed the following Google Form URL as an iframe inside the website.')
-      ..writeln('You MUST ensure the iframe is responsive, taking 100% width and a reasonable minimum height (e.g. min-height: 600px).')
-      ..writeln('Do NOT generate a custom HTML <form>, just embed this iframe EXACTLY:')
+      ..writeln(
+          'The user requested a Google Forms-based contact form. The form has already been created.')
+      ..writeln(
+          'Embed the following Google Form URL as an iframe inside the website.')
+      ..writeln(
+          'You MUST ensure the iframe is responsive, taking 100% width and a reasonable minimum height (e.g. min-height: 600px).')
+      ..writeln(
+          'Do NOT generate a custom HTML <form>, just embed this iframe EXACTLY:')
       ..writeln()
-      ..writeln('<iframe src="${cfg.destination}?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>')
+      ..writeln(
+          '<iframe src="${cfg.destination}?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>')
       ..writeln('=== END CONTACT FORM ===');
     return b.toString();
   }
@@ -339,7 +343,8 @@ String buildWebsiteLanguagesBlock(List<String> languages) {
     for (final l in languages)
       if (websiteLanguageAutonyms.containsKey(l.trim())) l.trim(),
   ].take(3).toList();
-  if (langs.isEmpty || (langs.length == 1 && langs.first == 'English')) return '';
+  if (langs.isEmpty || (langs.length == 1 && langs.first == 'English'))
+    return '';
 
   final b = StringBuffer()..writeln('=== SITE LANGUAGES (auto-added) ===');
   if (langs.length == 1) {
@@ -349,7 +354,8 @@ String buildWebsiteLanguagesBlock(List<String> languages) {
         'headings, body copy, buttons, form labels, alt text, and footer — must '
         'be in $lang; do not leave any text in another language.');
     if (_rtlWebsiteLanguages.contains(lang)) {
-      b.writeln('$lang is right-to-left: set dir="rtl" on the <html> element and '
+      b.writeln(
+          '$lang is right-to-left: set dir="rtl" on the <html> element and '
           'mirror the layout accordingly.');
     }
   } else {
@@ -549,8 +555,7 @@ String buildWebsiteAiPrompt(
         .toList();
     final styleLines = <String>[
       for (final s in selected)
-        if (websiteStyleInstructions[s] != null)
-          websiteStyleInstructions[s]!,
+        if (websiteStyleInstructions[s] != null) websiteStyleInstructions[s]!,
     ];
     if (styleLines.isNotEmpty) {
       buffer

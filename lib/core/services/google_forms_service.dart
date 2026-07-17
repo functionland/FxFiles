@@ -39,13 +39,13 @@ class GoogleFormsService {
       final requests = <Map<String, dynamic>>[];
       for (var i = 0; i < fields.length; i++) {
         final field = fields[i];
-        
+
         Map<String, dynamic> item = {
           'title': field.label,
         };
 
-        if (field.type == ContactFormFieldType.text || 
-            field.type == ContactFormFieldType.email || 
+        if (field.type == ContactFormFieldType.text ||
+            field.type == ContactFormFieldType.email ||
             field.type == ContactFormFieldType.number) {
           item['questionItem'] = {
             'question': {
@@ -92,7 +92,8 @@ class GoogleFormsService {
       );
 
       if (updateRes.statusCode != 200) {
-        throw Exception('Failed to update Google Form fields: ${updateRes.body}');
+        throw Exception(
+            'Failed to update Google Form fields: ${updateRes.body}');
       }
     }
 

@@ -107,9 +107,8 @@ class ContactFormConfig {
   static const ContactFormConfig disabled = ContactFormConfig();
 
   /// Fields whose label is non-empty — the only ones worth rendering.
-  List<ContactFormField> get usableFields => fields
-      .where((f) => f.label.trim().isNotEmpty)
-      .toList(growable: false);
+  List<ContactFormField> get usableFields =>
+      fields.where((f) => f.label.trim().isNotEmpty).toList(growable: false);
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,

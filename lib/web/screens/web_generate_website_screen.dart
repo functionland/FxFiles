@@ -268,9 +268,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       }
     } else if (cfg.channel == ContactFormChannel.email) {
       final at = dest.indexOf('@');
-      final emailOk = at > 0 &&
-          at != dest.length - 1 &&
-          dest.indexOf('.', at) > at + 1;
+      final emailOk =
+          at > 0 && at != dest.length - 1 && dest.indexOf('.', at) > at + 1;
       if (!emailOk) {
         return 'Enter a valid destination email address.';
       }
@@ -315,7 +314,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           if (!granted) {
             Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Google Forms permission is required.')),
+              const SnackBar(
+                  content: Text('Google Forms permission is required.')),
             );
             return;
           }
@@ -325,7 +325,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           if (token == null) {
             Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Failed to get Google authorization token.')),
+              const SnackBar(
+                  content: Text('Failed to get Google authorization token.')),
             );
             return;
           }
@@ -449,8 +450,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                   for (final c in _categoryOptions)
                     DropdownMenuItem(value: c, child: Text(c)),
                 ],
-                onChanged: (v) =>
-                    setState(() => _category = v ?? _category),
+                onChanged: (v) => setState(() => _category = v ?? _category),
               ),
               const SizedBox(height: 16),
               Text('Style · pick one',
@@ -467,8 +467,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                     final o = _styleOptions[i];
                     final selected = _selectedStyle == o.label;
                     return InkWell(
-                      onTap: () =>
-                          setState(() => _selectedStyle = o.label),
+                      onTap: () => setState(() => _selectedStyle = o.label),
                       borderRadius: BorderRadius.circular(10),
                       child: Container(
                         width: 130,
@@ -558,8 +557,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                             const Spacer(),
                             Text(o.label,
                                 style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600)),
+                                    fontSize: 12, fontWeight: FontWeight.w600)),
                             Text(o.description,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -586,8 +584,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                       'Add anything specific about content, layout, or theme '
                       '— leave blank to use only the category and styles '
                       'above.',
-                  helperText:
-                      'Category- and style-specific instructions plus '
+                  helperText: 'Category- and style-specific instructions plus '
                       'technical constraints (static site, IPFS hosting, '
                       'responsive design) are added automatically.',
                   helperMaxLines: 3,
@@ -621,8 +618,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: nameEmpty ? null : _submit,
-                style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary),
+                style:
+                    FilledButton.styleFrom(backgroundColor: AppColors.primary),
                 icon: const Icon(LucideIcons.sparkles, size: 18),
                 label: const Text('Publish'),
               ),
@@ -712,15 +709,12 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     final surchargeLabel =
         (surcharge != null && surcharge > 0) ? ' (+$surcharge FULA)' : '';
     final effectiveCost = pricing != null
-        ? (_enableTracking
-            ? pricing.costFulaWithTracking
-            : pricing.costFula)
+        ? (_enableTracking ? pricing.costFulaWithTracking : pricing.costFula)
         : null;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest
-            .withValues(alpha: 0.4),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
@@ -761,8 +755,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest
-            .withValues(alpha: 0.4),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
@@ -807,8 +800,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               ],
               selected: {_channel},
               showSelectedIcon: false,
-              onSelectionChanged: (s) =>
-                  setState(() => _channel = s.first),
+              onSelectionChanged: (s) => setState(() => _channel = s.first),
             ),
             if (_channel != ContactFormChannel.sheets) ...[
               const SizedBox(height: 10),
@@ -906,8 +898,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                   ),
                   items: const [
                     DropdownMenuItem(
-                        value: ContactFormFieldType.text,
-                        child: Text('Text')),
+                        value: ContactFormFieldType.text, child: Text('Text')),
                     DropdownMenuItem(
                         value: ContactFormFieldType.multiline,
                         child: Text('Multi-line')),
@@ -921,8 +912,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                         value: ContactFormFieldType.multiSelect,
                         child: Text('Multi-select')),
                   ],
-                  onChanged: (v) =>
-                      setState(() => row.type = v ?? row.type),
+                  onChanged: (v) => setState(() => row.type = v ?? row.type),
                 ),
               ),
               IconButton(
@@ -956,8 +946,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               children: [
                 Checkbox(
                   value: row.required,
-                  onChanged: (v) =>
-                      setState(() => row.required = v ?? false),
+                  onChanged: (v) => setState(() => row.required = v ?? false),
                 ),
                 const Text('Required', style: TextStyle(fontSize: 12)),
               ],

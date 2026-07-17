@@ -220,7 +220,6 @@ class _ContactFieldRow {
       );
 }
 
-
 /// Full-screen replacement for the previous "Generate website" dialog.
 ///
 /// Pop the screen with the [GenerateWebsitePromptResult] payload to publish,
@@ -313,8 +312,7 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
     final cf = widget.initialContactForm;
     _contactFormEnabled = cf?.enabled ?? false;
     _channel = cf?.channel ?? ContactFormChannel.whatsapp;
-    _destinationController =
-        TextEditingController(text: cf?.destination ?? '');
+    _destinationController = TextEditingController(text: cf?.destination ?? '');
     _emailSubjectController =
         TextEditingController(text: cf?.emailSubject ?? '');
     _titleController = TextEditingController(text: cf?.title ?? '');
@@ -375,44 +373,46 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         }
         return;
       }
-      
+
       if (contactForm.channel == ContactFormChannel.sheets) {
         showDialog(
           context: context,
           barrierDismissible: false,
           builder: (ctx) => const Center(child: CircularProgressIndicator()),
         );
-        
+
         try {
           final granted = await AuthService.instance.requestFormsScope();
           if (!mounted) return;
           if (!granted) {
             Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Google Forms permission is required.')),
+              const SnackBar(
+                  content: Text('Google Forms permission is required.')),
             );
             return;
           }
-          
+
           final token = await AuthService.instance.getGoogleAccessToken();
           if (!mounted) return;
           if (token == null) {
             Navigator.of(context).pop();
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Failed to get Google authorization token.')),
+              const SnackBar(
+                  content: Text('Failed to get Google authorization token.')),
             );
             return;
           }
-          
+
           final responderUri = await GoogleFormsService.instance.createForm(
             title: contactForm.title,
             fields: contactForm.usableFields,
             accessToken: token,
           );
-          
+
           if (!mounted) return;
           Navigator.of(context).pop(); // dismiss loading
-          
+
           contactForm = ContactFormConfig(
             enabled: contactForm.enabled,
             channel: contactForm.channel,
@@ -714,8 +714,8 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                       child: Text(
                         'Category- and style-specific instructions plus technical constraints (static site, IPFS hosting, responsive design) are added automatically.',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color:
-                              theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.6),
                           height: 1.5,
                         ),
                       ),
@@ -945,12 +945,12 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
             TextField(
               controller: _titleController,
               decoration: InputDecoration(
-                labelText: _channel == ContactFormChannel.sheets 
-                    ? 'Google Form title (optional)' 
+                labelText: _channel == ContactFormChannel.sheets
+                    ? 'Google Form title (optional)'
                     : 'Message header (optional)',
                 hintText: 'e.g. your website name',
-                helperText: _channel == ContactFormChannel.sheets 
-                    ? 'The title displayed at the top of the Google Form.' 
+                helperText: _channel == ContactFormChannel.sheets
+                    ? 'The title displayed at the top of the Google Form.'
                     : 'Added as "#Title: …" at the top of each message. Defaults to the website name; clear it to omit.',
                 helperMaxLines: 3,
                 isDense: true,
@@ -1208,15 +1208,13 @@ class _StyleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final borderColor = selected
-        ? AppColors.primary
-        : theme.colorScheme.outlineVariant;
+    final borderColor =
+        selected ? AppColors.primary : theme.colorScheme.outlineVariant;
     final fillColor = selected
         ? AppColors.primary.withValues(alpha: 0.12)
         : theme.colorScheme.surfaceContainerHighest;
-    final labelColor = selected
-        ? AppColors.primary
-        : theme.colorScheme.onSurface;
+    final labelColor =
+        selected ? AppColors.primary : theme.colorScheme.onSurface;
 
     return Material(
       color: fillColor,
@@ -1270,8 +1268,8 @@ class _StyleCard extends StatelessWidget {
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontSize: 11,
                         height: 1.3,
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.6),
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.6),
                       ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -1398,9 +1396,8 @@ class _PaletteCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final borderColor = selected
-        ? AppColors.primary
-        : theme.colorScheme.outlineVariant;
+    final borderColor =
+        selected ? AppColors.primary : theme.colorScheme.outlineVariant;
     final fillColor = selected
         ? AppColors.primary.withValues(alpha: 0.12)
         : theme.colorScheme.surfaceContainerHighest;
@@ -1459,8 +1456,8 @@ class _PaletteCard extends StatelessWidget {
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontSize: 11,
                         height: 1.3,
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.6),
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.6),
                       ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
