@@ -26,8 +26,10 @@ class TaggedFilesScreen extends ConsumerWidget {
     final tagState = ref.watch(tagProvider);
 
     // Get the tag either from the passed parameter or from state
-    final currentTag = tag ?? tagState.tags.where((t) => t.id == tagId).firstOrNull;
-    final tagColor = currentTag != null ? Color(currentTag.colorValue) : Colors.purple;
+    final currentTag =
+        tag ?? tagState.tags.where((t) => t.id == tagId).firstOrNull;
+    final tagColor =
+        currentTag != null ? Color(currentTag.colorValue) : Colors.purple;
 
     return Scaffold(
       appBar: AppBar(
@@ -65,20 +67,23 @@ class TaggedFilesScreen extends ConsumerWidget {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(LucideIcons.fileX, size: 64, color: Colors.grey[400]),
+                        Icon(LucideIcons.fileX,
+                            size: 64, color: Colors.grey[400]),
                         const SizedBox(height: 16),
                         Text(
                           'No files with this tag',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.grey[600],
-                          ),
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: Colors.grey[600],
+                                  ),
                         ),
                         const SizedBox(height: 8),
                         Text(
                           'Files tagged with "${currentTag?.name ?? 'this tag'}" will appear here',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.grey[500],
-                          ),
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: Colors.grey[500],
+                                  ),
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -104,7 +109,8 @@ class TaggedFilesScreen extends ConsumerWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(LucideIcons.alertCircle, size: 48, color: Colors.red[300]),
+                    Icon(LucideIcons.alertCircle,
+                        size: 48, color: Colors.red[300]),
                     const SizedBox(height: 16),
                     Text('Error: $error'),
                   ],
@@ -132,7 +138,8 @@ class TaggedFilesScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _removeTag(BuildContext context, WidgetRef ref, TaggedFile taggedFile) async {
+  Future<void> _removeTag(
+      BuildContext context, WidgetRef ref, TaggedFile taggedFile) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
