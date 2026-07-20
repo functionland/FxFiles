@@ -1,11 +1,11 @@
-# FxFiles - Fula File Manager
+# FxFiles - S3 compatible networks' File Manager, such as Fula
 
-A minimalistic file manager with Fula decentralized storage backup support. Built with Flutter for cross-platform compatibility.
+A minimalistic file manager totally compatible with any S3 compatible and IPFS pinning providers, such as Fula Network. Built with Flutter for cross-platform compatibility.
 
 ## Features
 
 - **Local File Browser**: Browse and manage local files and folders
-- **Fula Cloud Storage**: Sync files to decentralized Fula network
+- **S3-compatible**: Sync files to S3 compatble storage networks such as Fula
 - **Client-Side Encryption**: AES-256-GCM encryption before upload
 - **Authentication**: Sign in with Google or Apple
 - **File Viewers**: Built-in viewers for images, videos, and text files
@@ -16,8 +16,8 @@ A minimalistic file manager with Fula decentralized storage backup support. Buil
 - **NFT Generation**: Generate NFTs from your photos and share them with friends and family to claim with zero gas fees — no smart contracts, no fees, just import your asset and generate
 - **Zero-Gas NFT Claiming**: Recipients claim NFTs with absolutely no gas fees via a server-side relay — perfect for non-crypto people who don't even have a wallet. No wallet top-ups, no confusing transaction popups. Just sign, claim, and it's yours
 - **OpenSea Integration**: Minted NFTs show up on OpenSea automatically — ready to view, share, or show off
-- **NFT Transfer**: Standard ERC1155 transfers between wallets (FULA stays locked)
-- **NFT Burn-to-Release**: Burn NFTs to permanently destroy them and release locked FULA to the burner
+- **NFT Transfer**: Standard ERC1155 transfers between wallets
+- **NFT Burn-to-Release**: Burn NFTs to permanently destroy them
 - **Dual Wallet Support**: Internal wallet (auto-derived from sign-in) or external wallet (WalletConnect)
 
 ## Architecture
@@ -34,7 +34,7 @@ lib/
 │       ├── auth_service.dart         # Google/Apple authentication
 │       ├── encryption_service.dart   # AES-256-GCM encryption
 │       ├── file_service.dart         # Local file operations
-│       ├── fula_api_service.dart     # Fula S3-compatible API
+│       ├── fula_api_service.dart     # S3-compatible API, such as Fula network
 │       ├── local_storage_service.dart # Hive local storage
 │       ├── nft_service.dart          # NFT mint/claim/burn/transfer orchestration
 │       ├── nft_contract_service.dart  # ABI encoding + RPC calls for NFT contract
@@ -44,7 +44,7 @@ lib/
 │       └── sync_service.dart         # File synchronization
 ├── features/
 │   ├── browser/              # Local file browser
-│   ├── fula/                 # Fula cloud browser
+│   ├── fula/                 # Cloud browser
 │   ├── home/                 # Home screen with categories
 │   ├── nft/                  # NFT minting & claiming
 │   │   ├── providers/        # NftNotifier, nftTagsProvider, nftMintsProvider
@@ -135,11 +135,11 @@ The MSIX installer will be at `build/windows/x64/runner/Release/fula_files.msix`
 
 ### Configuration
 
-#### Fula API Setup
+#### Cloud API Setup (e.g. Fula)
 
 1. Open the app and go to **Settings**
 2. Under **Fula Configuration**, enter:
-   - **API Gateway URL**: Your Fula gateway endpoint (e.g., `https://gateway.fula.network`)
+   - **API Gateway URL**: Your gateway endpoint (e.g., `https://gateway.fula.network`)
    - **JWT Token**: Your authentication token
    - **IPFS Server** (optional): Custom IPFS server URL
 
@@ -162,7 +162,7 @@ Sign in with Google or Apple to enable:
 ### Data Flow
 
 ```
-Local File → Encrypt (AES-256-GCM) → Upload to Fula → IPFS Storage
+Local File → Encrypt (AES-256-GCM) → Upload to S3 (like  Fula → IPFS Storage)
                     ↑
             User's Encryption Key
 ```
@@ -187,16 +187,16 @@ Local File → Encrypt (AES-256-GCM) → Upload to Fula → IPFS Storage
 
 ## Usage
 
-### Upload Files to Fula
+### Upload Files to S3 Clouds like Fula
 
 1. Browse to local files
 2. Select files to upload
 3. Tap the upload button
 4. Files are encrypted and uploaded automatically
 
-### Download from Fula
+### Download from S3 clouds like Fula
 
-1. Open **Fula Browser** from home screen
+1. Open **Cloud Browser** from home screen
 2. Browse buckets and files
 3. Tap a file to download and decrypt
 
@@ -606,7 +606,7 @@ For the gateway at `https://cloud.fx.land/view`:
 
 Generate NFTs from your photos and let your friends and family claim them with zero gas. No smart contracts, no fees — just import your asset, generate an NFT, and share it with your friends or put it on OpenSea. Recipients claim with no wallet top-ups and no confusing transaction popups. Just sign, claim, and it's theirs. NFTs show up on OpenSea automatically — ready to view, share, or show off. Perfect for non-crypto people who don't even have a wallet.
 
-Built on ERC1155 tokens with FULA token backing. FULA tokens are permanently locked inside NFTs and can only be released by burning the NFT. Claims are gasless via a server-side meta-transaction relay that sponsors gas on behalf of the claimer.
+Built on ERC1155 tokens. tokens are permanently locked inside NFTs and can only be released by burning the NFT. Claims are gasless via a server-side meta-transaction relay that sponsors gas on behalf of the claimer.
 
 #### Overview
 
@@ -615,11 +615,11 @@ Create Collection → Import Images → Generate NFTs → Share Link → Friends
 ```
 
 Users can:
-- **Generate** NFTs from photos with FULA locked per token — no smart contract knowledge needed
+- **Generate** NFTs from photos — no smart contract knowledge needed
 - **Share** claim links — open (anyone can claim) or targeted (specific wallet)
 - **Claim with zero gas** — server-side relay pays gas fees so recipients never need tokens or wallet top-ups
-- **Transfer** NFTs freely via standard ERC1155 transfers (FULA stays locked)
-- **Burn** NFTs to permanently destroy them and release the locked FULA to the burner
+- **Transfer** NFTs freely via standard ERC1155 transfers
+- **Burn** NFTs to permanently destroy them
 - **View on OpenSea** — minted NFTs appear on OpenSea automatically
 
 #### Wallet Options
@@ -644,17 +644,17 @@ The internal wallet uses web3dart's `EthPrivateKey` for proper secp256k1 address
 
 #### 1. Generating NFTs
 
-**User flow:** Create Collection → Import Photos → Choose Wallet → Configure (count, FULA/NFT, chain) → Generate
+**User flow:** Create Collection → Import Photos → Choose Wallet → Configure (count, Backend, chain) → Generate
 
 **Pipeline (5 checkpointed steps):**
 
 ```
-Upload to IPFS → Approve FULA spend → mintWithFula() → Poll Receipt → Parse Token ID
+Upload to IPFS → Approve token spend → mintWithFula() → Poll Receipt → Parse Token ID
 ```
 
-1. **Upload to IPFS** — Image uploaded unencrypted to Fula S3 gateway, CID returned
-2. **Approve FULA** — ERC20 `approve()` so the NFT contract can pull FULA tokens
-3. **mintWithFula()** — Contract locks FULA and mints ERC1155 tokens
+1. **Upload to IPFS** — Image uploaded unencrypted to S3 gateway like Fula, CID returned
+2. **Approve** — ERC20 `approve()` so the NFT contract can pull tokens
+3. **mintWithFula()** — Contract locks tokens and mints ERC1155 tokens
 4. **Poll Receipt** — Wait for transaction confirmation
 5. **Parse Token ID** — Extract minted token ID from receipt logs
 
@@ -677,7 +677,7 @@ The contract escrows 1 NFT via `createClaimOffer()` and returns a `linkHash`. A 
 fxfiles://nft-claim?chain={chainId}&contract={address}&token={tokenId}&hash={linkHash}
 ```
 
-**Claimer side:** Open link → App shows NFT details (image, creator, FULA/NFT, supply) → Choose Wallet → Claim (zero gas)
+**Claimer side:** Open link → App shows NFT details (image, creator, NFT, supply) → Choose Wallet → Claim (zero gas)
 
 The claim screen fetches token info from the contract via `eth_call`, displays the NFT image from the IPFS gateway. Claims are submitted to the server-side relay (`/api/v1/nft/relay`) which broadcasts the transaction and pays gas on behalf of the claimer. The claimer only signs an EIP-712 message — no gas tokens needed. Pre-claim checks detect already-claimed or expired links.
 
@@ -692,23 +692,23 @@ After claiming, the screen shows **Transfer** and **Burn** buttons.
 
 #### 3. Transfer
 
-Standard ERC1155 `safeTransferFrom()`. FULA tokens remain locked inside the NFT — transfers do NOT release FULA. The UI shows: "Transfer keeps FULA locked. Only burning releases FULA."
+Standard ERC1155 `safeTransferFrom()`. tokens remain locked inside the NFT — transfers do NOT release tokens. The UI shows: "Transfer keeps tokens locked. Only burning releases tokens."
 
 **Flow:** Choose Wallet → Enter recipient `0x...` address → Confirm → `safeTransferFrom()` → Poll Receipt
 
-NFTs can be transferred any number of times between any wallets. The FULA only comes out when someone burns.
+NFTs can be transferred any number of times between any wallets. The tokens only comes out when someone burns.
 
-#### 4. Burn (Releases FULA)
+#### 4. Burn (Releases Tokens)
 
-The **only way** to release locked FULA from an NFT is to burn it. Burning permanently destroys the NFT and sends the proportional FULA to the burner.
+The **only way** to release locked tokens from an NFT is to burn it. Burning permanently destroys the NFT and sends the proportional tokens to the burner.
 
-**Flow:** Choose Wallet → Confirmation dialog ("This will permanently destroy the NFT and release X FULA to your wallet. This action cannot be undone.") → `burn(account, tokenId, amount)` → Poll Receipt
+**Flow:** Choose Wallet → Confirmation dialog ("This will permanently destroy the NFT and release X tokens to your wallet. This action cannot be undone.") → `burn(account, tokenId, amount)` → Poll Receipt
 
 The contract's `burn()` override:
 1. Calls `super.burn()` — standard ERC1155 burn (checks caller is owner or approved, zeros balance)
 2. Calculates `fulaToRelease = tokenInfo[id].fulaPerNft * amount`
 3. Decrements `totalLockedFula`
-4. Transfers FULA to the burner via `storageToken.safeTransfer()`
+4. Transfers tokens to the burner via `storageToken.safeTransfer()`
 5. Emits `NftBurned(tokenId, burner, amount, fulaReleased)`
 
 `burnBatch()` works similarly for multiple token types in one transaction.
@@ -720,7 +720,7 @@ ERC1155 upgradeable contract using OpenZeppelin v5.3.0 + GovernanceModule (UUPS 
 Deployed identically on Base (chain 8453) and Skale Europa (chain 2046399126).
 
 ```solidity
-// Mint — caller must approve() FULA spend first
+// Mint — caller must approve() tokens spend first
 mintWithFula(string ipfsCid, uint256 fulaPerNft, uint256 count) → uint256 firstTokenId
 
 // Claim — sender creates offer (escrows NFT), recipient claims
@@ -730,12 +730,12 @@ claimNFTMeta(bytes32 secret, address signer, uint256 deadline, uint256 nonce, by
 // claimer = address(0) → open claim (anyone can claim)
 // claimer = 0x1234...  → only that address can claim
 
-// Burn — permanently destroys NFT, releases locked FULA to burner
+// Burn — permanently destroys NFT, releases locked tokens to burner
 burn(address account, uint256 id, uint256 value)       // single token type
 burnBatch(address account, uint256[] ids, uint256[] values)  // multiple types
 burnMeta(bytes32 claimKey, uint256 tokenId, uint256 amount, address signer, uint256 deadline, uint256 nonce, bytes signature)  // sponsored burn
 
-// Transfer — standard ERC1155, FULA stays locked
+// Transfer — standard ERC1155, tokens stays locked
 safeTransferFrom(from, to, id, amount, data)  // inherited from ERC1155
 
 // Cancel — sender (after expiry) or admin can cancel stuck offers
@@ -841,7 +841,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- [Fula Network](https://fula.network) for decentralized storage
+- [Fula Network](https://fula.network) for decentralized storage and grants enabling this work
 - Flutter team for the amazing framework
 - All open-source contributors
 
@@ -882,10 +882,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ ] Add folder names in tabs inside each category. default view is All, but user can switch to other tabs in each category like "Images" to see only images in that folder for example "WhatsApp"
 - [ X ] Add sharing with links where root path is https://cloud.fx.land/ and the rest of parameters are based on the current s3 API doc for encrypted files where we have everything to decrypt a file in the link and it shows the link to user (General) - Implemented three share types: public links, password-protected links, and recipient-specific shares
 - [ X ] Change package name to land.fx.files.dev and create github actions to remove.dev for publishing to play store
-- [ X ] NFT minting: Mint images as ERC1155 NFTs on Base/Skale Europa with FULA token locking (NFT)
+- [ X ] NFT minting: Mint images as ERC1155 NFTs on Base/Skale Europa with token locking (NFT)
 - [ X ] NFT claim links: Share NFTs via deep links — open claims (anyone) or targeted (specific wallet) (NFT)
-- [ X ] NFT burn-to-release: Burn NFTs to permanently destroy and release locked FULA (NFT)
-- [ X ] NFT transfer: Standard ERC1155 transfers, FULA stays locked (NFT)
+- [ X ] NFT burn-to-release: Burn NFTs to permanently destroy and release locked tokens (NFT)
+- [ X ] NFT transfer: Standard ERC1155 transfers, tokens stays locked (NFT)
 - [ X ] NFT internal wallet: Deterministic wallet derivation + web3dart signing for non-crypto users (NFT)
 - [ X ] NFT wallet picker: Choose internal or connected wallet before every operation (NFT)
 - [ X ] NFT cloud sync: Encrypted metadata sync to S3 for cross-device recovery (NFT)
