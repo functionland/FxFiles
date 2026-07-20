@@ -39,6 +39,77 @@ void main() {
     });
   });
 
+  group('buildWebsiteContactFormBlock — Google Forms (sheets) channel', () {
+    // The form lives in a cross-origin iframe, so the generator cannot style
+    // its interior at any cost. These pin the two things the prompt CAN
+    // control: that the frame stays inline in the page, and that the generator
+    // is steered to style around it rather than waste effort inside it.
+    const cfg = ContactFormConfig(
+      enabled: true,
+      channel: ContactFormChannel.sheets,
+      destination: 'https://docs.google.com/forms/d/e/ABC/viewform',
+      fields: [ContactFormField(label: 'Name')],
+    );
+
+    test('embeds the responder URL as an inline iframe', () {
+      final b = buildWebsiteContactFormBlock(cfg);
+      expect(
+          b,
+          contains('<iframe src="https://docs.google.com/forms/d/e/ABC/'
+              'viewform?embedded=true"'));
+      expect(b, contains('title="Contact form"'));
+    });
+
+    test('appends embedded=true with the right separator when the URL '
+        'already has a query', () {
+      final b = buildWebsiteContactFormBlock(const ContactFormConfig(
+        enabled: true,
+        channel: ContactFormChannel.sheets,
+        destination: 'https://docs.google.com/forms/d/e/ABC/viewform?usp=sf',
+      ));
+      expect(b, contains('viewform?usp=sf&embedded=true'));
+      expect(b.contains('?usp=sf?embedded=true'), isFalse);
+    });
+
+    test('forbids putting the form behind a popup or overlay', () {
+      final b = buildWebsiteContactFormBlock(cfg).toLowerCase();
+      for (final surface in [
+        'modal',
+        'popup',
+        'dialog',
+        'lightbox',
+        'overlay',
+        'drawer',
+        'accordion',
+      ]) {
+        expect(b, contains(surface),
+            reason: 'the prompt should name "$surface" as disallowed');
+      }
+      expect(b, contains('do not put it in a modal'));
+      expect(b, contains('new tab'));
+    });
+
+    test('requires the form to sit inline in the page flow', () {
+      final b = buildWebsiteContactFormBlock(cfg);
+      expect(b, contains('PLACEMENT'));
+      expect(b.toLowerCase(), contains('inline'));
+      expect(b.toLowerCase(), contains('scroll'));
+    });
+
+    test('tells the generator it cannot style inside the iframe', () {
+      final b = buildWebsiteContactFormBlock(cfg);
+      expect(b, contains('STYLING'));
+      expect(b, contains('CANNOT reach its contents'));
+      // The light-surface steer is the fix for a white form on a dark site.
+      expect(b.toLowerCase(), contains('light'));
+    });
+
+    test('still forbids substituting a hand-written form', () {
+      final b = buildWebsiteContactFormBlock(cfg);
+      expect(b, contains('do not generate your own <form> to replace it'));
+    });
+  });
+
   group('buildWebsiteAiPrompt', () {
     test('expands hidden category/style/palette blocks from header lines',
         () {

@@ -258,19 +258,53 @@ String _fieldControlLabel(ContactFormFieldType t) {
 /// spec, and the verbatim HTML+JS snippet the generator must embed unchanged.
 String buildWebsiteContactFormBlock(ContactFormConfig cfg) {
   if (cfg.channel == ContactFormChannel.sheets) {
+    // The responder URI normally carries no query string, but it is now taken
+    // from a post-publish read of the form rather than assumed, so append
+    // `embedded=true` with the correct separator instead of a bare `?`.
+    final dest = cfg.destination.trim();
+    final src = dest.contains('?') ? '$dest&embedded=true' : '$dest?embedded=true';
+
     final b = StringBuffer()
       ..writeln('=== CONTACT FORM (auto-added) ===')
-      ..writeln(
-          'The user requested a Google Forms-based contact form. The form has already been created.')
-      ..writeln(
-          'Embed the following Google Form URL as an iframe inside the website.')
-      ..writeln(
-          'You MUST ensure the iframe is responsive, taking 100% width and a reasonable minimum height (e.g. min-height: 600px).')
-      ..writeln(
-          'Do NOT generate a custom HTML <form>, just embed this iframe EXACTLY:')
+      ..writeln('The user requested a Google Forms-based contact form. The '
+          'form already exists and its URL is baked into the iframe below.')
       ..writeln()
-      ..writeln(
-          '<iframe src="${cfg.destination}?embedded=true" width="100%" height="800" frameborder="0" marginheight="0" marginwidth="0">Loading…</iframe>')
+      ..writeln('PLACEMENT — the form must live IN the page:')
+      ..writeln('- Put the iframe inline, inside a normal "Contact" / "Get in '
+          'touch" section in the page\'s regular flow, so a visitor reaches it '
+          'by scrolling.')
+      ..writeln('- Do NOT put it in a modal, popup, dialog, lightbox, overlay, '
+          'drawer, accordion, or tab — nothing that hides it behind a click.')
+      ..writeln('- Do NOT replace it with a button or link that opens the form '
+          'in a new tab or window.')
+      ..writeln('- If the site has a "Contact" nav item it MUST scroll to this '
+          'section, not open a dialog.')
+      ..writeln()
+      ..writeln('STYLING — style AROUND the iframe, never inside it:')
+      ..writeln('- The iframe loads a cross-origin Google page. Your CSS '
+          'CANNOT reach its contents, so do not try to restyle the form\'s '
+          'fields, buttons or fonts, and do not try to hide any part of it. '
+          'Effort spent there is wasted.')
+      ..writeln('- Instead make the surroundings belong to the site: a section '
+          'heading and short intro line above it, and a container around the '
+          'iframe carrying the site\'s border-radius, padding, border/shadow '
+          'and vertical rhythm.')
+      ..writeln('- Google renders the form on a LIGHT background. Give that '
+          'container a light surface (white, or a very light tint of the '
+          'site\'s palette) so the frame reads as an intentional light card '
+          'rather than a bright rectangle floating on a dark section. On a '
+          'dark-themed site this contact card should be deliberately light.')
+      ..writeln('- Keep it responsive: full width of its container, never '
+          'causing horizontal scroll, and tall enough (~600px minimum, more '
+          'for a long form) that it is not internally scrolled on mobile.')
+      ..writeln()
+      ..writeln('Embed this iframe EXACTLY as given — do not alter the URL, '
+          'and do not generate your own <form> to replace it:')
+      ..writeln()
+      ..writeln('<iframe src="$src" title="Contact form" width="100%" '
+          'height="800" frameborder="0" marginheight="0" marginwidth="0" '
+          'style="display:block;width:100%;max-width:100%;border:0">'
+          'Loading…</iframe>')
       ..writeln('=== END CONTACT FORM ===');
     return b.toString();
   }

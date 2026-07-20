@@ -607,8 +607,13 @@ class WebsiteService {
 
   /// Best-effort check that a requested contact form actually rendered in the
   /// published site. The app never sees the AI's HTML directly, but the result
-  /// is public on IPFS, so we fetch the page and look for the form marker
-  /// (`id="cf"`). We intentionally check only the marker, not the JS tokens:
+  /// is public on IPFS, so we fetch the page and look for the form marker.
+  ///
+  /// The marker is channel-specific. The WhatsApp/Email channels embed the
+  /// client-side snippet, whose stable marker is `id="cf"`. The Google Forms
+  /// channel embeds a `docs.google.com` iframe instead and deliberately has no
+  /// `cf` form at all, so checking `id="cf"` there would warn on every healthy
+  /// site. We intentionally check only the marker, not the JS tokens:
   /// the generator may inline the script or split it into a separate file, so
   /// requiring the JS would false-warn on a good site. On a miss we annotate
   /// [generation.statusMessage] with [contactFormMissingWarning] and let the
@@ -620,6 +625,10 @@ class WebsiteService {
 
     final url = generation.gatewayUrl;
     if (url == null || url.isEmpty) return;
+
+    final marker = cfg.channel == ContactFormChannel.sheets
+        ? 'docs.google.com/forms'
+        : 'id="cf"';
 
     Future<void> run() async {
       // Allow a few attempts for IPFS gateway propagation before concluding
@@ -637,7 +646,7 @@ class WebsiteService {
           // into a separate script.js (both permitted by the generator), so we
           // deliberately do NOT require the JS tokens — that would false-warn on
           // a perfectly good externalized-script site.
-          if (res.body.contains('id="cf"')) return;
+          if (res.body.contains(marker)) return;
         } catch (_) {
           // Network/propagation hiccup — retry.
         }
