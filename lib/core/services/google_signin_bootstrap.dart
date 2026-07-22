@@ -32,6 +32,7 @@ class GoogleSignInBootstrap {
   GoogleSignInBootstrap._();
 
   static bool _done = false;
+  static bool _attemptFailed = false;
   static Future<void>? _inFlight;
   static String? _usedClientId;
   static String? _usedServerClientId;
@@ -80,19 +81,35 @@ class GoogleSignInBootstrap {
         serverClientId: serverClientId,
       );
     } on StateError catch (e) {
-      // The double-init guard is the only StateError `initialize()` raises, so
-      // arriving here means the singleton is already configured — by a code
-      // path this class does not know about, or by the previous run of a hot
+      if (_attemptFailed) {
+        // We have already watched an initialize() fail, so this is not a
+        // healthy "someone else got here first". The web plugin raises its
+        // double-init flag BEFORE awaiting the GIS script, so an attempt that
+        // fails at that await leaves the plugin permanently half-initialized:
+        // it rejects every retry with this same StateError while the future
+        // its other methods await never completes. Reporting success here
+        // would hand the caller a client that hangs instead of answering.
+        // Nothing in-process can clear that state — only a fresh page can.
+        _inFlight = null;
+        throw StateError(
+          'Google Sign-In could not finish initializing and cannot be retried '
+          'in this session. Please reload the page and try again. ($e)',
+        );
+      }
+      // Otherwise the singleton is simply already configured — by a code path
+      // this class does not know about, or by the previous run of a hot
       // restart, which resets Dart state but not the GIS SDK already loaded
-      // into the page. Either way it is initialized, which is all the caller
-      // asked for. Note this is deliberately matched by TYPE, not by message:
-      // the wording of that error changes between plugin versions.
+      // into the page. Either way it is initialized, which is what the caller
+      // asked for. Matched by TYPE, not by message: the wording of that error
+      // changes between plugin versions.
       debugPrint('GoogleSignInBootstrap: initialize() reports an existing '
           'initialization; continuing. ($e)');
     } catch (e) {
       // Something transient — e.g. the GIS script failed to load. Drop the
       // cached future so the next caller retries instead of inheriting the
-      // failure forever.
+      // failure forever, but remember that an attempt failed: on web a retry
+      // can only ever hit the poisoned-plugin case handled above.
+      _attemptFailed = true;
       _inFlight = null;
       rethrow;
     }
@@ -105,6 +122,7 @@ class GoogleSignInBootstrap {
   @visibleForTesting
   static void resetForTest() {
     _done = false;
+    _attemptFailed = false;
     _inFlight = null;
     _usedClientId = null;
     _usedServerClientId = null;

@@ -235,6 +235,9 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     WebWebsiteService.instance.fetchPricing().then((p) {
       if (mounted && p != null) setState(() => _pricing = p);
     });
+    // An existing Sheets form reaches Publish without ever touching the
+    // channel selector, so warm from the incoming configuration too.
+    _warmGoogleIfSheets();
   }
 
   @override
@@ -288,13 +291,16 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     return null;
   }
 
-  /// Load the Google Sign-In SDK as soon as the user picks the channel that
-  /// will need it. On web this matters beyond speed: `authorizeScopes` opens a
-  /// popup, and a browser only permits that while the click that led to it is
-  /// still "recent" (a few seconds) — long enough for a cached SDK, not always
-  /// for a cold one. Failures are ignored; Publish still initializes on demand.
+  /// Load the Google Sign-In SDK as soon as we know it will be needed. On web
+  /// this matters beyond speed: `authorizeScopes` opens a popup, and a browser
+  /// only permits that while the click that led to it is still "recent" (a few
+  /// seconds) — long enough for a cached SDK, not always for a cold one.
+  /// Called from every path that can land on the Sheets channel: picking it,
+  /// re-enabling a form that remembers it, and opening a website already
+  /// configured with it. Failures are ignored; Publish still initializes on
+  /// demand.
   void _warmGoogleIfSheets() {
-    if (_channel != ContactFormChannel.sheets) return;
+    if (!_contactFormEnabled || _channel != ContactFormChannel.sheets) return;
     unawaited(AuthService.instance.ensureGoogleInitialized().catchError(
       (Object e) => debugPrint('Google Sign-In warm-up failed: $e'),
     ));
@@ -787,14 +793,20 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               style: TextStyle(fontSize: 11),
             ),
             value: _contactFormEnabled,
-            onChanged: (v) => setState(() {
-              _contactFormEnabled = v;
-              // Default the message header to the website name, but only when
-              // the creator hasn't typed one — keeps it editable and clearable.
-              if (v && _titleController.text.trim().isEmpty) {
-                _titleController.text = _nameController.text.trim();
-              }
-            }),
+            onChanged: (v) {
+              setState(() {
+                _contactFormEnabled = v;
+                // Default the message header to the website name, but only
+                // when the creator hasn't typed one — keeps it editable and
+                // clearable.
+                if (v && _titleController.text.trim().isEmpty) {
+                  _titleController.text = _nameController.text.trim();
+                }
+              });
+              // Re-enabling a form that remembers Sheets never fires the
+              // channel selector, so warm from here too.
+              _warmGoogleIfSheets();
+            },
           ),
           if (_contactFormEnabled) ...[
             const SizedBox(height: 8),

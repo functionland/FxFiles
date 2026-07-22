@@ -137,6 +137,32 @@ void main() {
     expect(GoogleSignInBootstrap.isInitialized, isTrue);
   });
 
+  test(
+      'a web plugin poisoned by a failed first init is reported, not reported '
+      'as success', () async {
+    // google_sign_in_web raises its double-init flag BEFORE awaiting the GIS
+    // script, so an attempt that fails at that await leaves the plugin
+    // permanently rejecting retries while never finishing initialization.
+    // Treating that rejection as "already initialized" would hand callers a
+    // client that hangs.
+    fake.failWith = Exception('GIS script failed to load');
+
+    await expectLater(
+      GoogleSignInBootstrap.ensureInitialized(clientId: 'web-client'),
+      throwsA(isA<Exception>()),
+    );
+
+    await expectLater(
+      GoogleSignInBootstrap.ensureInitialized(clientId: 'web-client'),
+      throwsA(isA<StateError>().having(
+        (StateError e) => e.message,
+        'message',
+        contains('reload'),
+      )),
+    );
+    expect(GoogleSignInBootstrap.isInitialized, isFalse);
+  });
+
   test('a transient failure is surfaced and leaves a retry possible', () async {
     // A native-style plugin, so the retry below exercises a genuine second
     // initialization rather than the already-initialized branch.
