@@ -14,6 +14,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/google_signin_bootstrap.dart';
 import 'package:fula_files/core/services/sync_service.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/cloud_sync_mapping_service.dart';
@@ -85,7 +86,6 @@ class AuthService {
   static final AuthService instance = AuthService._();
 
   final _googleSignIn = GoogleSignIn.instance;
-  bool _googleInitialized = false;
 
   AuthUser? _currentUser;
   Uint8List? _encryptionKey;
@@ -148,9 +148,23 @@ class AuthService {
     }
   }
 
-  Future<void> _ensureGoogleInitialized() async {
-    if (_googleInitialized) return;
+  /// Warm up Google Sign-In before a flow that will need it.
+  ///
+  /// Worth calling from a user gesture that *precedes* the one needing Google
+  /// (e.g. choosing the Google Forms contact channel, several taps before
+  /// Publish): on web the scope request opens a popup, and browsers only allow
+  /// that within a few seconds of a real click — a first-time load of the GIS
+  /// SDK inside the Publish handler can eat that budget. No-op on desktop,
+  /// where Google Sign-In is unavailable.
+  Future<void> ensureGoogleInitialized() async {
+    if (PlatformCapabilities.isDesktop) return;
+    await _ensureGoogleInitialized();
+  }
 
+  /// Delegates to [GoogleSignInBootstrap], which owns the process's single
+  /// `initialize()` call — the web shell's sign-in screen initializes the very
+  /// same singleton, and a second `initialize()` throws there.
+  Future<void> _ensureGoogleInitialized() async {
     String? clientId;
     String? serverClientId;
 
@@ -173,11 +187,10 @@ class AuthService {
           _googleServerClientId.isNotEmpty ? _googleServerClientId : null;
     }
 
-    await _googleSignIn.initialize(
+    await GoogleSignInBootstrap.ensureInitialized(
       clientId: clientId,
       serverClientId: serverClientId,
     );
-    _googleInitialized = true;
   }
 
   /// Check if Google Sign-In is properly configured

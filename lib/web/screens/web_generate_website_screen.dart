@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -284,6 +286,18 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
       }
     }
     return null;
+  }
+
+  /// Load the Google Sign-In SDK as soon as the user picks the channel that
+  /// will need it. On web this matters beyond speed: `authorizeScopes` opens a
+  /// popup, and a browser only permits that while the click that led to it is
+  /// still "recent" (a few seconds) — long enough for a cached SDK, not always
+  /// for a cold one. Failures are ignored; Publish still initializes on demand.
+  void _warmGoogleIfSheets() {
+    if (_channel != ContactFormChannel.sheets) return;
+    unawaited(AuthService.instance.ensureGoogleInitialized().catchError(
+      (Object e) => debugPrint('Google Sign-In warm-up failed: $e'),
+    ));
   }
 
   Future<void> _submit() async {
@@ -801,7 +815,10 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               ],
               selected: {_channel},
               showSelectedIcon: false,
-              onSelectionChanged: (s) => setState(() => _channel = s.first),
+              onSelectionChanged: (s) {
+                setState(() => _channel = s.first);
+                _warmGoogleIfSheets();
+              },
             ),
             if (_channel != ContactFormChannel.sheets) ...[
               const SizedBox(height: 10),

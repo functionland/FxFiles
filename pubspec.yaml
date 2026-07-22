@@ -166,6 +166,9 @@ dev_dependencies:
   integration_test:
     sdk: flutter
   mocktail: ^1.0.4
+  # Lets google_signin_bootstrap_test swap in a fake GoogleSignInPlatform to
+  # reproduce the web plugin's "init() called twice" StateError.
+  google_sign_in_platform_interface: ^3.1.0
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.2
   flutter_native_splash: ^2.4.4

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -356,6 +358,16 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
         await WebsiteService.instance.fetchPricing(forceRefresh: true);
     if (!mounted) return;
     setState(() => _pricing = pricing);
+  }
+
+  /// Load the Google Sign-In SDK as soon as the user picks the channel that
+  /// will need it, rather than inside the Publish handler. Failures are
+  /// ignored: this is a head start, and Publish still initializes on demand.
+  void _warmGoogleIfSheets() {
+    if (_channel != ContactFormChannel.sheets) return;
+    unawaited(AuthService.instance.ensureGoogleInitialized().catchError(
+      (Object e) => debugPrint('Google Sign-In warm-up failed: $e'),
+    ));
   }
 
   Future<void> _submit() async {
@@ -908,7 +920,10 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                 ),
               ],
               selected: {_channel},
-              onSelectionChanged: (s) => setState(() => _channel = s.first),
+              onSelectionChanged: (s) {
+                setState(() => _channel = s.first);
+                _warmGoogleIfSheets();
+              },
             ),
             if (_channel != ContactFormChannel.sheets) ...[
               const SizedBox(height: 12),

@@ -8,6 +8,7 @@ import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/google_signin_bootstrap.dart';
 import 'package:fula_files/core/services/master_health_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/utils/bip39_local.dart';
@@ -169,7 +170,7 @@ class WebSession extends ChangeNotifier {
   // provider to Mode B (OAuth + seed); empty means legacy Mode A.
   // ==========================================================================
 
-  bool _googleInited = false;
+  Future<void>? _googleInitInFlight;
 
   /// Passphrase the user typed before clicking the Google button (the
   /// GIS button is the only sign-in trigger on web, so the choice has
@@ -178,19 +179,37 @@ class WebSession extends ChangeNotifier {
 
   /// Initialize google_sign_in for web and start consuming credential
   /// events. Idempotent; call from the sign-in screen.
-  Future<void> initGoogleWeb() async {
-    if (_googleInited) return;
-    await GoogleSignIn.instance.initialize(
-      clientId: AuthCore.googleWebClientId,
-    );
+  ///
+  /// The guard is a Future rather than a bool because the sign-in screen
+  /// calls this from `initState` without awaiting it: two screens mounted
+  /// in quick succession would both pass a bool guard that is only set
+  /// after the await, and subscribe the credential handler twice.
+  Future<void> initGoogleWeb() => _googleInitInFlight ??= _initGoogleWeb();
+
+  Future<void> _initGoogleWeb() async {
+    try {
+      // Shared with AuthService — `GoogleSignIn.instance` is a process-wide
+      // singleton whose initialize() may run only once, and AuthService
+      // initializes it too when it asks for the Drive scope.
+      await GoogleSignInBootstrap.ensureInitialized(
+        clientId: AuthCore.googleWebClientId,
+      );
+    } catch (e) {
+      // Leave the door open for a retry — e.g. the GIS script failed to load
+      // on a flaky connection and the user reopens the sign-in sheet. Callers
+      // are fire-and-forget, so this must not escape as an unhandled error.
+      _googleInitInFlight = null;
+      debugPrint('WebSession: Google Sign-In init failed: $e');
+      return;
+    }
     // Lifetime subscription — WebSession is a singleton that lives as
-    // long as the page, so the stream is never cancelled.
+    // long as the page, so the stream is never cancelled. It sits inside
+    // the guarded future above so it is registered exactly once.
     GoogleSignIn.instance.authenticationEvents.listen((event) {
       if (event is GoogleSignInAuthenticationEventSignIn) {
         unawaited(_onGoogleCredential(event.user));
       }
     });
-    _googleInited = true;
   }
 
   Future<void> _onGoogleCredential(GoogleSignInAccount account) async {
