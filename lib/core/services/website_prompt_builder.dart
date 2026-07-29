@@ -20,10 +20,11 @@ const String kWebsiteAssetBucket = 'website-assets';
 
 const int kWebsiteMaxParsedContentBytes = 100000; // 100KB backend limit
 
-// Per-type per-file size caps. Limits aligned with what Anthropic's
-// Messages API accepts (5MB images, 32MB PDFs); the rest sit below the
-// request-size budget.
-const int kWebsiteMaxImageBytes = 5 * 1024 * 1024; //  5MB
+// Per-type per-file size caps.
+// Images: the backend attaches a DOWNSCALED copy to the AI request (the
+// hosted original stays full-resolution for the generated site), so this
+// cap governs upload/hosting size — not the Anthropic 5MB image limit.
+const int kWebsiteMaxImageBytes = 25 * 1024 * 1024; // 25MB
 const int kWebsiteMaxBinaryDocBytes = 32 * 1024 * 1024; // 32MB
 const int kWebsiteMaxTextBytes = 10 * 1024 * 1024; // 10MB
 // Video is uploaded to S3 for hosting and referenced by URL only — its bytes
@@ -34,11 +35,15 @@ const int kWebsiteMaxTextBytes = 10 * 1024 * 1024; // 10MB
 const int kWebsiteMaxVideoBytes = 150 * 1024 * 1024; // 150MB
 
 // Per-job aggregate caps. Backend mirrors these as defence in depth.
-const int kWebsiteMaxFilesPerJob = 10;
+// NOTE: the backend attaches image/document assets to the Claude request
+// as base64 blocks under a cumulative attachment budget — assets beyond
+// that budget are still uploaded/hosted and referenced by URL in the
+// generated site; the AI just doesn't see their pixel/text content.
+const int kWebsiteMaxFilesPerJob = 30;
 // Raised from 50MB to fit one large (100MB+) video plus ~50MB of other assets.
-// NOTE: _uploadAssetUnencrypted buffers the whole file in memory before the PUT,
-// so a very large video is a memory consideration — most acute on the web build
-// (a chunked/streaming upload is the real fix; tracked as a follow-up).
+// NOTE: web streams uploads from the Blob (no whole-file read); NATIVE's
+// _uploadAssetUnencrypted still buffers the file in memory before the PUT,
+// so a very large video remains a memory consideration there.
 const int kWebsiteMaxTotalUploadBytes = 200 * 1024 * 1024; // 200MB total
 
 /// Per-file size cap for [ext] (dot-prefixed, e.g. '.png'). Returns 0

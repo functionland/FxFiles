@@ -536,7 +536,8 @@ class WebWebsiteService extends ChangeNotifier {
       if (uploadedCount >= kWebsiteMaxFilesPerJob) {
         asset.uploaded = false;
         failedCount++;
-        skipReasons.add('${asset.fileName}: 10-file cap reached');
+        skipReasons
+            .add('${asset.fileName}: $kWebsiteMaxFilesPerJob-file cap reached');
         continue;
       }
 

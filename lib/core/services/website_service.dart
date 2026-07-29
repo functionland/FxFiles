@@ -432,12 +432,13 @@ class WebsiteService {
         continue;
       }
 
-      // 10-file cap per job — once we've uploaded the cap, skip the rest.
+      // File cap per job — once we've uploaded the cap, skip the rest.
       if (uploadedCount >= _maxFilesPerJob) {
-        debugPrint('Asset ${asset.fileName} skipped (10-file cap reached)');
+        debugPrint(
+            'Asset ${asset.fileName} skipped ($_maxFilesPerJob-file cap reached)');
         asset.uploaded = false;
         failedCount++;
-        skipReasons.add('${asset.fileName}: 10-file cap reached');
+        skipReasons.add('${asset.fileName}: $_maxFilesPerJob-file cap reached');
         continue;
       }
 
