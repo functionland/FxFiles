@@ -715,7 +715,9 @@ class _GenerateWebsiteScreenState extends State<GenerateWebsiteScreen> {
                   controller: _promptController,
                   maxLines: 6,
                   minLines: 4,
-                  maxLength: 9000,
+                  // Server accepts 80K for the ENRICHED prompt (user text +
+                  // hidden blocks); 72K leaves ~8K headroom for enrichment.
+                  maxLength: 72000,
                   decoration: const InputDecoration(
                     labelText: 'Your creative direction',
                     hintText:

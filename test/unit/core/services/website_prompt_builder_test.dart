@@ -121,7 +121,10 @@ void main() {
         body: 'Sell things.',
       );
       final full = buildWebsiteAiPrompt(stored);
-      expect(full, startsWith('=== SYSTEM CONSTRAINTS'));
+      // The client no longer prepends a system block — the backend owns
+      // output policy (and strips the legacy block from old clients).
+      expect(full.contains('=== SYSTEM CONSTRAINTS'), isFalse);
+      expect(full, startsWith('=== TYPE-SPECIFIC CONSTRAINTS'));
       expect(full, contains('=== TYPE-SPECIFIC CONSTRAINTS (auto-added) ==='));
       expect(full, contains(websiteCategoryInstructions['Shop']!));
       expect(full, contains('=== STYLE PREFERENCES (auto-added) ==='));

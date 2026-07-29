@@ -1,9 +1,11 @@
-import 'package:file_picker/file_picker.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web/web.dart' as web;
 
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/file_tag.dart';
@@ -12,17 +14,20 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
-import 'package:fula_files/web/services/web_save.dart';
+import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
+import 'package:fula_files/web/services/web_website_asset_uploader.dart';
 import 'package:fula_files/web/services/web_website_assets_logic.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
-import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 
 /// Mirror of lib/features/websites/screens/website_detail_screen.dart:
-/// assets section (browser-picked files + per-asset notes), the Create
+/// assets section (imported files + per-asset notes), the Create
 /// Website action, the stable shareable-link section (fxfiles.top
-/// front door) and the generation history. Assets live in memory for
-/// the session — the app's local-file import flows don't apply here.
+/// front door) and the generation history. Imports upload EAGERLY
+/// (streamed from disk by the browser — never read into memory) and are
+/// recorded as group members in the tag manifest, so they survive a
+/// reload; the screen holds only names + CIDs + notes.
 class WebWebsiteDetailScreen extends StatefulWidget {
   final String tagId;
   const WebWebsiteDetailScreen({super.key, required this.tagId});
@@ -42,6 +47,15 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// uploaded copy in any generation) — listed for awareness, but only
   /// the app can include them.
   List<String> _appOnlyAssets = const [];
+
+  /// Group files with a PRIVATE cloud copy (non-website-assets remoteKey)
+  /// and no public CID — the app can include them, the web can't.
+  List<String> _cloudOnlyAssets = const [];
+
+  /// website-assets rows whose CID couldn't be resolved (LIST and HEAD
+  /// both failed) — shown as warnings with a Remove action.
+  final List<PendingCidWebsiteAsset> _unresolvedAssets = [];
+
   bool _assetsSeeded = false;
   bool _loading = true;
   String? _error;
@@ -50,17 +64,62 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   void initState() {
     super.initState();
     WebWebsiteService.instance.addListener(_onServiceTick);
+    WebWebsiteAssetUploader.instance.addListener(_onUploaderTick);
     _load();
   }
 
   @override
   void dispose() {
     WebWebsiteService.instance.removeListener(_onServiceTick);
+    WebWebsiteAssetUploader.instance.removeListener(_onUploaderTick);
+    for (final a in _assets) {
+      _revokePreview(a);
+    }
     super.dispose();
+  }
+
+  /// Release an adopted `blob:` preview URL (fresh imports) — they live
+  /// until explicitly revoked, so removal/replacement/dispose must free
+  /// them or every imported image leaks for the tab's lifetime.
+  void _revokePreview(WebPickedAsset a) {
+    final u = a.previewUrl;
+    if (u != null && u.startsWith('blob:')) {
+      try {
+        web.URL.revokeObjectURL(u);
+      } catch (_) {}
+    }
   }
 
   void _onServiceTick() {
     if (mounted) setState(() {});
+  }
+
+  /// Fold completed upload jobs into the asset rows (byteless: name +
+  /// CID + note + preview URL), then clear them from the queue.
+  void _onUploaderTick() {
+    if (!mounted) return;
+    final done =
+        WebWebsiteAssetUploader.instance.doneJobsForTag(widget.tagId);
+    setState(() {
+      for (final j in done) {
+        for (final old in _assets.where((a) => a.fileName == j.fileName)) {
+          _revokePreview(old); // replaced row's preview must not leak
+        }
+        _assets.removeWhere((a) => a.fileName == j.fileName);
+        _unresolvedAssets.removeWhere((p) => p.fileName == j.fileName);
+        _assets.add(WebPickedAsset(
+          fileName: j.fileName,
+          cid: j.cid,
+          gatewayUrl: j.gatewayUrl,
+          size: j.size,
+          note: j.note,
+          previewUrl: j.takePreviewUrl(),
+        ));
+      }
+    });
+    if (done.isNotEmpty) {
+      WebWebsiteAssetUploader.instance.clearDone(widget.tagId);
+    }
   }
 
   Future<void> _load() async {
@@ -124,10 +183,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     );
     final tagged = [
       for (final tf in WebTagService.instance.filesWithTag(widget.tagId))
-        (
-          fileName: tf.fileName,
-          hasRemoteKey: tf.remoteKey != null && tf.remoteKey!.isNotEmpty,
-        ),
+        (id: tf.id, fileName: tf.fileName, remoteKey: tf.remoteKey),
     ];
     final resolved =
         resolveWebsiteGroupAssets(taggedFiles: tagged, cidByName: cidByName);
@@ -137,9 +193,38 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         cid: a.cid,
         gatewayUrl: a.gatewayUrl,
         note: a.note,
+        taggedFileId: a.taggedFileId,
+        parsedContent: a.parsedContent,
       ));
     }
     _appOnlyAssets = resolved.appOnly;
+    _cloudOnlyAssets = resolved.cloudOnly;
+    // website-assets rows the LIST didn't cover (failed/lagged): resolve
+    // each via HEAD instead of dropping them — the sharp edge that used
+    // to make web-imported assets vanish.
+    if (resolved.pendingCid.isNotEmpty) {
+      unawaited(_resolvePendingCids(resolved.pendingCid));
+    }
+  }
+
+  Future<void> _resolvePendingCids(
+      List<PendingCidWebsiteAsset> pending) async {
+    for (final p in pending) {
+      final cid = await WebFeatures.websiteAssetCidByHead(p.objectKey);
+      if (!mounted) return;
+      setState(() {
+        if (cid != null && cid.isNotEmpty) {
+          _assets.removeWhere((a) => a.fileName == p.fileName);
+          _assets.add(WebPickedAsset(
+            fileName: p.fileName,
+            cid: cid,
+            taggedFileId: p.taggedFileId,
+          ));
+        } else {
+          _unresolvedAssets.add(p);
+        }
+      });
+    }
   }
 
   String get _displayName {
@@ -169,20 +254,66 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       g.status == WebsiteGenStatus.parsing ||
       g.status == WebsiteGenStatus.generating);
 
+  /// Known bytes already committed to the group (ready assets + jobs
+  /// still in flight) — feeds the aggregate import cap. Best-effort:
+  /// assets seeded from a reload don't know their size (counted as 0),
+  /// so the cap is permissive across sessions; the backend mirrors the
+  /// hard limits as defence in depth.
+  int get _knownGroupBytes {
+    var total = 0;
+    for (final a in _assets) {
+      total += a.size ?? 0;
+    }
+    for (final j in WebWebsiteAssetUploader.instance.jobsForTag(widget.tagId)) {
+      if (j.isActive) total += j.size;
+    }
+    return total;
+  }
+
+  /// Pick WITHOUT reading (lazily-readable Blob handles) and hand off to
+  /// the eager uploader: caps validated from metadata before any byte
+  /// moves, then each file streams from disk via a Blob-body PUT. The
+  /// tab's heap stays flat no matter how large the files are.
   Future<void> _importAssets() async {
-    final picked = await FilePicker.platform.pickFiles(
-      withData: true,
-      allowMultiple: true,
-      type: FileType.any,
+    final files = await pickFilesForUpload();
+    if (files.isEmpty || !mounted) return;
+    final r = WebWebsiteAssetUploader.instance.enqueue(
+      tagId: widget.tagId,
+      websiteName: _displayName,
+      files: files,
+      groupKnownBytes: _knownGroupBytes,
     );
-    if (picked == null || picked.files.isEmpty) return;
-    setState(() {
-      for (final f in picked.files) {
-        final data = f.bytes;
-        if (data == null) continue;
-        _assets.add(WebPickedAsset(fileName: f.name, bytes: data));
+    if (r.rejectedReasons.isNotEmpty && mounted) {
+      final reasons = r.rejectedReasons;
+      final summary = reasons.length <= 3
+          ? reasons.join('\n')
+          : '${reasons.take(3).join('\n')}\n(+${reasons.length - 3} more)';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(summary)));
+    }
+    setState(() {});
+  }
+
+  /// Real removal: drop the tag-manifest membership row (by row id when
+  /// known, else by the website-assets remoteKey). The bucket object is
+  /// NEVER deleted — it's content-addressed and may be referenced by
+  /// earlier generations' live sites.
+  Future<void> _removeAsset(int index) async {
+    final a = _assets[index];
+    _revokePreview(a);
+    setState(() => _assets.removeAt(index));
+    try {
+      if (a.taggedFileId != null) {
+        await WebTagService.instance.removeTaggedFile(a.taggedFileId!);
+      } else {
+        await WebTagService.instance.untagFile(
+          tagId: widget.tagId,
+          remoteKey: websiteAssetRemoteKey(_displayName, a.fileName),
+        );
       }
-    });
+    } catch (e) {
+      debugPrint('Asset untag failed (row may not exist yet): $e');
+    }
   }
 
   List<AssetNote> get _assetNotes => [
@@ -190,6 +321,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
           if (a.note.trim().isNotEmpty)
             (fileName: a.fileName, cid: a.cid, comment: a.note.trim()),
       ];
+
+  /// Assets eligible for generation: CID-backed (public on IPFS).
+  List<WebPickedAsset> get _readyAssets =>
+      [for (final a in _assets) if (a.isCidBacked) a];
 
   Future<void> _publishFromResult(WebGeneratePromptResult result) async {
     final enrichedPrompt = composeEnrichedWebsitePrompt(
@@ -205,7 +340,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       tagId: widget.tagId,
       tagName: _displayName,
       prompt: enrichedPrompt,
-      picked: List.of(_assets),
+      picked: List.of(_readyAssets),
       enableTracking: result.enableTracking,
     );
     if (mounted) {
@@ -216,7 +351,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   }
 
   Future<void> _createWebsite() async {
-    if (_assets.isEmpty) {
+    if (WebWebsiteAssetUploader.instance.hasActiveJobs(widget.tagId)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Assets are still uploading — one moment')));
+      return;
+    }
+    if (_readyAssets.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content:
               Text('Import images, videos, or documents first')));
@@ -266,7 +406,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       ),
     );
     if (result == null || !mounted) return;
-    if (_assets.isEmpty) {
+    if (_readyAssets.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text(
               'No reusable assets in this group — import files first')));
@@ -323,16 +463,25 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                         const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed:
-                                _isGenerating ? null : _createWebsite,
-                            style: FilledButton.styleFrom(
-                                backgroundColor: AppColors.primary),
-                            icon: const Icon(LucideIcons.sparkles, size: 18),
-                            label: Text(_isGenerating
-                                ? 'Generating...'
-                                : 'Create Website'),
-                          ),
+                          child: Builder(builder: (context) {
+                            final uploading = WebWebsiteAssetUploader
+                                .instance
+                                .hasActiveJobs(widget.tagId);
+                            return FilledButton.icon(
+                              onPressed: (_isGenerating || uploading)
+                                  ? null
+                                  : _createWebsite,
+                              style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.primary),
+                              icon:
+                                  const Icon(LucideIcons.sparkles, size: 18),
+                              label: Text(_isGenerating
+                                  ? 'Generating...'
+                                  : uploading
+                                      ? 'Uploading assets…'
+                                      : 'Create Website'),
+                            );
+                          }),
                         ),
                         const SizedBox(height: 24),
                         if (_generations.isNotEmpty) ...[
@@ -443,6 +592,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   }
 
   Widget _assetsSection(ThemeData theme) {
+    final jobs = WebWebsiteAssetUploader.instance.jobsForTag(widget.tagId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -459,7 +609,8 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
             ),
           ],
         ),
-        if (_assets.isEmpty)
+        for (final j in jobs) _uploadJobTile(theme, j),
+        if (_assets.isEmpty && jobs.isEmpty)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 28),
@@ -482,7 +633,38 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         else
           for (var i = 0; i < _assets.length; i++)
             _assetTile(theme, i),
-        if (_appOnlyAssets.isNotEmpty) ...[
+        for (final p in List.of(_unresolvedAssets))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 16, color: theme.colorScheme.error),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${p.fileName}  ·  not reachable right now — refresh, '
+                    'or remove and import again',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Remove',
+                  icon: const Icon(LucideIcons.x, size: 14),
+                  onPressed: () async {
+                    setState(() => _unresolvedAssets.remove(p));
+                    try {
+                      await WebTagService.instance
+                          .removeTaggedFile(p.taggedFileId);
+                    } catch (_) {}
+                  },
+                ),
+              ],
+            ),
+          ),
+        if (_appOnlyAssets.isNotEmpty || _cloudOnlyAssets.isNotEmpty) ...[
           const SizedBox(height: 4),
           for (final name in _appOnlyAssets)
             Padding(
@@ -504,14 +686,105 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                 ],
               ),
             ),
+          for (final name in _cloudOnlyAssets)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Icon(Icons.cloud_outlined,
+                      size: 16,
+                      color: theme.colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$name  ·  in your cloud — include it from the app',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ],
     );
   }
 
-  /// 44×44 leading visual: real thumbnail for images (picked bytes or
-  /// the public gateway URL), a play tile for videos, a category icon
-  /// otherwise.
+  /// One in-flight / failed upload row: name + progress bar (or error) +
+  /// cancel / retry.
+  Widget _uploadJobTile(ThemeData theme, WebsiteAssetUploadJob j) {
+    final failed = j.status == WebsiteAssetUploadStatus.failed;
+    final cancelled = j.status == WebsiteAssetUploadStatus.cancelled;
+    return Card(
+      key: ValueKey('upload-${j.id}'),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 44,
+              height: 44,
+              child: failed || cancelled
+                  ? Icon(Icons.error_outline,
+                      color: failed
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.onSurfaceVariant)
+                  : Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        value: j.progress > 0 ? j.progress : null,
+                      ),
+                    ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(j.fileName,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 4),
+                  if (failed)
+                    Text(j.error ?? 'Upload failed',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: theme.colorScheme.error))
+                  else if (cancelled)
+                    Text('Cancelled', style: theme.textTheme.bodySmall)
+                  else
+                    LinearProgressIndicator(
+                        value: j.progress > 0 ? j.progress : null),
+                ],
+              ),
+            ),
+            if (failed)
+              IconButton(
+                tooltip: 'Retry',
+                icon: const Icon(LucideIcons.refreshCw, size: 16),
+                onPressed: () =>
+                    WebWebsiteAssetUploader.instance.retry(j.id),
+              ),
+            IconButton(
+              tooltip: j.isActive ? 'Cancel' : 'Dismiss',
+              icon: const Icon(LucideIcons.x, size: 16),
+              onPressed: () => j.isActive
+                  ? WebWebsiteAssetUploader.instance.cancel(j.id)
+                  : WebWebsiteAssetUploader.instance.dismiss(j.id),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 44×44 leading visual: real thumbnail for images (session preview
+  /// URL for fresh imports — bridges gateway propagation lag — else the
+  /// public gateway URL), a play tile for videos, a category icon
+  /// otherwise. Never bytes.
   Widget _assetThumb(ThemeData theme, WebPickedAsset a) {
     Widget fallbackIcon(IconData icon) => Container(
           width: 44,
@@ -524,25 +797,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         );
 
     if (a.type == 'image') {
-      final bytes = a.bytes;
-      final url = a.resolvedGatewayUrl;
-      Widget? img;
-      if (bytes != null) {
-        img = Image.memory(bytes, width: 44, height: 44, fit: BoxFit.cover);
-      } else if (url != null) {
-        img = Image.network(
-          url,
-          width: 44,
-          height: 44,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) =>
-              fallbackIcon(Icons.image_outlined),
-        );
-      }
-      if (img != null) {
+      final url = a.previewUrl ?? a.resolvedGatewayUrl;
+      if (url != null) {
         return ClipRRect(
           borderRadius: BorderRadius.circular(8),
-          child: img,
+          child: Image.network(
+            url,
+            width: 44,
+            height: 44,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) =>
+                fallbackIcon(Icons.image_outlined),
+          ),
         );
       }
       return fallbackIcon(Icons.image_outlined);
@@ -565,83 +831,63 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     });
   }
 
-  /// Tap = double-check the asset: images preview in a dialog (with a
-  /// download action), picked files download directly, CID-backed
-  /// files open from the public gateway in a new tab.
+  /// Tap = double-check the asset: images preview in a dialog; everything
+  /// else opens from the public gateway in a new tab.
   Future<void> _openAsset(WebPickedAsset a) async {
-    final bytes = a.bytes;
-    final url = a.resolvedGatewayUrl;
+    final gatewayUrl = a.resolvedGatewayUrl;
 
-    if (a.type == 'image' && (bytes != null || url != null)) {
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => Dialog(
-          child: ConstrainedBox(
-            constraints:
-                const BoxConstraints(maxWidth: 900, maxHeight: 700),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  title: Text(a.fileName, overflow: TextOverflow.ellipsis),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: 'Download',
-                        icon: const Icon(Icons.download),
-                        onPressed: () {
-                          if (bytes != null) {
-                            saveBytesAsDownload(a.fileName, bytes);
-                          } else if (url != null) {
-                            launchUrl(Uri.parse(url),
-                                webOnlyWindowName: '_blank');
-                          }
-                        },
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(ctx),
-                      ),
-                    ],
-                  ),
-                ),
-                Flexible(
-                  child: InteractiveViewer(
-                    maxScale: 8,
-                    child: bytes != null
-                        ? Image.memory(bytes, fit: BoxFit.contain)
-                        : Image.network(url!, fit: BoxFit.contain),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-
-    if (bytes != null) {
-      if (a.type == 'video' || a.type == 'audio') {
+    if (a.type == 'image') {
+      final viewUrl = a.previewUrl ?? gatewayUrl;
+      if (viewUrl != null) {
         await showDialog<void>(
           context: context,
-          builder: (ctx) => MediaPreviewDialog(
-            title: a.fileName,
-            bytes: bytes,
-            mimeType: a.type == 'video' ? 'video/mp4' : 'audio/mpeg',
-            isVideo: a.type == 'video',
+          builder: (ctx) => Dialog(
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(maxWidth: 900, maxHeight: 700),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    title:
+                        Text(a.fileName, overflow: TextOverflow.ellipsis),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (gatewayUrl != null)
+                          IconButton(
+                            tooltip: 'Open on IPFS',
+                            icon: const Icon(Icons.download),
+                            onPressed: () => launchUrl(
+                                Uri.parse(gatewayUrl),
+                                webOnlyWindowName: '_blank'),
+                          ),
+                        IconButton(
+                          tooltip: 'Close',
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Flexible(
+                    child: InteractiveViewer(
+                      maxScale: 8,
+                      child: Image.network(viewUrl, fit: BoxFit.contain),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
           ),
         );
-      } else {
-        saveBytesAsDownload(a.fileName, bytes);
+        return;
       }
-      return;
     }
-    if (url != null) {
-      await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
+
+    if (gatewayUrl != null) {
+      await launchUrl(Uri.parse(gatewayUrl), webOnlyWindowName: '_blank');
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
@@ -678,8 +924,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                   IconButton(
                     tooltip: 'Remove',
                     icon: const Icon(LucideIcons.x, size: 16),
-                    onPressed: () =>
-                        setState(() => _assets.removeAt(index)),
+                    onPressed: () => _removeAsset(index),
                   ),
                 ],
               ),

@@ -18,7 +18,8 @@ import 'package:fula_files/core/models/contact_form_config.dart';
 /// `encodeURIComponent`-escaped at send time so user input can never break the
 /// URL.
 ///
-/// Kept compact (~1–1.5 KB) to respect the generator's 40 KB output budget.
+/// Kept compact (~1–1.5 KB) so the verbatim snippet stays a small share of
+/// the generated output.
 /// Stable tokens the post-generation verifier checks for: `id="cf"`,
 /// `encodeURIComponent`, and `wa.me/` (WhatsApp) or `mailto:` (Email).
 String buildContactFormSnippet(ContactFormConfig cfg) {

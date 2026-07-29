@@ -19,6 +19,7 @@ import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
+import 'package:fula_files/web/services/web_website_asset_uploader.dart';
 
 /// Signed-in identity as the web shell sees it.
 class WebUser {
@@ -456,6 +457,7 @@ class WebSession extends ChangeNotifier {
     FulaApiService.instance.reset();
     WebPrefetchScheduler.instance.reset();
     WebUploadManager.instance.reset();
+    WebWebsiteAssetUploader.instance.reset();
 
     // 4) Best-effort teardown — MUST NOT block sign-out. The KEK is
     //    already gone so any residual listing cache is unreadable;
@@ -499,6 +501,7 @@ class WebSession extends ChangeNotifier {
     if (_user == null) return;
     FulaApiService.instance.reset();
     WebUploadManager.instance.reset();
+    WebWebsiteAssetUploader.instance.reset();
     _user = null;
     loginPromptDismissed = false;
     notifyListeners(); // router redirects to the logged-out home

@@ -4,7 +4,7 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/web/services/web_website_assets_logic.dart';
 
 WebsiteAsset _asset(String name,
-        {String? cid, bool uploaded = false, String? url}) =>
+        {String? cid, bool uploaded = false, String? url, String? parsed}) =>
     WebsiteAsset(
       localPath: '/x/$name',
       fileName: name,
@@ -12,6 +12,7 @@ WebsiteAsset _asset(String name,
       cid: cid,
       gatewayUrl: url,
       uploaded: uploaded,
+      parsedContent: parsed,
     );
 
 WebsiteGeneration _gen({
@@ -33,8 +34,23 @@ WebsiteGeneration _gen({
       assets: assets,
     );
 
-GroupTaggedFile _tf(String name, {bool hasRemoteKey = false}) =>
-    (fileName: name, hasRemoteKey: hasRemoteKey);
+GroupTaggedFile _tf(String name, {String? remoteKey}) =>
+    (id: 'row-$name', fileName: name, remoteKey: remoteKey);
+
+ResolvedWebsiteAsset _resolved(String name,
+        {String? cid,
+        String? url,
+        String note = '',
+        String? taggedFileId,
+        String? parsed}) =>
+    (
+      fileName: name,
+      cid: cid,
+      gatewayUrl: url,
+      note: note,
+      taggedFileId: taggedFileId,
+      parsedContent: parsed,
+    );
 
 void main() {
   final t3 = DateTime.utc(2026, 6, 3);
@@ -43,7 +59,9 @@ void main() {
   group('websiteCidAssetsByName', () {
     test('collects uploaded+cid assets across ALL completed generations', () {
       final gens = [
-        _gen(id: 'g3', createdAt: t3, assets: [_asset('a', cid: 'A3', uploaded: true)]),
+        _gen(id: 'g3', createdAt: t3, assets: [
+          _asset('a', cid: 'A3', uploaded: true, parsed: 'summary-a'),
+        ]),
         _gen(id: 'g1', createdAt: t1, assets: [
           _asset('a', cid: 'A1', uploaded: true),
           _asset('b', cid: 'B1', uploaded: true),
@@ -53,6 +71,7 @@ void main() {
       expect(map.keys.toSet(), {'a', 'b'});
       // newest-first → first occurrence (g3) wins for 'a'.
       expect(map['a']!.cid, 'A3');
+      expect(map['a']!.parsedContent, 'summary-a'); // carried for recreate
       expect(map['b']!.cid, 'B1');
     });
 
@@ -74,8 +93,8 @@ void main() {
 
   group('resolveWebsiteGroupAssets', () {
     final cidByName = <String, ResolvedWebsiteAsset>{
-      'a': (fileName: 'a', cid: 'A', gatewayUrl: 'https://a', note: ''),
-      'b': (fileName: 'b', cid: 'B', gatewayUrl: null, note: 'hi'),
+      'a': _resolved('a', cid: 'A', url: 'https://a'),
+      'b': _resolved('b', cid: 'B', note: 'hi', parsed: 'doc-b'),
     };
 
     test('CID-backed current files are reusable; uncovered + no-remoteKey are app-only', () {
@@ -85,15 +104,51 @@ void main() {
       );
       expect(r.reusable.map((x) => x.fileName).toList(), ['a', 'b']);
       expect(r.appOnly, ['c']); // no cid, no remoteKey → on a device
+      expect(r.pendingCid, isEmpty);
+      expect(r.cloudOnly, isEmpty);
     });
 
-    test('a file with a private cloud copy but no public CID is omitted (not app-only)', () {
+    test('reusable entries carry the tag row id and parsedContent', () {
       final r = resolveWebsiteGroupAssets(
-        taggedFiles: [_tf('d', hasRemoteKey: true)],
+        taggedFiles: [_tf('b', remoteKey: 'website-assets/W/b')],
+        cidByName: cidByName,
+      );
+      expect(r.reusable.single.taggedFileId, 'row-b');
+      expect(r.reusable.single.parsedContent, 'doc-b');
+      expect(r.reusable.single.note, 'hi');
+    });
+
+    test('website-assets remoteKey WITHOUT a CID → pendingCid (not dropped)', () {
+      final r = resolveWebsiteGroupAssets(
+        taggedFiles: [_tf('v.mp4', remoteKey: 'website-assets/My_Site/v.mp4')],
         cidByName: cidByName,
       );
       expect(r.reusable, isEmpty);
+      expect(r.pendingCid.single.fileName, 'v.mp4');
+      expect(r.pendingCid.single.objectKey, 'My_Site/v.mp4');
+      expect(r.pendingCid.single.taggedFileId, 'row-v.mp4');
+      expect(r.appOnly, isEmpty);
+      expect(r.cloudOnly, isEmpty);
+    });
+
+    test('foreign-bucket remoteKey without a CID → cloudOnly (previously dropped)', () {
+      final r = resolveWebsiteGroupAssets(
+        taggedFiles: [_tf('d', remoteKey: 'images-v8/photos/d')],
+        cidByName: cidByName,
+      );
+      expect(r.reusable, isEmpty);
+      expect(r.pendingCid, isEmpty);
       expect(r.appOnly, isEmpty); // has a cloud copy → not "on a device"
+      expect(r.cloudOnly, ['d']);
+    });
+
+    test('malformed website-assets remoteKey (no object key) → cloudOnly', () {
+      final r = resolveWebsiteGroupAssets(
+        taggedFiles: [_tf('m', remoteKey: 'website-assets/')],
+        cidByName: cidByName,
+      );
+      expect(r.pendingCid, isEmpty);
+      expect(r.cloudOnly, ['m']);
     });
 
     test('dedupes by name, preserving group order', () {
@@ -128,11 +183,20 @@ void main() {
       final r = resolveWebsiteGroupAssets(
         taggedFiles: [_tf('a')],
         cidByName: {
-          'a': (fileName: 'a', cid: 'A', gatewayUrl: null, note: ''),
-          'old': (fileName: 'old', cid: 'OLD', gatewayUrl: null, note: ''),
+          'a': _resolved('a', cid: 'A'),
+          'old': _resolved('old', cid: 'OLD'),
         },
       );
       expect(r.reusable.map((x) => x.fileName).toList(), ['a']); // no 'old'
+    });
+
+    test('REGRESSION: mobile-shaped rows (null remoteKey) classify exactly as before', () {
+      final r = resolveWebsiteGroupAssets(
+        taggedFiles: [_tf('a'), _tf('local-only')],
+        cidByName: cidByName,
+      );
+      expect(r.reusable.single.fileName, 'a');
+      expect(r.appOnly, ['local-only']);
     });
   });
 
@@ -169,14 +233,15 @@ void main() {
   });
 
   group('mergeAuthoritativeCids', () {
-    test('website-assets CID wins; manifest note preserved; new keys added', () {
+    test('website-assets CID wins; manifest note/parsedContent preserved; new keys added', () {
       final manifest = <String, ResolvedWebsiteAsset>{
-        'a': (fileName: 'a', cid: 'OLD', gatewayUrl: 'u', note: 'hello'),
-        'c': (fileName: 'c', cid: 'CID_C', gatewayUrl: null, note: ''),
+        'a': _resolved('a', cid: 'OLD', url: 'u', note: 'hello', parsed: 'doc-a'),
+        'c': _resolved('c', cid: 'CID_C'),
       };
       final m = mergeAuthoritativeCids(manifest, {'a': 'NEW', 'b': 'CID_B'});
       expect(m['a']!.cid, 'NEW'); // authoritative override
       expect(m['a']!.note, 'hello'); // note preserved
+      expect(m['a']!.parsedContent, 'doc-a'); // parse carry preserved
       expect(m['b']!.cid, 'CID_B'); // new key from website-assets
       expect(m['c']!.cid, 'CID_C'); // manifest-only key untouched
     });

@@ -596,7 +596,9 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
               const SizedBox(height: 16),
               TextField(
                 controller: _promptController,
-                maxLength: 9000,
+                // Server accepts 80K for the ENRICHED prompt (user text +
+                // hidden blocks); 72K leaves ~8K headroom for enrichment.
+                maxLength: 72000,
                 minLines: 4,
                 maxLines: 6,
                 decoration: InputDecoration(
