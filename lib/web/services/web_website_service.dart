@@ -721,7 +721,12 @@ class WebWebsiteService extends ChangeNotifier {
     final deadline = DateTime.now().add(timeout);
     int consecutiveErrors = 0;
 
-    while (DateTime.now().isBefore(deadline)) {
+    // Poll-first, deadline-after: a mobile tab backgrounded/screen-off has
+    // its timers frozen, so wall-clock time keeps passing while no polls
+    // run. On resume the loop MUST ask the server once more before giving
+    // up — the job very likely completed server-side while the tab slept,
+    // and completion is what writes the manifest/membership records.
+    while (true) {
       await Future.delayed(pollInterval);
       if (pollInterval < maxPollInterval) {
         pollInterval = Duration(
@@ -790,8 +795,13 @@ class WebWebsiteService extends ChangeNotifier {
         throw Exception(
             (status['errorMessage'] as String?) ?? 'Generation failed');
       }
+      // Still pending/generating/publishing — give up only on a FRESH
+      // "still running" answer past the deadline (the server's own 15-min
+      // job timeout flips genuinely stuck jobs to 'error' before this).
+      if (DateTime.now().isAfter(deadline)) {
+        throw Exception('Generation timed out after 20 minutes');
+      }
     }
-    throw Exception('Generation timed out after 20 minutes');
   }
 
   /// Record every uploaded asset of a completed generation as a group

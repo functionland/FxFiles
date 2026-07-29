@@ -1068,7 +1068,11 @@ class WebsiteService {
     final deadline = DateTime.now().add(timeout);
     int consecutiveErrors = 0;
 
-    while (DateTime.now().isBefore(deadline)) {
+    // Poll-first, deadline-after: a backgrounded app has its timers frozen
+    // while wall-clock time keeps passing, so on resume the loop MUST ask
+    // the server once more before giving up — the job very likely
+    // completed server-side while the app was asleep.
+    while (true) {
       await Future.delayed(pollInterval);
 
       // L1: Exponential backoff — increase interval up to max
@@ -1129,10 +1133,13 @@ class WebsiteService {
           (status['errorMessage'] as String?) ?? 'Generation failed',
         );
       }
-      // Still pending/generating/publishing — continue polling
+      // Still pending/generating/publishing — give up only on a FRESH
+      // "still running" answer past the deadline (the server's own 15-min
+      // job timeout flips genuinely stuck jobs to 'error' before this).
+      if (DateTime.now().isAfter(deadline)) {
+        throw Exception('Generation timed out after 20 minutes');
+      }
     }
-
-    throw Exception('Generation timed out after 20 minutes');
   }
 
   // ============================================================================
