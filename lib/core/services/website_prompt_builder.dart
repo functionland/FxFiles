@@ -81,8 +81,17 @@ int websiteMaxFileSizeBytesForExt(String ext) {
 
 // ------------------------------------------------------------- prompt
 
-/// System instructions auto-prepended to every user prompt.
-const String websiteSystemInstructions = '''
+/// LEGACY system instructions — NO LONGER prepended to the prompt.
+///
+/// The AI backend now owns all output policy server-side (design system,
+/// output budget, asset-embedding and IPFS rules) and runs a multi-pass
+/// pipeline; this block's 40KB / 1-3-files / "concise code" budget was the
+/// main reason generated sites came out minimal. The backend also STRIPS
+/// this exact block from prompts sent by older app versions (matching on
+/// its `=== SYSTEM CONSTRAINTS ===` markers), so keep the marker lines
+/// byte-stable for as long as the const exists. Retained only as the
+/// reference for that server-side stripper and its tests.
+const String legacyWebsiteSystemInstructions = '''
 === SYSTEM CONSTRAINTS (auto-added, do not repeat) ===
 Output budget: Your TOTAL JSON response must be UNDER 40KB (~10,000 tokens). Plan accordingly — do NOT start generating a large site that will get cut off mid-output.
 
@@ -325,10 +334,10 @@ String buildWebsiteContactFormBlock(ContactFormConfig cfg) {
   }
 
   final b = StringBuffer()
-    ..writeln('=== CONTACT FORM (auto-added — overrides the "NO forms with '
-        'action URLs" rule) ===')
+    ..writeln('=== CONTACT FORM (auto-added — overrides the service\'s "NO '
+        'forms with action URLs" rule) ===')
     ..writeln('Add a contact form to the page. This is an explicit EXCEPTION '
-        'to the "NO forms" constraint above: the form is 100% CLIENT-SIDE — '
+        'to the service\'s "NO forms" rule: the form is 100% CLIENT-SIDE — '
         'it has NO action attribute, submits to NO server, and makes NO '
         'network request. On submit it composes a $linkWord deep link from the '
         'entered values and navigates to it, so the visitor only taps Send in '
@@ -408,12 +417,11 @@ String buildWebsiteLanguagesBlock(List<String> languages) {
       ..writeln('- Provide a complete, faithful, human-quality translation of '
           'ALL visible text for EVERY listed language — never leave text '
           'untranslated or mixed between languages.')
-      ..writeln('- Because ALL language versions ship together in one static '
-          'bundle under the output budget above, keep the site compact so every '
-          'language fits in full: prefer fewer, shorter sections, terse headings, '
-          'and single-paragraph copy. If it still would not fit, shorten or drop '
-          'whole sections UNIFORMLY across every language — never omit a language '
-          'or leave any language partially translated.')
+      ..writeln('- ALL language versions ship together in one static bundle, '
+          'so keep each language version complete and consistently scoped. If '
+          'the site must be trimmed to fit, shorten or drop whole sections '
+          'UNIFORMLY across every language — never omit a language or leave '
+          'any language partially translated.')
       ..writeln('- Switching language updates all visible text instantly, '
           'client-side (no page reload), and persists the choice in localStorage '
           'so it survives refreshes.');
@@ -566,7 +574,9 @@ String buildWebsiteAiPrompt(
   List<AssetNote> assetNotes = const [],
   bool cidsAvailable = true,
 }) {
-  final buffer = StringBuffer(websiteSystemInstructions);
+  // No client-side system block: the backend owns output policy and design
+  // guidance (and declares capability via pipeline_version in the request).
+  final buffer = StringBuffer();
 
   final categoryMatch = _categoryLinePattern.firstMatch(storedPrompt);
   final category = categoryMatch?.group(1)?.trim() ?? '';
@@ -663,5 +673,5 @@ String buildWebsiteAiPrompt(
     ..writeln()
     ..writeln('User request:')
     ..write(echoPrompt);
-  return buffer.toString();
+  return buffer.toString().trimLeft();
 }

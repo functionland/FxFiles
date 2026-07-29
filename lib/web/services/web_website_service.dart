@@ -6,7 +6,6 @@ import 'package:crypto/crypto.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:mime/mime.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:fula_files/core/models/file_tag.dart';
@@ -21,44 +20,59 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_cache_sync.dart';
+import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
 
-/// One asset for a website generation: either picked in-browser
-/// (bytes in memory) or carried over from a previous generation
-/// (CID-backed — bytes are fetched from the IPFS gateway at upload
-/// time, so Recreate / re-generate reuses the group's existing assets
-/// exactly like the app).
+/// One asset for a website generation. ALWAYS CID-backed and byteless:
+/// browser-picked files are eagerly streamed to the public
+/// `website-assets` bucket at import time (WebWebsiteAssetUploader), so
+/// by the time generation runs every asset is just a name + CID + notes.
+/// File bytes never live in this object — that's what keeps the tab's
+/// memory flat regardless of asset size.
 class WebPickedAsset {
   final String fileName;
-
-  /// Picked-file content; for CID-backed assets this starts null and is
-  /// filled by the upload phase after the gateway fetch (so the parse
-  /// phase can read text content either way).
-  Uint8List? bytes;
   final String? cid;
   final String? gatewayUrl;
+
+  /// Byte size when known (fresh imports report the Blob size; assets
+  /// carried over from an earlier generation may not know it).
+  final int? size;
+
+  /// Tag-manifest association row id when a current tag row exists —
+  /// enables removal by row; null for rows removed by remoteKey.
+  final String? taggedFileId;
+
+  /// Parsed text content recorded by a previous generation — lets the
+  /// parse phase skip re-reading the source entirely.
+  final String? parsedContent;
+
+  /// Session-only `URL.createObjectURL` preview for images (fresh
+  /// imports) — bridges the gateway-propagation lag for new CIDs.
+  final String? previewUrl;
+
   String note;
 
   WebPickedAsset({
     required this.fileName,
-    this.bytes,
     this.cid,
     this.gatewayUrl,
+    this.size,
+    this.taggedFileId,
+    this.parsedContent,
+    this.previewUrl,
     this.note = '',
-  }) : assert(bytes != null || cid != null);
+  });
 
-  bool get isCidBacked => bytes == null;
+  bool get isCidBacked => cid != null && cid!.isNotEmpty;
 
-  /// Size when known up front (picked files); CID-backed assets report
-  /// null until fetched.
-  int? get knownSize => bytes?.length;
+  int? get knownSize => size;
 
   String get type => file_utils.classifyFileType(fileName);
 
-  /// Public gateway URL for CID-backed assets (recorded URL when
-  /// present, else rebuilt from the CID via the configured template).
-  /// Null for picked-only assets.
+  /// Public gateway URL (recorded URL when present, else rebuilt from
+  /// the CID via the configured template).
   String? get resolvedGatewayUrl {
     if (gatewayUrl != null && gatewayUrl!.isNotEmpty) return gatewayUrl;
     final c = cid;
@@ -359,7 +373,6 @@ class WebWebsiteService extends ChangeNotifier {
   static final WebWebsiteService instance = WebWebsiteService._();
 
   static const String _defaultAiEndpoint = 'https://ai.cloud.fx.land';
-  static const String _defaultApiGateway = 'https://s3.cloud.fx.land';
   static const String _websiteMetadataBucket = 'website-metadata';
 
   static const _uuid = Uuid();
@@ -487,8 +500,8 @@ class WebWebsiteService extends ChangeNotifier {
   Future<void> _runPipeline(WebsiteGeneration generation, String websiteName,
       List<WebPickedAsset> picked) async {
     try {
-      await _uploadPhase(generation, websiteName, picked);
-      _parsePhase(generation, picked);
+      await _ensureUploadedPhase(generation, websiteName, picked);
+      await _parsePhase(generation, websiteName, picked);
       await _generatePhase(generation);
     } catch (e) {
       generation.status = WebsiteGenStatus.error;
@@ -499,40 +512,27 @@ class WebWebsiteService extends ChangeNotifier {
     }
   }
 
-  Future<void> _uploadPhase(WebsiteGeneration generation, String websiteName,
-      List<WebPickedAsset> picked) async {
-    final jwt = await _jwt();
-    final apiGateway = await SecureStorageService.instance
-            .read(SecureStorageKeys.apiGatewayUrl) ??
-        _defaultApiGateway;
-
-    // Ensure bucket (idempotent PUT, native pattern).
-    try {
-      await http.put(
-        Uri.parse('$apiGateway/$kWebsiteAssetBucket'),
-        headers: {'Authorization': 'Bearer $jwt'},
-      );
-    } catch (e) {
-      debugPrint('Bucket creation note: $e');
-    }
-
+  /// Assets arrive here already IN the public bucket — fresh imports were
+  /// eagerly streamed at import time (WebWebsiteAssetUploader) and
+  /// carried-over assets kept their prior CID (same content → same key →
+  /// same object). So this phase moves ZERO bytes: it stamps each
+  /// generation asset with its recorded CID (one defensive HEAD when a
+  /// CID is missing) and enforces the per-job file cap. Type/size caps
+  /// were enforced at import time from Blob metadata; the backend
+  /// mirrors them as defence in depth.
+  Future<void> _ensureUploadedPhase(WebsiteGeneration generation,
+      String websiteName, List<WebPickedAsset> picked) async {
     int failedCount = 0;
     int uploadedCount = 0;
-    int totalUploadedBytes = 0;
     final skipReasons = <String>[];
+
+    generation.statusMessage = 'Checking assets...';
+    generation.updatedAt = DateTime.now();
+    _notify(generation);
 
     for (var i = 0; i < generation.assets.length; i++) {
       final asset = generation.assets[i];
-      final dot = asset.fileName.lastIndexOf('.');
-      final ext = dot >= 0 ? asset.fileName.substring(dot) : '';
-      final perTypeCap = websiteMaxFileSizeBytesForExt(ext);
 
-      if (perTypeCap == 0) {
-        asset.uploaded = false;
-        failedCount++;
-        skipReasons.add('${asset.fileName}: unsupported type');
-        continue;
-      }
       if (uploadedCount >= kWebsiteMaxFilesPerJob) {
         asset.uploaded = false;
         failedCount++;
@@ -540,92 +540,29 @@ class WebWebsiteService extends ChangeNotifier {
         continue;
       }
 
-      // CID-backed assets (carried over from a previous generation)
-      // fetch their plaintext from the IPFS gateway first — website
-      // assets are public, so this needs no keys.
-      var bytes = picked[i].bytes;
-      if (bytes == null) {
-        generation.statusMessage =
-            'Fetching asset ${i + 1}/${generation.totalAssets}...';
-        generation.updatedAt = DateTime.now();
-        _notify(generation);
-        try {
-          final url = (picked[i].gatewayUrl?.isNotEmpty ?? false)
-              ? picked[i].gatewayUrl!
-              : IpfsGatewayHelper.buildUrlForCid(picked[i].cid!);
-          final resp = await http
-              .get(Uri.parse(url))
-              .timeout(const Duration(minutes: 2));
-          if (resp.statusCode != 200) {
-            throw Exception('HTTP ${resp.statusCode}');
-          }
-          bytes = resp.bodyBytes;
-          picked[i].bytes = bytes; // parse phase reads text from here
-        } catch (e) {
-          debugPrint('Asset fetch failed for ${asset.fileName}: $e');
-          asset.uploaded = false;
-          failedCount++;
-          skipReasons.add('${asset.fileName}: fetch failed');
-          continue;
-        }
+      var cid = picked[i].cid;
+      if (cid == null || cid.isEmpty) {
+        // Defensive — the screen only passes CID-backed assets. One HEAD
+        // attempt against the expected key recovers a lost ETag.
+        cid = await WebFeatures.websiteAssetCidByHead(
+            '$websiteName/${asset.fileName}');
       }
-      if (bytes.length > perTypeCap) {
-        final mb = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
-        final capMb = (perTypeCap / (1024 * 1024)).toStringAsFixed(0);
+      if (cid == null || cid.isEmpty) {
         asset.uploaded = false;
         failedCount++;
-        skipReasons
-            .add('${asset.fileName}: ${mb}MB exceeds ${capMb}MB cap for $ext');
-        continue;
-      }
-      if (totalUploadedBytes + bytes.length > kWebsiteMaxTotalUploadBytes) {
-        final capMb =
-            (kWebsiteMaxTotalUploadBytes / (1024 * 1024)).toStringAsFixed(0);
-        asset.uploaded = false;
-        failedCount++;
-        skipReasons.add('${asset.fileName}: ${capMb}MB total cap reached');
+        skipReasons.add('${asset.fileName}: not uploaded');
         continue;
       }
 
-      generation.statusMessage =
-          'Uploading asset ${i + 1}/${generation.totalAssets}...';
-      generation.updatedAt = DateTime.now();
+      asset.cid = cid;
+      final recordedUrl = picked[i].gatewayUrl;
+      asset.gatewayUrl = (recordedUrl != null && recordedUrl.isNotEmpty)
+          ? recordedUrl
+          : IpfsGatewayHelper.buildUrlForCid(cid);
+      asset.uploaded = true;
+      uploadedCount++;
+      generation.uploadedAssets = uploadedCount;
       _notify(generation);
-
-      try {
-        final key = '$websiteName/${asset.fileName}';
-        final contentType =
-            lookupMimeType(asset.fileName) ?? 'application/octet-stream';
-        final response = await http.put(
-          Uri.parse('$apiGateway/$kWebsiteAssetBucket/$key'),
-          headers: {
-            'Authorization': 'Bearer $jwt',
-            'Content-Type': contentType,
-          },
-          body: bytes,
-        );
-        if (response.statusCode != 200 && response.statusCode != 201) {
-          throw Exception(
-              'Upload failed (${response.statusCode}): ${response.body}');
-        }
-        final etag = response.headers['etag'];
-        if (etag == null || etag.isEmpty) {
-          throw Exception('Upload succeeded but no CID returned in etag');
-        }
-        final cid = etag.replaceAll('"', '');
-        asset.cid = cid;
-        asset.gatewayUrl = IpfsGatewayHelper.buildUrlForCid(cid);
-        asset.uploaded = true;
-        uploadedCount++;
-        totalUploadedBytes += bytes.length;
-        generation.uploadedAssets = uploadedCount;
-        _notify(generation);
-      } catch (e) {
-        debugPrint('Failed to upload asset ${asset.fileName}: $e');
-        asset.uploaded = false;
-        failedCount++;
-        skipReasons.add('${asset.fileName}: upload failed');
-      }
     }
 
     if (failedCount > 0) {
@@ -639,10 +576,14 @@ class WebWebsiteService extends ChangeNotifier {
     }
   }
 
-  /// Browser-side content extraction. Text files decode directly (same
-  /// as native's direct read); everything else gets the same
-  /// placeholder the DESKTOP app produces (no ML Kit there either).
-  void _parsePhase(WebsiteGeneration generation, List<WebPickedAsset> picked) {
+  /// Content extraction WITHOUT resident bytes. Priority per asset:
+  /// parsed content recorded by a previous generation (no fetch at all)
+  /// → a bounded ≤16KB ranged GET of the object's prefix (text types
+  /// only — enough for the 2000-char truncation below) → the same
+  /// name-based placeholders the desktop app produces. The whole file is
+  /// never read.
+  Future<void> _parsePhase(WebsiteGeneration generation, String websiteName,
+      List<WebPickedAsset> picked) async {
     generation.status = WebsiteGenStatus.parsing;
     generation.statusMessage = 'Parsing content...';
     generation.updatedAt = DateTime.now();
@@ -672,11 +613,19 @@ class WebWebsiteService extends ChangeNotifier {
                 'Audio file: ${asset.fileName} (format: ${ext.replaceAll('.', '')})';
             break;
           default: // document
-            final raw = picked[i].bytes;
-            if (raw != null && textExts.contains(ext)) {
-              final text = utf8.decode(raw, allowMalformed: true);
-              content =
-                  text.length > 2000 ? '${text.substring(0, 2000)}...' : text;
+            final recorded = picked[i].parsedContent;
+            if (recorded != null && recorded.isNotEmpty) {
+              content = recorded;
+            } else if (textExts.contains(ext)) {
+              final text = await WebFeatures.websiteAssetTextPrefix(
+                  '$websiteName/${asset.fileName}');
+              if (text != null && text.isNotEmpty) {
+                content = text.length > 2000
+                    ? '${text.substring(0, 2000)}...'
+                    : text;
+              } else {
+                content = 'Document: ${asset.fileName}';
+              }
             } else if (ext == '.pdf') {
               content = 'PDF document: ${asset.fileName}';
             } else {
@@ -732,6 +681,9 @@ class WebWebsiteService extends ChangeNotifier {
                   buildWebsiteAiPrompt(generation.prompt, assetNotes: assetNotes),
               'assets': assetPayloads,
               'enable_tracking': generation.trackingEnabled,
+              // Capability: opt into the backend's multi-pass pipeline
+              // (this client polls for up to 20 minutes below).
+              'pipeline_version': 2,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -763,7 +715,9 @@ class WebWebsiteService extends ChangeNotifier {
 
     Duration pollInterval = const Duration(seconds: 2);
     const maxPollInterval = Duration(seconds: 10);
-    const timeout = Duration(minutes: 5);
+    // Multi-pass generation (design brief → build → polish) legitimately
+    // runs past the old 5-minute ceiling; the server job timeout is 15 min.
+    const timeout = Duration(minutes: 20);
     final deadline = DateTime.now().add(timeout);
     int consecutiveErrors = 0;
 
@@ -818,6 +772,7 @@ class WebWebsiteService extends ChangeNotifier {
         _notify(generation);
 
         await _appendToCloudManifest(generation);
+        await _backfillGroupMembership(generation);
 
         // Stable link: best-effort, non-blocking like native.
         final cid = generation.resultCid;
@@ -836,7 +791,34 @@ class WebWebsiteService extends ChangeNotifier {
             (status['errorMessage'] as String?) ?? 'Generation failed');
       }
     }
-    throw Exception('Generation timed out after 5 minutes');
+    throw Exception('Generation timed out after 20 minutes');
+  }
+
+  /// Record every uploaded asset of a completed generation as a group
+  /// member in the tag manifest (idempotent — pre-filtered against the
+  /// current rows, and tagFile dedupes by remoteKey). This is what makes
+  /// assets survive a reload for groups whose files predate the eager
+  /// import-time membership rows: they self-heal on their next
+  /// generation. Best-effort — a failure never fails the generation.
+  Future<void> _backfillGroupMembership(WebsiteGeneration generation) async {
+    try {
+      final existing = WebTagService.instance
+          .filesWithTag(generation.tagId)
+          .map((tf) => tf.fileName)
+          .toSet();
+      for (final a in generation.assets) {
+        if (!a.uploaded || existing.contains(a.fileName)) continue;
+        await WebTagService.instance.tagFile(
+          tagId: generation.tagId,
+          remoteKey:
+              websiteAssetRemoteKey(generation.tagName, a.fileName),
+          fileName: a.fileName,
+        );
+      }
+    } catch (e) {
+      debugPrint(
+          'WebWebsiteService: membership backfill failed (non-fatal): $e');
+    }
   }
 
   /// Append the completed generation to the same encrypted cloud

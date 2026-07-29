@@ -16,18 +16,35 @@
 import 'package:xml/xml.dart';
 
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/website_prompt_builder.dart'
+    show kWebsiteAssetBucket;
 
 /// A CID-backed (public-on-IPFS) website asset, reusable across platforms.
+/// [taggedFileId] is the tag-manifest association row (null when the asset
+/// came from a generation manifest without a current tag row); a non-null
+/// [parsedContent] lets recreate skip re-parsing the source bytes.
 typedef ResolvedWebsiteAsset = ({
   String fileName,
   String? cid,
   String? gatewayUrl,
   String note,
+  String? taggedFileId,
+  String? parsedContent,
 });
 
-/// One current group file: its name + whether it has a private cloud copy
-/// (a non-empty `remoteKey` in the tag manifest).
-typedef GroupTaggedFile = ({String fileName, bool hasRemoteKey});
+/// One current group file: the tag-manifest association row [id], its name,
+/// and its raw remoteKey (null/empty = device-local mobile row).
+typedef GroupTaggedFile = ({String id, String fileName, String? remoteKey});
+
+/// A current group file whose remoteKey points into the public
+/// `website-assets` bucket but for which no CID was found (bucket LIST
+/// failed/lagged) — resolvable via a HEAD of [objectKey] instead of being
+/// silently dropped.
+typedef PendingCidWebsiteAsset = ({
+  String fileName,
+  String objectKey,
+  String taggedFileId,
+});
 
 /// The freshest CID-backed asset per `fileName` across ALL completed
 /// generations. [generationsNewestFirst] MUST be newest-first; the first
@@ -46,6 +63,8 @@ Map<String, ResolvedWebsiteAsset> websiteCidAssetsByName(
           cid: a.cid,
           gatewayUrl: a.gatewayUrl,
           note: a.comment ?? '',
+          taggedFileId: null,
+          parsedContent: a.parsedContent,
         ),
       );
     }
@@ -54,32 +73,69 @@ Map<String, ResolvedWebsiteAsset> websiteCidAssetsByName(
 }
 
 /// Resolve a website group's CURRENT files ([taggedFiles]) into:
-///   - `reusable`: CID-backed (public on IPFS) — usable on every platform;
-///   - `appOnly`:  device-local — no public CID in ANY generation AND no
-///     cloud copy, so the web can't include them ("on a device").
+///   - `reusable`:  CID-backed (public on IPFS) — usable on every platform;
+///   - `pendingCid`: remoteKey points into `website-assets` but no CID was
+///     found (LIST failed/lagged) — the caller resolves these via HEAD
+///     instead of dropping them;
+///   - `appOnly`:   device-local — no public CID in ANY generation AND no
+///     cloud copy, so the web can't include them ("on a device");
+///   - `cloudOnly`: a private cloud copy elsewhere (non-website-assets
+///     remoteKey) with no public CID — the app can include it, the web has
+///     no public URL (previously these were silently dropped).
 ///
-/// A file with a private cloud copy (`hasRemoteKey`) but no public CID is
-/// neither reusable-on-web nor app-only — it's omitted (the app can reuse it,
-/// but the web has no public URL to hand the generator). Files are deduped by
-/// name, preserving group order.
-({List<ResolvedWebsiteAsset> reusable, List<String> appOnly})
-    resolveWebsiteGroupAssets({
+/// Files are deduped by name, preserving group order. Reusable entries carry
+/// the tag row id when a current tag row exists (enables real removal).
+({
+  List<ResolvedWebsiteAsset> reusable,
+  List<PendingCidWebsiteAsset> pendingCid,
+  List<String> appOnly,
+  List<String> cloudOnly,
+}) resolveWebsiteGroupAssets({
   required List<GroupTaggedFile> taggedFiles,
   required Map<String, ResolvedWebsiteAsset> cidByName,
 }) {
+  const websiteAssetsPrefix = '$kWebsiteAssetBucket/';
   final reusable = <ResolvedWebsiteAsset>[];
+  final pendingCid = <PendingCidWebsiteAsset>[];
   final appOnly = <String>[];
+  final cloudOnly = <String>[];
   final seen = <String>{};
   for (final tf in taggedFiles) {
     if (!seen.add(tf.fileName)) continue; // dedupe by name, keep group order
     final hit = cidByName[tf.fileName];
+    final remoteKey = tf.remoteKey;
     if (hit != null) {
-      reusable.add(hit);
-    } else if (!tf.hasRemoteKey) {
+      reusable.add((
+        fileName: hit.fileName,
+        cid: hit.cid,
+        gatewayUrl: hit.gatewayUrl,
+        note: hit.note,
+        taggedFileId: tf.id,
+        parsedContent: hit.parsedContent,
+      ));
+    } else if (remoteKey == null || remoteKey.isEmpty) {
       appOnly.add(tf.fileName);
+    } else if (remoteKey.startsWith(websiteAssetsPrefix)) {
+      final objectKey = remoteKey.substring(websiteAssetsPrefix.length);
+      if (objectKey.isEmpty) {
+        cloudOnly.add(tf.fileName); // malformed key — surface, don't drop
+      } else {
+        pendingCid.add((
+          fileName: tf.fileName,
+          objectKey: objectKey,
+          taggedFileId: tf.id,
+        ));
+      }
+    } else {
+      cloudOnly.add(tf.fileName);
     }
   }
-  return (reusable: reusable, appOnly: appOnly);
+  return (
+    reusable: reusable,
+    pendingCid: pendingCid,
+    appOnly: appOnly,
+    cloudOnly: cloudOnly,
+  );
 }
 
 /// Sanitize a website display name into its `website-assets` key prefix —
@@ -135,6 +191,8 @@ Map<String, ResolvedWebsiteAsset> mergeAuthoritativeCids(
       cid: e.value,
       gatewayUrl: null, // built from the CID on demand
       note: out[e.key]?.note ?? '',
+      taggedFileId: out[e.key]?.taggedFileId,
+      parsedContent: out[e.key]?.parsedContent,
     );
   }
   return out;

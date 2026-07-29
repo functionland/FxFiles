@@ -16,6 +16,8 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_website_asset_upload_logic.dart'
+    show cidFromEtagHeader, encodeObjectKeyForUrl;
 import 'package:fula_files/web/services/web_website_assets_logic.dart';
 
 /// Read-only cloud loaders for the four feature areas the web shell
@@ -198,6 +200,63 @@ class WebFeatures {
     } catch (e) {
       debugPrint('WebFeatures.websiteAssetCids: $e');
       return const {};
+    }
+  }
+
+  static Future<({String endpoint, String jwt})?> _websiteAssetAuth() async {
+    var endpoint = (await SecureStorageService.instance
+            .read(SecureStorageKeys.apiGatewayUrl)) ??
+        AuthCore.defaultS3GatewayUrl;
+    endpoint = endpoint.replaceAll(RegExp(r'/+$'), '');
+    final jwt =
+        await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
+    if (jwt == null || jwt.isEmpty) return null;
+    return (endpoint: endpoint, jwt: jwt);
+  }
+
+  /// CID of one `website-assets` object via a HEAD's ETag — the fallback
+  /// when the bucket LIST failed or lags a fresh upload. [objectKey] is
+  /// bucket-relative (`{sanitizedName}/{fileName}`). FAIL-SOFT → null.
+  static Future<String?> websiteAssetCidByHead(String objectKey) async {
+    try {
+      final auth = await _websiteAssetAuth();
+      if (auth == null) return null;
+      final resp = await http.head(
+        Uri.parse('${auth.endpoint}/website-assets/'
+            '${encodeObjectKeyForUrl(objectKey)}'),
+        headers: {'Authorization': 'Bearer ${auth.jwt}'},
+      ).timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) return null;
+      // Same validation as the PUT path — the composite multipart ETag
+      // shape must never be recorded as a CID.
+      return cidFromEtagHeader(resp.headers['etag']);
+    } catch (e) {
+      debugPrint('WebFeatures.websiteAssetCidByHead: $e');
+      return null;
+    }
+  }
+
+  /// Bounded text prefix of a `website-assets` object for the generation
+  /// parse phase: a ranged GET of the first 16KB (enough for the 2000-char
+  /// parsed-content truncation at worst-case UTF-8 width) — never the whole
+  /// file. FAIL-SOFT → null.
+  static Future<String?> websiteAssetTextPrefix(String objectKey) async {
+    try {
+      final auth = await _websiteAssetAuth();
+      if (auth == null) return null;
+      final resp = await http.get(
+        Uri.parse('${auth.endpoint}/website-assets/'
+            '${encodeObjectKeyForUrl(objectKey)}'),
+        headers: {
+          'Authorization': 'Bearer ${auth.jwt}',
+          'Range': 'bytes=0-16383',
+        },
+      ).timeout(const Duration(seconds: 20));
+      if (resp.statusCode != 200 && resp.statusCode != 206) return null;
+      return utf8.decode(resp.bodyBytes, allowMalformed: true);
+    } catch (e) {
+      debugPrint('WebFeatures.websiteAssetTextPrefix: $e');
+      return null;
     }
   }
 

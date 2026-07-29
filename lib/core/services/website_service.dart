@@ -1025,6 +1025,9 @@ class WebsiteService {
         // `window.location` and reports against that, so no token is
         // exchanged here.
         'enable_tracking': generation.trackingEnabled,
+        // Capability: opt into the backend's multi-pass pipeline (this
+        // client polls for up to 20 minutes below).
+        'pipeline_version': 2,
       }),
       ).timeout(const Duration(seconds: 30));
     } on TimeoutException {
@@ -1059,7 +1062,9 @@ class WebsiteService {
     // 2. Poll /api/v1/status/:jobId with exponential backoff (L1)
     Duration pollInterval = const Duration(seconds: 2);
     const maxPollInterval = Duration(seconds: 10);
-    const timeout = Duration(minutes: 5);
+    // Multi-pass generation (design brief → build → polish) legitimately
+    // runs past the old 5-minute ceiling; the server job timeout is 15 min.
+    const timeout = Duration(minutes: 20);
     final deadline = DateTime.now().add(timeout);
     int consecutiveErrors = 0;
 
@@ -1127,7 +1132,7 @@ class WebsiteService {
       // Still pending/generating/publishing — continue polling
     }
 
-    throw Exception('Generation timed out after 5 minutes');
+    throw Exception('Generation timed out after 20 minutes');
   }
 
   // ============================================================================

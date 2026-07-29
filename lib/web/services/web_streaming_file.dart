@@ -18,6 +18,11 @@ class WebPickedFile {
   String get name => _file.name;
   int get size => _file.size;
 
+  /// The underlying browser `File` — for handing to a Blob-body XHR (the
+  /// browser's network process streams it from disk; this never reads the
+  /// file into the Dart/JS heap).
+  web.File get jsFile => _file;
+
   /// Read bytes `[start, end)` from the underlying file. The browser reads the
   /// slice from disk on demand; only this slice is materialized in memory.
   Future<Uint8List> readSlice(int start, int end) async {
