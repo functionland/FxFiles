@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:fula_files/core/services/wallet_service.dart'
     show walletNavigatorKey;
 import 'package:fula_files/web/screens/web_api_config_screen.dart';
+import 'package:fula_files/web/screens/web_buffer_settings_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
 import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
@@ -170,6 +171,10 @@ GoRouter buildWebRouter() {
       GoRoute(
         path: '/settings/api',
         builder: (context, state) => const WebApiConfigScreen(),
+      ),
+      GoRoute(
+        path: '/settings/buffer',
+        builder: (context, state) => const WebBufferSettingsScreen(),
       ),
       GoRoute(
         path: '/sync-queue',

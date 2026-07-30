@@ -83,6 +83,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
                 const Divider(height: 1),
                 _apiConfigSection(context),
                 const Divider(height: 1),
+                _integrationsSection(context),
+                const Divider(height: 1),
                 _syncQueueSection(context),
                 const Divider(height: 1),
                 _otherSection(context),
@@ -360,6 +362,23 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
               'Change the gateway / IPFS / resolver URLs (advanced)'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.go('/settings/api'),
+        ),
+      ],
+    );
+  }
+
+  // ── Integrations (Buffer) ────────────────────────────────────────────
+  Widget _integrationsSection(BuildContext context) {
+    return _Section(
+      label: 'INTEGRATIONS',
+      children: [
+        ListTile(
+          leading: const Icon(Icons.send_outlined),
+          title: const Text('Buffer'),
+          subtitle: const Text(
+              'Post generated social content to your channels'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.go('/settings/buffer'),
         ),
       ],
     );
