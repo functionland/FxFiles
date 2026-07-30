@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -43,6 +45,11 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
       _loading = true;
       _error = null;
     });
+    // Re-attach to generations that were still running when this tab was
+    // last closed (mobile Chrome evicts background tabs and reloads the
+    // page). Fail-soft and off the critical path — the list renders from
+    // the manifest either way.
+    unawaited(WebWebsiteService.instance.resumePendingJobs());
     try {
       await WebTagService.instance
           .load(force: force, refetchForest: force);

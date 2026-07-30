@@ -10,10 +10,19 @@ import 'package:fula_files/core/models/social_post_record.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/generation_poll_policy.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/social_post_logic.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
+
+/// Thrown to stop a poll loop WITHOUT marking the job failed — the tab
+/// couldn't reach the server (or isn't signed in), which says nothing about
+/// the job running on the backend.
+class _PollPaused implements Exception {
+  final String message;
+  const _PollPaused(this.message);
+}
 
 /// Social-post generation for the web app: submits the job, polls it
 /// (poll-first-deadline-after — a backgrounded tab recovers on resume),
@@ -64,8 +73,16 @@ class WebSocialPostService extends ChangeNotifier {
 
   /// Read the sidecar and resume any interrupted poll loops. Single-flight;
   /// safe to call from every detail-screen load.
+  ///
+  /// When already loaded this still re-runs [_resumePending] — a poll loop
+  /// that gave up (tab offline on reopen, expired session) leaves its record
+  /// RUNNING, and re-entering the screen or hitting Refresh is what restarts
+  /// it. `_activeJobIds` keeps that from double-polling a live job.
   Future<void> load({bool force = false}) {
-    if (_loaded && !force) return Future.value();
+    if (_loaded && !force) {
+      _resumePending();
+      return Future.value();
+    }
     return _loading ??= _doLoad().whenComplete(() => _loading = null);
   }
 
@@ -256,18 +273,34 @@ class WebSocialPostService extends ChangeNotifier {
   }
 
   /// Poll loop — website-gen shape verbatim: backoff 2s ×1.5 capped 10s,
-  /// 5 consecutive non-200s abort, 401/403/404 terminal, and the deadline
-  /// (createdAt + 10 min; server timeout is 5) is checked ONLY after a
-  /// fresh "still running" answer, so a frozen background tab polls once
-  /// more on resume instead of giving up.
+  /// 5 consecutive non-200s abort, and the deadline (createdAt + 10 min;
+  /// server timeout is 5) is checked ONLY after a fresh "still running"
+  /// answer, so a frozen background tab polls once more on resume instead
+  /// of giving up.
+  ///
+  /// Failure classification matters more than the loop shape: only the
+  /// SERVER's verdict (error / 404 / past-deadline) may terminalize a
+  /// record. Anything that merely means "this tab couldn't ask right now"
+  /// — offline, DNS, CORS, timeout, 5xx, expired session — throws
+  /// [_PollPaused], which stops this loop but leaves the record RUNNING
+  /// with its jobId so the next load() resumes it. Terminalizing on those
+  /// would permanently discard a paid job that finished server-side.
   Future<void> _pollJob(SocialPostRecord record,
       {bool immediateFirstPoll = false}) async {
     final jobId = record.jobId;
     if (jobId == null || jobId.isEmpty) return;
     if (!_activeJobIds.add(jobId)) return;
     try {
-      final jwt = await _jwt();
-      final aiEndpoint = await _aiEndpoint();
+      final String jwt;
+      final String aiEndpoint;
+      try {
+        jwt = await _jwt();
+        aiEndpoint = await _aiEndpoint();
+      } catch (_) {
+        // Signed out or storage not ready yet — recoverable, not a failure
+        // of the job itself.
+        throw const _PollPaused('Sign in to check social post status');
+      }
       final deadline = record.createdAt.add(const Duration(minutes: 10));
       Duration pollInterval = immediateFirstPoll
           ? Duration.zero
@@ -289,29 +322,36 @@ class WebSocialPostService extends ChangeNotifier {
             Uri.parse('$aiEndpoint/api/v1/social/status/$jobId'),
             headers: {'Authorization': 'Bearer $jwt'},
           ).timeout(const Duration(seconds: 20));
-        } on TimeoutException {
+        } catch (_) {
+          // Any transport failure (offline, DNS, CORS, timeout). A tab
+          // reopened on mobile often polls before the network is back.
           consecutiveErrors++;
-          if (consecutiveErrors >= 5) {
-            throw Exception(
-                'Status check failed after $consecutiveErrors consecutive errors');
+          switch (classifyPollTransportFailure(
+              consecutiveErrors: consecutiveErrors)) {
+            case PollFailure.retry:
+              continue;
+            case PollFailure.pause:
+            case PollFailure.fail:
+              throw const _PollPaused(
+                  'Could not reach the server — reopen this page to retry');
           }
-          continue;
         }
 
         if (statusResponse.statusCode != 200) {
           consecutiveErrors++;
-          if (statusResponse.statusCode == 401 ||
-              statusResponse.statusCode == 403) {
-            throw Exception('Authentication expired. Please log in again.');
+          switch (classifyPollStatusCode(statusResponse.statusCode,
+              consecutiveErrors: consecutiveErrors)) {
+            case PollFailure.retry:
+              continue;
+            case PollFailure.pause:
+              throw _PollPaused(statusResponse.statusCode == 401 ||
+                      statusResponse.statusCode == 403
+                  ? 'Session expired — sign in again to check status'
+                  : 'Could not reach the server — reopen this page to retry');
+            case PollFailure.fail:
+              throw Exception(
+                  'Social post job not found (it may have expired)');
           }
-          if (statusResponse.statusCode == 404) {
-            throw Exception('Social post job not found (it may have expired)');
-          }
-          if (consecutiveErrors >= 5) {
-            throw Exception(
-                'Status check failed after $consecutiveErrors consecutive errors');
-          }
-          continue;
         }
         consecutiveErrors = 0;
 
@@ -347,6 +387,15 @@ class WebSocialPostService extends ChangeNotifier {
           throw Exception('Social post generation timed out');
         }
       }
+    } on _PollPaused catch (paused) {
+      // NOT a job failure — this tab just couldn't ask. Keep the record
+      // running (jobId intact, nothing written to the sidecar) so the next
+      // load()/Refresh picks the job back up.
+      final current = _byGenerationId[record.generationId] ?? record;
+      if (current.status.isRunning) {
+        _update(current.copyWith(statusMessage: paused.message));
+      }
+      debugPrint('WebSocialPostService: poll paused — ${paused.message}');
     } catch (e) {
       final current = _byGenerationId[record.generationId] ?? record;
       _update(current.copyWith(

@@ -129,9 +129,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   }
 
   Future<void> _load() async {
-    // Sidecar read + pending-job resume; fail-soft (the social section just
-    // stays empty until it loads).
+    // Sidecar reads + pending-job resume, both fail-soft. These re-attach to
+    // work that was still running when the tab was last closed — the common
+    // mobile case, where Chrome evicts a background tab and reloads the page
+    // from scratch on return.
     unawaited(WebSocialPostService.instance.load());
+    unawaited(WebWebsiteService.instance.resumePendingJobs());
     try {
       await WebTagService.instance.load();
       final r = await WebFeatures.loadWebsites();

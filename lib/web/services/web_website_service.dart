@@ -13,6 +13,7 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/generation_poll_policy.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_name.dart';
 import 'package:fula_files/core/services/ipns_record.dart';
@@ -362,6 +363,19 @@ class WebIpnsService {
   }
 }
 
+/// Multi-pass generation (design brief → build → polish) legitimately runs
+/// past the old 5-minute ceiling; the server's own job timeout is 15 min.
+const Duration kWebsiteGenerationTimeout = Duration(minutes: 20);
+
+/// Thrown to stop a poll loop WITHOUT failing the generation — this tab
+/// couldn't reach the server (or isn't signed in), which says nothing about
+/// the job running on the backend. The pending record stays on disk so a
+/// later load resumes it.
+class _WebsitePollPaused implements Exception {
+  final String message;
+  const _WebsitePollPaused(this.message);
+}
+
 /// Web counterpart of the native WebsiteService generation pipeline:
 /// upload assets (unencrypted, same bucket/key/caps) → parse what the
 /// browser can (text; placeholders elsewhere — same as the desktop app,
@@ -381,6 +395,13 @@ class WebWebsiteService extends ChangeNotifier {
   /// also land in the cloud manifest). Screens listen to this service
   /// (ChangeNotifier) for live status updates.
   final List<WebsiteGeneration> liveGenerations = [];
+
+  /// AI job ids with a live poll loop in THIS tab — stops [resumePendingJobs]
+  /// from double-polling a job the fresh-generation path is already driving.
+  final Set<String> _activeJobIds = {};
+
+  /// Serializes read-modify-write cycles on the pending-jobs sidecar.
+  Future<void> _pendingChain = Future.value();
 
   void _notify(WebsiteGeneration g) => notifyListeners();
 
@@ -714,12 +735,65 @@ class WebWebsiteService extends ChangeNotifier {
     final jobId =
         (jsonDecode(response.body) as Map<String, dynamic>)['jobId'] as String;
 
+    // Persist the job handle BEFORE polling. Everything up to here lived
+    // only in this tab's memory; from this point a closed/killed tab (the
+    // norm on mobile, where Chrome evicts background tabs) can pick the
+    // job back up on reopen instead of losing a paid generation.
+    await _writePendingJob(generation, jobId);
+
+    await _pollGenerationJob(
+      generation,
+      jobId,
+      jwt,
+      aiEndpoint,
+      deadline: DateTime.now().add(kWebsiteGenerationTimeout),
+    );
+  }
+
+  /// Poll an accepted generation job to a terminal state, then run the
+  /// completion side-effects (cloud manifest, group membership, stable
+  /// link). Shared by the fresh-generation path and by [resumePendingJobs].
+  ///
+  /// Failure classification mirrors the social poller: only the SERVER's
+  /// verdict terminalizes. A transport failure or an expired session throws
+  /// [_WebsitePollPaused], which stops this loop but leaves the pending
+  /// record on disk so a later load resumes it.
+  Future<void> _pollGenerationJob(
+    WebsiteGeneration generation,
+    String jobId,
+    String jwt,
+    String aiEndpoint, {
+    required DateTime deadline,
+  }) async {
+    if (!_activeJobIds.add(jobId)) return;
+    try {
+      await _runGenerationPollLoop(
+          generation, jobId, jwt, aiEndpoint, deadline);
+    } on _WebsitePollPaused catch (paused) {
+      // Not a job failure — keep the generation in its running state and
+      // leave the pending record intact so reopening resumes it.
+      generation.statusMessage = paused.message;
+      generation.updatedAt = DateTime.now();
+      _notify(generation);
+      debugPrint('WebWebsiteService: poll paused — ${paused.message}');
+    } catch (_) {
+      // Terminal: the server failed the job, or it is genuinely gone.
+      await _clearPendingJob(generation.id);
+      rethrow;
+    } finally {
+      _activeJobIds.remove(jobId);
+    }
+  }
+
+  Future<void> _runGenerationPollLoop(
+    WebsiteGeneration generation,
+    String jobId,
+    String jwt,
+    String aiEndpoint,
+    DateTime deadline,
+  ) async {
     Duration pollInterval = const Duration(seconds: 2);
     const maxPollInterval = Duration(seconds: 10);
-    // Multi-pass generation (design brief → build → polish) legitimately
-    // runs past the old 5-minute ceiling; the server job timeout is 15 min.
-    const timeout = Duration(minutes: 20);
-    final deadline = DateTime.now().add(timeout);
     int consecutiveErrors = 0;
 
     // Poll-first, deadline-after: a mobile tab backgrounded/screen-off has
@@ -737,25 +811,42 @@ class WebWebsiteService extends ChangeNotifier {
         );
       }
 
-      final statusResponse = await http.get(
-        Uri.parse('$aiEndpoint/api/v1/status/$jobId'),
-        headers: {'Authorization': 'Bearer $jwt'},
-      );
+      final http.Response statusResponse;
+      try {
+        statusResponse = await http.get(
+          Uri.parse('$aiEndpoint/api/v1/status/$jobId'),
+          headers: {'Authorization': 'Bearer $jwt'},
+        ).timeout(const Duration(seconds: 20));
+      } catch (_) {
+        // Transport failure (offline, DNS, CORS, hung connection). A tab
+        // reopened on mobile frequently polls before the network is back —
+        // never let that discard the job.
+        consecutiveErrors++;
+        switch (classifyPollTransportFailure(
+            consecutiveErrors: consecutiveErrors)) {
+          case PollFailure.retry:
+            continue;
+          case PollFailure.pause:
+          case PollFailure.fail:
+            throw const _WebsitePollPaused(
+                'Could not reach the server — reopen this page to retry');
+        }
+      }
 
       if (statusResponse.statusCode != 200) {
         consecutiveErrors++;
-        if (statusResponse.statusCode == 401 ||
-            statusResponse.statusCode == 403) {
-          throw Exception('Authentication expired. Please log in again.');
+        switch (classifyPollStatusCode(statusResponse.statusCode,
+            consecutiveErrors: consecutiveErrors)) {
+          case PollFailure.retry:
+            continue;
+          case PollFailure.pause:
+            throw _WebsitePollPaused(statusResponse.statusCode == 401 ||
+                    statusResponse.statusCode == 403
+                ? 'Session expired — sign in again to check status'
+                : 'Could not reach the server — reopen this page to retry');
+          case PollFailure.fail:
+            throw Exception('Generation job not found.');
         }
-        if (statusResponse.statusCode == 404) {
-          throw Exception('Generation job not found.');
-        }
-        if (consecutiveErrors >= 5) {
-          throw Exception(
-              'Status check failed after $consecutiveErrors consecutive errors');
-        }
-        continue;
       }
       consecutiveErrors = 0;
 
@@ -779,6 +870,8 @@ class WebWebsiteService extends ChangeNotifier {
 
         await _appendToCloudManifest(generation);
         await _backfillGroupMembership(generation);
+        // Result is durable in the manifest now — drop the pending handle.
+        await _clearPendingJob(generation.id);
 
         // Stable link: best-effort, non-blocking like native.
         final cid = generation.resultCid;
@@ -829,6 +922,198 @@ class WebWebsiteService extends ChangeNotifier {
     } catch (e) {
       debugPrint(
           'WebWebsiteService: membership backfill failed (non-fatal): $e');
+    }
+  }
+
+  // ── Pending-job persistence (survives a closed tab) ──────────────────
+  //
+  // Generations live in `liveGenerations` (memory) and only reach the
+  // cloud manifest once COMPLETE, so a tab closed mid-generation used to
+  // lose the job outright: the server finished and pinned the site, but
+  // nothing client-side ever recorded it. This sidecar holds the handful
+  // of in-flight jobs — full generation snapshot + jobId — and is cleared
+  // the moment the job reaches a terminal state.
+
+  Future<String> _pendingJobsKey() async {
+    final pub = await FulaApiService.instance.getPublicKey();
+    final uid = sha256
+        .convert(utf8.encode(base64Encode(pub)))
+        .toString()
+        .substring(0, 16);
+    return '.fula/website_jobs/$uid.json';
+  }
+
+  /// Merge pending entries from every downloaded blob, newest write wins
+  /// per generation id. Entries are kept as raw maps so a field this
+  /// client doesn't know about survives a rewrite.
+  Map<String, Map<String, dynamic>> _mergePendingJobs(
+      Iterable<Iterable<dynamic>> entryLists) {
+    DateTime updatedAtOf(Map<String, dynamic> m) {
+      final v = m['updatedAt'];
+      return v is String
+          ? (DateTime.tryParse(v) ?? DateTime.fromMillisecondsSinceEpoch(0))
+          : DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    final byId = <String, Map<String, dynamic>>{};
+    for (final list in entryLists) {
+      for (final raw in list) {
+        if (raw is! Map) continue;
+        final m = raw.cast<String, dynamic>();
+        final id = m['generationId'];
+        if (id is! String || id.isEmpty) continue;
+        final existing = byId[id];
+        if (existing == null || updatedAtOf(m).isAfter(updatedAtOf(existing))) {
+          byId[id] = m;
+        }
+      }
+    }
+    return byId;
+  }
+
+  /// Serialized read-modify-write, same reasoning as the pointer backup:
+  /// overlapping writes would download the same base blob and the loser's
+  /// upload would erase the winner's entry.
+  Future<void> _mutatePendingJobs(
+      void Function(Map<String, Map<String, dynamic>> byId) mutate) {
+    final next = _pendingChain.then((_) => _doMutatePendingJobs(mutate));
+    _pendingChain = next.catchError((_) {});
+    return next;
+  }
+
+  Future<void> _doMutatePendingJobs(
+      void Function(Map<String, Map<String, dynamic>> byId) mutate) async {
+    try {
+      final kekB64 = await SecureStorageService.instance
+          .read(SecureStorageKeys.encryptionKey);
+      if (kekB64 == null || kekB64.isEmpty) return;
+      final kek = Uint8List.fromList(base64Decode(kekB64));
+      final key = await _pendingJobsKey();
+
+      final blobEntries = <List<dynamic>>[];
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_websiteMetadataBucket, key, kek)) {
+        try {
+          final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+          blobEntries.add(j['jobs'] as List<dynamic>? ?? const []);
+        } catch (_) {}
+      }
+      final byId = _mergePendingJobs(blobEntries);
+      mutate(byId);
+
+      final writeBucket =
+          BucketVersionResolver.writeBucket(_websiteMetadataBucket);
+      try {
+        await FulaApiService.instance.createBucket(writeBucket);
+      } catch (_) {}
+      final data = Uint8List.fromList(utf8.encode(jsonEncode({
+        'jobs': byId.values.toList(),
+        'updatedAt': DateTime.now().toIso8601String(),
+      })));
+      await FulaApiService.instance.encryptAndUpload(
+        writeBucket,
+        key,
+        data,
+        kek,
+        contentType: 'application/json',
+      );
+      await WebListingCache.instance.writeManifest(writeBucket, key, data);
+      WebCacheSync.instance.sendInvalidateManifest(writeBucket, key);
+    } catch (e) {
+      debugPrint('WebWebsiteService: pending-job write failed (non-fatal): $e');
+    }
+  }
+
+  Future<void> _writePendingJob(WebsiteGeneration generation, String jobId) =>
+      _mutatePendingJobs((byId) {
+        byId[generation.id] = {
+          'generationId': generation.id,
+          'jobId': jobId,
+          'updatedAt': DateTime.now().toIso8601String(),
+          'generation': generation.toJson(),
+        };
+      });
+
+  Future<void> _clearPendingJob(String generationId) =>
+      _mutatePendingJobs((byId) => byId.remove(generationId));
+
+  /// Re-attach to generations that were still running when this tab was
+  /// last closed. Safe to call on every screen load: jobs already being
+  /// polled in this tab are skipped, and a job that finished while the tab
+  /// was gone resolves on the first poll (poll-first — the deadline is
+  /// only consulted after a fresh "still running" answer).
+  Future<void> resumePendingJobs() async {
+    try {
+      final kekB64 = await SecureStorageService.instance
+          .read(SecureStorageKeys.encryptionKey);
+      if (kekB64 == null || kekB64.isEmpty) return;
+      final kek = Uint8List.fromList(base64Decode(kekB64));
+      final key = await _pendingJobsKey();
+
+      final blobEntries = <List<dynamic>>[];
+      for (final blob in await FulaApiService.instance
+          .downloadMetadataMerged(_websiteMetadataBucket, key, kek)) {
+        try {
+          final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
+          blobEntries.add(j['jobs'] as List<dynamic>? ?? const []);
+        } catch (_) {}
+      }
+
+      for (final entry in _mergePendingJobs(blobEntries).values) {
+        final jobId = entry['jobId'];
+        final genJson = entry['generation'];
+        if (jobId is! String || jobId.isEmpty) continue;
+        if (genJson is! Map) continue;
+        if (_activeJobIds.contains(jobId)) continue;
+
+        final WebsiteGeneration generation;
+        try {
+          generation = WebsiteGeneration.fromJson(
+              genJson.cast<String, dynamic>());
+        } catch (_) {
+          continue;
+        }
+
+        // Adopt into the live list so the card renders while we re-poll.
+        final existing =
+            liveGenerations.indexWhere((g) => g.id == generation.id);
+        if (existing >= 0) {
+          if (liveGenerations[existing].status == WebsiteGenStatus.completed) {
+            // Already finished in this tab — stale pending entry.
+            unawaited(_clearPendingJob(generation.id));
+            continue;
+          }
+          liveGenerations[existing] = generation;
+        } else {
+          liveGenerations.insert(0, generation);
+        }
+        generation.status = WebsiteGenStatus.generating;
+        generation.statusMessage = 'Reconnecting to your generation...';
+        _notify(generation);
+
+        final jwt = await _jwt();
+        final aiEndpoint = await SecureStorageService.instance
+                .read(SecureStorageKeys.aiEndpointUrl) ??
+            _defaultAiEndpoint;
+
+        unawaited(_pollGenerationJob(
+          generation,
+          jobId,
+          jwt,
+          aiEndpoint,
+          // Anchored to when the job was created, not to now — the server
+          // caps generation at 15 min, so a job older than this window is
+          // already terminal and the first poll will say so.
+          deadline: generation.createdAt.add(kWebsiteGenerationTimeout),
+        ).catchError((Object e) {
+          generation.status = WebsiteGenStatus.error;
+          generation.errorMessage = e.toString();
+          generation.updatedAt = DateTime.now();
+          _notify(generation);
+        }));
+      }
+    } catch (e) {
+      debugPrint('WebWebsiteService: resume pending failed (non-fatal): $e');
     }
   }
 
