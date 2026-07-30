@@ -124,6 +124,11 @@ class SecureStorageKeys {
   static const String ipfsGatewayUrl = 'ipfs_gateway_url';
   static const String analyticsEndpointUrl = 'analytics_endpoint_url';
 
+  // Buffer (social posting) personal API key — device-local v1 (no cloud
+  // roaming). Grants posting to the user's Buffer channels; only ever sent
+  // to the AI-backend proxy, never to third parties from the client.
+  static const String bufferApiKey = 'buffer_api_key';
+
   // IPFS upload endpoint (ipfs-server with /upload and /gateway)
   static const String ipfsEndpointUrl = 'ipfs_endpoint_url';
 

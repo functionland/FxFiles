@@ -9,9 +9,11 @@ import 'package:web/web.dart' as web;
 
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/models/social_post_record.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
+import 'package:fula_files/shared/widgets/ipfs_public_disclaimer_dialog.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
@@ -19,7 +21,9 @@ import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
 import 'package:fula_files/web/services/web_website_asset_uploader.dart';
 import 'package:fula_files/web/services/web_website_assets_logic.dart';
+import 'package:fula_files/web/services/web_social_post_service.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
+import 'package:fula_files/web/widgets/web_social_post_section.dart';
 
 /// Mirror of lib/features/websites/screens/website_detail_screen.dart:
 /// assets section (imported files + per-asset notes), the Create
@@ -65,6 +69,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     super.initState();
     WebWebsiteService.instance.addListener(_onServiceTick);
     WebWebsiteAssetUploader.instance.addListener(_onUploaderTick);
+    WebSocialPostService.instance.addListener(_onServiceTick);
     _load();
   }
 
@@ -72,6 +77,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   void dispose() {
     WebWebsiteService.instance.removeListener(_onServiceTick);
     WebWebsiteAssetUploader.instance.removeListener(_onUploaderTick);
+    WebSocialPostService.instance.removeListener(_onServiceTick);
     for (final a in _assets) {
       _revokePreview(a);
     }
@@ -123,6 +129,9 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   }
 
   Future<void> _load() async {
+    // Sidecar read + pending-job resume; fail-soft (the social section just
+    // stays empty until it loads).
+    unawaited(WebSocialPostService.instance.load());
     try {
       await WebTagService.instance.load();
       final r = await WebFeatures.loadWebsites();
@@ -362,6 +371,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
               Text('Import images, videos, or documents first')));
       return;
     }
+    // Public-content disclaimer before the form, matching the native
+    // app's step-1 placement (assets + generated site are public IPFS).
+    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    if (accepted != true || !mounted) return;
     final result =
         await Navigator.of(context).push<WebGeneratePromptResult>(
       MaterialPageRoute(
@@ -375,11 +388,53 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     await _publishFromResult(result);
   }
 
+  /// Send this generation's assets + prompt + public URL to the AI
+  /// backend for a 4:5 social image + captions. Disclaimer (public
+  /// content) and FULA price share one confirm dialog.
+  Future<void> _createSocialPosts(WebsiteGeneration gen) async {
+    if (WebSocialPostService.instance.isGenerating(gen.id)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A social post is already being generated')));
+      return;
+    }
+    final price = await WebSocialPostService.instance.fetchSocialPricing();
+    if (!mounted) return;
+    final accepted = await showIpfsPublicDisclaimerDialog(
+      context,
+      variant: PublicDisclaimerVariant.social,
+      footnote: price != null
+          ? 'Cost: $price FULA (1 image + captions)'
+          : 'Charged at the current social-post rate (1 image + captions)',
+    );
+    if (accepted != true || !mounted) return;
+    final pointer =
+        _pointer ?? WebIpnsService.instance.pointerFor(widget.tagId);
+    try {
+      await WebSocialPostService.instance.startGeneration(
+        generation: gen,
+        frontDoorUrl: pointer?.frontDoorUrl,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Social post generation started')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text(e.toString().replaceFirst('Exception: ', ''))));
+      }
+    }
+  }
+
   /// Native Recreate parity: reopen the generator prefilled from the
   /// generation's parsed prompt, with the prior-site reference seeded
   /// into the creative direction; the group's current assets are
   /// reused on publish.
   Future<void> _recreate(WebsiteGeneration gen) async {
+    // Same public-content acknowledgement as Create Website (native parity).
+    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    if (accepted != true || !mounted) return;
     final parsed = parseStoredWebsitePrompt(gen.prompt);
     final priorUrl = gen.gatewayUrl ?? '';
     final priorPromptForRef =
@@ -496,6 +551,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                                           WebsiteGenStatus.completed &&
                                       !_isGenerating
                                   ? () => _recreate(g)
+                                  : null,
+                              socialRecord: WebSocialPostService.instance
+                                  .recordFor(g.id),
+                              onCreateSocial: g.status ==
+                                      WebsiteGenStatus.completed
+                                  ? () => _createSocialPosts(g)
                                   : null,
                             ),
                         ],
@@ -952,7 +1013,19 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
 class _GenerationCard extends StatelessWidget {
   final WebsiteGeneration generation;
   final VoidCallback? onRecreate;
-  const _GenerationCard({required this.generation, this.onRecreate});
+
+  /// Social-post state for this generation (null = never generated); the
+  /// launch button lives in the action Wrap only until a record exists —
+  /// after that the section below owns status/result/recreate.
+  final SocialPostRecord? socialRecord;
+  final VoidCallback? onCreateSocial;
+
+  const _GenerationCard({
+    required this.generation,
+    this.onRecreate,
+    this.socialRecord,
+    this.onCreateSocial,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1083,6 +1156,12 @@ class _GenerationCard extends StatelessWidget {
                       label: const Text('Recreate'),
                       onPressed: onRecreate,
                     ),
+                  if (onCreateSocial != null && socialRecord == null)
+                    OutlinedButton.icon(
+                      icon: const Icon(LucideIcons.megaphone, size: 14),
+                      label: const Text('Create Social Posts'),
+                      onPressed: onCreateSocial,
+                    ),
                 ],
               ),
               // Click-tracking stats below the link (native parity:
@@ -1093,6 +1172,11 @@ class _GenerationCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 _AnalyticsRow(cid: g.resultCid!),
               ],
+              WebSocialPostSection(
+                generationId: g.id,
+                tagName: g.tagName,
+                onCreateSocial: onCreateSocial,
+              ),
             ],
             if (g.status == WebsiteGenStatus.error &&
                 g.errorMessage != null) ...[
