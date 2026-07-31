@@ -132,9 +132,17 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     // Sidecar reads + pending-job resume, both fail-soft. These re-attach to
     // work that was still running when the tab was last closed — the common
     // mobile case, where Chrome evicts a background tab and reloads the page
-    // from scratch on return.
+    // from scratch on return. The resume kick is deferred past the first
+    // frame + a short settle (mobile freeze fix): its manifest read +
+    // full-generation decode must not compete with the opening paint.
     unawaited(WebSocialPostService.instance.load());
-    unawaited(WebWebsiteService.instance.resumePendingJobs());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          unawaited(WebWebsiteService.instance.resumePendingJobs());
+        }
+      });
+    });
     try {
       await WebTagService.instance.load();
       final r = await WebFeatures.loadWebsites();

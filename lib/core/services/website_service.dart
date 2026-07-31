@@ -24,6 +24,7 @@ import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/website_manifest_logic.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/core/utils/platform_capabilities.dart';
@@ -1254,11 +1255,16 @@ class WebsiteService {
       final userId = await _getUserId();
       if (userId == null) return;
 
-      // Only sync completed generations
-      final completed = _generationsBox.values
+      // Only sync completed generations. Keep-freshest strip
+      // (website_manifest_logic.dart): the CLOUD copy carries
+      // parsedContent only for the freshest occurrence per fileName —
+      // the local Hive box keeps everything, so same-device behavior is
+      // unchanged. The web writer applies the same strip, or the two
+      // writers would oscillate.
+      final completed = stripParsedContentKeepFreshest(_generationsBox.values
           .where((g) => g.status == WebsiteGenStatus.completed)
           .map((g) => g.toJson())
-          .toList();
+          .toList());
 
       final jsonStr = jsonEncode({'generations': completed, 'updatedAt': DateTime.now().toIso8601String()});
       final data = Uint8List.fromList(utf8.encode(jsonStr));

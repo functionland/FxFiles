@@ -37,6 +37,11 @@ class WebTagService {
   List<TaggedFile> _taggedFiles = const [];
   bool _loaded = false;
 
+  /// Single-flight for non-force [load]s — the websites LIST and DETAIL
+  /// screens both call load() on mount and used to race two identical
+  /// network reads. Force callers NEVER join (see [load]).
+  Future<void>? _loadFuture;
+
   List<FileTag> get tags => _tags;
   List<TaggedFile> get taggedFiles => _taggedFiles;
   bool get isLoaded => _loaded;
@@ -70,12 +75,40 @@ class WebTagService {
   /// refreshes also pass [refetchForest] (a mutation's merge-read must
   /// keep the session forest — it already reflects our own writes,
   /// while the server may briefly lag them).
-  Future<void> load({bool force = false, bool refetchForest = false}) async {
-    if (_loaded && !force) return;
+  Future<void> load({bool force = false, bool refetchForest = false}) {
+    if (_loaded && !force) return Future.value();
+    if (!force) {
+      // Join an in-flight non-force load instead of starting a second
+      // identical network read (list + detail screens race on mount).
+      final inFlight = _loadFuture;
+      if (inFlight != null) return inFlight;
+      final f = _doLoad(refetchForest: refetchForest)
+          .whenComplete(() => _loadFuture = null);
+      _loadFuture = f;
+      return f;
+    }
+    // Force NEVER joins: mutation callers (_mutateAndSync) do
+    // read-modify-write and joining a stale non-force flight would let
+    // the overwrite-upload silently drop a concurrent change.
+    return _doLoad(force: true, refetchForest: refetchForest);
+  }
+
+  Future<void> _doLoad(
+      {bool force = false, bool refetchForest = false}) async {
     final kek = await _kek();
     final uid = await userId();
     final tagsById = <String, FileTag>{};
     final filesById = <String, TaggedFile>{};
+    // Yield cadence: rows are tiny (a few ms per ~200) — slicing keeps
+    // the frame alive on big tag sets without measurable overhead.
+    var sinceYield = 0;
+    Future<void> maybeYield() async {
+      if (++sinceYield >= 200) {
+        sinceYield = 0;
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
     for (final blob in await WebListingSwr.instance.downloadMetadataMergedSwr(
         _bucket, '$_keyPrefix$uid.json', kek,
         force: force, refetchForest: refetchForest)) {
@@ -84,9 +117,11 @@ class WebTagService {
             jsonDecode(utf8.decode(blob)) as Map<String, dynamic>);
         for (final t in meta.tags) {
           tagsById.putIfAbsent(t.id, () => t);
+          await maybeYield();
         }
         for (final f in meta.taggedFiles) {
           filesById.putIfAbsent(f.id, () => f);
+          await maybeYield();
         }
       } catch (e) {
         debugPrint('WebTagService.load: manifest parse skipped: $e');

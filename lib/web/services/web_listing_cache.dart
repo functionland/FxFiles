@@ -13,6 +13,7 @@ import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_cache_hkdf.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
+import 'package:fula_files/web/services/web_l1_budget.dart';
 
 /// L1/L2 cache behind the web SWR read path
 /// (docs/web-listing-prefetch-cache-plan.md §5).
@@ -52,6 +53,18 @@ class WebListingCache {
   static const int maxObjectsDesktop = 20000;
   static const int maxObjectsLowEnd = 5000;
 
+  /// L1 (in-memory) byte budgets — tunable. L1 used to be unbounded;
+  /// on a low-memory phone every big manifest read this session stayed
+  /// resident on top of the wasm heap + the non-lazy Hive box (mobile
+  /// freeze fix, step 5). Oversized MANIFEST blobs additionally skip L1
+  /// on low-end ([l1MaxManifestBytesLowEnd]) — L2 still holds them, a
+  /// re-read pays a decrypt, not memory. Listings are exempt from the
+  /// per-entry cap: low-end already truncates them to [maxObjectsLowEnd]
+  /// and skipping L1 there would re-decrypt on every back-navigation.
+  static const int l1BudgetBytesDesktop = 4 * 1024 * 1024;
+  static const int l1BudgetBytesLowEnd = 1536 * 1024;
+  static const int l1MaxManifestBytesLowEnd = 256 * 1024;
+
   Box<Uint8List>? _box;
   web.CryptoKey? _aesKey;
   String? _aesKeyOwner;
@@ -63,6 +76,29 @@ class WebListingCache {
   /// to exist) — distinct from an outer `null` return (cache miss).
   final Map<String, ({Uint8List? blob, DateTime fetchedAt})> _l1Manifests =
       {};
+
+  /// Byte accounting + LRU order for BOTH L1 maps (web_l1_budget.dart).
+  /// Nominal size for a cached-absence manifest entry.
+  static const int _l1AbsenceBytes = 16;
+  L1Budget? _l1BudgetInstance;
+  L1Budget get _l1Budget => _l1BudgetInstance ??= L1Budget(
+      budgetBytes: WebDeviceClass.lowEnd
+          ? l1BudgetBytesLowEnd
+          : l1BudgetBytesDesktop);
+
+  /// Record [key] at [bytes] and drop whatever the budget evicts from
+  /// both maps. Call AFTER putting the entry in its map.
+  void _l1Track(String key, int bytes) {
+    for (final k in _l1Budget.insert(key, bytes)) {
+      _l1Listings.remove(k);
+      _l1Manifests.remove(k);
+    }
+  }
+
+  /// True when a MANIFEST plaintext of [bytes] may enter L1 at all.
+  bool _l1AdmitManifest(int bytes) =>
+      _l1Budget.shouldCache(bytes) &&
+      !(WebDeviceClass.lowEnd && bytes > l1MaxManifestBytesLowEnd);
 
   final Random _rng = Random.secure();
 
@@ -168,7 +204,10 @@ class WebListingCache {
       if (owner == null) return null;
       final k = listingKey(owner, bucket);
       final l1 = _l1Listings[k];
-      if (l1 != null) return l1;
+      if (l1 != null) {
+        _l1Budget.touch(k);
+        return l1;
+      }
 
       final key = await _cacheKey(owner);
       if (key == null) return null;
@@ -188,7 +227,10 @@ class WebListingCache {
           .map((m) => _objectFromJson(Map<String, dynamic>.from(m)))
           .toList(growable: false);
       final entry = (objects: objects, fetchedAt: fetchedAt);
-      _l1Listings[k] = entry;
+      if (_l1Budget.shouldCache(plain.length)) {
+        _l1Listings[k] = entry;
+        _l1Track(k, plain.length);
+      }
       unawaited(_touchLru(owner, k));
       return entry;
     } catch (e) {
@@ -259,7 +301,15 @@ class WebListingCache {
       final value = await _encrypt(key, k, Uint8List.fromList(plain));
       await _evictForInsert(owner, k, value.length);
       await (await _openBox()).put(k, value);
-      _l1Listings[k] = (objects: List.unmodifiable(toStore), fetchedAt: at);
+      if (_l1Budget.shouldCache(plain.length)) {
+        _l1Listings[k] =
+            (objects: List.unmodifiable(toStore), fetchedAt: at);
+        _l1Track(k, plain.length);
+      } else {
+        // Too big for L1 — make sure no stale copy keeps serving.
+        _l1Listings.remove(k);
+        _l1Budget.remove(k);
+      }
       await _touchLru(owner, k);
     } catch (e) {
       debugPrint('WebListingCache.writeListing($bucket) skipped: $e');
@@ -275,7 +325,10 @@ class WebListingCache {
       if (owner == null) return null;
       final k = manifestKey(owner, bucket, objectKey);
       final l1 = _l1Manifests[k];
-      if (l1 != null) return l1;
+      if (l1 != null) {
+        _l1Budget.touch(k);
+        return l1;
+      }
 
       final key = await _cacheKey(owner);
       if (key == null) return null;
@@ -293,7 +346,11 @@ class WebListingCache {
       final blob =
           present ? base64Decode(json['blob'] as String? ?? '') : null;
       final entry = (blob: blob, fetchedAt: fetchedAt);
-      _l1Manifests[k] = entry;
+      final bytes = blob?.length ?? _l1AbsenceBytes;
+      if (_l1AdmitManifest(bytes)) {
+        _l1Manifests[k] = entry;
+        _l1Track(k, bytes);
+      }
       unawaited(_touchLru(owner, k));
       return entry;
     } catch (e) {
@@ -335,7 +392,15 @@ class WebListingCache {
       final value = await _encrypt(key, k, Uint8List.fromList(plain));
       await _evictForInsert(owner, k, value.length);
       await (await _openBox()).put(k, value);
-      _l1Manifests[k] = (blob: blob, fetchedAt: at);
+      final bytes = blob?.length ?? _l1AbsenceBytes;
+      if (_l1AdmitManifest(bytes)) {
+        _l1Manifests[k] = (blob: blob, fetchedAt: at);
+        _l1Track(k, bytes);
+      } else {
+        // Too big for L1 — make sure no stale copy keeps serving.
+        _l1Manifests.remove(k);
+        _l1Budget.remove(k);
+      }
       await _touchLru(owner, k);
     } catch (e) {
       debugPrint(
@@ -353,6 +418,7 @@ class WebListingCache {
       if (owner == null) return;
       final k = listingKey(owner, bucket);
       _l1Listings.remove(k);
+      _l1Budget.remove(k);
       await (await _openBox()).delete(k);
     } catch (e) {
       debugPrint('WebListingCache.dropListing($bucket): $e');
@@ -365,6 +431,7 @@ class WebListingCache {
       if (owner == null) return;
       final k = manifestKey(owner, bucket, objectKey);
       _l1Manifests.remove(k);
+      _l1Budget.remove(k);
       await (await _openBox()).delete(k);
     } catch (e) {
       debugPrint('WebListingCache.dropManifest($bucket/$objectKey): $e');
@@ -482,6 +549,7 @@ class WebListingCache {
         await box.delete(key);
         _l1Listings.remove(key);
         _l1Manifests.remove(key);
+        _l1Budget.remove(key);
         lru.remove(key);
         total -= sizes[key]!;
         debugPrint('WebListingCache: evicted $key (${sizes[key]} B)');
@@ -573,6 +641,7 @@ class WebListingCache {
   Future<void> deactivate() async {
     _l1Listings.clear();
     _l1Manifests.clear();
+    _l1Budget.clear();
     _aesKey = null;
     _aesKeyOwner = null;
     try {
@@ -599,6 +668,7 @@ class WebListingCache {
   Future<void> clearAll() async {
     _l1Listings.clear();
     _l1Manifests.clear();
+    _l1Budget.clear();
     _aesKey = null;
     _aesKeyOwner = null;
     final box = _box;
@@ -623,6 +693,7 @@ class WebListingCache {
   void clearL1() {
     _l1Listings.clear();
     _l1Manifests.clear();
+    _l1Budget.clear();
   }
 
   // ------------------------------------------------------------ json

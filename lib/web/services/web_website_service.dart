@@ -18,13 +18,16 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_name.dart';
 import 'package:fula_files/core/services/ipns_record.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
+import 'package:fula_files/core/services/website_manifest_logic.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
+import 'package:fula_files/web/services/web_website_jobs_logic.dart';
 
 /// One asset for a website generation. ALWAYS CID-backed and byteless:
 /// browser-picked files are eagerly streamed to the public
@@ -943,34 +946,6 @@ class WebWebsiteService extends ChangeNotifier {
     return '.fula/website_jobs/$uid.json';
   }
 
-  /// Merge pending entries from every downloaded blob, newest write wins
-  /// per generation id. Entries are kept as raw maps so a field this
-  /// client doesn't know about survives a rewrite.
-  Map<String, Map<String, dynamic>> _mergePendingJobs(
-      Iterable<Iterable<dynamic>> entryLists) {
-    DateTime updatedAtOf(Map<String, dynamic> m) {
-      final v = m['updatedAt'];
-      return v is String
-          ? (DateTime.tryParse(v) ?? DateTime.fromMillisecondsSinceEpoch(0))
-          : DateTime.fromMillisecondsSinceEpoch(0);
-    }
-
-    final byId = <String, Map<String, dynamic>>{};
-    for (final list in entryLists) {
-      for (final raw in list) {
-        if (raw is! Map) continue;
-        final m = raw.cast<String, dynamic>();
-        final id = m['generationId'];
-        if (id is! String || id.isEmpty) continue;
-        final existing = byId[id];
-        if (existing == null || updatedAtOf(m).isAfter(updatedAtOf(existing))) {
-          byId[id] = m;
-        }
-      }
-    }
-    return byId;
-  }
-
   /// Serialized read-modify-write, same reasoning as the pointer backup:
   /// overlapping writes would download the same base blob and the loser's
   /// upload would erase the winner's entry.
@@ -998,7 +973,7 @@ class WebWebsiteService extends ChangeNotifier {
           blobEntries.add(j['jobs'] as List<dynamic>? ?? const []);
         } catch (_) {}
       }
-      final byId = _mergePendingJobs(blobEntries);
+      final byId = mergePendingJobs(blobEntries);
       mutate(byId);
 
       final writeBucket =
@@ -1030,7 +1005,12 @@ class WebWebsiteService extends ChangeNotifier {
           'generationId': generation.id,
           'jobId': jobId,
           'updatedAt': DateTime.now().toIso8601String(),
-          'generation': generation.toJson(),
+          // Snapshot WITHOUT parsedContent (≤30×100KB per generation):
+          // resume only needs the job handle + light metadata. A resumed
+          // generation's manifest entry then lacks parsedContent for its
+          // assets — the recreate flow falls back to the ranged-GET
+          // re-parse, never fails.
+          'generation': stripAssetParsedContent(generation.toJson()),
         };
       });
 
@@ -1050,16 +1030,30 @@ class WebWebsiteService extends ChangeNotifier {
       final kek = Uint8List.fromList(base64Decode(kekB64));
       final key = await _pendingJobsKey();
 
+      // SWR read, NOT the direct network path: every pending-jobs
+      // mutation write-throughs the cache (_doMutatePendingJobs), so
+      // after _clearPendingJob the cached `{jobs:[]}` blob answers
+      // "nothing pending" with ZERO network — the common case on every
+      // screen open. Cache miss → live fetch (existing 30s timeout).
+      // recordUsage:false keeps this background task out of the
+      // frecency log and the foreground-activity window. Trade-off:
+      // another DEVICE's just-written pending job may wait out the
+      // fresh window before this tab sees it — acceptable, resume is a
+      // same-device tab-eviction recovery and polls are poll-first.
       final blobEntries = <List<dynamic>>[];
-      for (final blob in await FulaApiService.instance
-          .downloadMetadataMerged(_websiteMetadataBucket, key, kek)) {
+      for (final blob in await WebListingSwr.instance
+          .downloadMetadataMergedSwr(_websiteMetadataBucket, key, kek,
+              recordUsage: false)) {
         try {
           final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
           blobEntries.add(j['jobs'] as List<dynamic>? ?? const []);
         } catch (_) {}
       }
 
-      for (final entry in _mergePendingJobs(blobEntries).values) {
+      for (final entry in mergePendingJobs(blobEntries).values) {
+        // Each entry decodes a FULL generation snapshot — yield so this
+        // background loop can't monopolize the frame budget.
+        await Future<void>.delayed(Duration.zero);
         final jobId = entry['jobId'];
         final genJson = entry['generation'];
         if (jobId is! String || jobId.isEmpty) continue;
@@ -1152,8 +1146,13 @@ class WebWebsiteService extends ChangeNotifier {
       try {
         await FulaApiService.instance.createBucket(writeBucket);
       } catch (_) {}
+      // Keep-freshest strip (website_manifest_logic.dart): applied to
+      // the MERGED set, so bloated historical entries shrink on the
+      // first append after deploy — not just the new generation. The
+      // native writer (WebsiteService.syncToCloud) applies the same
+      // strip, or the two writers would oscillate.
       final data = Uint8List.fromList(utf8.encode(jsonEncode({
-        'generations': byId.values.toList(),
+        'generations': stripParsedContentKeepFreshest(byId.values.toList()),
         'updatedAt': DateTime.now().toIso8601String(),
       })));
       await FulaApiService.instance.encryptAndUpload(

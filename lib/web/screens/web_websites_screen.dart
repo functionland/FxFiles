@@ -28,43 +28,98 @@ class WebWebsitesScreen extends StatefulWidget {
 class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
   List<WebsiteGeneration> _generations = const [];
   Map<String, WebsiteGroupPointer> _pointers = const {};
+
+  /// Nothing to show yet (first open, tags not loaded) — full spinner.
   bool _loading = true;
+
+  /// Rows painted from tags; generation statuses still hydrating — thin
+  /// progress bar under the AppBar, rows stay interactive.
+  bool _hydrating = false;
+
+  /// Forced reload (Refresh / after delete) with rows already visible —
+  /// same thin bar; the list is never replaced by a spinner again.
+  bool _refreshing = false;
+
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // Re-attach to generations that were still running when this tab was
+    // last closed (mobile Chrome evicts background tabs and reloads the
+    // page). Kicked AFTER the first frame + a short settle so its
+    // manifest read + decode can't compete with the opening paint;
+    // fail-soft either way, and still fires once per mount (an evicted
+    // tab reloads the page → fresh mount).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          unawaited(WebWebsiteService.instance.resumePendingJobs());
+        }
+      });
+    });
   }
 
   // SWR: initial open serves cached manifests; Refresh forces live.
   // Mutations (create group / completed generations / pointer mints)
   // write through the cache, so the default path stays current.
+  //
+  // Two-phase paint (mobile freeze fix): tags alone are enough to render
+  // the group rows, so they paint first; the (potentially heavy)
+  // generations+pointers manifests hydrate statuses in a second
+  // setState. _groups is insertion-ordered — phase 2 only APPENDS
+  // synthetic cross-device rows via putIfAbsent, so phase-1 rows never
+  // reorder under the user's finger.
   Future<void> _load({bool force = false}) async {
+    final hasRows =
+        _groups.isNotEmpty || WebTagService.instance.isLoaded;
     setState(() {
-      _loading = true;
       _error = null;
+      if (hasRows) {
+        _refreshing = true;
+      } else {
+        _loading = true;
+      }
     });
-    // Re-attach to generations that were still running when this tab was
-    // last closed (mobile Chrome evicts background tabs and reloads the
-    // page). Fail-soft and off the critical path — the list renders from
-    // the manifest either way.
-    unawaited(WebWebsiteService.instance.resumePendingJobs());
     try {
       await WebTagService.instance
           .load(force: force, refetchForest: force);
+      if (!mounted) return;
+      // First paint: rows from tags; statuses show as pending.
+      setState(() {
+        _loading = false;
+        _hydrating = true;
+      });
       final r = await WebFeatures.loadWebsites(
-          force: force, refetchForest: force);
+          force: force, refetchForest: force, dropParsedContent: true);
+      if (!mounted) return;
       setState(() {
         _generations = r.generations;
         _pointers = r.pointersByTag;
-        _loading = false;
+        _hydrating = false;
+        _refreshing = false;
       });
     } catch (e) {
-      setState(() {
-        _error = '$e';
-        _loading = false;
-      });
+      if (!mounted) return;
+      if (_groups.isNotEmpty) {
+        // Rows are on screen — keep them and surface the failure
+        // lightly instead of swapping to a full-screen error.
+        setState(() {
+          _loading = false;
+          _hydrating = false;
+          _refreshing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not refresh websites: $e')));
+      } else {
+        setState(() {
+          _error = '$e';
+          _loading = false;
+          _hydrating = false;
+          _refreshing = false;
+        });
+      }
     }
   }
 
@@ -202,6 +257,14 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
             onPressed: () => _load(force: true),
           ),
         ],
+        // Background work indicator: rows stay visible + interactive
+        // while generations hydrate or a forced reload runs.
+        bottom: (_hydrating || _refreshing)
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(minHeight: 2),
+              )
+            : null,
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _createWebsite,
@@ -212,7 +275,12 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
           : _loading
               ? const Center(child: CircularProgressIndicator())
               : groups.isEmpty
-                  ? Center(
+                  // While hydrating, synthetic cross-device rows may
+                  // still arrive with the generations manifest — don't
+                  // claim "No websites yet" until it has landed.
+                  ? _hydrating
+                      ? const Center(child: CircularProgressIndicator())
+                      : Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -263,7 +331,9 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
                               overflow: TextOverflow.ellipsis),
                           subtitle: Text(
                             latest == null
-                                ? 'No generations yet'
+                                // Statuses hydrate in phase 2 — don't
+                                // claim an absence before they land.
+                                ? (_hydrating ? '…' : 'No generations yet')
                                 : url != null
                                     ? 'published'
                                     : latest.statusMessage ??
