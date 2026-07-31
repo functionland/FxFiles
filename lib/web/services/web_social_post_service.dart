@@ -201,8 +201,14 @@ class WebSocialPostService extends ChangeNotifier {
       userPrompt: socialUserPrompt(generation.prompt),
       assets: [
         for (final a in generation.assets)
-          if (a.uploaded && (a.gatewayUrl ?? '').isNotEmpty)
-            (fileName: a.fileName, type: a.type, url: a.gatewayUrl!),
+          if (a.uploaded &&
+              ((a.gatewayUrl ?? '').isNotEmpty || (a.cid ?? '').isNotEmpty))
+            (
+              fileName: a.fileName,
+              type: a.type,
+              url: a.gatewayUrl ?? '',
+              cid: a.cid,
+            ),
       ],
       displayName: generation.tagName,
     );

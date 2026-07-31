@@ -30,18 +30,33 @@ bool _isImageFileName(String fileName) {
 }
 
 /// Request body for POST /api/v1/social/generate. Filters the generation's
-/// assets to URL-backed raster images and caps at [kSocialMaxAssets].
+/// assets to raster images and caps at [kSocialMaxAssets].
+///
+/// Each asset carries its `cid` as well as its `url`: the backend resolves
+/// the CID against ITS OWN gateway rather than trusting ours. That matters
+/// because the app's default gateway is the subdomain-style
+/// `<cid>.ipfs.dweb.link`, which the service has no reason to allow-list —
+/// sending only the URL is what silently dropped every reference image.
+/// An asset with neither a CID nor a URL is unusable and is skipped.
 Map<String, dynamic> buildSocialGeneratePayload({
   required String generationId,
   required String websiteUrl,
   required String userPrompt,
-  required List<({String fileName, String type, String url})> assets,
+  required List<({String fileName, String type, String url, String? cid})>
+      assets,
   required String displayName,
 }) {
   final images = assets
-      .where((a) => a.url.isNotEmpty && _isImageFileName(a.fileName))
+      .where((a) =>
+          (a.url.isNotEmpty || (a.cid ?? '').isNotEmpty) &&
+          _isImageFileName(a.fileName))
       .take(kSocialMaxAssets)
-      .map((a) => {'fileName': a.fileName, 'type': a.type, 'url': a.url})
+      .map((a) => {
+            'fileName': a.fileName,
+            'type': a.type,
+            'url': a.url,
+            if ((a.cid ?? '').isNotEmpty) 'cid': a.cid,
+          })
       .toList();
   return {
     'generationId': generationId,

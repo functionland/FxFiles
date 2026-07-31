@@ -14,15 +14,17 @@ void main() {
 
   group('buildSocialGeneratePayload', () {
     final assets = [
-      (fileName: 'hero.jpg', type: 'image', url: 'https://gw/a'),
-      (fileName: 'logo.svg', type: 'image', url: 'https://gw/b'), // not raster
-      (fileName: 'doc.pdf', type: 'document', url: 'https://gw/c'),
-      (fileName: 'clip.mp4', type: 'video', url: 'https://gw/d'),
-      (fileName: 'photo.PNG', type: 'image', url: 'https://gw/e'),
-      (fileName: 'nourl.png', type: 'image', url: ''),
+      (fileName: 'hero.jpg', type: 'image', url: 'https://gw/a', cid: 'bafya'),
+      // not raster
+      (fileName: 'logo.svg', type: 'image', url: 'https://gw/b', cid: 'bafyb'),
+      (fileName: 'doc.pdf', type: 'document', url: 'https://gw/c', cid: null),
+      (fileName: 'clip.mp4', type: 'video', url: 'https://gw/d', cid: null),
+      (fileName: 'photo.PNG', type: 'image', url: 'https://gw/e', cid: null),
+      // no url AND no cid — unusable
+      (fileName: 'nourl.png', type: 'image', url: '', cid: null),
     ];
 
-    test('keeps only URL-backed raster images', () {
+    test('keeps only raster images that have a url or a cid', () {
       final payload = buildSocialGeneratePayload(
         generationId: 'g1',
         websiteUrl: 'https://fxfiles.top/w/x',
@@ -39,10 +41,43 @@ void main() {
       expect(payload['prompt'], 'my prompt');
     });
 
+    test('forwards the cid so the server can use its own gateway', () {
+      final payload = buildSocialGeneratePayload(
+        generationId: 'g1',
+        websiteUrl: 'u',
+        userPrompt: 'p',
+        assets: assets,
+        displayName: 'd',
+      );
+      final images = (payload['assets'] as List).cast<Map>();
+      expect(images.first['cid'], 'bafya');
+      // Omitted rather than sent as null when unknown.
+      expect(images.last.containsKey('cid'), isFalse);
+    });
+
+    test('keeps a cid-only asset even with no url', () {
+      final payload = buildSocialGeneratePayload(
+        generationId: 'g1',
+        websiteUrl: 'u',
+        userPrompt: 'p',
+        assets: [
+          (fileName: 'a.jpg', type: 'image', url: '', cid: 'bafyonly'),
+        ],
+        displayName: 'd',
+      );
+      final images = (payload['assets'] as List).cast<Map>();
+      expect(images.single['cid'], 'bafyonly');
+    });
+
     test('caps at 14 images', () {
       final many = [
         for (var i = 0; i < 20; i++)
-          (fileName: 'img$i.jpg', type: 'image', url: 'https://gw/$i'),
+          (
+            fileName: 'img$i.jpg',
+            type: 'image',
+            url: 'https://gw/$i',
+            cid: 'bafy$i'
+          ),
       ];
       final payload = buildSocialGeneratePayload(
         generationId: 'g1',
