@@ -7,6 +7,7 @@ import 'package:web/web.dart' as web;
 import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_swr_policy.dart';
@@ -468,6 +469,20 @@ class WebListingSwr extends ChangeNotifier {
     final k = '$bucket|$key';
     if (_manifestRefreshes.containsKey(k)) return;
     final future = () async {
+      // Low-end devices: DEFER (never skip) until the foreground work
+      // that triggered this read has finished — a behind-refresh's
+      // forest drop + fetch + wasm decrypt competing with a screen open
+      // is part of the mobile freeze. Bounded so a busy screen can't
+      // starve refreshes forever. The single-flight map above keeps
+      // holding this future during the wait, so repeat triggers no-op.
+      if (WebDeviceClass.lowEnd) {
+        await WebForegroundActivity.instance
+            .whenIdle()
+            .timeout(const Duration(seconds: 30), onTimeout: () {});
+      }
+      // Stamp AFTER the deferral (monotonic guard rule: "stamp at fetch
+      // START") — a mutation write-through landing during the wait
+      // carries a newer stamp and must win the cache.
       final started = DateTime.now();
       try {
         await FulaApiService.instance.invalidateForestCache(bucket);

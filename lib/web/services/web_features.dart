@@ -16,6 +16,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_websites_load_logic.dart';
 import 'package:fula_files/web/services/web_website_asset_upload_logic.dart'
     show cidFromEtagHeader, encodeObjectKeyForUrl;
 import 'package:fula_files/web/services/web_website_assets_logic.dart';
@@ -111,57 +112,42 @@ class WebFeatures {
 
   /// Website generations + the stable-link pointers, keyed by tagId.
   /// Mirrors WebsiteService.restoreFromCloud (merged blobs, first id
-  /// wins) + IpnsPointerService's pointers manifest.
+  /// wins) + IpnsPointerService's pointers manifest. Decode loops live
+  /// in web_websites_load_logic.dart — they yield to the event loop so
+  /// a large manifest can't freeze the frame (mobile-web hang fix).
   static Future<
       ({
         List<WebsiteGeneration> generations,
         Map<String, WebsiteGroupPointer> pointersByTag,
       })> loadWebsites(
-      {bool force = false, bool refetchForest = false}) async {
+      {bool force = false,
+      bool refetchForest = false,
+      // The LIST screen passes true: it never renders parsedContent, and
+      // a legacy still-bloated manifest (≤30×100KB per generation) would
+      // otherwise stay resident in its state. The DETAIL screen keeps
+      // the default — its recreate flow reuses recorded parses.
+      bool dropParsedContent = false}) async {
     final kek = await _kek();
     final userId = await _userId();
 
-    final byId = <String, WebsiteGeneration>{};
-    for (final blob in await WebListingSwr.instance
-        .downloadMetadataMergedSwr(
+    final generations = await decodeGenerationsBlobs(
+        await WebListingSwr.instance.downloadMetadataMergedSwr(
             'website-metadata', '.fula/websites/$userId.json', kek,
-            force: force, refetchForest: refetchForest)) {
-      try {
-        final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
-        for (final raw in (j['generations'] as List<dynamic>? ?? const [])) {
-          final g = WebsiteGeneration.fromJson(raw as Map<String, dynamic>);
-          byId.putIfAbsent(g.id, () => g);
-        }
-      } catch (e) {
-        debugPrint('WebFeatures.loadWebsites: parse skipped: $e');
-      }
-    }
+            force: force, refetchForest: refetchForest),
+        dropParsedContent: dropParsedContent);
 
-    final pointers = <String, WebsiteGroupPointer>{};
+    var pointers = const <String, WebsiteGroupPointer>{};
     try {
       // NOTE: underscore, not hyphen — IpnsPointerService writes
       // `.fula/website_pointers/…` (ipns_pointer_service.dart:283).
-      for (final blob in await WebListingSwr.instance
+      pointers = await decodePointersBlobs(await WebListingSwr.instance
           .downloadMetadataMergedSwr(
               'website-metadata', '.fula/website_pointers/$userId.json', kek,
-              force: force, refetchForest: refetchForest)) {
-        final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
-        for (final raw
-            in (j['pointers'] as List<dynamic>? ?? j.values.toList())) {
-          if (raw is Map<String, dynamic>) {
-            try {
-              final p = WebsiteGroupPointer.fromJson(raw);
-              pointers.putIfAbsent(p.tagId, () => p);
-            } catch (_) {}
-          }
-        }
-      }
+              force: force, refetchForest: refetchForest));
     } catch (e) {
       debugPrint('WebFeatures.loadWebsites: pointers skipped: $e');
     }
 
-    final generations = byId.values.toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return (generations: generations, pointersByTag: pointers);
   }
 
