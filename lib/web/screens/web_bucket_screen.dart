@@ -17,6 +17,8 @@ import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_bucket_sort.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
+import 'package:fula_files/web/services/web_file_view_mode.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
@@ -28,8 +30,10 @@ import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
+import 'package:fula_files/web/services/web_view_mode_store.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
+import 'package:fula_files/web/widgets/web_file_grid_tile.dart';
 import 'package:fula_files/web/widgets/web_thumb.dart';
 import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
@@ -69,6 +73,13 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   /// file rows show compact tag chips).
   Map<String, List<FileTag>> _fileTags = const {};
 
+  /// list / 2-col grid / 3-col grid (native parity). Read synchronously
+  /// in initState so the first frame already paints in the remembered
+  /// mode, and persisted per category — Images and Documents keep
+  /// separate choices, same as native.
+  WebFileViewMode _viewMode = WebFileViewMode.list;
+  String get _viewModeKey => 'category_${widget.base}';
+
   // Uploads now run in the app-level WebUploadManager (they survive
   // navigating away from this screen). We only listen for "a file for THIS
   // category finished" to refresh the listing from the now-fresh cache.
@@ -80,6 +91,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
   @override
   void initState() {
     super.initState();
+    _viewMode = WebViewModeStore.instance.read(_viewModeKey);
     // Connection-regain → silent forced revalidate (plan §5.3).
     WebListingSwr.instance.ensureOnlineHook();
     WebListingSwr.instance.addListener(_onOnline);
@@ -969,6 +981,37 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     'archives': 'Archives',
   };
 
+  /// One cycling button (native parity): list → 2-col → 3-col → list.
+  void _cycleViewMode() {
+    final next = nextWebFileViewMode(_viewMode);
+    setState(() => _viewMode = next);
+    WebViewModeStore.instance.write(_viewModeKey, next);
+  }
+
+  static IconData viewModeIcon(WebFileViewMode m) {
+    switch (m) {
+      case WebFileViewMode.list:
+        return Icons.view_list;
+      case WebFileViewMode.grid2:
+        return Icons.grid_view;
+      case WebFileViewMode.grid3:
+        return Icons.grid_on;
+    }
+  }
+
+  /// The tooltip names what the button will switch TO, so a user who
+  /// can't tell the two grid icons apart still knows what they get.
+  static String viewModeTooltip(WebFileViewMode m) {
+    switch (nextWebFileViewMode(m)) {
+      case WebFileViewMode.list:
+        return 'Switch to list view';
+      case WebFileViewMode.grid2:
+        return 'Switch to grid (2 columns)';
+      case WebFileViewMode.grid3:
+        return 'Switch to grid (3 columns)';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -979,6 +1022,11 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
         ),
         title: Text(labels[widget.base] ?? widget.base),
         actions: [
+          IconButton(
+            tooltip: viewModeTooltip(_viewMode),
+            icon: Icon(viewModeIcon(_viewMode)),
+            onPressed: _cycleViewMode,
+          ),
           IconButton(
             tooltip: 'Sort',
             icon: const Icon(Icons.sort),
@@ -1074,80 +1122,146 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
             )
           else
             Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.only(bottom: 96),
-                itemCount: _objects!.length,
-                itemBuilder: (ctx, i) {
-                  final o = _objects![i];
-                  final tags = _fileTags[o.key] ?? const <FileTag>[];
-                  return ListTile(
-                    leading: _leadingFor(o),
-                    title: Text(_displayName(o),
-                        overflow: TextOverflow.ellipsis),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text([
-                          _fmtSize(o.size),
-                          if (o.lastModified != null)
-                            '${o.lastModified!.toLocal()}'
-                                .split('.')
-                                .first,
-                        ].join('  ·  ')),
-                        if (tags.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: _TagChipRow(tags: tags),
-                          ),
-                      ],
-                    ),
-                    onTap: () => _preview(o),
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (v) {
-                        if (v == 'download') _download(o);
-                        if (v == 'tags') _editTags(o);
-                        if (v == 'share') _shareFile(o);
-                        if (v == 'public') _sharePublicly(o);
-                        if (v == 'collab') _addToCollaboration(o);
-                        if (v == 'delete') _delete(o);
-                      },
-                      // Same entry points as the app's file menu: the
-                      // private share sheet (its three options cover
-                      // public-gateway links too) and the unencrypted
-                      // IPFS Share Publicly path.
-                      itemBuilder: (ctx) => const [
-                        PopupMenuItem(
-                          value: 'download',
-                          child: Text('Download'),
-                        ),
-                        PopupMenuItem(
-                          value: 'tags',
-                          child: Text('Tags'),
-                        ),
-                        PopupMenuItem(
-                          value: 'share',
-                          child: Text('Share Private…'),
-                        ),
-                        PopupMenuItem(
-                          value: 'public',
-                          child: Text('Share Publicly'),
-                        ),
-                        PopupMenuItem(
-                          value: 'collab',
-                          child: Text('Add to Collaborate'),
-                        ),
-                        PopupMenuItem(
-                          value: 'delete',
-                          child: Text('Delete'),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+              child: _viewMode == WebFileViewMode.list
+                  ? _buildList()
+                  : _buildGrid(),
             ),
         ],
       ),
+    );
+  }
+
+  /// Same entry points as the app's file menu: the private share sheet
+  /// (its three options cover public-gateway links too) and the
+  /// unencrypted IPFS Share Publicly path. Shared by the list rows and
+  /// the grid tiles — [dense] shrinks it for a grid cell corner.
+  Widget _fileMenu(FulaObject o, {bool dense = false}) {
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      // dense = a grid cell corner: shrink the BUTTON (iconSize/padding).
+      // Not `constraints` — that sizes the popup menu, not the button.
+      iconSize: dense ? 18 : 24,
+      padding: dense ? EdgeInsets.zero : const EdgeInsets.all(8),
+      onSelected: (v) {
+        if (v == 'download') _download(o);
+        if (v == 'tags') _editTags(o);
+        if (v == 'share') _shareFile(o);
+        if (v == 'public') _sharePublicly(o);
+        if (v == 'collab') _addToCollaboration(o);
+        if (v == 'delete') _delete(o);
+      },
+      itemBuilder: (ctx) => const [
+        PopupMenuItem(value: 'download', child: Text('Download')),
+        PopupMenuItem(value: 'tags', child: Text('Tags')),
+        PopupMenuItem(value: 'share', child: Text('Share Private…')),
+        PopupMenuItem(value: 'public', child: Text('Share Publicly')),
+        PopupMenuItem(value: 'collab', child: Text('Add to Collaborate')),
+        PopupMenuItem(value: 'delete', child: Text('Delete')),
+      ],
+    );
+  }
+
+  String _metaLine(FulaObject o) => [
+        _fmtSize(o.size),
+        if (o.lastModified != null)
+          '${o.lastModified!.toLocal()}'.split('.').first,
+      ].join('  ·  ');
+
+  Widget _buildList() {
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 96),
+      itemCount: _objects!.length,
+      itemBuilder: (ctx, i) {
+        final o = _objects![i];
+        final tags = _fileTags[o.key] ?? const <FileTag>[];
+        return ListTile(
+          leading: _leadingFor(o),
+          title: Text(_displayName(o), overflow: TextOverflow.ellipsis),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_metaLine(o)),
+              if (tags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: _TagChipRow(tags: tags),
+                ),
+            ],
+          ),
+          onTap: () => _preview(o),
+          trailing: _fileMenu(o),
+        );
+      },
+    );
+  }
+
+  /// Grid view (native parity). Perf rules that keep a 10k-file category
+  /// smooth on a phone — the grid shows 4-9x more tiles than the list,
+  /// and every tile can trigger a thumbnail fetch:
+  ///   * fixed column count (no per-tile layout math),
+  ///   * MODEST cacheExtent, smaller still on low-end devices, so a
+  ///     fling doesn't queue hundreds of offscreen thumbnail fetches
+  ///     (WebThumb's 250ms debounce then cancels the ones scrolled past
+  ///     before they ever hit the network),
+  ///   * addAutomaticKeepAlives:false so scrolled-away tiles are
+  ///     disposed — that is what cancels their pending fetches and frees
+  ///     their decoded bitmaps instead of growing the tab's memory.
+  Widget _buildGrid() {
+    final dense = _viewMode == WebFileViewMode.grid3;
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final columns = webGridColumnsFor(_viewMode, constraints.maxWidth);
+        return GridView.builder(
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 96),
+          cacheExtent: webGridCacheExtent(lowEnd: WebDeviceClass.lowEnd),
+          addAutomaticKeepAlives: false,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: webGridAspectRatioFor(_viewMode),
+          ),
+          itemCount: _objects!.length,
+          itemBuilder: (ctx, i) {
+            final o = _objects![i];
+            final tags = _fileTags[o.key] ?? const <FileTag>[];
+            return WebFileGridTile(
+              thumbnail: _gridThumbFor(o),
+              name: _displayName(o).split('/').last,
+              subtitle: _fmtSize(o.size),
+              tags: tags.isEmpty ? null : _TagChipRow(tags: tags),
+              menu: _fileMenu(o, dense: true),
+              onTap: () => _preview(o),
+              dense: dense,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Grid cell thumbnail: a filling image for images, a large type icon
+  /// otherwise. Same sidecar fetch as the list — never the full file.
+  Widget _gridThumbFor(FulaObject o) {
+    final icon = Icon(
+      _isImage(o)
+          ? Icons.image_outlined
+          : _isVideo(o)
+              ? Icons.movie_outlined
+              : _isAudio(o)
+                  ? Icons.audiotrack_outlined
+                  : _isText(o)
+                      ? Icons.article_outlined
+                      : Icons.insert_drive_file_outlined,
+      size: 36,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    if (!_isImage(o)) return icon;
+    return WebThumb(
+      bucket: o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base),
+      objectKey: o.key,
+      fallback: icon,
+      fill: true,
     );
   }
 }

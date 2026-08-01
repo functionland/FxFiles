@@ -53,10 +53,14 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
     // fail-soft either way, and still fires once per mount (an evicted
     // tab reloads the page → fresh mount).
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Deliberately NOT guarded by `mounted`: recovering a pending job
+      // is a GLOBAL responsibility (the user paid for that generation,
+      // and only a client poll writes its completion records). Backing
+      // out of this screen inside the 2s settle must not silently drop
+      // the recovery. The call targets a singleton service and touches
+      // no BuildContext, so running post-dispose is safe.
       Future<void>.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          unawaited(WebWebsiteService.instance.resumePendingJobs());
-        }
+        unawaited(WebWebsiteService.instance.resumePendingJobs());
       });
     });
   }

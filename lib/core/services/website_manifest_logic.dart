@@ -1,22 +1,22 @@
 // Pure helpers that shape the website-generations cloud manifest
 // (`.fula/websites/{userId}.json`) at WRITE time. Shared by BOTH
-// writers — native WebsiteService.syncToCloud and web
-// WebWebsiteService._appendToCloudManifest — because a strip applied by
+// writers â€” native WebsiteService.syncToCloud and web
+// WebWebsiteService._appendToCloudManifest â€” because a strip applied by
 // only one of them would oscillate: the other writer re-uploads the
 // unstripped copy on its next sync.
 //
-// Why strip: each generation embeds assets[].parsedContent (≤100KB per
-// asset, ≤30 assets) and the manifest accumulates EVERY generation
+// Why strip: each generation embeds assets[].parsedContent (â‰¤100KB per
+// asset, â‰¤30 assets) and the manifest accumulates EVERY generation
 // forever, so it grows into a multi-MB blob the web list screen must
 // download + decrypt + jsonDecode on the browser main thread (the
 // mobile freeze). The ONLY consumer of RESTORED parsedContent is the
-// web recreate flow's parse-skip, and it reads the freshest occurrence
-// per fileName across completed generations (websiteCidAssetsByName,
-// web_website_assets_logic.dart) — so keeping exactly those winners and
-// nulling every other copy is behavior-preserving while dropping the
-// N-way duplicates that dominate the bloat. parsedContent is a nullable
-// field on both platforms' fromJson, so a stripped manifest round-trips
-// safely everywhere (native re-parses from local bytes when missing).
+// web recreate flow's parse-skip (websiteCidAssetsByName,
+// web_website_assets_logic.dart) â€” so keeping exactly the winners that
+// consumer resolves and nulling every other copy is behavior-preserving
+// while dropping the N-way duplicates that dominate the bloat.
+// parsedContent is a nullable field on both platforms' fromJson, so a
+// stripped manifest round-trips safely everywhere (native re-parses
+// from local bytes when missing).
 
 import 'package:fula_files/core/models/website_generation.dart';
 
@@ -45,37 +45,53 @@ DateTime _stamp(Object? v) => v is String
     ? (DateTime.tryParse(v) ?? DateTime.fromMillisecondsSinceEpoch(0))
     : DateTime.fromMillisecondsSinceEpoch(0);
 
+/// Winner slot key. `\u0000` joins the parts so a tagId or fileName that
+/// itself contains the separator can't collide with a different pair.
+String _winnerKey(String tagId, String fileName) => '$tagId\u0000$fileName';
+
 /// Strip `parsedContent` from [generations] (raw manifest maps), keeping
-/// it ONLY where it is the value websiteCidAssetsByName would resolve —
-/// the first qualifying occurrence per fileName over completed
-/// generations ordered newest-first. Mirrors that consumer over raw
-/// maps, using the same field coercions as WebsiteGeneration.fromJson /
-/// WebsiteAsset.fromJson:
+/// it ONLY where it is the value websiteCidAssetsByName would resolve.
 ///
-///  - generation qualifies iff status (default: completed — fromJson's
+/// The winner rule mirrors the REAL consumer SCOPE, which is per website
+/// GROUP, not global (web_website_detail_screen.dart `_generations`: the
+/// list is filtered to one `tagId` and sorted `createdAt`-DESC before
+/// being handed to websiteCidAssetsByName). So the winner slot is keyed
+/// by **(tagId, fileName)** and ordered by **createdAt**:
+///
+///  - keyed by tagId: two different websites that both contain
+///    `logo.png` each keep their own parse â€” a single GLOBAL winner
+///    would strip the copy the other group's recreate needs;
+///  - ordered by createdAt (NOT updatedAt): a generation created earlier
+///    but completed later has the larger updatedAt yet LOSES the
+///    consumer's createdAt sort, so an updatedAt-ordered strip would
+///    preserve the wrong copy.
+///
+/// Field coercions match WebsiteGeneration.fromJson / WebsiteAsset.fromJson:
+///
+///  - generation qualifies iff status (default: completed â€” fromJson's
 ///    `?? 3`) == completed;
 ///  - asset qualifies iff `uploaded == true` and non-empty `cid`;
-///  - fileName coerces `as String? ?? ''` (empty names dedupe together);
+///  - fileName / tagId coerce `as String? ?? ''`;
 ///  - within one generation, list order; across generations,
-///    updatedAt-desc (tiebreak createdAt-desc, then input index — the
-///    consumer's unstable sort already leaves ties unspecified).
+///    createdAt-desc (tiebreak: input index â€” the consumer's unstable
+///    sort already leaves exact ties unspecified).
 ///
-/// A winner keeps its existing value INCLUDING null — resurrecting an
+/// A winner keeps its existing value INCLUDING null â€” resurrecting an
 /// older non-null copy would change what the consumer resolves. Output
 /// preserves input order; inputs are never mutated; no field access
 /// throws (id-less / assets-less / malformed entries pass through
 /// stripped).
 List<Map<String, dynamic>> stripParsedContentKeepFreshest(
     List<Map<String, dynamic>> generations) {
-  // Winner slots: fileName -> (generation input index, asset list index).
+  // (tagId, fileName) -> (generation index, asset index).
   final winners = <String, ({int genIndex, int assetIndex})>{};
 
+  // A global createdAt-desc order also yields, WITHIN each tagId, the
+  // exact order the consumer sees â€” so no physical grouping is needed.
   final order = List<int>.generate(generations.length, (i) => i)
     ..sort((ia, ib) {
-      final a = generations[ia], b = generations[ib];
-      var c = _stamp(b['updatedAt']).compareTo(_stamp(a['updatedAt']));
-      if (c != 0) return c;
-      c = _stamp(b['createdAt']).compareTo(_stamp(a['createdAt']));
+      final c = _stamp(generations[ib]['createdAt'])
+          .compareTo(_stamp(generations[ia]['createdAt']));
       if (c != 0) return c;
       return ia.compareTo(ib);
     });
@@ -88,6 +104,7 @@ List<Map<String, dynamic>> stripParsedContentKeepFreshest(
     if (status != WebsiteGenStatus.completed.index) continue;
     final assets = g['assets'];
     if (assets is! List) continue;
+    final tagId = g['tagId'] is String ? g['tagId'] as String : '';
     for (var ai = 0; ai < assets.length; ai++) {
       final a = assets[ai];
       if (a is! Map) continue;
@@ -95,7 +112,8 @@ List<Map<String, dynamic>> stripParsedContentKeepFreshest(
       final cid = a['cid'];
       if (!uploaded || cid is! String || cid.isEmpty) continue;
       final fileName = a['fileName'] is String ? a['fileName'] as String : '';
-      winners.putIfAbsent(fileName, () => (genIndex: gi, assetIndex: ai));
+      winners.putIfAbsent(
+          _winnerKey(tagId, fileName), () => (genIndex: gi, assetIndex: ai));
     }
   }
 
@@ -112,16 +130,18 @@ Map<String, dynamic> _stripExceptWinners(
 ) {
   final assets = g['assets'];
   if (assets is! List) return Map<String, dynamic>.from(g);
+  final tagId = g['tagId'] is String ? g['tagId'] as String : '';
   final copy = Map<String, dynamic>.from(g);
   copy['assets'] = [
     for (var ai = 0; ai < assets.length; ai++)
-      _stripUnlessWinner(assets[ai], genIndex, ai, winners),
+      _stripUnlessWinner(assets[ai], tagId, genIndex, ai, winners),
   ];
   return copy;
 }
 
 Object? _stripUnlessWinner(
   Object? asset,
+  String tagId,
   int genIndex,
   int assetIndex,
   Map<String, ({int genIndex, int assetIndex})> winners,
@@ -129,7 +149,7 @@ Object? _stripUnlessWinner(
   if (asset is! Map) return asset;
   final a = Map<String, dynamic>.from(asset.cast<String, dynamic>());
   final fileName = a['fileName'] is String ? a['fileName'] as String : '';
-  final w = winners[fileName];
+  final w = winners[_winnerKey(tagId, fileName)];
   final isWinner =
       w != null && w.genIndex == genIndex && w.assetIndex == assetIndex;
   if (!isWinner) a['parsedContent'] = null;

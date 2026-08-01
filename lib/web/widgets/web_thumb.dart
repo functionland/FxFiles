@@ -18,12 +18,19 @@ class WebThumb extends StatefulWidget {
   final double size;
   final Widget fallback;
 
+  /// Fill the parent instead of painting at [size] — grid tiles size the
+  /// thumbnail from their cell, list rows keep the fixed 40px leading
+  /// slot. When true [size] is ignored and the corners are square (the
+  /// grid tile does its own clipping).
+  final bool fill;
+
   const WebThumb({
     super.key,
     required this.bucket,
     required this.objectKey,
     required this.fallback,
     this.size = 40,
+    this.fill = false,
   });
 
   @override
@@ -57,9 +64,16 @@ class _WebThumbState extends State<WebThumb> {
   void _schedule() {
     _timer?.cancel();
     _timer = Timer(_debounceDelay, () async {
-      final b = await WebThumbnailService.instance
-          .get(widget.bucket, widget.objectKey);
+      // Capture the identity this fetch was issued for: cancelling the
+      // timer in didUpdateWidget can't cancel a fetch already awaiting,
+      // so a recycled row would otherwise paint the PREVIOUS file's
+      // thumbnail. A grid recycles far more aggressively than a list,
+      // which makes this reachable in normal scrolling.
+      final bucket = widget.bucket;
+      final objectKey = widget.objectKey;
+      final b = await WebThumbnailService.instance.get(bucket, objectKey);
       if (!mounted || b == null) return;
+      if (bucket != widget.bucket || objectKey != widget.objectKey) return;
       setState(() => _bytes = b);
     });
   }
@@ -74,6 +88,19 @@ class _WebThumbState extends State<WebThumb> {
   Widget build(BuildContext context) {
     final b = _bytes;
     if (b == null) return widget.fallback;
+    if (widget.fill) {
+      // Grid cell: the tile clips and sizes us. SizedBox.expand keeps the
+      // image from laying out at its intrinsic size first (which would
+      // shift the tile on every thumbnail arrival).
+      return SizedBox.expand(
+        child: Image.memory(
+          b,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => widget.fallback,
+        ),
+      );
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
       child: Image.memory(

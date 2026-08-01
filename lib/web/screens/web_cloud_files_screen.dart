@@ -12,6 +12,8 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
 import 'package:fula_files/web/services/web_audio_controller.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
+import 'package:fula_files/web/services/web_file_view_mode.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
@@ -19,9 +21,11 @@ import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
 import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
+import 'package:fula_files/web/services/web_view_mode_store.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
 import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_audio_player.dart';
+import 'package:fula_files/web/widgets/web_file_grid_tile.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 import 'package:fula_files/web/widgets/web_text_viewer.dart';
@@ -68,9 +72,17 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
 
   StreamSubscription<String>? _uploadSub;
 
+  /// list / 2-col grid / 3-col grid (native parity). One choice for the
+  /// whole cloud browser (native uses a single `viewMode_cloud` key too
+  /// — folders and files share the layout), read synchronously so the
+  /// first frame paints in the remembered mode.
+  WebFileViewMode _viewMode = WebFileViewMode.list;
+  static const String _viewModeKey = 'cloud';
+
   @override
   void initState() {
     super.initState();
+    _viewMode = WebViewModeStore.instance.read(_viewModeKey);
     // Reload the open bucket when its uploads finish.
     _uploadSub = WebUploadManager.instance.onBucketCompleted.listen((bucket) {
       if (mounted && bucket == _bucket) _loadObjects(silent: true);
@@ -878,6 +890,36 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
 
   // ── Build ──────────────────────────────────────────────────────────────────
 
+  /// One cycling button (native parity): list → 2-col → 3-col → list.
+  void _cycleViewMode() {
+    final next = nextWebFileViewMode(_viewMode);
+    setState(() => _viewMode = next);
+    WebViewModeStore.instance.write(_viewModeKey, next);
+  }
+
+  static IconData _viewModeIcon(WebFileViewMode m) {
+    switch (m) {
+      case WebFileViewMode.list:
+        return Icons.view_list;
+      case WebFileViewMode.grid2:
+        return Icons.grid_view;
+      case WebFileViewMode.grid3:
+        return Icons.grid_on;
+    }
+  }
+
+  /// Names what the button switches TO (see WebBucketScreen).
+  static String _viewModeTooltip(WebFileViewMode m) {
+    switch (nextWebFileViewMode(m)) {
+      case WebFileViewMode.list:
+        return 'Switch to list view';
+      case WebFileViewMode.grid2:
+        return 'Switch to grid (2 columns)';
+      case WebFileViewMode.grid3:
+        return 'Switch to grid (3 columns)';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -897,6 +939,14 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
         ),
         title: const Text('Cloud Files'),
         actions: [
+          // Only inside a bucket — the bucket LIST stays a list (there
+          // is nothing to thumbnail, and native has no grid there).
+          if (_bucket != null)
+            IconButton(
+              tooltip: _viewModeTooltip(_viewMode),
+              icon: Icon(_viewModeIcon(_viewMode)),
+              onPressed: _cycleViewMode,
+            ),
           IconButton(
             icon: const Icon(LucideIcons.refreshCw),
             tooltip: 'Refresh',
@@ -1076,93 +1126,182 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     }
     return RefreshIndicator(
       onRefresh: _loadObjects,
-      child: ListView.builder(
-        physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: view.folders.length + view.files.length,
-        itemBuilder: (_, i) {
-          if (i < view.folders.length) {
-            final name = view.folders[i];
-            return ListTile(
-              leading: const Icon(LucideIcons.folder, color: Color(0xFF8AB4F8)),
-              title: Text(name),
-              onTap: () => _enterFolder(name),
-              trailing: _isReadOnly
-                  ? const Icon(Icons.chevron_right)
-                  : PopupMenuButton<String>(
-                      onSelected: (v) {
-                        if (v == 'delete') _deleteFolder(name);
-                      },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'delete', child: Text('Delete')),
-                      ],
-                    ),
-            );
-          }
-          final o = view.files[i - view.folders.length];
-          final tags = _fileTags[o.key] ?? const <FileTag>[];
-          return ListTile(
-            leading: o.isImage
-                ? WebThumb(
-                    bucket: o.sourceBucket ?? _bucket!,
-                    objectKey: o.key,
-                    fallback: Icon(_iconFor(o)),
-                  )
-                : Icon(_iconFor(o)),
-            title: Text(o.name),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(o.sizeFormatted),
-                if (tags.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: _TagChipRow(tags: tags),
-                  ),
-              ],
-            ),
-            onTap: () => _open(o),
-            trailing: PopupMenuButton<String>(
-              onSelected: (v) {
-                switch (v) {
-                  case 'open':
-                    _open(o);
-                  case 'download':
-                    _download(o);
-                  case 'tags':
-                    _editTags(o);
-                  case 'share':
-                    _shareFile(o);
-                  case 'sharePublic':
-                    _sharePublicly(o);
-                  case 'rename':
-                    _renameFile(o);
-                  case 'move':
-                    _moveFile(o);
-                  case 'delete':
-                    _deleteFile(o);
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'open', child: Text('Open')),
-                const PopupMenuItem(value: 'download', child: Text('Download')),
-                const PopupMenuItem(value: 'tags', child: Text('Tags')),
-                const PopupMenuItem(
-                    value: 'share', child: Text('Share (private link)')),
-                const PopupMenuItem(
-                    value: 'sharePublic', child: Text('Share publicly')),
-                if (!_isReadOnly)
-                  const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                if (!_isReadOnly)
-                  const PopupMenuItem(value: 'move', child: Text('Move')),
-                if (!_isReadOnly)
-                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
-              ],
-            ),
-          );
-        },
-      ),
+      child: _viewMode == WebFileViewMode.list
+          ? _buildFileList(view)
+          : _buildFileGrid(view),
     );
   }
+
+  /// Folder actions — null in read-only buckets (native shows a plain
+  /// chevron there).
+  Widget? _folderMenu(String name, {bool dense = false}) {
+    if (_isReadOnly) return null;
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      // dense = a grid cell corner: shrink the BUTTON (iconSize/padding).
+      // Not `constraints` — that sizes the popup menu, not the button.
+      iconSize: dense ? 18 : 24,
+      padding: dense ? EdgeInsets.zero : const EdgeInsets.all(8),
+      onSelected: (v) {
+        if (v == 'delete') _deleteFolder(name);
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'delete', child: Text('Delete')),
+      ],
+    );
+  }
+
+  Widget _fileMenu(FulaObject o, {bool dense = false}) {
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      // dense = a grid cell corner: shrink the BUTTON (iconSize/padding).
+      // Not `constraints` — that sizes the popup menu, not the button.
+      iconSize: dense ? 18 : 24,
+      padding: dense ? EdgeInsets.zero : const EdgeInsets.all(8),
+      onSelected: (v) {
+        switch (v) {
+          case 'open':
+            _open(o);
+          case 'download':
+            _download(o);
+          case 'tags':
+            _editTags(o);
+          case 'share':
+            _shareFile(o);
+          case 'sharePublic':
+            _sharePublicly(o);
+          case 'rename':
+            _renameFile(o);
+          case 'move':
+            _moveFile(o);
+          case 'delete':
+            _deleteFile(o);
+        }
+      },
+      itemBuilder: (_) => [
+        const PopupMenuItem(value: 'open', child: Text('Open')),
+        const PopupMenuItem(value: 'download', child: Text('Download')),
+        const PopupMenuItem(value: 'tags', child: Text('Tags')),
+        const PopupMenuItem(
+            value: 'share', child: Text('Share (private link)')),
+        const PopupMenuItem(
+            value: 'sharePublic', child: Text('Share publicly')),
+        if (!_isReadOnly)
+          const PopupMenuItem(value: 'rename', child: Text('Rename')),
+        if (!_isReadOnly)
+          const PopupMenuItem(value: 'move', child: Text('Move')),
+        if (!_isReadOnly)
+          const PopupMenuItem(value: 'delete', child: Text('Delete')),
+      ],
+    );
+  }
+
+  Widget _buildFileList(({List<String> folders, List<FulaObject> files}) view) {
+    return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      itemCount: view.folders.length + view.files.length,
+      itemBuilder: (_, i) {
+        if (i < view.folders.length) {
+          final name = view.folders[i];
+          return ListTile(
+            leading: const Icon(LucideIcons.folder, color: Color(0xFF8AB4F8)),
+            title: Text(name),
+            onTap: () => _enterFolder(name),
+            trailing:
+                _folderMenu(name) ?? const Icon(Icons.chevron_right),
+          );
+        }
+        final o = view.files[i - view.folders.length];
+        final tags = _fileTags[o.key] ?? const <FileTag>[];
+        return ListTile(
+          leading: o.isImage
+              ? WebThumb(
+                  bucket: o.sourceBucket ?? _bucket!,
+                  objectKey: o.key,
+                  fallback: Icon(_iconFor(o)),
+                )
+              : Icon(_iconFor(o)),
+          title: Text(o.name),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(o.sizeFormatted),
+              if (tags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: _TagChipRow(tags: tags),
+                ),
+            ],
+          ),
+          onTap: () => _open(o),
+          trailing: _fileMenu(o),
+        );
+      },
+    );
+  }
+
+  /// Grid view. Folders keep leading the files (same flat index space as
+  /// the list) and render as icon tiles. See WebBucketScreen._buildGrid
+  /// for why cacheExtent is modest and keep-alives are off — a grid puts
+  /// 4-9x more thumbnail-capable tiles on screen than the list.
+  Widget _buildFileGrid(({List<String> folders, List<FulaObject> files}) view) {
+    final dense = _viewMode == WebFileViewMode.grid3;
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final columns = webGridColumnsFor(_viewMode, constraints.maxWidth);
+        return GridView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 96),
+          cacheExtent: webGridCacheExtent(lowEnd: WebDeviceClass.lowEnd),
+          addAutomaticKeepAlives: false,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: webGridAspectRatioFor(_viewMode),
+          ),
+          itemCount: view.folders.length + view.files.length,
+          itemBuilder: (ctx, i) {
+            if (i < view.folders.length) {
+              final name = view.folders[i];
+              return WebFileGridTile(
+                thumbnail: const Icon(LucideIcons.folder,
+                    size: 40, color: Color(0xFF8AB4F8)),
+                name: name,
+                menu: _folderMenu(name, dense: true),
+                onTap: () => _enterFolder(name),
+                dense: dense,
+              );
+            }
+            final o = view.files[i - view.folders.length];
+            final tags = _fileTags[o.key] ?? const <FileTag>[];
+            return WebFileGridTile(
+              thumbnail: o.isImage
+                  ? WebThumb(
+                      bucket: o.sourceBucket ?? _bucket!,
+                      objectKey: o.key,
+                      fallback: _gridIcon(o),
+                      fill: true,
+                    )
+                  : _gridIcon(o),
+              name: o.name,
+              subtitle: o.sizeFormatted,
+              tags: tags.isEmpty ? null : _TagChipRow(tags: tags),
+              menu: _fileMenu(o, dense: true),
+              onTap: () => _open(o),
+              dense: dense,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _gridIcon(FulaObject o) => Icon(
+        _iconFor(o),
+        size: 36,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      );
 
   IconData _iconFor(FulaObject o) {
     if (o.isImage) return LucideIcons.image;
