@@ -64,9 +64,16 @@ class _WebThumbState extends State<WebThumb> {
   void _schedule() {
     _timer?.cancel();
     _timer = Timer(_debounceDelay, () async {
-      final b = await WebThumbnailService.instance
-          .get(widget.bucket, widget.objectKey);
+      // Capture the identity this fetch was issued for: cancelling the
+      // timer in didUpdateWidget can't cancel a fetch already awaiting,
+      // so a recycled row would otherwise paint the PREVIOUS file's
+      // thumbnail. A grid recycles far more aggressively than a list,
+      // which makes this reachable in normal scrolling.
+      final bucket = widget.bucket;
+      final objectKey = widget.objectKey;
+      final b = await WebThumbnailService.instance.get(bucket, objectKey);
       if (!mounted || b == null) return;
+      if (bucket != widget.bucket || objectKey != widget.objectKey) return;
       setState(() => _bytes = b);
     });
   }

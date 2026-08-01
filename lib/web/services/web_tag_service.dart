@@ -42,6 +42,10 @@ class WebTagService {
   /// network reads. Force callers NEVER join (see [load]).
   Future<void>? _loadFuture;
 
+  /// Monotonic commit epoch — see [_doLoad]. Guards against a slow stale
+  /// read committing after a newer read (or after a mutation).
+  int _loadEpoch = 0;
+
   List<FileTag> get tags => _tags;
   List<TaggedFile> get taggedFiles => _taggedFiles;
   bool get isLoaded => _loaded;
@@ -95,6 +99,13 @@ class WebTagService {
 
   Future<void> _doLoad(
       {bool force = false, bool refetchForest = false}) async {
+    // Commit epoch. Force loads run concurrently with non-force ones, and
+    // every flight writes the same _tags/_taggedFiles fields — so a SLOW
+    // stale read finishing last used to overwrite a newer read's state
+    // (and, worse, a mutation applied between them, which _upload would
+    // then serialize back to the cloud, silently dropping it). Only the
+    // newest-started load is allowed to commit.
+    final epoch = ++_loadEpoch;
     final kek = await _kek();
     final uid = await userId();
     final tagsById = <String, FileTag>{};
@@ -127,6 +138,8 @@ class WebTagService {
         debugPrint('WebTagService.load: manifest parse skipped: $e');
       }
     }
+    // Superseded while we were decoding — discard rather than clobber.
+    if (epoch != _loadEpoch) return;
     _tags = tagsById.values.toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     _taggedFiles = filesById.values.toList();
