@@ -136,11 +136,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     // frame + a short settle (mobile freeze fix): its manifest read +
     // full-generation decode must not compete with the opening paint.
     unawaited(WebSocialPostService.instance.load());
+    // Deliberately NOT guarded by `mounted` — see WebWebsitesScreen:
+    // job recovery is global, so navigating away inside the settle
+    // window must not drop it. Singleton call, no BuildContext.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future<void>.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          unawaited(WebWebsiteService.instance.resumePendingJobs());
-        }
+        unawaited(WebWebsiteService.instance.resumePendingJobs());
       });
     });
     try {
