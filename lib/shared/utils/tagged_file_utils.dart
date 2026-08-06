@@ -30,8 +30,19 @@ String? lookupIosAssetId(String virtualPath) {
 /// - iOS Documents-relative paths (e.g. "Imported/foo.jpg") that survive
 ///   sandbox-UUID changes across app updates
 /// - stale absolute iOS paths recoverable via the "Documents/" marker
-Future<String?> resolveTaggedFilePath(TaggedFile file) async {
-  final path = file.localPath;
+Future<String?> resolveTaggedFilePath(TaggedFile file) => resolveLocalFilePath(
+      localPath: file.localPath,
+      iosAssetId: file.iosAssetId,
+    );
+
+/// [resolveTaggedFilePath] without requiring a [TaggedFile] — used by Ask AI,
+/// whose attachment descriptor carries the same two fields plus cloud
+/// coordinates a `TaggedFile` cannot express.
+Future<String?> resolveLocalFilePath({
+  String? localPath,
+  String? iosAssetId,
+}) async {
+  final path = localPath;
   if (path == null) return null;
   if (kIsWeb) return null; // local paths don't exist on web
 
@@ -43,9 +54,9 @@ Future<String?> resolveTaggedFilePath(TaggedFile file) async {
       return docsResolved;
     }
     // Otherwise treat as a PhotoKit virtual path.
-    final iosAssetId = file.iosAssetId ?? lookupIosAssetId(path);
-    if (iosAssetId == null) return null;
-    final actualFile = await MediaService.instance.getOriginalFile(iosAssetId);
+    final assetId = iosAssetId ?? lookupIosAssetId(path);
+    if (assetId == null) return null;
+    final actualFile = await MediaService.instance.getOriginalFile(assetId);
     return actualFile?.path;
   }
 

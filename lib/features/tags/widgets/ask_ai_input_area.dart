@@ -32,17 +32,20 @@ class _AskAiInputAreaState extends ConsumerState<AskAiInputArea> {
   }
 
   Future<void> _submit() async {
-    final files = widget.aiContext.files;
+    // Read the attachment set ONCE, at submit time: the sheet rebuilds a fresh
+    // context on every checkbox toggle, so re-reading it mid-flight could
+    // disagree with what we actually uploaded.
+    final attachments = widget.aiContext.attachments;
     final suffix = widget.aiContext.contextualPromptSuffix;
 
-    if (files.isEmpty && suffix == null) {
+    if (attachments.isEmpty && suffix == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No context available to ask about.')),
       );
       return;
     }
-    
-    if (files.length > 30) {
+
+    if (attachments.length > 30) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Maximum 30 files are allowed for Ask AI.')),
       );
@@ -59,21 +62,48 @@ class _AskAiInputAreaState extends ConsumerState<AskAiInputArea> {
     });
 
     try {
-      final responseText = await AiAskService.instance.askAi(
+      final result = await AiAskService.instance.askAi(
         prompt: finalPrompt,
-        files: files,
+        attachments: attachments,
       );
 
       if (mounted) {
         _promptController.clear();
-        _showResponseBottomSheet(context, responseText);
-        
+        _showResponseBottomSheet(context, result.response);
+
+        // The model answered about a SUBSET. Say so — silently dropping files
+        // is what made the original bug invisible.
+        if (result.hasSkips) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 6),
+              content: Text(
+                'Answered using ${result.sentCount} of '
+                '${attachments.length} files. Left out: '
+                '${result.skipped.map((s) => s.explanation).join(', ')}',
+              ),
+            ),
+          );
+        }
+
         AskAiHistoryService.instance.saveHistory(
           tagId: widget.aiContext.id,
           tagName: widget.aiContext.name,
-          filenames: files.map((f) => f.fileName).toList(),
+          filenames: attachments.map((a) => a.fileName).toList(),
           prompt: prompt,
-          response: responseText,
+          response: result.response,
+        );
+      }
+    } on AskAiNoFilesAttachedException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 6),
+            content: Text(
+              'Nothing was sent — none of the selected files could be used: '
+              '${e.skipped.map((s) => s.explanation).join(', ')}',
+            ),
+          ),
         );
       }
     } catch (e) {
