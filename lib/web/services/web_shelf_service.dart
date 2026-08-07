@@ -205,7 +205,7 @@ class WebShelfService {
     try {
       blob = await FulaApiService.instance.downloadAndDecrypt(v8, key, kek);
     } catch (e) {
-      if (_isConfirmedAbsence(e)) return null;
+      if (isConfirmedShelfAbsence(e)) return null;
       throw const ShelfWriteAbort(
           'Could not read your current shelf — not saving, to avoid '
           'overwriting it. Check your connection and try again.');
@@ -221,11 +221,6 @@ class WebShelfService {
           'Reload and try again.');
     }
     return blob;
-  }
-
-  static bool _isConfirmedAbsence(Object e) {
-    final s = '$e';
-    return s.contains('NoSuchKey') || s.contains('NoSuchBucket');
   }
 
   Future<void> _uploadManifest(

@@ -39,13 +39,17 @@ bool _isSupportedForAskAi(String fileName) {
 /// Only a miss justifies trying the next candidate bucket. Falling through on
 /// an auth or network error would turn a transient outage into a misleading
 /// "could not read your file".
+///
+/// Deliberately matches STORAGE-SPECIFIC forms only. A bare `not found` also
+/// appears in DNS/host failures, and a bare `404` in routing or authorization
+/// layers that hide objects rather than admitting they exist — either would
+/// silently promote an outage into "try the next bucket".
 @visibleForTesting
 bool isObjectMissingError(Object error) {
   final s = error.toString().toLowerCase();
-  return s.contains('not found') ||
+  return s.contains('object not found:') ||
       s.contains('nosuchkey') ||
-      s.contains('no such key') ||
-      s.contains('404');
+      s.contains('no such key');
 }
 
 /// Why an attachment did not make it into the request.

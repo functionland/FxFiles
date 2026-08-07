@@ -276,6 +276,18 @@ void main() {
       expect(isObjectMissingError(Exception('NoSuchKey')), isTrue);
       expect(isObjectMissingError(Exception('401 Unauthorized')), isFalse);
       expect(isObjectMissingError(Exception('Connection closed')), isFalse);
+
+      // Must NOT treat generic transport/routing failures as a miss —
+      // falling through on those hides an outage behind "file unreadable".
+      expect(
+        isObjectMissingError(Exception('Failed host lookup: host not found')),
+        isFalse,
+      );
+      expect(isObjectMissingError(Exception('HTTP 404 from gateway')), isFalse);
+      expect(
+        isObjectMissingError(Exception('403 Forbidden — token expired')),
+        isFalse,
+      );
     });
   });
 

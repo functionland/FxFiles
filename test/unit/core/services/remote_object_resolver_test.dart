@@ -7,9 +7,10 @@ import 'package:fula_files/core/services/remote_object_resolver.dart';
 /// consumer of a stored `remoteKey`) must follow.
 ///
 /// The bug this pins down: the old AiAskService split `remoteKey` on '/' and
-/// used the first segment as a bucket. Shelf keys are '<year>/<month>/<id>-name',
-/// so it asked for a bucket literally named `2026`, the download 404'd, the
-/// error was swallowed, and the request went out with zero attachments.
+/// used the first segment as a bucket. Shelf keys look like
+/// `2026/07/<uuid>-name.pdf`, so it asked for a bucket literally named `2026`,
+/// the download 404'd, the error was swallowed, and the request went out with
+/// zero attachments.
 void main() {
   setUp(() => BucketVersionResolver.enabled = true);
   tearDown(() => BucketVersionResolver.enabled = true);

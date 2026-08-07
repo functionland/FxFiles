@@ -28,6 +28,31 @@ const int kShelfManifestVersion = 2;
 /// Cloud key for a user's shelf manifest.
 String shelfManifestKey(String userId) => '$kShelfDumpsPrefix$userId.json';
 
+/// Whether [e] proves the current shelf manifest is STRUCTURALLY ABSENT, as
+/// opposed to merely unreadable right now.
+///
+/// The shelf manifest is a full snapshot overwritten on every add, so this
+/// predicate is the entire safety boundary for that write:
+///  * too NARROW and a user who has never had a v8 index can never get one —
+///    the write path won't write until it can read, and the read always
+///    reports absence (the "Could not read your current shelf" deadlock);
+///  * too BROAD and a damaged index is silently overwritten, orphaning items.
+///
+/// `Object not found: <bucket>/<key>` is fula-client's structured
+/// `FulaError::ObjectNotFound` (crates/fula-client/src/error.rs:48). The COLON
+/// is load-bearing — it separates that from the server-side DAMAGE messages
+/// `Object not found (gc-orphaned index; client recovers by CID)` and
+/// `Object not found in this bucket`, which must NOT count as absence.
+///
+/// Deliberately narrower than `FulaApiService._isNotFoundError`, which also
+/// matches bare `404` / `not found` — proxies emit those on transport errors.
+bool isConfirmedShelfAbsence(Object e) {
+  final s = '$e';
+  return s.contains('NoSuchKey') ||
+      s.contains('NoSuchBucket') ||
+      s.contains('Object not found:');
+}
+
 /// Replace anything outside [A-Za-z0-9._-] with '_' (S3-safe keys).
 /// Mirrors ShelfService._sanitizeName.
 String sanitizeShelfName(String name) {
