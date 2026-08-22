@@ -88,6 +88,43 @@ jobs:
           echo "Artifact layout:"
           find out -maxdepth 2 -type f | head -40
 
+      - name: Cache-bust the app bundle
+        # GitHub Pages serves everything with `Cache-Control: max-age=600`
+        # and we ship `--pwa-strategy=none`, so there is no service worker
+        # to force an update. index.html, flutter_bootstrap.js and
+        # main.dart.js therefore each cache INDEPENDENTLY for 10 minutes:
+        # a browser can revalidate index.html (picking up a new deploy)
+        # while still serving the PREVIOUS main.dart.js from disk, and a
+        # reload inside the window does not revalidate anything at all.
+        # That is not theoretical — two phone net-export captures taken
+        # after a deploy show the entire app shell served from cache with
+        # no network request, so the device was still running old code
+        # while we believed the fix was live (2026-08-22).
+        #
+        # Stamping the commit SHA onto the script URLs makes the new
+        # index.html reference URLs the cache has never seen, so the app
+        # code can never be older than the HTML that loaded it. Worst-case
+        # staleness collapses to index.html's own 10-minute window, and it
+        # self-heals. Wasm under /app/pkg/ is deliberately NOT stamped: the
+        # verify step above already pins it to fula_client, and its URL is
+        # built by RustLib at runtime.
+        run: |
+          set -euo pipefail
+          V="${GITHUB_SHA:0:12}"
+          echo "cache-bust version: $V"
+          # Only rewrite quote-delimited references, so a `.map` sibling or
+          # a prose mention can never be corrupted into `main.dart.js?v=X.map`.
+          sed -i "s|flutter_bootstrap\.js\([\"']\)|flutter_bootstrap.js?v=$V\1|g" out/app/index.html
+          sed -i "s|main\.dart\.js\([\"']\)|main.dart.js?v=$V\1|g" out/app/flutter_bootstrap.js
+          # Fail loudly rather than silently shipping an unbusted bundle if
+          # a future Flutter version changes how these are referenced.
+          grep -q "flutter_bootstrap.js?v=$V" out/app/index.html \
+            || { echo "::error::index.html was not cache-busted - check how it references flutter_bootstrap.js"; exit 1; }
+          grep -q "main.dart.js?v=$V" out/app/flutter_bootstrap.js \
+            || { echo "::error::flutter_bootstrap.js was not cache-busted - check how it references main.dart.js"; exit 1; }
+          echo "index.html:"; grep -o "flutter_bootstrap.js?v=[a-f0-9]*" out/app/index.html | head -3
+          echo "flutter_bootstrap.js:"; grep -o "main.dart.js?v=[a-f0-9]*" out/app/flutter_bootstrap.js | head -3
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
