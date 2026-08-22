@@ -61,12 +61,28 @@ class BucketHealthBreaker {
   /// Cooldown ladder, indexed by consecutive-failure count. Capped at the
   /// last entry. Deliberately short at the start: a genuinely transient
   /// blip costs at most one skipped read, while a permanently broken
-  /// bucket settles at 5 min and stops dominating the session.
+  /// bucket backs off hard and stops dominating every session.
+  ///
+  /// The 1h tail exists because the damage is not transient — the same
+  /// `tag-metadata` forest-root CID has failed identically across three
+  /// phone captures weeks apart. Paired with [exportState]/[importState]
+  /// persistence, that turns "30s on every page load" into "30s once an
+  /// hour, worst case".
+  ///
+  /// TRADE-OFF, stated plainly: once the gateway is repaired the client
+  /// can sit in a stale cooldown for up to an hour before it notices.
+  /// Signing out clears it immediately (see [reset]).
   static const List<Duration> cooldownLadder = <Duration>[
     Duration(seconds: 30),
     Duration(minutes: 2),
-    Duration(minutes: 5),
+    Duration(minutes: 10),
+    Duration(hours: 1),
   ];
+
+  /// Fired after any state change so a shell can persist the result.
+  /// The web shell sets this; native leaves it null. Deliberately NOT
+  /// fired by [importState] — restoring at boot must not write back.
+  void Function()? onChanged;
 
   /// Overridable for tests — production always uses the wall clock.
   @visibleForTesting
@@ -111,22 +127,58 @@ class BucketHealthBreaker {
     _state[bucket] = _BucketState(failures: failures, until: clock().add(step));
     debugPrint('BucketHealthBreaker: $bucket cooling down for '
         '${step.inSeconds}s (consecutive failures: $failures)');
+    onChanged?.call();
   }
 
   /// Clear [bucket]'s state — it answered, so the ladder restarts.
   void recordSuccess(String bucket) {
     if (_state.remove(bucket) != null) {
       debugPrint('BucketHealthBreaker: $bucket recovered');
+      onChanged?.call();
     }
   }
 
   /// Drop all state. Call on sign-out / user-switch so one account's
   /// bucket health never carries into another's session (same hygiene rule
   /// as `WebPrefetchScheduler.reset()`).
+  ///
+  /// Fires [onChanged] even when already empty, so the shell's persisted
+  /// copy is cleared too — a stored cooldown that outlived the account it
+  /// was learned in would be a bug that survives sign-out.
   void reset() {
+    final had = _state.isNotEmpty;
+    _state.clear();
+    if (had) debugPrint('BucketHealthBreaker: reset');
+    onChanged?.call();
+  }
+
+  // ------------------------------------------------------- persistence
+
+  /// Snapshot for the shell to persist. The in-memory map alone is not
+  /// enough: the stall this guards against is paid on the FIRST read of a
+  /// session, so without surviving a page load the user re-pays 30s on
+  /// every reload (measured — capture 3, 2026-08-22).
+  Map<String, ({int failures, DateTime until})> exportState() => {
+        for (final e in _state.entries)
+          e.key: (failures: e.value.failures, until: e.value.until),
+      };
+
+  /// Restore a snapshot at boot. Entries whose cooldown expired long ago
+  /// are dropped so a bucket that has since recovered isn't held back by
+  /// ancient history; a recently-expired entry is KEPT so its failure
+  /// count still drives the ladder upward instead of restarting at 30s.
+  /// Never fires [onChanged].
+  void importState(Map<String, ({int failures, DateTime until})> saved,
+      {Duration keepExpiredFor = const Duration(hours: 6)}) {
+    final now = clock();
+    for (final e in saved.entries) {
+      if (now.difference(e.value.until) > keepExpiredFor) continue;
+      _state[e.key] =
+          _BucketState(failures: e.value.failures, until: e.value.until);
+    }
     if (_state.isNotEmpty) {
-      _state.clear();
-      debugPrint('BucketHealthBreaker: reset');
+      debugPrint('BucketHealthBreaker: restored ${_state.length} bucket(s): '
+          '${_state.keys.join(", ")}');
     }
   }
 }

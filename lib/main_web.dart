@@ -46,6 +46,7 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
+import 'package:fula_files/web/services/web_breaker_persistence.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
@@ -93,6 +94,14 @@ Future<void> main() async {
     await AutomateTaskService.instance.init();
 
     restored = await WebSession.instance.restore();
+
+    // Restore learned bucket cooldowns BEFORE any screen mounts and starts
+    // reading. Without this the breaker is in-memory only, so the first
+    // read after every page load re-pays the full ~30s stall on a
+    // gc-damaged legacy bucket (measured on the phone, capture 3). Needs
+    // the restored session for its owner stamp; touches only localStorage,
+    // so it cannot fail the boot.
+    await WebBreakerPersistence.instance.init();
   } catch (e) {
     bootError = e;
     debugPrint('web boot error: $e');
