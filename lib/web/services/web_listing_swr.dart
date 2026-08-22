@@ -550,16 +550,48 @@ class WebListingSwr extends ChangeNotifier {
   ///
   /// Single-flighted on the same map as [_refreshManifestBehind], under a
   /// distinct key prefix so the two can't collide.
+  /// How long a known-bad bucket is left completely alone by the
+  /// backfill. A probe is not free here: it costs every other fula call
+  /// in the tab ~30s behind the wasm bridge's per-client lock, so once a
+  /// bucket has failed the correct number of speculative retries is
+  /// approximately zero. A user-driven `force` read still bypasses this.
+  static const Duration _kFrozenBackfillQuiet = Duration(hours: 6);
+
+  /// Settle before backfilling. `whenIdle()` alone is NOT a deferral:
+  /// the foreground counter hits zero in the microseconds BETWEEN two
+  /// screen operations, so a naive `await whenIdle()` fires immediately
+  /// and lands the lock-holding forest load right in the middle of the
+  /// screen load it was supposed to avoid (observed on the phone,
+  /// 2026-08-22 — the backfill's 5s timeout expired while the detail
+  /// screen was still loading). A wall-clock delay plus a re-check is
+  /// what actually moves it out of the way.
+  static const Duration _kFrozenBackfillDelay = Duration(seconds: 15);
+
   void _backfillFrozenHalf(
       String bucket, String key, Uint8List encryptionKey) {
     final k = 'frozen|$bucket|$key';
     if (_manifestRefreshes.containsKey(k)) return;
+    // Known bad → don't probe at all. This is what stops the ladder from
+    // re-authorising a 30s tab freeze every time a cooldown lapses.
+    if (BucketHealthBreaker.instance
+        .failedRecently(bucket, _kFrozenBackfillQuiet)) {
+      return;
+    }
     final future = () async {
-      // Bounded wait: a permanently busy tab must not starve the backfill
-      // forever, but it must not jump the queue either.
+      // Wall-clock first, THEN idle — see _kFrozenBackfillDelay.
+      await Future<void>.delayed(_kFrozenBackfillDelay);
       await WebForegroundActivity.instance
           .whenIdle()
           .timeout(const Duration(seconds: 60), onTimeout: () {});
+      // A burst of taps shouldn't interleave with this (same settle the
+      // prefetch scheduler uses).
+      await Future<void>.delayed(const Duration(seconds: 1));
+      // Re-check: the bucket may have been marked bad while we waited,
+      // and the whole point is to not touch it once we know.
+      if (BucketHealthBreaker.instance
+          .failedRecently(bucket, _kFrozenBackfillQuiet)) {
+        return;
+      }
       // Stamp AFTER the wait (monotonic guard rule: stamp at fetch START),
       // so a mutation write-through landing during the wait still wins.
       final started = DateTime.now();

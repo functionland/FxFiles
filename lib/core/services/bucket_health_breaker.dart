@@ -116,6 +116,23 @@ class BucketHealthBreaker {
   /// Consecutive failures recorded for [bucket] (0 when healthy).
   int failureCount(String bucket) => _state[bucket]?.failures ?? 0;
 
+  /// True when [bucket] failed within [within] — regardless of whether its
+  /// cooldown has since expired.
+  ///
+  /// [shouldSkip] answers "may I retry now?", which goes false as soon as
+  /// the ladder step elapses. That is right for a retry the user asked
+  /// for, and wrong for a speculative BACKGROUND probe: on this gateway a
+  /// single probe of a dead bucket costs the whole tab ~30s of wasm-lock
+  /// blockage, so a warm-up has to be far more reluctant than a real read.
+  /// Callers use this to stay away for hours after a known failure.
+  bool failedRecently(String bucket, Duration within) {
+    final s = _state[bucket];
+    if (s == null) return false;
+    // `until` is lastFailure + ladder step, so it is a conservative
+    // (never-too-old) stand-in for the failure time itself.
+    return clock().difference(s.until) < within;
+  }
+
   /// Record a transport/server failure and open (or extend) the cooldown.
   /// Callers must gate this on [isBreakerWorthyFailure] — a structural
   /// absence must never cool a bucket down.
