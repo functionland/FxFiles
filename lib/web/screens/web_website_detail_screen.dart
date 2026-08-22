@@ -166,13 +166,15 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       } catch (e) {
         debugPrint('WebsiteDetail: tags unavailable, continuing: $e');
       }
-      // Keep the recorded parses ONLY for the group being opened. Loading
-      // them for every group is what froze this screen: a vault with
-      // several website groups carries tens of MB of `parsedContent`, all
-      // decoded and held on the main thread and then discarded by the
-      // filter two lines below.
+      // Keep the recorded parses only for the group being opened. NOTE:
+      // this is a memory-hygiene trim, NOT the freeze fix — measured
+      // response sizes in this vault top out at ~24KB, so parsedContent
+      // bloat is not what blocks the thread here.
+      debugPrint('WebsiteDetail: loadWebsites ENTER');
       final r = await WebFeatures.loadWebsites(
           keepParsedForTagId: widget.tagId);
+      debugPrint('WebsiteDetail: loadWebsites ok '
+          '(${r.generations.length} generations)');
       if (!mounted) return;
 
       final tag = WebTagService.instance.tagById(widget.tagId);
@@ -180,6 +182,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
           r.generations.where((g) => g.tagId == widget.tagId).toList();
 
       // Phase 1 — paint. Everything below this point is enrichment.
+      debugPrint('WebsiteDetail: PAINT (${generations.length} for this tag)');
       setState(() {
         _tag = tag;
         _cloudGenerations = generations;

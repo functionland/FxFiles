@@ -456,6 +456,9 @@ class FulaApiService implements FulaApi {
           bucket, breaker.remaining(bucket) ?? Duration.zero);
     }
     try {
+      // Paired with the `Forest loaded for bucket:` line below — an ENTER
+      // with no matching completion pins a hard stall to loadForest.
+      debugPrint('loadForest: ENTER $bucket');
       await perfSpan('forest-load $bucket',
           () => fula.loadForest(client: _client!, bucket: bucket));
       _loadedForests.add(bucket);
@@ -889,8 +892,30 @@ class FulaApiService implements FulaApi {
     _ensureConfigured();
     try {
       await _ensureForestLoaded(bucket);
-      final data = await fula.getFlat(client: _client!, bucket: bucket, path: key);
-      return Uint8List.fromList(data);
+      // TEMPORARY DIAGNOSTIC (2026-08-22). A phone reproduces a HARD main
+      // thread block — spinner frozen mid-rotation, Chrome's "Page
+      // unresponsive" dialog — and the last line in the console is
+      // `Forest loaded for bucket: <b>`, i.e. loadForest RETURNING. The
+      // very next thing is this wasm call, and nothing logs around it, so
+      // it is the blind spot. FRB runs wasm on the UI thread here (the
+      // boot log's "Buffers cannot be shared due to missing cross-origin
+      // headers" means no worker), so a synchronous stall inside getFlat
+      // freezes the renderer exactly as reported. If the console shows
+      // `getFlat: ENTER` with no matching `ok`/`FAILED`, this call is the
+      // culprit and the fix belongs below the bridge, not in Dart.
+      final sw = Stopwatch()..start();
+      debugPrint('getFlat: ENTER $bucket/$key');
+      try {
+        final data =
+            await fula.getFlat(client: _client!, bucket: bucket, path: key);
+        debugPrint('getFlat: ok $bucket/$key '
+            '${data.length}B in ${sw.elapsedMilliseconds}ms');
+        return Uint8List.fromList(data);
+      } catch (e) {
+        debugPrint('getFlat: FAILED $bucket/$key '
+            'after ${sw.elapsedMilliseconds}ms: $e');
+        rethrow;
+      }
     } catch (e) {
       throw FulaApiException('Failed to download object: $e');
     }
