@@ -162,8 +162,18 @@ class WebIpnsService {
     // First pass: collect entries first-wins by tagId ([v8, legacy]
     // order — v8 wins), keeping each winner's privKey alongside it.
     final winners = <String, ({WebsiteGroupPointer pointer, String? privKey})>{};
+    // The core downloadMetadataMerged has NO timeout of its own and reads
+    // [v8, legacy] in series, so on a gc-damaged legacy bucket this could
+    // hang the caller indefinitely. It never throws (a failed half is just
+    // skipped), so a bound here degrades to "no pointers" rather than an
+    // error — the detail screen already treats a missing pointer as "no
+    // stable link yet".
     for (final blob in await FulaApiService.instance
-        .downloadMetadataMerged(_metadataBucket, _pointerObjectKey(uid), kek)) {
+        .downloadMetadataMerged(_metadataBucket, _pointerObjectKey(uid), kek)
+        .timeout(const Duration(seconds: 12), onTimeout: () {
+      debugPrint('WebIpnsService: pointer manifest read timed out');
+      return const <Uint8List>[];
+    })) {
       try {
         final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
         for (final raw in (j['pointers'] as List<dynamic>? ?? const [])) {

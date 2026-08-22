@@ -144,28 +144,65 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
         unawaited(WebWebsiteService.instance.resumePendingJobs());
       });
     });
+    // Two-phase load, same shape as the websites LIST screen.
+    //
+    // This used to await four reads in series and only clear `_loading`
+    // after the last one, so ANY of them stalling left a permanent
+    // spinner. That is the reported "open a site while the list is still
+    // loading and it hangs": the tag read is single-flighted, so tapping
+    // into a detail joins the list's in-flight load and inherits its
+    // stall — and a gc-damaged legacy metadata bucket holds the wasm
+    // bridge's per-client lock for ~30s, which no Dart timeout can cut
+    // short. Tags are best-effort here (they only supply the display
+    // name), and the pointer + asset CIDs only drive secondary sections,
+    // so none of them may gate the first paint.
     try {
-      await WebTagService.instance.load();
+      // Best-effort: a stalled/failed tag read must not block the screen.
+      // The generations carry `tagName`, so the title still resolves.
+      try {
+        await WebTagService.instance
+            .load()
+            .timeout(const Duration(seconds: 6));
+      } catch (e) {
+        debugPrint('WebsiteDetail: tags unavailable, continuing: $e');
+      }
       final r = await WebFeatures.loadWebsites();
-      await WebIpnsService.instance.load(force: true);
+      if (!mounted) return;
+
       final tag = WebTagService.instance.tagById(widget.tagId);
-      final rawName = tag?.name ?? 'website';
+      final generations =
+          r.generations.where((g) => g.tagId == widget.tagId).toList();
+
+      // Phase 1 — paint. Everything below this point is enrichment.
+      setState(() {
+        _tag = tag;
+        _cloudGenerations = generations;
+        _pointer = r.pointersByTag[widget.tagId];
+        _loading = false;
+      });
+
+      final rawName =
+          tag?.name ?? (generations.isNotEmpty ? generations.first.tagName : '');
       final displayName = rawName.startsWith('websites-')
           ? rawName.substring('websites-'.length)
-          : rawName;
-      // Authoritative CID source (#44): assets that reached IPFS but whose
-      // generation recorded uploaded=false/no-CID. Fail-soft → {}.
+          : (rawName.isEmpty ? 'website' : rawName);
+
+      // Phase 2 — hydrate. The pointer refresh is a cross-device check for
+      // the stable-link section and the asset CIDs are the authoritative
+      // source for issue #44; both are fail-soft and neither is worth a
+      // spinner.
+      try {
+        await WebIpnsService.instance.load(force: true);
+      } catch (e) {
+        debugPrint('WebsiteDetail: pointer refresh skipped: $e');
+      }
+      // Fail-soft → {} on any error (see WebFeatures.websiteAssetCids).
       final assetCids = await WebFeatures.websiteAssetCids(displayName);
       if (!mounted) return;
       setState(() {
-        _tag = tag;
-        _cloudGenerations = r.generations
-            .where((g) => g.tagId == widget.tagId)
-            .toList();
         _pointer = WebIpnsService.instance.pointerFor(widget.tagId) ??
             r.pointersByTag[widget.tagId];
         _seedAssetsFromGroup(assetCids);
-        _loading = false;
       });
     } catch (e) {
       if (mounted) {

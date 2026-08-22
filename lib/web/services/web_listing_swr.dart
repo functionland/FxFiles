@@ -397,9 +397,17 @@ class WebListingSwr extends ChangeNotifier {
     // can only delay what the user SEES — it can never change what gets
     // written. That is what makes the short budget safe.
     //
-    // A render read gets ~5s; a forced read (mutation read-modify-write,
-    // explicit Refresh) keeps the full budget so it still gets the real
-    // answer whenever legacy is merely slow rather than broken.
+    // The short budget applies to EVERY read, forced or not. An earlier
+    // version kept the full 30s for forced reads "so a mutation gets the
+    // real answer" — that was wrong twice over:
+    //
+    //  * `force` is about getting FRESH data, and this half is frozen and
+    //    immutable (note the hardcoded `force: false` below — the outer
+    //    force flag was never meant to reach it). "Fresh legacy" is a
+    //    contradiction, so there is nothing to wait 30s for.
+    //  * every forced path therefore re-paid the stall. The website DETAIL
+    //    screen forces on open, so opening a site still hung for 30s even
+    //    after the list itself was fixed (user report + capture 6).
     if (v8 != base) {
       final legacyBlob = await _manifestHalf(
         bucket: base,
@@ -408,7 +416,7 @@ class WebListingSwr extends ChangeNotifier {
         force: false, // frozen — force never re-fetches legacy
         refetchForest: false,
         frozen: true,
-        budget: force ? _kManifestBudget : _kLegacyRenderBudget,
+        budget: _kLegacyRenderBudget,
       );
       if (legacyBlob != null) blobs.add(legacyBlob);
     }
@@ -418,7 +426,7 @@ class WebListingSwr extends ChangeNotifier {
   /// Full budget for the live/authoritative half.
   static const Duration _kManifestBudget = Duration(seconds: 30);
 
-  /// Short budget for the frozen legacy half on RENDER reads. The gateway
+  /// Budget for the frozen legacy half — every read, forced or not. The gateway
   /// takes ~30s to fail a gc-damaged legacy forest root, and that whole
   /// time is spent holding the wasm bridge's exclusive per-client lock —
   /// so the old shared 30s budget put a 30s stall in front of every
