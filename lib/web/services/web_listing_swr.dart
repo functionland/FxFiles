@@ -458,6 +458,36 @@ class WebListingSwr extends ChangeNotifier {
       return cached.blob;
     }
 
+    // FROZEN LEGACY HALF, not cached: NEVER fetch it on the caller's path.
+    //
+    // Reading a manifest goes through its bucket's forest, and
+    // `load_forest` takes the wasm bridge's EXCLUSIVE per-client lock for
+    // the whole fetch. On a gc-damaged legacy bucket that is ~30s, during
+    // which every other fula call in the tab is stuck behind it. Captured
+    // live on the phone:
+    //
+    //   loadForest: ENTER tag-metadata          <- doomed, holds the lock
+    //   getFlat:    ENTER website-metadata-v8/… <- never completes
+    //   loadForest: ENTER tag-metadata-v8       <- never completes (healthy
+    //                                              bucket, normally 0.1s!)
+    //   WebsiteDetail: loadWebsites ENTER       <- never completes
+    //
+    // So one dead LEGACY bucket froze a screen that only needed HEALTHY
+    // v8 data. Deferring the fetch to idle is not merely tidier — it is
+    // the difference between the screen painting and not.
+    //
+    // What this costs: legacy-only entries appear one screen-open later
+    // instead of immediately. That is the SWR contract the rest of this
+    // file already follows, and for the bucket that motivated it the cost
+    // is zero — it has returned 500 on every capture, so those entries do
+    // not arrive today either. A `force` read (mutation read-modify-write)
+    // still takes the live path below; correctness is unchanged because
+    // managed metadata services only ever WRITE to the `-v8` bucket.
+    if (frozen && !force) {
+      _backfillFrozenHalf(bucket, key, encryptionKey);
+      return null;
+    }
+
     // Miss, or force on the mutable half: live fetch. Cross-device
     // refreshes drop the forest first (manifests are read THROUGH the
     // bucket's forest); mutation reads keep the session forest — it
@@ -510,6 +540,54 @@ class WebListingSwr extends ChangeNotifier {
   static bool _isConfirmedAbsence(Object e) {
     if (e is BucketCooldownException) return false;
     return isConfirmedObjectAbsence(e);
+  }
+
+  /// One-shot background fetch of a FROZEN (legacy, immutable) manifest
+  /// half that isn't cached yet. Runs only once the tab is idle, so its
+  /// forest load can't hold the wasm bridge's per-client lock while the
+  /// user is waiting on a screen. Result lands in the cache, so the NEXT
+  /// read serves it instantly and this never runs again for that key.
+  ///
+  /// Single-flighted on the same map as [_refreshManifestBehind], under a
+  /// distinct key prefix so the two can't collide.
+  void _backfillFrozenHalf(
+      String bucket, String key, Uint8List encryptionKey) {
+    final k = 'frozen|$bucket|$key';
+    if (_manifestRefreshes.containsKey(k)) return;
+    final future = () async {
+      // Bounded wait: a permanently busy tab must not starve the backfill
+      // forever, but it must not jump the queue either.
+      await WebForegroundActivity.instance
+          .whenIdle()
+          .timeout(const Duration(seconds: 60), onTimeout: () {});
+      // Stamp AFTER the wait (monotonic guard rule: stamp at fetch START),
+      // so a mutation write-through landing during the wait still wins.
+      final started = DateTime.now();
+      try {
+        final blob = await FulaApiService.instance
+            .downloadAndDecrypt(bucket, key, encryptionKey)
+            .timeout(_kLegacyRenderBudget);
+        await WebListingCache.instance.writeManifest(
+            bucket, key, blob.isEmpty ? null : blob,
+            fetchedAt: started);
+        debugPrint('WebListingSwr: backfilled frozen half $bucket/$key');
+      } catch (e) {
+        debugPrint('WebListingSwr: frozen-half backfill $bucket/$key: $e');
+        // Only a STRUCTURALLY confirmed absence may be frozen as "gone" —
+        // a transport failure here must stay retryable (the breaker is
+        // what stops it from being retried in a tight loop).
+        if (_isConfirmedAbsence(e)) {
+          await WebListingCache.instance
+              .writeManifest(bucket, key, null, fetchedAt: started);
+        }
+      }
+    }()
+        // Same whenComplete-returns-the-removed-future trap as
+        // _revalidate — keep the block body.
+        .whenComplete(() {
+      _manifestRefreshes.remove(k);
+    });
+    _manifestRefreshes[k] = future;
   }
 
   void _refreshManifestBehind(
