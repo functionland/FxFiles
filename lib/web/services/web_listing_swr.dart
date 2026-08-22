@@ -5,11 +5,14 @@ import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 
 import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/services/bucket_health_breaker.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
+import 'package:fula_files/web/services/web_shelf_write_logic.dart'
+    show isConfirmedObjectAbsence;
 import 'package:fula_files/web/services/web_swr_policy.dart';
 
 export 'package:fula_files/web/services/web_swr_policy.dart';
@@ -374,6 +377,8 @@ class WebListingSwr extends ChangeNotifier {
     final blobs = <Uint8List>[];
 
     // ----- v8 (or sole unmanaged bucket) half -----
+    // Keeps the full budget: this is the live, authoritative half, and a
+    // legitimately slow mobile link needs the headroom.
     final v8Blob = await _manifestHalf(
       bucket: v8,
       key: key,
@@ -381,10 +386,20 @@ class WebListingSwr extends ChangeNotifier {
       force: force,
       refetchForest: refetchForest,
       frozen: false,
+      budget: _kManifestBudget,
     );
     if (v8Blob != null) blobs.add(v8Blob);
 
     // ----- legacy half (only when managed) -----
+    // Best-effort by construction: legacy metadata buckets are immutable
+    // post-migration and NEVER written (writes route to `-v8`, and
+    // isForbiddenWriteTarget throws otherwise), so a missing legacy half
+    // can only delay what the user SEES — it can never change what gets
+    // written. That is what makes the short budget safe.
+    //
+    // A render read gets ~5s; a forced read (mutation read-modify-write,
+    // explicit Refresh) keeps the full budget so it still gets the real
+    // answer whenever legacy is merely slow rather than broken.
     if (v8 != base) {
       final legacyBlob = await _manifestHalf(
         bucket: base,
@@ -393,11 +408,25 @@ class WebListingSwr extends ChangeNotifier {
         force: false, // frozen — force never re-fetches legacy
         refetchForest: false,
         frozen: true,
+        budget: force ? _kManifestBudget : _kLegacyRenderBudget,
       );
       if (legacyBlob != null) blobs.add(legacyBlob);
     }
     return blobs;
   }
+
+  /// Full budget for the live/authoritative half.
+  static const Duration _kManifestBudget = Duration(seconds: 30);
+
+  /// Short budget for the frozen legacy half on RENDER reads. The gateway
+  /// takes ~30s to fail a gc-damaged legacy forest root, and that whole
+  /// time is spent holding the wasm bridge's exclusive per-client lock —
+  /// so the old shared 30s budget put a 30s stall in front of every
+  /// screen that reads a manifest. Five seconds is generous for a healthy
+  /// legacy read (every healthy request in both phone captures finished
+  /// in under 0.9s) and cheap when it is broken. After the first failure
+  /// BucketHealthBreaker skips the call entirely.
+  static const Duration _kLegacyRenderBudget = Duration(seconds: 5);
 
   Future<Uint8List?> _manifestHalf({
     required String bucket,
@@ -406,6 +435,7 @@ class WebListingSwr extends ChangeNotifier {
     required bool force,
     required bool refetchForest,
     required bool frozen,
+    required Duration budget,
   }) async {
     final cached = await WebListingCache.instance.readManifest(bucket, key);
 
@@ -431,7 +461,7 @@ class WebListingSwr extends ChangeNotifier {
       }
       final blob = await FulaApiService.instance
           .downloadAndDecrypt(bucket, key, encryptionKey)
-          .timeout(const Duration(seconds: 30));
+          .timeout(budget);
       final value = blob.isEmpty ? null : blob;
       await WebListingCache.instance
           .writeManifest(bucket, key, value, fetchedAt: started);
@@ -459,9 +489,19 @@ class WebListingSwr extends ChangeNotifier {
   /// Strict S3-style absence codes only — used to gate NEGATIVE cache
   /// writes (including the legacy freeze). Deliberately narrower than
   /// FulaApiService._isNotFoundError's broad match.
+  ///
+  /// Single-sourced from `web_shelf_write_logic.dart` (2026-08-22). This
+  /// used to be a second, DIVERGENT copy that matched only NoSuchKey /
+  /// NoSuchBucket — it missed fula-client's actual structured absence
+  /// string `Object not found: <bucket>/<key>`. Consequence: a legacy
+  /// manifest that genuinely does not exist was never frozen as absent,
+  /// so every single read re-fetched it live, and on a gc-damaged bucket
+  /// that cost 30s each time. A cooldown skip is NOT an absence — it is
+  /// an unavailable read — so BucketCooldownException must never reach
+  /// here as "confirmed".
   static bool _isConfirmedAbsence(Object e) {
-    final s = '$e';
-    return s.contains('NoSuchKey') || s.contains('NoSuchBucket');
+    if (e is BucketCooldownException) return false;
+    return isConfirmedObjectAbsence(e);
   }
 
   void _refreshManifestBehind(

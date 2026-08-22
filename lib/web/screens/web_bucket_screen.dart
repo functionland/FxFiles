@@ -514,28 +514,80 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    // The whole file is held in memory here, and `pinBytes` layers a
+    // multipart copy on top — the same reason the Cloud Files screen caps
+    // rename/move. Without this a big file OOM-kills a low-RAM phone tab,
+    // which is what "it froze" looked like.
+    if (!_guardPublicShareSize(o)) return;
 
-    _snack('Uploading $fileName to IPFS...');
+    // Progress must be tied to COMPLETION. This used to be a plain
+    // `_snack(...)`, i.e. Flutter's default 4-second SnackBar, while the
+    // work below can legitimately run for minutes on a phone link — so the
+    // banner vanished long before the link appeared and the user was left
+    // staring at nothing. Now it stays until the operation ends, in a
+    // `finally`, and offers a way out.
+    final progress = ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Uploading $fileName to IPFS…'),
+        duration: const Duration(days: 1),
+        action: SnackBarAction(
+          label: 'Dismiss',
+          onPressed: () {},
+        ),
+      ),
+    );
+    var closedProgress = false;
+    void closeProgress() {
+      if (closedProgress) return;
+      closedProgress = true;
+      // The messenger may already be gone if the tab was navigated away
+      // from mid-upload; closing a banner is never worth an exception.
+      try {
+        progress.close();
+      } catch (_) {}
+    }
+
     try {
       final bucket =
           o.sourceBucket ?? BucketVersionResolver.writeBucket(widget.base);
       // P14.1: route by sourceBucket (AI files decrypt via workspace client).
-      final bytes = await FulaApiService.instance
-          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
-      final result = await IpfsPublicService.instance.pinBytes(
-        bytes,
-        fileName,
-      );
+      // Wrapped in ForegroundActivity like every other user-initiated
+      // transfer (the Cloud Files twin already did this): without it the
+      // prefetch scheduler still sees the tab as idle and keeps dequeuing
+      // bucket warm-ups that contend for the one wasm client.
+      final bytes = await WebForegroundActivity.instance.run(() =>
+          FulaApiService.instance
+              .downloadBySourceBucket(bucket, o.key, o.sourceBucket));
+      final result = await WebForegroundActivity.instance
+          .run(() => IpfsPublicService.instance.pinBytes(bytes, fileName));
+      closeProgress();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
       await _showPublicIpfsLinkDialog(result.gatewayUrl, fileName);
     } catch (e) {
+      closeProgress();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
       final msg =
           e is Exception ? e.toString().replaceFirst('Exception: ', '') : '$e';
       _snack(msg);
+    } finally {
+      // Belt and braces: the banner must never outlive the work, on any
+      // path out of this method.
+      closeProgress();
     }
+  }
+
+  /// Largest file we push to IPFS from the web. Mirrors the Cloud Files
+  /// screen's rename/move cap for the same reason: the plaintext bytes and
+  /// the multipart body both sit in the tab's heap at once.
+  static const int _kMaxPublicShareBytes = 50 * 1024 * 1024;
+
+  bool _guardPublicShareSize(FulaObject o) {
+    if (o.size > _kMaxPublicShareBytes) {
+      _snack('Files over 50 MB can\'t be shared publicly from the web yet '
+          '(it would exceed browser memory).');
+      return false;
+    }
+    return true;
   }
 
   /// Mirror of the app's Add to Collaboration flow: pick one of the

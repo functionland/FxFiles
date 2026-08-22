@@ -43,6 +43,29 @@ class BucketVersionResolver {
     'videos',
     'audio',
     'documents',
+    // Added 2026-08-22. `archives` was the one content category still
+    // unmanaged, so it had no `-v8` sibling to fall back to — and its
+    // legacy forest root is gc-damaged: two phone net-export captures show
+    // `GET /archives/Qmae36f95…` returning 500 after 30.2s, every time,
+    // with no alternative to read. Joining the managed set gives it what
+    // the other categories already have: new uploads land in a healthy
+    // `archives-v8`, and `listCategoryCached` merges legacy + v8 while
+    // treating a legacy failure as EMPTY instead of an error, so the
+    // category opens instead of hanging.
+    //
+    // Write paths audited before flipping (all route via [writeBucket], so
+    // none trip the legacy-write guard): SyncService.queueUpload — the
+    // documented single chokepoint for every native content upload;
+    // web_bucket_screen's per-category picker; web_recent_files_section's
+    // cross-category "+" tile. The raw Cloud Files manager writes to the
+    // bucket being browsed, but it already gates on
+    // [isForbiddenWriteTarget], so `archives` simply becomes read-only
+    // there — exactly how `images` and friends already behave.
+    //
+    // HARD INVARIANT (v8 migration): the legacy `archives` bucket is never
+    // deleted. Its objects stay readable and keep existing share links
+    // working.
+    'archives',
   };
 
   /// Metadata buckets migrated to v8 INCREMENTALLY (P6). A bucket here routes

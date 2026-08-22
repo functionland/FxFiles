@@ -46,7 +46,17 @@ String shelfManifestKey(String userId) => '$kShelfDumpsPrefix$userId.json';
 ///
 /// Deliberately narrower than `FulaApiService._isNotFoundError`, which also
 /// matches bare `404` / `not found` — proxies emit those on transport errors.
-bool isConfirmedShelfAbsence(Object e) {
+bool isConfirmedShelfAbsence(Object e) => isConfirmedObjectAbsence(e);
+
+/// The predicate above, named for general use. Shared with
+/// `WebListingSwr` so the app has exactly ONE definition of "this object
+/// is structurally absent" — there used to be two, and the SWR copy was
+/// missing the `Object not found:` case, so a genuinely-absent legacy
+/// manifest was never frozen and got re-fetched live on every read.
+///
+/// NOTE the colon, and the deliberate omission of bare `404` /
+/// `not found`: see the reasoning above.
+bool isConfirmedObjectAbsence(Object e) {
   final s = '$e';
   return s.contains('NoSuchKey') ||
       s.contains('NoSuchBucket') ||

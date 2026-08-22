@@ -9,6 +9,7 @@ import 'package:fula_files/core/platform/frb_u64.dart';
 import 'package:fula_files/core/models/share_token.dart' as local;
 import 'package:fula_files/core/perf/perf_probe.dart';
 import 'package:fula_files/core/services/bucket_cache_service.dart';
+import 'package:fula_files/core/services/bucket_health_breaker.dart';
 import 'package:fula_files/core/services/object_cache_service.dart';
 import 'package:fula_files/core/services/fula_api.dart';
 import 'package:fula_files/core/services/fula_api_types.dart';
@@ -441,10 +442,24 @@ class FulaApiService implements FulaApi {
   /// success branch above, not the catch.
   Future<void> _ensureForestLoaded(String bucket) async {
     if (_loadedForests.contains(bucket)) return;
+    // Circuit breaker (web shell only â€” inert while
+    // BucketHealthBreaker.enabled is false, i.e. always on native).
+    //
+    // A gc-damaged bucket's forest root 500s after ~30s server-side, and
+    // `fula.loadForest` holds the bridge's EXCLUSIVE per-client RwLock for
+    // that whole time, blocking every other fula call in the tab. The FRB
+    // binding has no cancel handle, so a Dart `.timeout()` cannot release
+    // it. The only remedy is to not issue the call at all.
+    final breaker = BucketHealthBreaker.instance;
+    if (breaker.shouldSkip(bucket)) {
+      throw BucketCooldownException(
+          bucket, breaker.remaining(bucket) ?? Duration.zero);
+    }
     try {
       await perfSpan('forest-load $bucket',
           () => fula.loadForest(client: _client!, bucket: bucket));
       _loadedForests.add(bucket);
+      breaker.recordSuccess(bucket);
       debugPrint('Forest loaded for bucket: $bucket');
     } catch (e) {
       // Don't mark `_loadedForests.add(bucket)` here â€” the next call
@@ -453,6 +468,12 @@ class FulaApiService implements FulaApi {
       // automatically when master comes back). Rethrow so callers
       // (listObjects, downloadObject, etc.) can surface the actual
       // condition instead of returning an empty list.
+      //
+      // The breaker is the BOUNDED refinement of that rule: only
+      // transport/server failures open it (never a structural absence â€”
+      // a brand-new bucket must stay usable), and the window expires, so
+      // a transient outage still self-heals.
+      if (isBreakerWorthyFailure(e)) breaker.recordFailure(bucket);
       debugPrint('Forest load for $bucket failed: $e');
       rethrow;
     }
@@ -1778,6 +1799,9 @@ class FulaApiService implements FulaApi {
     _defaultBucket = null;
     _isConfigured = false;
     _loadedForests.clear();
+    // One account's bucket health must never carry into another's session
+    // (same hygiene rule as WebPrefetchScheduler.reset()).
+    BucketHealthBreaker.instance.reset();
     _currentSecretKey = null;
     _cloudEndpoint = null;
     _cloudAccessToken = null;

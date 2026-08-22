@@ -37,6 +37,7 @@ import 'package:fula_files/core/models/fula_object.dart';
 import 'package:fula_files/core/models/share_token.dart' as share_model;
 import 'package:fula_files/core/platform/rust_lib_init.dart' as rust_lib;
 import 'package:fula_files/core/services/automate_task_service.dart';
+import 'package:fula_files/core/services/bucket_health_breaker.dart';
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
 import 'package:fula_files/core/services/category_listing.dart';
@@ -67,6 +68,14 @@ String get _e2eSeed => !_e2eEnabled
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Web shell only: stop re-issuing forest loads to a bucket that just
+  // failed. On web every fula call shares ONE wasm client, and the FRB
+  // bridge holds an exclusive per-client lock across a forest load — so a
+  // gc-damaged bucket's 30s-then-500 root fetch stalls the whole tab, and
+  // a Dart timeout can't cancel it. Native keeps the old behaviour (flag
+  // stays false there): it has its own block cache and storage tiers.
+  BucketHealthBreaker.enabled = true;
 
   Object? bootError;
   var restored = false;

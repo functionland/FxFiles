@@ -118,6 +118,44 @@ void main() {
       }
     });
 
+    test('archives is a managed content base (2026-08-22)', () {
+      // Joined the managed set because its legacy forest root is
+      // gc-damaged: phone net-export captures show
+      // `GET /archives/Qmae36f95…` returning 500 after 30.2s with no `-v8`
+      // sibling to fall back to, so the whole category hung. It must
+      // behave exactly like the other four content categories.
+      expect(BucketVersionResolver.writeBucket('archives'), 'archives-v8');
+      expect(BucketVersionResolver.isManagedBase('archives'), isTrue);
+      expect(
+        BucketVersionResolver.readBuckets('archives'),
+        <String>['archives', 'archives-v8'],
+        reason: 'legacy first so listCategoryCached prefers the v8 copy',
+      );
+      // The legacy bucket becomes read-only — new data must never land in
+      // a gc-damaged forest. (Reads are deliberately NOT blocked: existing
+      // archives stay downloadable and share links keep working.)
+      expect(
+        BucketVersionResolver.isForbiddenWriteTarget('archives'),
+        isTrue,
+      );
+      expect(
+        BucketVersionResolver.isForbiddenWriteTarget('archives-v8'),
+        isFalse,
+      );
+    });
+
+    test('downloads is still unmanaged (only archives was migrated)', () {
+      // Guards against over-reaching: `downloads` is the other legacy-only
+      // content category and was NOT part of this change — its bucket
+      // answered normally (404 = empty) in both captures.
+      expect(BucketVersionResolver.writeBucket('downloads'), 'downloads');
+      expect(BucketVersionResolver.isManagedBase('downloads'), isFalse);
+      expect(
+        BucketVersionResolver.isForbiddenWriteTarget('downloads'),
+        isFalse,
+      );
+    });
+
     test('asset / un-migrated buckets still pass through (incremental)', () {
       // Asset buckets are a separate (Type-B) scope — never in the metadata set.
       expect(BucketVersionResolver.writeBucket('website-assets'),

@@ -13,7 +13,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 
-/// Which share backend to invoke — mirror of the native ShareChoice in
+/// Which share backend to invoke â€” mirror of the native ShareChoice in
 /// lib/features/sharing/widgets/create_share_dialog.dart (that file is
 /// dart:io-tainted, so the web shell carries its own copy of the enum).
 enum WebShareChoice { recipient, password, public }
@@ -21,12 +21,24 @@ enum WebShareChoice { recipient, password, public }
 /// A created share: the URL to hand out, the recorded OutgoingShare,
 /// and whether the record reached the cloud shares manifest (when
 /// false, the link still works but won't appear in the app's Sharing
-/// tab until recreated — surfaced as a warning in the result dialog).
+/// tab until recreated â€” surfaced as a warning in the result dialog).
 class WebShareResult {
   final String url;
   final OutgoingShare share;
   final WebShareChoice choice;
-  final bool persisted;
+
+  /// Settles when the BACKGROUND record write finishes: true once the
+  /// share reached the cloud shares manifest, false after its retries
+  /// were exhausted. Never throws.
+  ///
+  /// This used to be a plain `bool` that the caller awaited BEFORE the
+  /// URL was handed back â€” which meant a link that was already complete
+  /// and working sat behind up to four untimed round trips against
+  /// `fula-metadata`. On a phone with that bucket 500ing, the sheet spun
+  /// at "Creating linkâ€¦" long enough for the user to give up or for the
+  /// tab to be reclaimed, and the finished link was thrown away.
+  /// Displaying the link now depends ONLY on share creation returning.
+  final Future<bool> persisted;
 
   /// Tag shares: tagged files left OUT of the share (no cloud copy in
   /// the primary bucket) so the owner can be told, native-style.
@@ -46,8 +58,8 @@ class WebShareResult {
 /// Web-shell share creation. Each method replicates the corresponding
 /// native SharingService recipe step-for-step (createPublicLink /
 /// createPasswordProtectedLink / createShare+shareWithUser in
-/// lib/core/services/sharing_service.dart) — same token construction,
-/// same URL builders, same OutgoingShare fields — then records the
+/// lib/core/services/sharing_service.dart) â€” same token construction,
+/// same URL builders, same OutgoingShare fields â€” then records the
 /// share in the SAME cloud manifest the native app syncs
 /// (CloudShareStorageService), so web-created shares show up in the
 /// app's Sharing tab and can be revoked from there.
@@ -75,7 +87,7 @@ class WebShareService {
     return (priv: priv, pub: pub);
   }
 
-  /// "Anyone with the link" — v2 public link.
+  /// "Anyone with the link" â€” v2 public link.
   static Future<WebShareResult> createPublicLink({
     required String bucket,
     required String pathScope,
@@ -140,7 +152,7 @@ class WebShareService {
       storageKey: storageKey,
     );
 
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: url,
       share: share,
@@ -149,7 +161,7 @@ class WebShareService {
     );
   }
 
-  /// "Protected link" — password-encrypted v2 payload.
+  /// "Protected link" â€” password-encrypted v2 payload.
   static Future<WebShareResult> createPasswordProtectedLink({
     required String bucket,
     required String pathScope,
@@ -221,7 +233,7 @@ class WebShareService {
       storageKey: storageKey,
     );
 
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: built.url,
       share: share,
@@ -230,8 +242,8 @@ class WebShareService {
     );
   }
 
-  /// "Specific Person" — recipient share against a pasted FULA share
-  /// ID. The link is the app deep link (fxblox://share/…), same as the
+  /// "Specific Person" â€” recipient share against a pasted FULA share
+  /// ID. The link is the app deep link (fxblox://share/â€¦), same as the
   /// native flow; only the recipient's app (holding their private key)
   /// can use it.
   static Future<WebShareResult> createRecipientShare({
@@ -287,7 +299,7 @@ class WebShareService {
       recipientName: recipientName,
     );
 
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: buildRecipientShareUrl(token.encode()),
       share: share,
@@ -307,7 +319,7 @@ class WebShareService {
   // manifest. Tag shares are always temporal (a tag has no snapshot).
 
   /// Per-file `{n, c, s, t}` manifest entries (continues past a failed
-  /// token so one bad file doesn't kill the share) — mirror of
+  /// token so one bad file doesn't kill the share) â€” mirror of
   /// SharingService._buildManifestEntries.
   static Future<List<Map<String, dynamic>>> _buildManifestEntries({
     required String bucket,
@@ -340,7 +352,7 @@ class WebShareService {
   }
 
   /// PUT the share manifest (fire-and-forget on native; the web awaits
-  /// so the result dialog can warn when the manifest didn't land) —
+  /// so the result dialog can warn when the manifest didn't land) â€”
   /// mirror of SharingService._postManifest.
   static Future<void> _postManifest({
     required String shareId,
@@ -391,7 +403,7 @@ class WebShareService {
   }
 
   static Never _noShareableFiles(String tagName) => throw StateError(
-      'Tag "$tagName" has no shareable files — newly uploaded files are '
+      'Tag "$tagName" has no shareable files â€” newly uploaded files are '
       'shareable; older files must be re-uploaded to share them.');
 
   /// "Anyone with the link" for a tag.
@@ -471,7 +483,7 @@ class WebShareService {
       linkSecretKey: kp.priv,
       tagId: tagId,
     );
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: url,
       share: share,
@@ -579,7 +591,7 @@ class WebShareService {
       encryptedFragment: fragment,
       tagId: tagId,
     );
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: url,
       share: share,
@@ -590,7 +602,7 @@ class WebShareService {
   }
 
   /// Share a tag with a specific recipient (per-file tokens issued to
-  /// their key; plaintext manifest — the tokens themselves are
+  /// their key; plaintext manifest â€” the tokens themselves are
   /// recipient-scoped).
   static Future<WebShareResult> createTagRecipientShare({
     required String tagId,
@@ -656,7 +668,7 @@ class WebShareService {
       recipientName: recipientName,
       tagId: tagId,
     );
-    final persisted = await _persist(share);
+    final persisted = _persistInBackground(share);
     return WebShareResult(
       url: buildRecipientShareUrl(token.encode()),
       share: share,
@@ -668,24 +680,48 @@ class WebShareService {
 
   /// Record the share in the cloud shares manifest (the one the native
   /// app merges into its Sharing tab): download existing, add (new
-  /// wins its id), upload. Best-effort — a failure must not eat a link
-  /// whose fula token already exists, so the caller gets `false` and
-  /// warns instead.
-  static Future<bool> _persist(OutgoingShare share) async {
-    try {
-      final existing = await CloudShareStorageService.instance.downloadShares();
-      final byId = <String, OutgoingShare>{
-        for (final s in existing) s.id: s,
-      };
-      byId[share.id] = share;
-      final merged = byId.values.toList()
-        ..sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
-      await CloudShareStorageService.instance.uploadShares(merged);
-      return true;
-    } catch (e) {
-      debugPrint('WebShareService: share created but not recorded: $e');
-      return false;
+  /// wins its id), upload. Best-effort â€” a failure must not eat a link
+  /// whose fula token already exists, so this resolves `false` and the
+  /// dialog warns instead.
+  ///
+  /// Runs OFF the critical path (see [WebShareResult.persisted]) and
+  /// RETRIES: the record is what makes a share revocable from the phone's
+  /// Sharing tab, so a transient gateway blip must not permanently orphan
+  /// it. Bounded, in-session only â€” a tab close still loses a pending
+  /// record, same as before.
+  static const List<Duration> _persistBackoff = <Duration>[
+    Duration(seconds: 2),
+    Duration(seconds: 8),
+    Duration(seconds: 20),
+  ];
+
+  static Future<bool> _persistInBackground(OutgoingShare share) async {
+    for (var attempt = 0; attempt <= _persistBackoff.length; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(_persistBackoff[attempt - 1]);
+      }
+      try {
+        final existing =
+            await CloudShareStorageService.instance.downloadShares();
+        final byId = <String, OutgoingShare>{
+          for (final s in existing) s.id: s,
+        };
+        byId[share.id] = share;
+        final merged = byId.values.toList()
+          ..sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
+        await CloudShareStorageService.instance.uploadShares(merged);
+        if (attempt > 0) {
+          debugPrint('WebShareService: share recorded on retry $attempt');
+        }
+        return true;
+      } catch (e) {
+        debugPrint('WebShareService: share created but not recorded '
+            '(attempt ${attempt + 1}/${_persistBackoff.length + 1}): $e');
+      }
     }
+    debugPrint('WebShareService: giving up recording share ${share.id} â€” '
+        'the link works but will not appear in the app Sharing tab');
+    return false;
   }
 
   // ===========================================================  Shared tab
@@ -800,7 +836,7 @@ class WebShareService {
     }
   }
 
-  /// Accept a pasted share link or raw token. Handles fxblox://share/…
+  /// Accept a pasted share link or raw token. Handles fxblox://share/â€¦
   /// deep links, raw encoded tokens and v1 public-link payloads (v2
   /// public/password links open in the share portal, like native).
   static Future<AcceptedShare> acceptFromInput(String input) async {
@@ -818,7 +854,7 @@ class WebShareService {
           }
         }
       } catch (_) {
-        // Not a v1 payload — fall through to the token forms.
+        // Not a v1 payload â€” fall through to the token forms.
       }
     }
 
@@ -901,7 +937,7 @@ class WebShareService {
     await _saveAcceptedShares(shares);
   }
 
-  /// Download an accepted share's file — mirror of
+  /// Download an accepted share's file â€” mirror of
   /// SharingService.downloadSharedFile: an ephemeral fula client (the
   /// recipient's encryption key) pointed at the share-gateway proxy,
   /// fetching by token in one shot.

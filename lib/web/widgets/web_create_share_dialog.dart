@@ -95,6 +95,21 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // Never let the sheet be dismissed WHILE a link is being created.
+    // `_submit` ends in `Navigator.pop(context, result)` guarded by a
+    // `mounted` check, so a dismissal mid-flight threw away a share that
+    // had already been created (and already consumed a fula share token)
+    // — the user saw the sheet vanish with no link and no error. The
+    // route's `enableDrag: false` closes the drag-to-dismiss half of this
+    // (a touch-only gesture, which is why the bug was mobile-only); this
+    // blocks the barrier-tap and system-back half.
+    return PopScope(
+      canPop: !_isLoading,
+      child: _sheet(theme),
+    );
+  }
+
+  Widget _sheet(ThemeData theme) {
     return DraggableScrollableSheet(
       initialChildSize: 0.85,
       minChildSize: 0.5,
@@ -812,6 +827,11 @@ Future<WebShareResult?> showWebCreateShareDialog({
     useSafeArea: true,
     backgroundColor: Colors.transparent,
     constraints: const BoxConstraints(maxWidth: 560),
+    // Drag-to-dismiss is a touch-only gesture, and mid-creation it
+    // destroyed an already-created share link (see the PopScope in
+    // WebCreateShareDialog.build). The sheet has an explicit close
+    // button, which is already disabled while loading.
+    enableDrag: false,
     builder: (_) => WebCreateShareDialog(
       bucket: bucket,
       pathScope: pathScope,
@@ -837,6 +857,8 @@ Future<WebShareResult?> showWebCreateTagShareDialog({
     useSafeArea: true,
     backgroundColor: Colors.transparent,
     constraints: const BoxConstraints(maxWidth: 560),
+    // See the file-share sheet above — same reason.
+    enableDrag: false,
     builder: (_) => WebCreateShareDialog(
       bucket: '',
       pathScope: '',
@@ -980,32 +1002,44 @@ Future<void> showWebShareCreatedDialog({
                 ],
               ),
             ],
-            if (!result.persisted) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.warnFaint,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.warnBorder),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(LucideIcons.alertTriangle,
-                        size: 16, color: AppColors.warning),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'The link works, but it could not be recorded in '
-                        'your shares list — it won\'t show in the app\'s '
-                        'Sharing tab and can\'t be revoked early.',
-                        style: TextStyle(fontSize: 12),
-                      ),
+            // The record write now runs in the BACKGROUND (the link above
+            // is already valid and is shown immediately), so this warning
+            // waits on it instead of gating the link on it. Nothing is
+            // rendered while it's still in flight — a transient failure
+            // usually succeeds on retry, and flashing a scary warning that
+            // then disappears is worse than showing it a few seconds late.
+            FutureBuilder<bool>(
+              future: result.persisted,
+              builder: (_, snap) {
+                if (snap.data != false) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.warnFaint,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.warnBorder),
                     ),
-                  ],
-                ),
-              ),
-            ],
+                    child: const Row(
+                      children: [
+                        Icon(LucideIcons.alertTriangle,
+                            size: 16, color: AppColors.warning),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'The link works, but it could not be recorded in '
+                            'your shares list — it won\'t show in the app\'s '
+                            'Sharing tab and can\'t be revoked early.',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
           ],
         ),
       ),

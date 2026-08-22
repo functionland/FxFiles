@@ -135,11 +135,22 @@ class WebIpnsService {
   /// Load pointers from the cloud blob; entries carrying a `privKey`
   /// seed are stashed into SecureStorage (validated against the IPNS
   /// name first, same rule as the native restore). Single-flight:
-  /// concurrent callers await the same download.
+  /// concurrent NON-FORCE callers await the same download.
+  ///
+  /// A FORCE load never joins an in-flight non-force flight (same rule as
+  /// `WebTagService.load`). It used to, which meant a caller asking for
+  /// authoritative freshness — the mint path at `:217` does
+  /// read-modify-write on the pointers manifest — could be served a
+  /// flight that started earlier and, worse, could be parked behind one
+  /// that had stalled. With a gc-damaged metadata bucket that stall was
+  /// 30s+, so the detail screen's forced load inherited someone else's
+  /// hang instead of doing its own bounded read.
   Future<void> load({bool force = false}) {
     if (_loaded && !force) return Future.value();
-    final inFlight = _loadFuture;
-    if (inFlight != null) return inFlight;
+    if (!force) {
+      final inFlight = _loadFuture;
+      if (inFlight != null) return inFlight;
+    }
     final f = _doLoad().whenComplete(() => _loadFuture = null);
     _loadFuture = f;
     return f;
