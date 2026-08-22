@@ -87,8 +87,20 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
       }
     });
     try {
-      await WebTagService.instance
-          .load(force: force, refetchForest: force);
+      // Bounded and best-effort, matching the DETAIL screen. Nothing here
+      // may gate the first paint on a read that can queue behind the wasm
+      // bridge's per-client lock: one forest load of a gc-damaged bucket
+      // holds it ~30s and no Dart timeout can cut that short, so an
+      // unbounded await is an unbounded spinner. Generations carry their
+      // own `tagName`, so rows still render without the tag manifest —
+      // phase 2 below fills in whatever tags were missing.
+      try {
+        await WebTagService.instance
+            .load(force: force, refetchForest: force)
+            .timeout(const Duration(seconds: 6));
+      } catch (e) {
+        debugPrint('WebsitesList: tags unavailable, continuing: $e');
+      }
       if (!mounted) return;
       // First paint: rows from tags; statuses show as pending.
       setState(() {
