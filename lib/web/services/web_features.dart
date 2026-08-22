@@ -124,9 +124,15 @@ class WebFeatures {
       bool refetchForest = false,
       // The LIST screen passes true: it never renders parsedContent, and
       // a legacy still-bloated manifest (≤30×100KB per generation) would
-      // otherwise stay resident in its state. The DETAIL screen keeps
-      // the default — its recreate flow reuses recorded parses.
-      bool dropParsedContent = false}) async {
+      // otherwise stay resident in its state.
+      bool dropParsedContent = false,
+      // The DETAIL screen passes its tagId: it needs the recorded parses
+      // for the group it is showing, but keeping them for every OTHER
+      // group is what froze the screen on open — it decoded and retained
+      // the whole vault's worth of parsedContent, then filtered down to
+      // one group. Using the default (keep everything) is only correct
+      // for a caller that genuinely reads every group's parses.
+      String? keepParsedForTagId}) async {
     final kek = await _kek();
     final userId = await _userId();
 
@@ -134,7 +140,8 @@ class WebFeatures {
         await WebListingSwr.instance.downloadMetadataMergedSwr(
             'website-metadata', '.fula/websites/$userId.json', kek,
             force: force, refetchForest: refetchForest),
-        dropParsedContent: dropParsedContent);
+        dropParsedContent: dropParsedContent,
+        keepParsedForTagId: keepParsedForTagId);
 
     var pointers = const <String, WebsiteGroupPointer>{};
     try {

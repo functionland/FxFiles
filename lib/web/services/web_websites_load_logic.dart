@@ -31,10 +31,20 @@ import 'package:fula_files/core/models/website_group_pointer.dart';
 /// manifest can carry ≤30×100KB of it per generation. The detail
 /// screen keeps the default (false): its recreate flow reuses recorded
 /// parses via websiteCidAssetsByName.
+/// [keepParsedForTagId] is the DETAIL screen's middle ground: it needs the
+/// recorded parses for the ONE group it is showing (its recreate flow
+/// reuses them), but retaining them for every other group is what froze
+/// the screen. A vault with several groups holds tens of MB of
+/// `parsedContent` strings, all decoded and kept on the main thread and
+/// then immediately filtered away — the list screen avoids that with
+/// `dropParsedContent: true`, which is exactly why the list loads and the
+/// detail did not. Generations whose `tagId` differs are stripped like the
+/// list's; the requested one keeps everything.
 Future<List<WebsiteGeneration>> decodeGenerationsBlobs(
   List<Uint8List> blobs, {
   int yieldEvery = 8,
   bool dropParsedContent = false,
+  String? keepParsedForTagId,
 }) async {
   final byId = <String, WebsiteGeneration>{};
   var sinceYield = 0;
@@ -43,7 +53,8 @@ Future<List<WebsiteGeneration>> decodeGenerationsBlobs(
       final j = jsonDecode(utf8.decode(blob)) as Map<String, dynamic>;
       for (final raw in (j['generations'] as List<dynamic>? ?? const [])) {
         final g = WebsiteGeneration.fromJson(raw as Map<String, dynamic>);
-        if (dropParsedContent) {
+        if (dropParsedContent ||
+            (keepParsedForTagId != null && g.tagId != keepParsedForTagId)) {
           for (final a in g.assets) {
             a.parsedContent = null;
           }

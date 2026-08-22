@@ -166,7 +166,13 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       } catch (e) {
         debugPrint('WebsiteDetail: tags unavailable, continuing: $e');
       }
-      final r = await WebFeatures.loadWebsites();
+      // Keep the recorded parses ONLY for the group being opened. Loading
+      // them for every group is what froze this screen: a vault with
+      // several website groups carries tens of MB of `parsedContent`, all
+      // decoded and held on the main thread and then discarded by the
+      // filter two lines below.
+      final r = await WebFeatures.loadWebsites(
+          keepParsedForTagId: widget.tagId);
       if (!mounted) return;
 
       final tag = WebTagService.instance.tagById(widget.tagId);

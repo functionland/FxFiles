@@ -115,6 +115,59 @@ void main() {
       final out = await decodeGenerationsBlobs([blob], yieldEvery: 3);
       expect(out.length, 40);
     });
+
+    /// The website DETAIL screen froze on open because it decoded and
+    /// RETAINED `parsedContent` for every group in the vault (tens of MB
+    /// of strings on the main thread) before filtering down to the one
+    /// group it shows. It still needs the parses for THAT group — its
+    /// recreate flow reuses them — so the fix is per-tag, not all-or-nothing.
+    test('keepParsedForTagId retains parses for that tag only', () async {
+      final blob = _blob({
+        'generations': [
+          _gen('mine', tagId: 'wanted', assets: [
+            _asset('a.html', parsedContent: 'keep me'),
+          ]),
+          _gen('other', tagId: 'unwanted', assets: [
+            _asset('b.html', parsedContent: 'drop me'),
+          ]),
+        ],
+      });
+      final out =
+          await decodeGenerationsBlobs([blob], keepParsedForTagId: 'wanted');
+      final mine = out.firstWhere((g) => g.id == 'mine');
+      final other = out.firstWhere((g) => g.id == 'other');
+      expect(mine.assets.single.parsedContent, 'keep me');
+      expect(other.assets.single.parsedContent, isNull,
+          reason: 'other groups must not stay resident');
+      // Nothing is dropped from the RESULT — only the heavy field is.
+      expect(out.length, 2);
+    });
+
+    test('dropParsedContent wins over keepParsedForTagId', () async {
+      final blob = _blob({
+        'generations': [
+          _gen('mine', tagId: 'wanted', assets: [
+            _asset('a.html', parsedContent: 'x'),
+          ]),
+        ],
+      });
+      final out = await decodeGenerationsBlobs([blob],
+          dropParsedContent: true, keepParsedForTagId: 'wanted');
+      expect(out.single.assets.single.parsedContent, isNull);
+    });
+
+    test('keepParsedForTagId null keeps everything (unchanged default)',
+        () async {
+      final blob = _blob({
+        'generations': [
+          _gen('a', tagId: 't1', assets: [_asset('a.html', parsedContent: 'p')]),
+          _gen('b', tagId: 't2', assets: [_asset('b.html', parsedContent: 'q')]),
+        ],
+      });
+      final out = await decodeGenerationsBlobs([blob]);
+      expect(out.map((g) => g.assets.single.parsedContent).toList(),
+          containsAll(<String>['p', 'q']));
+    });
   });
 
   group('decodePointersBlobs', () {
