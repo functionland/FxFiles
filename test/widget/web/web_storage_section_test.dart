@@ -23,11 +23,13 @@ void main() {
     totalCredits: 0,
   );
 
-  testWidgets('renders STORAGE header, Cloud label and used/total bytes',
+  testWidgets('renders STORAGE header, Cloud Files label and used/total bytes',
       (tester) async {
     await pump(tester, halfFull);
     expect(find.text('STORAGE'), findsOneWidget);
-    expect(find.text('Cloud'), findsOneWidget);
+    // The row was relabelled 'Cloud' -> 'Cloud Files' when the Cloud
+    // Files manager shipped; this assertion was never updated.
+    expect(find.text('Cloud Files'), findsOneWidget);
     expect(find.text('500.0 MB / 2.00 GB'), findsOneWidget);
     // No native "Phone"/device row on web.
     expect(find.text('Phone'), findsNothing);

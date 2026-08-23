@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fula_files/core/services/remote_object_resolver.dart';
-import 'package:fula_files/web/services/web_tagged_file_resolver.dart';
+// The RESOLVER itself transitively imports `package:web`, which the VM
+// test runner cannot load; the decisions it makes live here instead.
+import 'package:fula_files/web/services/web_tagged_file_logic.dart';
 
 /// The Tags screen joins `TaggedFile.remoteKey` to a real cloud object.
 /// Both halves of that join have to agree on what a key looks like, and
@@ -10,18 +12,18 @@ void main() {
   group('normalizeTaggedObjectKey', () {
     test('strips a leading segment that IS a known bucket', () {
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('images/photo.jpg'),
+        normalizeTaggedObjectKey('images/photo.jpg'),
         'photo.jpg',
       );
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('documents/a/b.pdf'),
+        normalizeTaggedObjectKey('documents/a/b.pdf'),
         'a/b.pdf',
       );
     });
 
     test('strips the -v8 sibling too', () {
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('images-v8/photo.jpg'),
+        normalizeTaggedObjectKey('images-v8/photo.jpg'),
         'photo.jpg',
       );
     });
@@ -30,29 +32,29 @@ void main() {
       // The shelf key shape. Under the naive rule this became a request
       // for a bucket literally named `2026`, and the 404 was swallowed.
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('2026/07/report.pdf'),
+        normalizeTaggedObjectKey('2026/07/report.pdf'),
         '2026/07/report.pdf',
       );
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('holiday/pic.jpg'),
+        normalizeTaggedObjectKey('holiday/pic.jpg'),
         'holiday/pic.jpg',
       );
     });
 
     test('leaves a bare key untouched', () {
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('photo.jpg'),
+        normalizeTaggedObjectKey('photo.jpg'),
         'photo.jpg',
       );
     });
 
     test('drops leading slashes', () {
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('/photo.jpg'),
+        normalizeTaggedObjectKey('/photo.jpg'),
         'photo.jpg',
       );
       expect(
-        WebTaggedFileResolver.normalizeTaggedObjectKey('images//photo.jpg'),
+        normalizeTaggedObjectKey('images//photo.jpg'),
         'photo.jpg',
       );
     });
@@ -110,6 +112,77 @@ void main() {
         resolveRemoteObjectCandidates(remoteKey: 'images/', fileName: 'x'),
         isEmpty,
       );
+    });
+  });
+
+  group('firstResolvedCandidate', () {
+    test('takes the FIRST candidate present, not just any', () {
+      // Order is meaningful: for a managed category the healthy -v8
+      // bucket precedes the gc-damaged legacy one, so a file present in
+      // both must resolve to v8.
+      final refs = resolveRemoteObjectCandidates(
+        remoteKey: 'photo.jpg',
+        fileName: 'photo.jpg',
+      );
+      final listings = {
+        'images-v8': {'photo.jpg': 'V8'},
+        'images': {'photo.jpg': 'LEGACY'},
+      };
+      expect(firstResolvedCandidate(refs, listings), ('images-v8', 'V8'));
+    });
+
+    test('falls through to a later candidate when the first misses', () {
+      final refs = resolveRemoteObjectCandidates(
+        remoteKey: 'photo.jpg',
+        fileName: 'photo.jpg',
+      );
+      final listings = {
+        'images-v8': <String, String>{},
+        'images': {'photo.jpg': 'LEGACY'},
+      };
+      expect(firstResolvedCandidate(refs, listings), ('images', 'LEGACY'));
+    });
+
+    test('matches a composite listing key against a bare candidate', () {
+      final refs = resolveRemoteObjectCandidates(
+        remoteKey: 'photo.jpg',
+        fileName: 'photo.jpg',
+      );
+      final listings = {
+        'images-v8': indexListingByKey(
+          const ['images-v8/photo.jpg'],
+          (k) => k,
+        ),
+      };
+      expect(firstResolvedCandidate(refs, listings)?.$1, 'images-v8');
+    });
+
+    test('returns null when nothing resolves', () {
+      final refs = resolveRemoteObjectCandidates(
+        remoteKey: 'gone.jpg',
+        fileName: 'gone.jpg',
+      );
+      expect(firstResolvedCandidate(refs, <String, Map<String, String>>{}),
+          isNull);
+    });
+  });
+
+  group('preferredBuckets', () {
+    test('is the best candidate of each file, deduped', () {
+      final a = resolveRemoteObjectCandidates(
+          remoteKey: 'a.jpg', fileName: 'a.jpg');
+      final b = resolveRemoteObjectCandidates(
+          remoteKey: 'b.jpg', fileName: 'b.jpg');
+      final c = resolveRemoteObjectCandidates(
+          remoteKey: 'c.pdf', fileName: 'c.pdf');
+      final preferred = preferredBuckets([a, b, c]);
+      expect(preferred, {'images-v8', 'documents-v8'});
+      // The legacy siblings are deliberately NOT in the first pass.
+      expect(preferred, isNot(contains('images')));
+    });
+
+    test('ignores files with no candidates at all', () {
+      expect(preferredBuckets([const [], const []]), isEmpty);
     });
   });
 }

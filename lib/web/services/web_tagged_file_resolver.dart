@@ -25,9 +25,9 @@ import 'package:flutter/foundation.dart';
 
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/fula_object.dart';
-import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/remote_object_resolver.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
+import 'package:fula_files/web/services/web_tagged_file_logic.dart';
 
 /// One tagged file plus the cloud object it resolved to (if any).
 class ResolvedTaggedFile {
@@ -90,11 +90,7 @@ class WebTaggedFileResolver {
     // means the `-v8` bucket precedes the legacy one. Legacy buckets are
     // exactly the gc-damaged ones that time out, so they are only listed
     // when a file genuinely did not resolve without them.
-    final preferred = <String>{
-      for (final refs in candidates.values)
-        if (refs.isNotEmpty) refs.first.bucket,
-    };
-    await _loadBuckets(preferred);
+    await _loadBuckets(preferredBuckets(candidates.values));
 
     final out = List<ResolvedTaggedFile>.generate(
       files.length,
@@ -129,15 +125,8 @@ class WebTaggedFileResolver {
   }
 
   /// First candidate that exists in a listing we have.
-  (String, FulaObject)? _lookup(List<RemoteObjectRef> refs) {
-    for (final ref in refs) {
-      final listing = _byBucket[ref.bucket];
-      if (listing == null) continue;
-      final o = listing[ref.key] ?? listing[normalizeTaggedObjectKey(ref.key)];
-      if (o != null) return (ref.bucket, o);
-    }
-    return null;
-  }
+  (String, FulaObject)? _lookup(List<RemoteObjectRef> refs) =>
+      firstResolvedCandidate(refs, _byBucket);
 
   Future<void> _loadBuckets(Set<String> buckets) async {
     final todo = buckets.where((b) => !_byBucket.containsKey(b)).toList();
@@ -153,12 +142,7 @@ class WebTaggedFileResolver {
       final listing = await WebListingSwr.instance
           .getListing(bucket)
           .timeout(_kListingBudget);
-      _byBucket[bucket] = {
-        for (final o in listing.objects) ...{
-          o.key: o,
-          normalizeTaggedObjectKey(o.key): o,
-        },
-      };
+      _byBucket[bucket] = indexListingByKey(listing.objects, (o) => o.key);
     } catch (e) {
       // Record the miss so the second pass does not retry it.
       _byBucket[bucket] = const {};
@@ -166,28 +150,7 @@ class WebTaggedFileResolver {
     }
   }
 
-  /// Strip a leading segment ONLY when it is a real bucket name, so
-  /// `images-v8/photo.jpg` and `photo.jpg` match while the shelf key
-  /// `2026/07/x.pdf` keeps all of its segments.
-  ///
-  /// Public for unit tests: this is the exact rule whose naive version
-  /// (`RegExp(r'^[a-z0-9-]+$')`) turns `2026` into a bucket name.
-  static String normalizeTaggedObjectKey(String key) {
-    var k = key;
-    while (k.startsWith('/')) {
-      k = k.substring(1);
-    }
-    final firstSlash = k.indexOf('/');
-    if (firstSlash > 0) {
-      final head = k.substring(0, firstSlash);
-      if (isKnownBucketName(head) ||
-          kKnownBucketBases.contains(BucketVersionResolver.baseOf(head))) {
-        k = k.substring(firstSlash + 1);
-      }
-    }
-    while (k.startsWith('/')) {
-      k = k.substring(1);
-    }
-    return k;
-  }
+  // Key normalization and candidate matching live in
+  // `web_tagged_file_logic.dart` — this file transitively imports
+  // `package:web`, so anything testable has to sit outside it.
 }
