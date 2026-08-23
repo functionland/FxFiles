@@ -656,12 +656,15 @@ class WebWebsiteService extends ChangeNotifier {
     required List<WebPickedAsset> picked,
     bool enableTracking = false,
 
-    /// Opt into the public directory ("yellow pages"). Defaults ON for a
-    /// NEW generation — the user is shown this choice, and can turn it
-    /// off, in the pre-generation disclaimer and again on the website
-    /// screen. The SERVER column defaults to false, so nothing that was
-    /// generated before this feature is ever listed retroactively.
-    bool listInDirectory = true,
+    /// Opt into the public directory ("yellow pages").
+    ///
+    /// Defaults OFF, and the checkbox in the pre-generation disclaimer
+    /// starts unticked: a pre-ticked box does not constitute consent
+    /// (GDPR Recital 32), so listing requires a deliberate act. The
+    /// SERVER column also defaults to false, so a site is listed only
+    /// when a user actively asked for it — here, or later via the
+    /// website screen's toggle.
+    bool listInDirectory = false,
   }) async {
     final websiteName = tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
 

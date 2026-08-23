@@ -68,7 +68,8 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
 
   /// The public-directory choice the user made in the pre-generation
   /// disclaimer, carried from that dialog to `startGeneration`.
-  bool _listInDirectory = true;
+  /// Opt-in: false unless the user ticked the box.
+  bool _listInDirectory = false;
 
   /// Id of the newest completed generation — the one the directory
   /// lists, and so the only card that carries the listing switch.
@@ -450,10 +451,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     // Public-content disclaimer before the form, matching the native
     // app's step-1 placement (assets + generated site are public IPFS).
     // It also carries the public-directory choice — this is the one
-    // screen every user passes through before generating, and listing
-    // defaults ON, so the choice has to be visible here and not only on
-    // a settings row further in.
-    final listInDirectory = ValueNotifier<bool>(true);
+    // screen every user passes through before generating, so it is where
+    // the opt-in is taken. Starts UNTICKED: a pre-ticked box is not
+    // consent (GDPR Recital 32), it has to be a deliberate act.
+    final listInDirectory = ValueNotifier<bool>(false);
     final accepted = await showIpfsPublicDisclaimerDialog(
       context,
       directoryOptIn: listInDirectory,
@@ -520,8 +521,9 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     // Same public-content acknowledgement as Create Website (native
     // parity), including the directory choice — a recreate produces a
     // NEW generation, so it gets its own decision rather than silently
-    // inheriting the previous one.
-    final listInDirectory = ValueNotifier<bool>(true);
+    // inheriting the previous one. Also unticked: consent does not carry
+    // over from a previous generation.
+    final listInDirectory = ValueNotifier<bool>(false);
     final accepted = await showIpfsPublicDisclaimerDialog(
       context,
       directoryOptIn: listInDirectory,

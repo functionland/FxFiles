@@ -21,11 +21,13 @@ Future<bool?> showIpfsPublicDisclaimerDialog(
   /// When supplied, the dialog also offers the public-directory choice
   /// and writes the user's answer back through this notifier.
   ///
-  /// This is the ONLY screen every user is guaranteed to pass through
-  /// before a site is generated. Listing defaults to ON and its
+  /// The box starts UNTICKED. GDPR Recital 32 names pre-ticked boxes as
+  /// something that does not constitute consent — valid consent needs a
+  /// clear affirmative act — so listing is opt-in, taken here, by a
+  /// deliberate tick. This is also the only screen every user is
+  /// guaranteed to pass through before a site is generated; the
   /// permanent toggle lives on the website detail screen, which a user
-  /// may never open — so surfacing the choice here is what makes the
-  /// default defensible rather than a surprise. Do not quietly drop it.
+  /// may never open. Do not pre-tick this and do not quietly drop it.
   ///
   /// A notifier (rather than a richer return type) keeps the existing
   /// `Future<bool?>` contract intact for the call sites that don't need
@@ -130,9 +132,11 @@ class _IpfsPublicDisclaimerDialogState
                     style: TextStyle(fontSize: 14),
                   ),
                   subtitle: const Text(
-                    'Its name, a short AI-written description and its link '
-                    'appear on the public FxFiles directory so others can '
-                    'find it. You can turn this off any time from the '
+                    'Optional. If you tick this, the site\'s name, a short '
+                    'AI-written description and its link appear on the '
+                    'public FxFiles directory so others can find it. '
+                    'Leave it unticked and the site stays reachable only '
+                    'by its link. You can change this any time from the '
                     'website screen.',
                     style: TextStyle(fontSize: 12),
                   ),
