@@ -66,6 +66,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   bool _loading = true;
   String? _error;
 
+  /// The public-directory choice the user made in the pre-generation
+  /// disclaimer, carried from that dialog to `startGeneration`.
+  bool _listInDirectory = true;
+
   @override
   void initState() {
     super.initState();
@@ -411,6 +415,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       prompt: enrichedPrompt,
       picked: List.of(_readyAssets),
       enableTracking: result.enableTracking,
+      listInDirectory: _listInDirectory,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -433,8 +438,17 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     }
     // Public-content disclaimer before the form, matching the native
     // app's step-1 placement (assets + generated site are public IPFS).
-    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    // It also carries the public-directory choice — this is the one
+    // screen every user passes through before generating, and listing
+    // defaults ON, so the choice has to be visible here and not only on
+    // a settings row further in.
+    final listInDirectory = ValueNotifier<bool>(true);
+    final accepted = await showIpfsPublicDisclaimerDialog(
+      context,
+      directoryOptIn: listInDirectory,
+    );
     if (accepted != true || !mounted) return;
+    _listInDirectory = listInDirectory.value;
     final result =
         await Navigator.of(context).push<WebGeneratePromptResult>(
       MaterialPageRoute(
@@ -492,9 +506,17 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// into the creative direction; the group's current assets are
   /// reused on publish.
   Future<void> _recreate(WebsiteGeneration gen) async {
-    // Same public-content acknowledgement as Create Website (native parity).
-    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    // Same public-content acknowledgement as Create Website (native
+    // parity), including the directory choice — a recreate produces a
+    // NEW generation, so it gets its own decision rather than silently
+    // inheriting the previous one.
+    final listInDirectory = ValueNotifier<bool>(true);
+    final accepted = await showIpfsPublicDisclaimerDialog(
+      context,
+      directoryOptIn: listInDirectory,
+    );
     if (accepted != true || !mounted) return;
+    _listInDirectory = listInDirectory.value;
     final parsed = parseStoredWebsitePrompt(gen.prompt);
     final priorUrl = gen.gatewayUrl ?? '';
     final priorPromptForRef =
@@ -1220,6 +1242,9 @@ class _GenerationCard extends StatelessWidget {
                     ),
                 ],
               ),
+              // Public-directory switch. Changeable here so a user never
+              // has to regenerate a site to take it out of the directory.
+              _DirectoryListingSwitch(generation: g),
               // Click-tracking stats below the link (native parity:
               // shown only for generations created with tracking on).
               if (g.trackingEnabled &&
@@ -1266,6 +1291,105 @@ class _GenerationCard extends StatelessWidget {
     if (d.inDays < 30) return '${d.inDays}d ago';
     return '${t.day.toString().padLeft(2, '0')}/'
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+}
+
+/// "List in public directory" switch for a completed generation.
+///
+/// Reads the state from the SERVER rather than assuming it: a generation
+/// restored from the cloud manifest carries no listing flag, because the
+/// manifest is this client's own encrypted record while the directory
+/// lives server-side. When the state cannot be read, the switch is not
+/// shown at all — a wrong switch is worse than no switch.
+class _DirectoryListingSwitch extends StatefulWidget {
+  final WebsiteGeneration generation;
+  const _DirectoryListingSwitch({required this.generation});
+
+  @override
+  State<_DirectoryListingSwitch> createState() =>
+      _DirectoryListingSwitchState();
+}
+
+class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
+  ({bool listed, bool delistedByAdmin})? _state;
+  bool _busy = false;
+  bool _unavailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final state = await WebWebsiteService.instance
+        .fetchListingState(widget.generation.id);
+    if (!mounted) return;
+    setState(() {
+      _state = state;
+      _unavailable = state == null;
+    });
+  }
+
+  Future<void> _set(bool listed) async {
+    setState(() => _busy = true);
+    try {
+      await WebWebsiteService.instance
+          .setDirectoryListing(widget.generation, listed: listed);
+      if (!mounted) return;
+      setState(() => _state = (listed: listed, delistedByAdmin: false));
+    } catch (e) {
+      if (!mounted) return;
+      // Surface the failure and leave the switch where it was, rather
+      // than showing a state the server never accepted.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final state = _state;
+    if (_unavailable || state == null) return const SizedBox.shrink();
+
+    if (state.delistedByAdmin) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          children: [
+            const Icon(LucideIcons.alertCircle,
+                size: 14, color: AppColors.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Removed from the public directory by a moderator. The site '
+                'itself is still reachable at its link.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: AppColors.error),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return SwitchListTile(
+      value: state.listed,
+      onChanged: _busy ? null : _set,
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      title: const Text('List in public directory',
+          style: TextStyle(fontSize: 13)),
+      subtitle: Text(
+        state.listed
+            ? 'Visible on the FxFiles public directory'
+            : 'Not listed — reachable only by its link',
+        style: theme.textTheme.bodySmall,
+      ),
+    );
   }
 }
 

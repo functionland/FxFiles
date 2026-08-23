@@ -14,21 +14,44 @@ enum PublicDisclaimerVariant { website, social }
 Future<bool?> showIpfsPublicDisclaimerDialog(
   BuildContext context, {
   PublicDisclaimerVariant variant = PublicDisclaimerVariant.website,
+
   /// Optional extra line rendered under the terms (e.g. the FULA price).
   String? footnote,
+
+  /// When supplied, the dialog also offers the public-directory choice
+  /// and writes the user's answer back through this notifier.
+  ///
+  /// This is the ONLY screen every user is guaranteed to pass through
+  /// before a site is generated. Listing defaults to ON and its
+  /// permanent toggle lives on the website detail screen, which a user
+  /// may never open — so surfacing the choice here is what makes the
+  /// default defensible rather than a surprise. Do not quietly drop it.
+  ///
+  /// A notifier (rather than a richer return type) keeps the existing
+  /// `Future<bool?>` contract intact for the call sites that don't need
+  /// this.
+  ValueNotifier<bool>? directoryOptIn,
 }) {
   return showDialog<bool>(
     context: context,
     barrierDismissible: false,
-    builder: (context) =>
-        _IpfsPublicDisclaimerDialog(variant: variant, footnote: footnote),
+    builder: (context) => _IpfsPublicDisclaimerDialog(
+      variant: variant,
+      footnote: footnote,
+      directoryOptIn: directoryOptIn,
+    ),
   );
 }
 
 class _IpfsPublicDisclaimerDialog extends StatefulWidget {
   final PublicDisclaimerVariant variant;
   final String? footnote;
-  const _IpfsPublicDisclaimerDialog({required this.variant, this.footnote});
+  final ValueNotifier<bool>? directoryOptIn;
+  const _IpfsPublicDisclaimerDialog({
+    required this.variant,
+    this.footnote,
+    this.directoryOptIn,
+  });
 
   @override
   State<_IpfsPublicDisclaimerDialog> createState() =>
@@ -92,6 +115,32 @@ class _IpfsPublicDisclaimerDialogState
                 widget.footnote!,
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
+            ],
+            if (widget.directoryOptIn != null) ...[
+              const SizedBox(height: 16),
+              const Divider(height: 1),
+              ValueListenableBuilder<bool>(
+                valueListenable: widget.directoryOptIn!,
+                builder: (context, listed, _) => CheckboxListTile(
+                  value: listed,
+                  onChanged: (value) =>
+                      widget.directoryOptIn!.value = value ?? false,
+                  title: const Text(
+                    'List this website in the public directory',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  subtitle: const Text(
+                    'Its name, a short AI-written description and its link '
+                    'appear on the public FxFiles directory so others can '
+                    'find it. You can turn this off any time from the '
+                    'website screen.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const Divider(height: 1),
             ],
             const SizedBox(height: 16),
             CheckboxListTile(

@@ -445,6 +445,13 @@ class WebWebsiteService extends ChangeNotifier {
   final Map<String, String> _serverPhase = {};
   final Map<String, WebsiteGenStatus> _lastActiveStatus = {};
 
+  /// Directory opt-in for an IN-FLIGHT generation, keyed by generation
+  /// id. Transient for the same reason as the two maps above: it is only
+  /// needed between `startGeneration` and the `/generate` POST, after
+  /// which the server owns the flag and the website screen's toggle is
+  /// what changes it.
+  final Map<String, bool> _listInDirectory = {};
+
   /// Server phase for [generationId], or null if none has been observed.
   String? serverPhaseFor(String generationId) => _serverPhase[generationId];
 
@@ -472,6 +479,103 @@ class WebWebsiteService extends ChangeNotifier {
   void _forgetPhase(String generationId) {
     _serverPhase.remove(generationId);
     _lastActiveStatus.remove(generationId);
+    _listInDirectory.remove(generationId);
+  }
+
+  /// Turn a completed website's public-directory listing on or off.
+  ///
+  /// Deliberately available AFTER generation: a user must not have to
+  /// regenerate a site to take it out of the directory. Throws with a
+  /// readable message so the caller can surface a failure instead of
+  /// silently reverting the switch.
+  Future<void> setDirectoryListing(
+    WebsiteGeneration generation, {
+    required bool listed,
+  }) async {
+    // Throws 'No API key configured' when the session is gone.
+    final jwt = await _jwt();
+    final aiEndpoint =
+        (WebFeatures.instance.aiEndpoint?.trim().isNotEmpty == true)
+            ? WebFeatures.instance.aiEndpoint!.trim()
+            : _defaultAiEndpoint;
+
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse('$aiEndpoint/api/v1/generations/${generation.id}/listing'),
+            headers: {
+              'Authorization': 'Bearer $jwt',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'listed': listed,
+              'name': generation.tagName,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      throw Exception('Request timed out. Please try again.');
+    }
+
+    if (response.statusCode == 409) {
+      throw Exception('This site was removed from the directory by a moderator');
+    }
+    if (response.statusCode == 404) {
+      throw Exception('This website is not on the server yet');
+    }
+    if (response.statusCode != 200) {
+      throw Exception('Could not update the listing (${response.statusCode})');
+    }
+    _listedOnServer[generation.id] =
+        (listed: listed, delistedByAdmin: false);
+    _notify(generation);
+  }
+
+  /// Last known server-side listing state, so the switch reflects reality
+  /// after a successful toggle without re-fetching.
+  final Map<String, ({bool listed, bool delistedByAdmin})> _listedOnServer =
+      {};
+
+  ({bool listed, bool delistedByAdmin})? listedOnServer(
+          String generationId) =>
+      _listedOnServer[generationId];
+
+  /// Read a completed generation's directory state from the server.
+  ///
+  /// A generation restored from the cloud manifest carries no listing
+  /// flag (the manifest is the client's own encrypted record and the
+  /// directory lives server-side), so the toggle asks rather than
+  /// guessing. Returns null when the state cannot be determined — the
+  /// caller should then show no switch instead of a wrong one.
+  Future<({bool listed, bool delistedByAdmin})?> fetchListingState(
+      String generationId) async {
+    final cached = _listedOnServer[generationId];
+    if (cached != null) return cached;
+    try {
+      final jwt = await _jwt();
+      final aiEndpoint =
+          (WebFeatures.instance.aiEndpoint?.trim().isNotEmpty == true)
+              ? WebFeatures.instance.aiEndpoint!.trim()
+              : _defaultAiEndpoint;
+      final response = await http.get(
+        Uri.parse('$aiEndpoint/api/v1/status/$generationId'),
+        headers: {'Authorization': 'Bearer $jwt'},
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return null;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      // An older backend that predates the directory omits these; treat
+      // a missing field as "not listed" rather than inventing a state.
+      final state = (
+        listed: body['listed'] == true,
+        delistedByAdmin: body['delistedByAdmin'] == true,
+      );
+      _listedOnServer[generationId] = state;
+      return state;
+    } catch (e) {
+      debugPrint('Listing state unavailable for $generationId: $e');
+      return null;
+    }
   }
 
   /// Create a website group — a `websites-` prefixed tag, exactly like
@@ -553,6 +657,13 @@ class WebWebsiteService extends ChangeNotifier {
     required String prompt,
     required List<WebPickedAsset> picked,
     bool enableTracking = false,
+
+    /// Opt into the public directory ("yellow pages"). Defaults ON for a
+    /// NEW generation — the user is shown this choice, and can turn it
+    /// off, in the pre-generation disclaimer and again on the website
+    /// screen. The SERVER column defaults to false, so nothing that was
+    /// generated before this feature is ever listed retroactively.
+    bool listInDirectory = true,
   }) async {
     final websiteName = tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
 
@@ -579,6 +690,7 @@ class WebWebsiteService extends ChangeNotifier {
       assets: assets,
       trackingEnabled: enableTracking,
     );
+    _listInDirectory[generation.id] = listInDirectory;
     liveGenerations.insert(0, generation);
     _notify(generation);
 
@@ -775,6 +887,13 @@ class WebWebsiteService extends ChangeNotifier {
               // Capability: opt into the backend's multi-pass pipeline
               // (this client polls for up to 20 minutes below).
               'pipeline_version': 2,
+              // Public directory. Sent explicitly — the server column
+              // defaults to false, so an older client (or a resumed job)
+              // can never publish a user into the directory by omission.
+              'listed': _listInDirectory[generation.id] ?? false,
+              // The group's display name, sent as its own field rather
+              // than scraped from the prompt (free text the user wrote).
+              'listing_name': generation.tagName,
             }),
           )
           .timeout(const Duration(seconds: 30));
