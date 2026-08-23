@@ -70,6 +70,17 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// disclaimer, carried from that dialog to `startGeneration`.
   bool _listInDirectory = true;
 
+  /// Id of the newest completed generation — the one the directory
+  /// lists, and so the only card that carries the listing switch.
+  /// `_generations` is sorted newest-first, so this is the first
+  /// completed entry.
+  String? get _latestCompletedId {
+    for (final g in _generations) {
+      if (g.status == WebsiteGenStatus.completed) return g.id;
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -629,6 +640,8 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                           for (final g in _generations)
                             _GenerationCard(
                               generation: g,
+                              isLatestCompleted:
+                                  g.id == _latestCompletedId,
                               onRecreate: g.status ==
                                           WebsiteGenStatus.completed &&
                                       !_isGenerating
@@ -1102,11 +1115,20 @@ class _GenerationCard extends StatelessWidget {
   final SocialPostRecord? socialRecord;
   final VoidCallback? onCreateSocial;
 
+  /// True for the newest COMPLETED generation of this website.
+  ///
+  /// The directory keeps one entry per website (the newest listed
+  /// generation), so only this card owns the listing switch. Showing it
+  /// on every historical card would both mislead and cost one status
+  /// request per card on screen open.
+  final bool isLatestCompleted;
+
   const _GenerationCard({
     required this.generation,
     this.onRecreate,
     this.socialRecord,
     this.onCreateSocial,
+    this.isLatestCompleted = false,
   });
 
   @override
@@ -1242,9 +1264,12 @@ class _GenerationCard extends StatelessWidget {
                     ),
                 ],
               ),
-              // Public-directory switch. Changeable here so a user never
-              // has to regenerate a site to take it out of the directory.
-              _DirectoryListingSwitch(generation: g),
+              // Public-directory switch, on the newest completed
+              // generation only — that is the one the directory lists.
+              // Changeable here so a user never has to regenerate a site
+              // to take it out of the directory.
+              if (isLatestCompleted)
+                _DirectoryListingSwitch(generation: g),
               // Click-tracking stats below the link (native parity:
               // shown only for generations created with tracking on).
               if (g.trackingEnabled &&
