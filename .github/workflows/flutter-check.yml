@@ -1,0 +1,72 @@
+name: Flutter check
+
+# Analyze + unit-test on every branch and PR.
+#
+# WHY: the only workflow that compiled this project ran on `push: main`
+# (Deploy GitHub Pages), so a branch had NO verification at all and the
+# first compile happened during a production deploy. This runs the cheap
+# half of that — `flutter analyze` and `flutter test` — everywhere else,
+# so a broken branch is caught before it reaches main.
+#
+# Deliberately does NOT build the web bundle or touch `web/pkg/`: the
+# deploy workflow owns the wasm/version gate, and duplicating it here
+# would just make both slower.
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/flutter-check.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/flutter-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed on the COMMIT, not the ref: a branch with an open PR fires both
+  # the push and the pull_request trigger, and those have different refs
+  # (refs/heads/x vs refs/pull/N/merge) — so a ref-keyed group runs the
+  # same commit twice instead of collapsing it.
+  group: flutter-check-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.41.9'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Fail on ERRORS only. The repo carries a large pre-existing
+      # lint baseline (~180 infos/warnings across lib/), so a plain
+      # `flutter analyze` fails on day one and tells you nothing about
+      # the change in front of you. Errors are the compile-breaking
+      # class and are always someone's fault today.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Unit tests
+        run: flutter test

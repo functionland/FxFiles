@@ -4,10 +4,23 @@ import 'package:lucide_icons/lucide_icons.dart';
 
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/core/models/fula_object.dart';
+import 'package:fula_files/core/models/share_token.dart' as share_model;
+import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/web/services/web_cache_sync.dart';
+import 'package:fula_files/web/services/web_device_class.dart';
+import 'package:fula_files/web/services/web_file_view_mode.dart';
+import 'package:fula_files/web/services/web_foreground_activity.dart';
+import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
+import 'package:fula_files/web/services/web_tagged_file_resolver.dart';
+import 'package:fula_files/web/services/web_view_mode_store.dart';
 import 'package:fula_files/features/tags/widgets/tag_ask_ai_sheet.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
+import 'package:fula_files/web/widgets/web_file_grid_tile.dart';
+import 'package:fula_files/web/widgets/web_file_preview.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
+import 'package:fula_files/web/widgets/web_thumb.dart';
 
 /// Mirror of lib/features/tags/screens/tags_browser_screen.dart:
 /// search bar, color rows with file counts, create-tag FAB/dialog, and
@@ -287,16 +300,36 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
   bool _loading = true;
   String? _error;
 
+  /// Tagged files joined to the cloud objects they point at, so this
+  /// screen can render thumbnails and open the same internal viewers the
+  /// category screens use. Files that resolve to nothing are KEPT (with
+  /// an "on a device" affordance) rather than dropped.
+  List<ResolvedTaggedFile> _resolved = const [];
+
+  late WebFileViewMode _viewMode;
+  String get _viewModeKey => 'tag_${widget.tagId}';
+
   @override
   void initState() {
     super.initState();
+    _viewMode = WebViewModeStore.instance.read(_viewModeKey);
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool force = false}) async {
+    if (force && mounted) setState(() => _loading = true);
     try {
       await WebTagService.instance.load();
-      if (mounted) setState(() => _loading = false);
+      if (force) WebTaggedFileResolver.instance.reset();
+      final files = WebTagService.instance.filesWithTag(widget.tagId);
+      final resolved = await WebTaggedFileResolver.instance.resolveAll(files);
+      if (mounted) {
+        setState(() {
+          _resolved = resolved;
+          _loading = false;
+          _error = null;
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -304,6 +337,152 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
           _loading = false;
         });
       }
+    }
+  }
+
+  void _cycleViewMode() {
+    final next = nextWebFileViewMode(_viewMode);
+    setState(() => _viewMode = next);
+    WebViewModeStore.instance.write(_viewModeKey, next);
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Every resolved audio file in this tag, so tapping one plays the
+  /// tag as a queue exactly like a category screen does.
+  List<FulaObject> get _audioQueue => [
+        for (final r in _resolved)
+          if (r.inCloud && webIsAudio(r.object!)) r.object!,
+      ];
+
+  Future<void> _open(ResolvedTaggedFile r) async {
+    if (!r.inCloud) {
+      _snack(r.taggedFile.remoteKey == null
+          ? 'This file lives on a device — open it in the app.'
+          : 'This file is no longer in your cloud vault.');
+      return;
+    }
+    await openWebFilePreview(
+      context: context,
+      object: r.object!,
+      // Each tagged file carries its OWN bucket: one tag legitimately
+      // spans several, so a screen-wide fallback would misroute half.
+      bucketOf: (o) => _bucketOf(o) ?? r.bucket!,
+      base: r.bucket!,
+      nameOf: (o) => _nameOf(o),
+      audioQueue: _audioQueue,
+    );
+  }
+
+  String? _bucketOf(FulaObject o) {
+    for (final r in _resolved) {
+      if (r.inCloud && identical(r.object, o)) return r.bucket;
+    }
+    return o.sourceBucket;
+  }
+
+  String _nameOf(FulaObject o) {
+    for (final r in _resolved) {
+      if (r.inCloud && identical(r.object, o)) return r.displayName;
+    }
+    return o.name;
+  }
+
+  Future<void> _download(ResolvedTaggedFile r) async {
+    if (!r.inCloud) return;
+    await downloadWebFile(
+      context: context,
+      object: r.object!,
+      bucket: r.bucket!,
+      base: r.bucket!,
+      nameOf: (_) => r.displayName,
+    );
+  }
+
+  /// Share sheet parity with the category screens (see
+  /// WebBucketScreen._shareFile).
+  Future<void> _shareFile(ResolvedTaggedFile r) async {
+    if (!r.inCloud) return;
+    final o = r.object!;
+    final bucket = r.bucket!;
+    final storageKey = o.storageKey ?? o.key;
+    final ct = o.metadata?['contentType'] ?? '';
+    final binding = share_model.SnapshotBinding(
+      contentHash: o.etag ?? storageKey,
+      size: o.size,
+      modifiedAt: (o.lastModified ?? DateTime.now()).millisecondsSinceEpoch,
+      storageKey: storageKey,
+    );
+    final result = await showWebCreateShareDialog(
+      context: context,
+      bucket: bucket,
+      pathScope: o.key,
+      storageKey: storageKey,
+      fileName: r.displayName.split('/').last,
+      contentType:
+          ct.isNotEmpty && ct != 'application/octet-stream' ? ct : null,
+      snapshotBinding: binding,
+    );
+    if (result != null && mounted) {
+      await showWebShareCreatedDialog(context: context, result: result);
+    }
+  }
+
+  Future<void> _editTags(ResolvedTaggedFile r) async {
+    if (!r.inCloud) return;
+    final bucket = r.bucket!;
+    // Reuse the listing-oriented lookup with a single-object list rather
+    // than reaching into the service's private association rows.
+    final initial = (WebTagService.instance
+                .tagsForObjects(bucket, [r.object!])[r.object!.key] ??
+            const <FileTag>[])
+        .map((t) => t.id)
+        .toSet();
+    final changed = await showWebTagSelectorDialog(
+      context: context,
+      remoteKey: '$bucket/${r.object!.key}',
+      fileName: r.displayName.split('/').last,
+      initialTagIds: initial,
+    );
+    if (changed == true) await _load(force: true);
+  }
+
+  Future<void> _deleteFile(ResolvedTaggedFile r) async {
+    if (!r.inCloud) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete file?'),
+        content: Text('"${r.displayName}" will be removed from your '
+            'cloud vault. This cannot be undone from the web app.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final bucket = r.bucket!;
+      final key = r.object!.key;
+      await WebForegroundActivity.instance
+          .run(() => FulaApiService.instance.deleteObject(bucket, key));
+      await WebListingCache.instance.patchListingRemove(bucket, key);
+      WebCacheSync.instance.sendInvalidateListing(bucket);
+      _snack('Deleted');
+      await _load(force: true);
+    } catch (e) {
+      _snack('Delete failed: $e');
     }
   }
 
@@ -348,7 +527,9 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
     if (confirmed != true) return;
     try {
       await WebTagService.instance.removeTaggedFile(f.id);
-      if (mounted) setState(() {});
+      // Re-resolve so the row disappears and the audio queue/indices stay
+      // in step with the tag's contents.
+      if (mounted) await _load();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -385,6 +566,24 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: switch (_viewMode) {
+              WebFileViewMode.list => 'Grid view',
+              WebFileViewMode.grid2 => 'Small grid',
+              WebFileViewMode.grid3 => 'List view',
+            },
+            icon: Icon(switch (_viewMode) {
+              WebFileViewMode.list => Icons.grid_view,
+              WebFileViewMode.grid2 => Icons.apps,
+              WebFileViewMode.grid3 => Icons.view_list,
+            }),
+            onPressed: _cycleViewMode,
+          ),
+          IconButton(
+            tooltip: 'Refresh',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _load(force: true),
+          ),
           if (tag != null)
             IconButton(
               tooltip: 'Share tag',
@@ -415,41 +614,9 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
                         ],
                       ),
                     )
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: files.length,
-                      itemBuilder: (ctx, i) {
-                        final f = files[i];
-                        final cloud =
-                            f.remoteKey != null && f.remoteKey!.isNotEmpty;
-                        return ListTile(
-                          leading: Icon(cloud
-                              ? Icons.cloud_done_outlined
-                              : Icons.smartphone),
-                          title: Text(f.fileName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                            '${_relative(f.taggedAt)}'
-                            '${cloud ? '' : '  ·  on a device'}',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          trailing: IconButton(
-                            tooltip: 'Remove tag',
-                            icon: const Icon(LucideIcons.x, size: 18),
-                            onPressed: () => _removeTag(f),
-                          ),
-                          onTap: () =>
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                            SnackBar(
-                              content: Text(cloud
-                                  ? 'Find "${f.fileName}" in its category to open it.'
-                                  : 'This file lives on a device — open it in the app.'),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                  : _viewMode == WebFileViewMode.list
+                      ? _buildList()
+                      : _buildGrid(),
       floatingActionButton: (tag != null && files.isNotEmpty)
           ? FloatingActionButton(
               onPressed: () {
@@ -460,5 +627,133 @@ class _WebTaggedFilesScreenState extends State<WebTaggedFilesScreen> {
             )
           : null,
     );
+  }
+
+  // ------------------------------------------------------------ rows
+
+  Widget _buildList() {
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: _resolved.length,
+      itemBuilder: (ctx, i) {
+        final r = _resolved[i];
+        return ListTile(
+          leading: _thumbFor(r, size: 40),
+          title: Text(r.displayName,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(_metaLine(r), style: const TextStyle(fontSize: 12)),
+          trailing: _menuFor(r),
+          onTap: () => _open(r),
+        );
+      },
+    );
+  }
+
+  Widget _buildGrid() {
+    final width = MediaQuery.of(context).size.width;
+    final columns = webGridColumnsFor(_viewMode, width);
+    return GridView.builder(
+      padding: const EdgeInsets.all(12),
+      cacheExtent: webGridCacheExtent(lowEnd: WebDeviceClass.lowEnd),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        childAspectRatio: webGridAspectRatioFor(_viewMode),
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+      ),
+      itemCount: _resolved.length,
+      itemBuilder: (ctx, i) {
+        final r = _resolved[i];
+        return WebFileGridTile(
+          thumbnail: _thumbFor(r, fill: true),
+          name: r.displayName.split('/').last,
+          subtitle: _metaLine(r),
+          menu: _menuFor(r, dense: true),
+          dense: _viewMode == WebFileViewMode.grid3,
+          onTap: () => _open(r),
+        );
+      },
+    );
+  }
+
+  /// Same lazy sidecar thumbnail the category screens use — resolving the
+  /// bucket is the ONLY thing tags were ever missing.
+  Widget _thumbFor(ResolvedTaggedFile r, {double size = 40, bool fill = false}) {
+    final o = r.object;
+    if (o == null) {
+      // Unresolved: still listed, but honestly marked.
+      return Icon(
+        r.taggedFile.remoteKey == null
+            ? Icons.smartphone
+            : Icons.cloud_off_outlined,
+        size: fill ? 36 : null,
+      );
+    }
+    final icon = Icon(webIconFor(o), size: fill ? 36 : null);
+    if (!webIsImage(o)) return icon;
+    return WebThumb(
+      bucket: r.bucket!,
+      objectKey: o.key,
+      size: size,
+      fill: fill,
+      fallback: icon,
+    );
+  }
+
+  Widget _menuFor(ResolvedTaggedFile r, {bool dense = false}) {
+    final cloud = r.inCloud;
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      iconSize: dense ? 18 : 24,
+      padding: dense ? EdgeInsets.zero : const EdgeInsets.all(8),
+      onSelected: (v) {
+        switch (v) {
+          case 'open':
+            _open(r);
+          case 'download':
+            _download(r);
+          case 'tags':
+            _editTags(r);
+          case 'share':
+            _shareFile(r);
+          case 'untag':
+            _removeTag(r.taggedFile);
+          case 'delete':
+            _deleteFile(r);
+        }
+      },
+      itemBuilder: (ctx) => [
+        if (cloud) const PopupMenuItem(value: 'open', child: Text('Open')),
+        if (cloud)
+          const PopupMenuItem(value: 'download', child: Text('Download')),
+        if (cloud) const PopupMenuItem(value: 'tags', child: Text('Tags')),
+        if (cloud)
+          const PopupMenuItem(
+              value: 'share', child: Text('Share Private…')),
+        const PopupMenuItem(value: 'untag', child: Text('Remove tag')),
+        if (cloud)
+          const PopupMenuItem(value: 'delete', child: Text('Delete file')),
+      ],
+    );
+  }
+
+  String _metaLine(ResolvedTaggedFile r) {
+    final parts = <String>[];
+    final o = r.object;
+    if (o != null && o.size > 0) parts.add(_fmtSize(o.size));
+    parts.add(_relative(r.taggedFile.taggedAt));
+    if (!r.inCloud) {
+      parts.add(r.taggedFile.remoteKey == null ? 'on a device' : 'not in cloud');
+    }
+    return parts.join('  ·  ');
+  }
+
+  String _fmtSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 }

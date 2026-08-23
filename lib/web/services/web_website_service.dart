@@ -23,6 +23,7 @@ import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_generation_steps.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -427,7 +428,153 @@ class WebWebsiteService extends ChangeNotifier {
   /// Serializes read-modify-write cycles on the pending-jobs sidecar.
   Future<void> _pendingChain = Future.value();
 
-  void _notify(WebsiteGeneration g) => notifyListeners();
+  /// Transient per-generation progress detail, keyed by generation id.
+  ///
+  /// Deliberately NOT persisted and deliberately NOT fields on
+  /// [WebsiteGeneration]: that model is `@HiveType(typeId: 25)` and is
+  /// shared with the native app, so adding fields there would drag a Hive
+  /// migration into a web-only change. Both values are re-established by
+  /// the first poll after a resume, which is the only way they can be
+  /// lost.
+  ///
+  /// [_serverPhase] is the AI service's own phase from
+  /// `GET /api/v1/status/:jobId` ('pending' | 'generating' |
+  /// 'publishing'); [_lastActiveStatus] is the last non-error client
+  /// phase, needed because a failure overwrites `status` with `error` and
+  /// would otherwise lose which step actually broke.
+  final Map<String, String> _serverPhase = {};
+  final Map<String, WebsiteGenStatus> _lastActiveStatus = {};
+
+  /// Directory opt-in for an IN-FLIGHT generation, keyed by generation
+  /// id. Transient for the same reason as the two maps above: it is only
+  /// needed between `startGeneration` and the `/generate` POST, after
+  /// which the server owns the flag and the website screen's toggle is
+  /// what changes it.
+  final Map<String, bool> _listInDirectory = {};
+
+  /// Server phase for [generationId], or null if none has been observed.
+  String? serverPhaseFor(String generationId) => _serverPhase[generationId];
+
+  /// Last non-error client phase for [generationId].
+  WebsiteGenStatus? lastActiveStatusFor(String generationId) =>
+      _lastActiveStatus[generationId];
+
+  void _notify(WebsiteGeneration g) {
+    // Record the last phase the generation was genuinely working in, so a
+    // later `error` can be attributed to the right step.
+    if (g.status != WebsiteGenStatus.error &&
+        g.status != WebsiteGenStatus.completed) {
+      _lastActiveStatus[g.id] = g.status;
+    }
+    notifyListeners();
+  }
+
+  /// Fold a freshly-polled server phase in, never walking backwards.
+  void _recordServerPhase(String generationId, String? phase) {
+    final next = advanceServerPhase(_serverPhase[generationId], phase);
+    if (next != null) _serverPhase[generationId] = next;
+  }
+
+  /// Drop transient progress detail once a generation is finished with.
+  void _forgetPhase(String generationId) {
+    _serverPhase.remove(generationId);
+    _lastActiveStatus.remove(generationId);
+    _listInDirectory.remove(generationId);
+  }
+
+  /// Turn a completed website's public-directory listing on or off.
+  ///
+  /// Deliberately available AFTER generation: a user must not have to
+  /// regenerate a site to take it out of the directory. Throws with a
+  /// readable message so the caller can surface a failure instead of
+  /// silently reverting the switch.
+  Future<void> setDirectoryListing(
+    WebsiteGeneration generation, {
+    required bool listed,
+  }) async {
+    // Throws 'No API key configured' when the session is gone.
+    final jwt = await _jwt();
+    final aiEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.aiEndpointUrl) ??
+        _defaultAiEndpoint;
+
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse('$aiEndpoint/api/v1/generations/${generation.id}/listing'),
+            headers: {
+              'Authorization': 'Bearer $jwt',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'listed': listed,
+              'name': generation.tagName,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      throw Exception('Request timed out. Please try again.');
+    }
+
+    if (response.statusCode == 409) {
+      throw Exception('This site was removed from the directory by a moderator');
+    }
+    if (response.statusCode == 404) {
+      throw Exception('This website is not on the server yet');
+    }
+    if (response.statusCode != 200) {
+      throw Exception('Could not update the listing (${response.statusCode})');
+    }
+    _listedOnServer[generation.id] =
+        (listed: listed, delistedByAdmin: false);
+    _notify(generation);
+  }
+
+  /// Last known server-side listing state, so the switch reflects reality
+  /// after a successful toggle without re-fetching.
+  final Map<String, ({bool listed, bool delistedByAdmin})> _listedOnServer =
+      {};
+
+  ({bool listed, bool delistedByAdmin})? listedOnServer(
+          String generationId) =>
+      _listedOnServer[generationId];
+
+  /// Read a completed generation's directory state from the server.
+  ///
+  /// A generation restored from the cloud manifest carries no listing
+  /// flag (the manifest is the client's own encrypted record and the
+  /// directory lives server-side), so the toggle asks rather than
+  /// guessing. Returns null when the state cannot be determined — the
+  /// caller should then show no switch instead of a wrong one.
+  Future<({bool listed, bool delistedByAdmin})?> fetchListingState(
+      String generationId) async {
+    final cached = _listedOnServer[generationId];
+    if (cached != null) return cached;
+    try {
+      final jwt = await _jwt();
+      final aiEndpoint = await SecureStorageService.instance
+              .read(SecureStorageKeys.aiEndpointUrl) ??
+          _defaultAiEndpoint;
+      final response = await http.get(
+        Uri.parse('$aiEndpoint/api/v1/status/$generationId'),
+        headers: {'Authorization': 'Bearer $jwt'},
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return null;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      // An older backend that predates the directory omits these; treat
+      // a missing field as "not listed" rather than inventing a state.
+      final state = (
+        listed: body['listed'] == true,
+        delistedByAdmin: body['delistedByAdmin'] == true,
+      );
+      _listedOnServer[generationId] = state;
+      return state;
+    } catch (e) {
+      debugPrint('Listing state unavailable for $generationId: $e');
+      return null;
+    }
+  }
 
   /// Create a website group — a `websites-` prefixed tag, exactly like
   /// the app (websiteProvider.createWebsite).
@@ -508,6 +655,16 @@ class WebWebsiteService extends ChangeNotifier {
     required String prompt,
     required List<WebPickedAsset> picked,
     bool enableTracking = false,
+
+    /// Opt into the public directory ("yellow pages").
+    ///
+    /// Defaults OFF, and the checkbox in the pre-generation disclaimer
+    /// starts unticked: a pre-ticked box does not constitute consent
+    /// (GDPR Recital 32), so listing requires a deliberate act. The
+    /// SERVER column also defaults to false, so a site is listed only
+    /// when a user actively asked for it — here, or later via the
+    /// website screen's toggle.
+    bool listInDirectory = false,
   }) async {
     final websiteName = tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
 
@@ -534,6 +691,7 @@ class WebWebsiteService extends ChangeNotifier {
       assets: assets,
       trackingEnabled: enableTracking,
     );
+    _listInDirectory[generation.id] = listInDirectory;
     liveGenerations.insert(0, generation);
     _notify(generation);
 
@@ -730,6 +888,16 @@ class WebWebsiteService extends ChangeNotifier {
               // Capability: opt into the backend's multi-pass pipeline
               // (this client polls for up to 20 minutes below).
               'pipeline_version': 2,
+              // Public directory. Sent explicitly — the server column
+              // defaults to false, so an older client (or a resumed job)
+              // can never publish a user into the directory by omission.
+              'listed': _listInDirectory[generation.id] ?? false,
+              // The group's display name, sent as its own field rather
+              // than scraped from the prompt (free text the user wrote).
+              'listing_name': generation.tagName,
+              // Per-WEBSITE key so the directory shows one entry per
+              // website instead of one per regeneration.
+              'listing_group': generation.tagId,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -877,9 +1045,19 @@ class WebWebsiteService extends ChangeNotifier {
       final status = jsonDecode(statusResponse.body) as Map<String, dynamic>;
       final serverStatus = status['status'] as String?;
       final statusMsg = status['statusMessage'] as String?;
+      // The server has always sent its own phase here; it used to be
+      // read only to detect 'completed'/'error'. Keeping it is what lets
+      // the card tick "Generate site" → "Publish to IPFS" for real
+      // instead of guessing.
+      final phaseAdvanced =
+          advanceServerPhase(_serverPhase[generation.id], serverStatus) !=
+              _serverPhase[generation.id];
+      _recordServerPhase(generation.id, serverStatus);
       if (statusMsg != null) {
         generation.statusMessage = statusMsg;
         generation.updatedAt = DateTime.now();
+        _notify(generation);
+      } else if (phaseAdvanced) {
         _notify(generation);
       }
 
@@ -890,6 +1068,11 @@ class WebWebsiteService extends ChangeNotifier {
         generation.status = WebsiteGenStatus.completed;
         generation.statusMessage = 'Website generated successfully';
         generation.updatedAt = DateTime.now();
+        // A completed generation renders every step done regardless of
+        // phase, so the transient detail is dead weight from here on.
+        // NOT done on the error path — a failed card keeps rendering the
+        // step that actually broke.
+        _forgetPhase(generation.id);
         _notify(generation);
 
         await _appendToCloudManifest(generation);

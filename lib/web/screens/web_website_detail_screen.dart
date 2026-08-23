@@ -14,8 +14,10 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/shared/widgets/ipfs_public_disclaimer_dialog.dart';
+import 'package:fula_files/shared/widgets/step_row.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_generation_steps.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
@@ -63,6 +65,22 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   bool _assetsSeeded = false;
   bool _loading = true;
   String? _error;
+
+  /// The public-directory choice the user made in the pre-generation
+  /// disclaimer, carried from that dialog to `startGeneration`.
+  /// Opt-in: false unless the user ticked the box.
+  bool _listInDirectory = false;
+
+  /// Id of the newest completed generation — the one the directory
+  /// lists, and so the only card that carries the listing switch.
+  /// `_generations` is sorted newest-first, so this is the first
+  /// completed entry.
+  String? get _latestCompletedId {
+    for (final g in _generations) {
+      if (g.status == WebsiteGenStatus.completed) return g.id;
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -409,6 +427,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       prompt: enrichedPrompt,
       picked: List.of(_readyAssets),
       enableTracking: result.enableTracking,
+      listInDirectory: _listInDirectory,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -431,8 +450,17 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     }
     // Public-content disclaimer before the form, matching the native
     // app's step-1 placement (assets + generated site are public IPFS).
-    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    // It also carries the public-directory choice — this is the one
+    // screen every user passes through before generating, so it is where
+    // the opt-in is taken. Starts UNTICKED: a pre-ticked box is not
+    // consent (GDPR Recital 32), it has to be a deliberate act.
+    final listInDirectory = ValueNotifier<bool>(false);
+    final accepted = await showIpfsPublicDisclaimerDialog(
+      context,
+      directoryOptIn: listInDirectory,
+    );
     if (accepted != true || !mounted) return;
+    _listInDirectory = listInDirectory.value;
     final result =
         await Navigator.of(context).push<WebGeneratePromptResult>(
       MaterialPageRoute(
@@ -490,9 +518,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// into the creative direction; the group's current assets are
   /// reused on publish.
   Future<void> _recreate(WebsiteGeneration gen) async {
-    // Same public-content acknowledgement as Create Website (native parity).
-    final accepted = await showIpfsPublicDisclaimerDialog(context);
+    // Same public-content acknowledgement as Create Website (native
+    // parity), including the directory choice — a recreate produces a
+    // NEW generation, so it gets its own decision rather than silently
+    // inheriting the previous one. Also unticked: consent does not carry
+    // over from a previous generation.
+    final listInDirectory = ValueNotifier<bool>(false);
+    final accepted = await showIpfsPublicDisclaimerDialog(
+      context,
+      directoryOptIn: listInDirectory,
+    );
     if (accepted != true || !mounted) return;
+    _listInDirectory = listInDirectory.value;
     final parsed = parseStoredWebsitePrompt(gen.prompt);
     final priorUrl = gen.gatewayUrl ?? '';
     final priorPromptForRef =
@@ -605,6 +642,8 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                           for (final g in _generations)
                             _GenerationCard(
                               generation: g,
+                              isLatestCompleted:
+                                  g.id == _latestCompletedId,
                               onRecreate: g.status ==
                                           WebsiteGenStatus.completed &&
                                       !_isGenerating
@@ -1078,11 +1117,20 @@ class _GenerationCard extends StatelessWidget {
   final SocialPostRecord? socialRecord;
   final VoidCallback? onCreateSocial;
 
+  /// True for the newest COMPLETED generation of this website.
+  ///
+  /// The directory keeps one entry per website (the newest listed
+  /// generation), so only this card owns the listing switch. Showing it
+  /// on every historical card would both mislead and cost one status
+  /// request per card on screen open.
+  final bool isLatestCompleted;
+
   const _GenerationCard({
     required this.generation,
     this.onRecreate,
     this.socialRecord,
     this.onCreateSocial,
+    this.isLatestCompleted = false,
   });
 
   @override
@@ -1148,18 +1196,14 @@ class _GenerationCard extends StatelessWidget {
                     style: theme.textTheme.bodySmall),
               ],
             ),
-            if (g.statusMessage != null && g.statusMessage!.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(g.statusMessage!, style: theme.textTheme.bodySmall),
-            ],
-            if (g.status == WebsiteGenStatus.uploading &&
-                g.totalAssets > 0) ...[
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                  value: g.uploadedAssets / g.totalAssets),
-              const SizedBox(height: 4),
-              Text('${g.uploadedAssets}/${g.totalAssets} assets uploaded',
-                  style: theme.textTheme.bodySmall),
+            // While a generation is in flight (or has failed) the card
+            // shows the real step checklist instead of one opaque line of
+            // status text, so a slow step is visibly slow rather than
+            // looking hung. A finished generation drops the checklist —
+            // the live URL below is the payload at that point.
+            if (active || g.status == WebsiteGenStatus.error) ...[
+              const SizedBox(height: 10),
+              _StepChecklist(generation: g),
             ],
             if (g.status == WebsiteGenStatus.completed && url != null) ...[
               const SizedBox(height: 10),
@@ -1222,6 +1266,12 @@ class _GenerationCard extends StatelessWidget {
                     ),
                 ],
               ),
+              // Public-directory switch, on the newest completed
+              // generation only — that is the one the directory lists.
+              // Changeable here so a user never has to regenerate a site
+              // to take it out of the directory.
+              if (isLatestCompleted)
+                _DirectoryListingSwitch(generation: g),
               // Click-tracking stats below the link (native parity:
               // shown only for generations created with tracking on).
               if (g.trackingEnabled &&
@@ -1268,6 +1318,162 @@ class _GenerationCard extends StatelessWidget {
     if (d.inDays < 30) return '${d.inDays}d ago';
     return '${t.day.toString().padLeft(2, '0')}/'
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+}
+
+/// "List in public directory" switch for a completed generation.
+///
+/// Reads the state from the SERVER rather than assuming it: a generation
+/// restored from the cloud manifest carries no listing flag, because the
+/// manifest is this client's own encrypted record while the directory
+/// lives server-side. When the state cannot be read, the switch is not
+/// shown at all — a wrong switch is worse than no switch.
+class _DirectoryListingSwitch extends StatefulWidget {
+  final WebsiteGeneration generation;
+  const _DirectoryListingSwitch({required this.generation});
+
+  @override
+  State<_DirectoryListingSwitch> createState() =>
+      _DirectoryListingSwitchState();
+}
+
+class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
+  ({bool listed, bool delistedByAdmin})? _state;
+  bool _busy = false;
+  bool _unavailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final state = await WebWebsiteService.instance
+        .fetchListingState(widget.generation.id);
+    if (!mounted) return;
+    setState(() {
+      _state = state;
+      _unavailable = state == null;
+    });
+  }
+
+  Future<void> _set(bool listed) async {
+    setState(() => _busy = true);
+    try {
+      await WebWebsiteService.instance
+          .setDirectoryListing(widget.generation, listed: listed);
+      if (!mounted) return;
+      setState(() => _state = (listed: listed, delistedByAdmin: false));
+    } catch (e) {
+      if (!mounted) return;
+      // Surface the failure and leave the switch where it was, rather
+      // than showing a state the server never accepted.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final state = _state;
+    if (_unavailable || state == null) return const SizedBox.shrink();
+
+    if (state.delistedByAdmin) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          children: [
+            const Icon(LucideIcons.alertCircle,
+                size: 14, color: AppColors.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Removed from the public directory by a moderator. The site '
+                'itself is still reachable at its link.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: AppColors.error),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return SwitchListTile(
+      value: state.listed,
+      onChanged: _busy ? null : _set,
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      title: const Text('List in public directory',
+          style: TextStyle(fontSize: 13)),
+      subtitle: Text(
+        state.listed
+            ? 'Visible on the FxFiles public directory'
+            : 'Not listed — reachable only by its link',
+        style: theme.textTheme.bodySmall,
+      ),
+    );
+  }
+}
+
+/// The generation progress checklist.
+///
+/// Every tick is driven by state the client genuinely observes — its own
+/// pipeline phase plus the server's `status` from
+/// `GET /api/v1/status/:jobId` — never by a timer. See
+/// `web_generation_steps.dart` for the mapping and why the 3-pass AI
+/// stage stays a single step.
+class _StepChecklist extends StatelessWidget {
+  final WebsiteGeneration generation;
+
+  const _StepChecklist({required this.generation});
+
+  @override
+  Widget build(BuildContext context) {
+    final g = generation;
+    final service = WebWebsiteService.instance;
+    final steps = buildWebsiteGenerationSteps(
+      status: g.status,
+      serverPhase: service.serverPhaseFor(g.id),
+      lastActiveStatus: service.lastActiveStatusFor(g.id),
+      statusMessage: g.statusMessage,
+      // Deliberately not passed: the dedicated error block below the
+      // checklist already shows the failure reason. Leaving this null
+      // makes the failed step's subtitle show what it was DOING when it
+      // broke, which is different information rather than a duplicate.
+      errorMessage: null,
+      uploadedAssets: g.uploadedAssets,
+      totalAssets: g.totalAssets,
+    );
+
+    final rows = <Widget>[];
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      final isUploadInFlight =
+          i == 0 && step.state == WebsiteStepState.active && g.totalAssets > 0;
+      if (i > 0) rows.add(const SizedBox(height: 6));
+      rows.add(StepRow(
+        state: switch (step.state) {
+          WebsiteStepState.pending => StepRowState.pending,
+          WebsiteStepState.active => StepRowState.active,
+          WebsiteStepState.done => StepRowState.done,
+          WebsiteStepState.failed => StepRowState.error,
+        },
+        number: '${i + 1}',
+        title: step.title,
+        subtitle: step.subtitle,
+        expanded: isUploadInFlight
+            ? LinearProgressIndicator(
+                value: g.uploadedAssets / g.totalAssets,
+              )
+            : null,
+      ));
+    }
+    return Column(children: rows);
   }
 }
 

@@ -14,7 +14,6 @@ import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
 import 'package:fula_files/core/services/ipfs_public_service.dart';
-import 'package:fula_files/web/services/web_audio_controller.dart';
 import 'package:fula_files/web/services/web_bucket_sort.dart';
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
@@ -22,23 +21,17 @@ import 'package:fula_files/web/services/web_file_view_mode.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
-import 'package:fula_files/web/services/web_recent_files_service.dart';
-import 'package:fula_files/web/services/web_save.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
-import 'package:fula_files/web/services/web_text_viewer_logic.dart';
-import 'package:fula_files/web/services/web_thumbnail_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
 import 'package:fula_files/web/services/web_view_mode_store.dart';
 import 'package:fula_files/web/utils/cloud_folder_tree.dart';
-import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_file_grid_tile.dart';
+import 'package:fula_files/web/widgets/web_file_preview.dart';
 import 'package:fula_files/web/widgets/web_thumb.dart';
-import 'package:fula_files/web/widgets/web_audio_player.dart';
 import 'package:fula_files/web/widgets/web_create_share_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
-import 'package:fula_files/web/widgets/web_text_viewer.dart';
 
 /// Merged (legacy + v8) listing of one content category, with upload /
 /// download / delete / preview.
@@ -349,28 +342,13 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
   }
 
-  Future<void> _download(FulaObject o) async {
-    _snack('Downloading "${_displayName(o)}"…');
-    try {
-      final bucket = o.sourceBucket ?? widget.base;
-      final bytes = await WebForegroundActivity.instance.run(
-        // P14.1: route by sourceBucket so adopted AI-workspace files decrypt
-        // via the workspace client (bucket already folds in sourceBucket).
-        () => FulaApiService.instance
-            .downloadBySourceBucket(bucket, o.key, o.sourceBucket),
+  Future<void> _download(FulaObject o) => downloadWebFile(
+        context: context,
+        object: o,
+        bucket: _bucketOf(o),
+        base: widget.base,
+        nameOf: _displayName,
       );
-      saveBytesAsDownload(
-        _displayName(o).split('/').last,
-        bytes,
-        mimeType: o.metadata?['contentType']?.isNotEmpty == true
-            ? o.metadata!['contentType']!
-            : 'application/octet-stream',
-      );
-      _recordRecent(o, bucket);
-    } catch (e) {
-      _snack('Download failed: $e');
-    }
-  }
 
   Future<void> _delete(FulaObject o) async {
     final confirmed = await showDialog<bool>(
@@ -712,87 +690,23 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
   }
 
-  bool _isVideo(FulaObject o) {
-    final ct = o.metadata?['contentType'] ?? '';
-    if (ct.startsWith('video/')) return true;
-    final n = o.key.toLowerCase();
-    return n.endsWith('.mp4') ||
-        n.endsWith('.webm') ||
-        n.endsWith('.mov') ||
-        n.endsWith('.m4v');
-  }
+  // Type detection now lives in `web_file_preview.dart` so the Tags
+  // screen classifies objects identically. These stay as thin forwarders
+  // because they are referenced throughout this screen's rendering.
+  bool _isVideo(FulaObject o) => webIsVideo(o);
 
-  bool _isAudio(FulaObject o) {
-    final ct = o.metadata?['contentType'] ?? '';
-    if (ct.startsWith('audio/')) return true;
-    final n = o.key.toLowerCase();
-    return n.endsWith('.mp3') ||
-        n.endsWith('.m4a') ||
-        n.endsWith('.wav') ||
-        n.endsWith('.ogg') ||
-        n.endsWith('.flac');
-  }
+  bool _isAudio(FulaObject o) => webIsAudio(o);
 
-  String _mediaMime(FulaObject o) {
-    final ct = o.metadata?['contentType'] ?? '';
-    if (ct.isNotEmpty && ct != 'application/octet-stream') return ct;
-    final n = o.key.toLowerCase();
-    if (n.endsWith('.mp4') || n.endsWith('.m4v')) return 'video/mp4';
-    if (n.endsWith('.webm')) return 'video/webm';
-    if (n.endsWith('.mov')) return 'video/quicktime';
-    if (n.endsWith('.mp3')) return 'audio/mpeg';
-    if (n.endsWith('.m4a')) return 'audio/mp4';
-    if (n.endsWith('.wav')) return 'audio/wav';
-    if (n.endsWith('.ogg')) return 'audio/ogg';
-    if (n.endsWith('.flac')) return 'audio/flac';
-    return 'application/octet-stream';
-  }
+  bool _isImage(FulaObject o) => webIsImage(o);
 
-  bool _isImage(FulaObject o) {
-    final ct = o.metadata?['contentType'] ?? '';
-    if (ct.startsWith('image/')) return true;
-    final n = o.key.toLowerCase();
-    return n.endsWith('.png') ||
-        n.endsWith('.jpg') ||
-        n.endsWith('.jpeg') ||
-        n.endsWith('.gif') ||
-        n.endsWith('.webp');
-  }
+  bool _isText(FulaObject o) => webIsText(o);
 
-  bool _isText(FulaObject o) {
-    final ct = o.metadata?['contentType'] ?? '';
-    if (ct.startsWith('text/') ||
-        ct == 'application/json' ||
-        ct == 'application/xml') {
-      return true;
-    }
-    // Native parity: the full LocalFile.isTextViewable extension set
-    // (xml, ts, js, html, yaml, py, …), not just the old short list (#19).
-    return isTextViewableName(o.key);
-  }
+  /// Which bucket an object actually lives in.
+  String _bucketOf(FulaObject o) => o.sourceBucket ?? widget.base;
 
-  /// A stable kind for the recents store (forces image/video/audio
-  /// classification so the strip renders the right card + thumbnail).
-  String _recentMime(FulaObject o) {
-    if (_isImage(o)) return 'image/*';
-    if (_isVideo(o)) return 'video/*';
-    if (_isAudio(o)) return 'audio/*';
-    final ct = o.metadata?['contentType'] ?? '';
-    return ct.isNotEmpty ? ct : 'application/octet-stream';
-  }
-
-  /// Record a successful open in the device-local Recent strip (#17).
-  void _recordRecent(FulaObject o, String bucket, {Uint8List? imageBytes}) {
-    WebRecentFilesService.instance.recordOpened(
-      bucket: bucket,
-      base: widget.base,
-      key: o.key,
-      name: _displayName(o).split('/').last,
-      mime: _recentMime(o),
-      size: o.size,
-      imageBytes: imageBytes,
-    );
-  }
+  // Recording opens in the device-local Recent strip (#17) moved into
+  // `web_file_preview.dart` alongside the open/download paths that
+  // trigger it, so every screen that opens a file records it.
 
   /// Leading slot: a lazy thumbnail for images (fetched from the small sidecar,
   /// never the full file), the type icon otherwise / as fallback.
@@ -814,208 +728,20 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     );
   }
 
+  /// Open [o] with the shared preview stack (`web_file_preview.dart`) —
+  /// the same code path the Tags screen uses, so the two cannot drift.
+  /// The image / media / text / audio dialogs and the download fallback
+  /// all used to be private methods here, which is precisely why no
+  /// other screen could open a cloud file.
   Future<void> _preview(FulaObject o) async {
-    if (_isVideo(o) || _isAudio(o)) {
-      await _previewMedia(o);
-      return;
-    }
-    if (_isText(o)) {
-      // The whole file is in memory on web; decoding + splitting a huge
-      // string would jank the JS thread, so cap inline viewing and fall
-      // back to download (#19). Guard on the listed size pre-download.
-      if (o.size > kMaxInlineTextBytes) {
-        await _download(o);
-      } else {
-        await _previewText(o);
-      }
-      return;
-    }
-    if (!_isImage(o)) {
-      await _download(o);
-      return;
-    }
-    final bucket = o.sourceBucket ?? widget.base;
-    // One download future shared with the dialog; record once when it
-    // resolves (not on FutureBuilder rebuilds, not on failure).
-    // P14.1: route by sourceBucket (AI files decrypt via workspace client).
-    final future = FulaApiService.instance
-        .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
-    unawaited(future.then((bytes) {
-      _recordRecent(o, bucket, imageBytes: bytes);
-      WebThumbnailService.instance.backfillFromBytes(bucket, o.key, o.name, bytes);
-    }).catchError((_) {}));
-    showDialog<void>(
+    await openWebFilePreview(
       context: context,
-      builder: (ctx) => Dialog(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900, maxHeight: 700),
-          child: FutureBuilder<Uint8List>(
-            future: future,
-            builder: (ctx, snap) {
-              if (snap.hasError) {
-                return Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text('Preview failed: ${snap.error}'),
-                );
-              }
-              if (!snap.hasData) {
-                return const SizedBox(
-                  width: 320,
-                  height: 200,
-                  child: Center(child: CircularProgressIndicator()),
-                );
-              }
-              final bytes = snap.data!;
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ListTile(
-                    title: Text(
-                      _displayName(o),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: 'Download',
-                          icon: const Icon(Icons.download),
-                          onPressed: () => saveBytesAsDownload(
-                              _displayName(o).split('/').last, bytes),
-                        ),
-                        IconButton(
-                          tooltip: 'Close',
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Navigator.pop(ctx),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Flexible(
-                    child: InteractiveViewer(
-                      maxScale: 8,
-                      child: Image.memory(bytes, fit: BoxFit.contain),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              );
-            },
-          ),
-        ),
-      ),
+      object: o,
+      bucketOf: _bucketOf,
+      base: widget.base,
+      nameOf: _displayName,
+      audioQueue: _objects ?? const <FulaObject>[],
     );
-  }
-
-  /// Full-screen inline text/code viewer (#19). Mirrors [_previewMedia]:
-  /// a snackbar while downloading, record the open (Recent strip #17),
-  /// then show the viewer with the decrypted bytes.
-  Future<void> _previewText(FulaObject o) async {
-    _snack('Loading "${_displayName(o)}"…');
-    try {
-      final bucket = o.sourceBucket ?? widget.base;
-      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
-      final bytes = await FulaApiService.instance
-          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
-      if (!mounted) return;
-      final name = _displayName(o).split('/').last;
-      _recordRecent(o, bucket);
-      // Backstop the size cap: if the listing size was 0/unset a truly large
-      // file would jank the viewer's decode/split, so download it instead.
-      if (bytes.length > kMaxInlineTextBytes) {
-        saveBytesAsDownload(name, bytes);
-        return;
-      }
-      await showDialog<void>(
-        context: context,
-        useSafeArea: false,
-        builder: (ctx) => Dialog.fullscreen(
-          child: WebTextViewer(
-            fileName: name,
-            bytes: bytes,
-            onDownload: () => saveBytesAsDownload(name, bytes),
-          ),
-        ),
-      );
-    } catch (e) {
-      _snack('Preview failed: $e');
-    }
-  }
-
-  /// Download + decrypt, then play via a blob URL fed to the HTML5
-  /// media element (video_player / just_audio on web). Best-effort:
-  /// codec support depends on the browser; the dialog offers Download
-  /// as the fallback.
-  Future<void> _previewMedia(FulaObject o) async {
-    // Audio → the full-screen queue player (#21); video stays on Chewie.
-    if (_isAudio(o)) {
-      await _openAudioPlayer(o);
-      return;
-    }
-    _snack('Loading "${_displayName(o)}"…');
-    try {
-      final bucket = o.sourceBucket ?? widget.base;
-      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
-      final bytes = await FulaApiService.instance
-          .downloadBySourceBucket(bucket, o.key, o.sourceBucket);
-      _recordRecent(o, bucket);
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => MediaPreviewDialog(
-          title: _displayName(o),
-          bytes: bytes,
-          mimeType: _mediaMime(o),
-          isVideo: _isVideo(o),
-        ),
-      );
-    } catch (e) {
-      _snack('Playback failed: $e');
-    }
-  }
-
-  /// A player queue item for an audio object in this bucket (the controller
-  /// downloads on demand, so nothing is fetched until it plays).
-  WebAudioTrack _audioTrackFor(FulaObject o) {
-    final bucket = o.sourceBucket ?? widget.base;
-    return WebAudioTrack(
-      name: _displayName(o).split('/').last,
-      mime: _mediaMime(o),
-      cloudKey: o.key,
-      // P14.1: route by sourceBucket (AI files decrypt via workspace client).
-      download: () => FulaApiService.instance
-          .downloadBySourceBucket(bucket, o.key, o.sourceBucket),
-    );
-  }
-
-  /// Open the full-screen audio player with a queue of every audio file in
-  /// the current listing, starting at [tapped] (#21).
-  Future<void> _openAudioPlayer(FulaObject tapped) async {
-    final audio = (_objects ?? const <FulaObject>[]).where(_isAudio).toList();
-    final tappedBucket = tapped.sourceBucket ?? widget.base;
-    var start = audio.indexWhere((o) =>
-        o.key == tapped.key &&
-        (o.sourceBucket ?? widget.base) == tappedBucket);
-    if (start < 0) {
-      // Not in the current listing (e.g. a deep-open) — play it on its own.
-      audio.insert(0, tapped);
-      start = 0;
-    }
-    _recordRecent(tapped, tappedBucket);
-    if (!mounted) return;
-    // Start playback on the singleton, then open the (parameterless) player —
-    // closing it just minimizes to the mini-player (s2). setExpanded is done
-    // here (event context), not in the dialog's initState, to avoid notifying
-    // the mini-player mid-build.
-    final c = WebAudioController.instance;
-    c.playQueue([for (final o in audio) _audioTrackFor(o)], start);
-    c.setExpanded(true);
-    await showDialog<void>(
-      context: context,
-      useSafeArea: false,
-      builder: (ctx) => const Dialog.fullscreen(child: WebAudioPlayer()),
-    );
-    c.setExpanded(false);
   }
 
   void _snack(String msg) {

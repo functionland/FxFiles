@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 
-enum StepRowState { pending, active, done }
+/// [error] is used by progress checklists where a step can fail (e.g. the
+/// website-generation card). Consumers that only ever move forward — like
+/// `setup_unlock_sheet.dart` — simply never produce it.
+enum StepRowState { pending, active, done, error }
 
 class StepRow extends StatelessWidget {
   final StepRowState state;
@@ -33,13 +36,21 @@ class StepRow extends StatelessWidget {
     final theme = Theme.of(context);
     final isDone = state == StepRowState.done;
     final isActive = state == StepRowState.active;
+    final isError = state == StepRowState.error;
 
-    final bg = isActive
-        ? AppColors.primaryFaint
-        : theme.colorScheme.surface.withValues(alpha: 0.5);
-    final borderColor = isActive
-        ? AppColors.primary
-        : theme.dividerColor.withValues(alpha: 0.4);
+    // A failed step must read as failed, not as pending: without this branch
+    // the new `error` variant would fall through to the pending styling and
+    // look like work that simply hasn't started.
+    final bg = isError
+        ? AppColors.errorFaint
+        : isActive
+            ? AppColors.primaryFaint
+            : theme.colorScheme.surface.withValues(alpha: 0.5);
+    final borderColor = isError
+        ? AppColors.errorBorder
+        : isActive
+            ? AppColors.primary
+            : theme.dividerColor.withValues(alpha: 0.4);
 
     return Container(
       decoration: BoxDecoration(
@@ -58,7 +69,7 @@ class StepRow extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    _badge(isDone, isActive, number, context),
+                    _badge(isDone, isActive, isError, number, context),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
@@ -74,12 +85,15 @@ class StepRow extends StatelessWidget {
                                   title,
                                   style: TextStyle(
                                     fontSize: 13,
-                                    fontWeight: isActive
+                                    fontWeight: isActive || isError
                                         ? FontWeight.w600
                                         : FontWeight.w500,
-                                    color: isDone
-                                        ? theme.colorScheme.onSurfaceVariant
-                                        : theme.colorScheme.onSurface,
+                                    color: isError
+                                        ? AppColors.error
+                                        : isDone
+                                            ? theme
+                                                .colorScheme.onSurfaceVariant
+                                            : theme.colorScheme.onSurface,
                                     decoration: isDone
                                         ? TextDecoration.lineThrough
                                         : null,
@@ -116,7 +130,9 @@ class StepRow extends StatelessWidget {
                               subtitle!,
                               style: TextStyle(
                                 fontSize: 11,
-                                color: theme.colorScheme.onSurfaceVariant,
+                                color: isError
+                                    ? AppColors.error
+                                    : theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ],
@@ -139,15 +155,20 @@ class StepRow extends StatelessWidget {
     );
   }
 
-  Widget _badge(bool done, bool active, String? n, BuildContext context) {
-    final fill = done || active ? AppColors.primary : Colors.transparent;
+  Widget _badge(
+      bool done, bool active, bool error, String? n, BuildContext context) {
+    final fill = error
+        ? AppColors.error
+        : done || active
+            ? AppColors.primary
+            : Colors.transparent;
     return Container(
       width: 24,
       height: 24,
       decoration: BoxDecoration(
         color: fill,
         shape: BoxShape.circle,
-        border: done || active
+        border: done || active || error
             ? null
             : Border.all(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -155,16 +176,20 @@ class StepRow extends StatelessWidget {
               ),
       ),
       alignment: Alignment.center,
-      child: done
-          ? const Icon(LucideIcons.check, color: Colors.white, size: 14)
-          : Text(
-              n ?? '',
-              style: TextStyle(
-                color: active ? Colors.white : Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+      child: error
+          ? const Icon(LucideIcons.x, color: Colors.white, size: 14)
+          : done
+              ? const Icon(LucideIcons.check, color: Colors.white, size: 14)
+              : Text(
+                  n ?? '',
+                  style: TextStyle(
+                    color: active
+                        ? Colors.white
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
     );
   }
 

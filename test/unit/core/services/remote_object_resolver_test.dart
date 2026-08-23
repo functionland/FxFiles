@@ -97,12 +97,28 @@ void main() {
       );
     });
 
-    test('unmanaged categories have no v8 sibling', () {
+    test('archives is a MANAGED category, so it offers its v8 sibling first',
+        () {
+      // `archives` was added to BucketVersionResolver.managedBaseBuckets
+      // (2026-08) so archive uploads route to the healthy v8 bucket like
+      // every other category. This test previously asserted the opposite
+      // and became stale with that change.
       final refs = resolveRemoteObjectCandidates(
         remoteKey: 'a.zip',
         fileName: 'a.zip',
       );
-      expect(asStrings(refs), ['archives|a.zip']);
+      expect(asStrings(refs), ['archives-v8|a.zip', 'archives|a.zip']);
+    });
+
+    test('a genuinely unmanaged category has no v8 sibling', () {
+      // `other` is the catch-all for extensions no category claims, and
+      // is deliberately NOT v8-managed — this is the case the test above
+      // used to cover.
+      final refs = resolveRemoteObjectCandidates(
+        remoteKey: 'a.unknownext',
+        fileName: 'a.unknownext',
+      );
+      expect(asStrings(refs), ['other|a.unknownext']);
     });
   });
 
