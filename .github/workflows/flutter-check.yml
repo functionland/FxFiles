@@ -33,7 +33,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: flutter-check-${{ github.ref }}
+  # Keyed on the COMMIT, not the ref: a branch with an open PR fires both
+  # the push and the pull_request trigger, and those have different refs
+  # (refs/heads/x vs refs/pull/N/merge) — so a ref-keyed group runs the
+  # same commit twice instead of collapsing it.
+  group: flutter-check-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 env:
