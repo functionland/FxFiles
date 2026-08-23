@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -514,6 +516,11 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
     );
   }
 
+  /// Ceiling on share creation. Generous - it is a real crypto + network
+  /// round trip - but finite, because the alternative is a sheet that spins
+  /// with no exit. See the note in _submit.
+  static const Duration _kShareCreateBudget = Duration(seconds: 45);
+
   Future<void> _submit() async {
     final label = _labelController.text.trim().isNotEmpty
         ? _labelController.text.trim()
@@ -543,12 +550,21 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
     });
 
     try {
-      final WebShareResult result;
+      // Bounded. Share creation ends in ula.createShareTokenWithMode, which
+      // does a network HEAD against the gateway - and on wasm reqwest's
+      // client-level timeout is a NO-OP, so that call has no bound of its own.
+      // Against a saturated gateway it can hang indefinitely, and _isLoading
+      // is only cleared in the catch below, so the sheet span forever with no
+      // way out. A Dart timeout cannot cancel the Rust future (no FRB cancel
+      // handle) but it does let the UI recover and show the user an error
+      // instead of a permanent spinner. The real fix is a per-request timeout
+      // inside the wasm client; this is the guard until that ships.
+      final result = await (() async {
       if (_isTagShare) {
         final tagId = widget.tagId!;
         switch (_choice) {
           case WebShareChoice.recipient:
-            result = await WebShareService.createTagRecipientShare(
+            return await WebShareService.createTagRecipientShare(
               tagId: tagId,
               recipientShareId: _recipientKeyController.text.trim(),
               recipientName: _recipientNameController.text.trim(),
@@ -556,14 +572,14 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
               label: label,
             );
           case WebShareChoice.password:
-            result = await WebShareService.createTagPasswordLink(
+            return await WebShareService.createTagPasswordLink(
               tagId: tagId,
               expiryDays: _expiryDays ?? 7,
               password: _passwordController.text,
               label: label,
             );
           case WebShareChoice.public:
-            result = await WebShareService.createTagPublicLink(
+            return await WebShareService.createTagPublicLink(
               tagId: tagId,
               expiryDays: _expiryDays ?? 7,
               label: label,
@@ -572,7 +588,7 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
       } else {
         switch (_choice) {
           case WebShareChoice.recipient:
-            result = await WebShareService.createRecipientShare(
+            return await WebShareService.createRecipientShare(
               bucket: widget.bucket,
               pathScope: widget.pathScope,
               storageKey: widget.storageKey,
@@ -586,7 +602,7 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
               contentType: widget.contentType,
             );
           case WebShareChoice.password:
-            result = await WebShareService.createPasswordProtectedLink(
+            return await WebShareService.createPasswordProtectedLink(
               bucket: widget.bucket,
               pathScope: widget.pathScope,
               storageKey: widget.storageKey,
@@ -599,7 +615,7 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
               contentType: widget.contentType,
             );
           case WebShareChoice.public:
-            result = await WebShareService.createPublicLink(
+            return await WebShareService.createPublicLink(
               bucket: widget.bucket,
               pathScope: widget.pathScope,
               storageKey: widget.storageKey,
@@ -612,6 +628,7 @@ class _WebCreateShareDialogState extends State<WebCreateShareDialog> {
             );
         }
       }
+      })().timeout(_kShareCreateBudget);
       if (!mounted) return;
       Navigator.pop(context, result);
     } catch (e) {
