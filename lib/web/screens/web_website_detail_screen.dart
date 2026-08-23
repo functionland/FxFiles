@@ -14,8 +14,10 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/shared/widgets/ipfs_public_disclaimer_dialog.dart';
+import 'package:fula_files/shared/widgets/step_row.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_generation_steps.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_asset_upload_logic.dart';
@@ -1148,18 +1150,14 @@ class _GenerationCard extends StatelessWidget {
                     style: theme.textTheme.bodySmall),
               ],
             ),
-            if (g.statusMessage != null && g.statusMessage!.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(g.statusMessage!, style: theme.textTheme.bodySmall),
-            ],
-            if (g.status == WebsiteGenStatus.uploading &&
-                g.totalAssets > 0) ...[
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                  value: g.uploadedAssets / g.totalAssets),
-              const SizedBox(height: 4),
-              Text('${g.uploadedAssets}/${g.totalAssets} assets uploaded',
-                  style: theme.textTheme.bodySmall),
+            // While a generation is in flight (or has failed) the card
+            // shows the real step checklist instead of one opaque line of
+            // status text, so a slow step is visibly slow rather than
+            // looking hung. A finished generation drops the checklist —
+            // the live URL below is the payload at that point.
+            if (active || g.status == WebsiteGenStatus.error) ...[
+              const SizedBox(height: 10),
+              _StepChecklist(generation: g),
             ],
             if (g.status == WebsiteGenStatus.completed && url != null) ...[
               const SizedBox(height: 10),
@@ -1268,6 +1266,63 @@ class _GenerationCard extends StatelessWidget {
     if (d.inDays < 30) return '${d.inDays}d ago';
     return '${t.day.toString().padLeft(2, '0')}/'
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+}
+
+/// The generation progress checklist.
+///
+/// Every tick is driven by state the client genuinely observes — its own
+/// pipeline phase plus the server's `status` from
+/// `GET /api/v1/status/:jobId` — never by a timer. See
+/// `web_generation_steps.dart` for the mapping and why the 3-pass AI
+/// stage stays a single step.
+class _StepChecklist extends StatelessWidget {
+  final WebsiteGeneration generation;
+
+  const _StepChecklist({required this.generation});
+
+  @override
+  Widget build(BuildContext context) {
+    final g = generation;
+    final service = WebWebsiteService.instance;
+    final steps = buildWebsiteGenerationSteps(
+      status: g.status,
+      serverPhase: service.serverPhaseFor(g.id),
+      lastActiveStatus: service.lastActiveStatusFor(g.id),
+      statusMessage: g.statusMessage,
+      // Deliberately not passed: the dedicated error block below the
+      // checklist already shows the failure reason. Leaving this null
+      // makes the failed step's subtitle show what it was DOING when it
+      // broke, which is different information rather than a duplicate.
+      errorMessage: null,
+      uploadedAssets: g.uploadedAssets,
+      totalAssets: g.totalAssets,
+    );
+
+    final rows = <Widget>[];
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      final isUploadInFlight =
+          i == 0 && step.state == WebsiteStepState.active && g.totalAssets > 0;
+      if (i > 0) rows.add(const SizedBox(height: 6));
+      rows.add(StepRow(
+        state: switch (step.state) {
+          WebsiteStepState.pending => StepRowState.pending,
+          WebsiteStepState.active => StepRowState.active,
+          WebsiteStepState.done => StepRowState.done,
+          WebsiteStepState.failed => StepRowState.error,
+        },
+        number: '${i + 1}',
+        title: step.title,
+        subtitle: step.subtitle,
+        expanded: isUploadInFlight
+            ? LinearProgressIndicator(
+                value: g.uploadedAssets / g.totalAssets,
+              )
+            : null,
+      ));
+    }
+    return Column(children: rows);
   }
 }
 

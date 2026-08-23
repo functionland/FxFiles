@@ -23,6 +23,7 @@ import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_cache_sync.dart';
 import 'package:fula_files/web/services/web_features.dart';
+import 'package:fula_files/web/services/web_generation_steps.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -427,7 +428,51 @@ class WebWebsiteService extends ChangeNotifier {
   /// Serializes read-modify-write cycles on the pending-jobs sidecar.
   Future<void> _pendingChain = Future.value();
 
-  void _notify(WebsiteGeneration g) => notifyListeners();
+  /// Transient per-generation progress detail, keyed by generation id.
+  ///
+  /// Deliberately NOT persisted and deliberately NOT fields on
+  /// [WebsiteGeneration]: that model is `@HiveType(typeId: 25)` and is
+  /// shared with the native app, so adding fields there would drag a Hive
+  /// migration into a web-only change. Both values are re-established by
+  /// the first poll after a resume, which is the only way they can be
+  /// lost.
+  ///
+  /// [_serverPhase] is the AI service's own phase from
+  /// `GET /api/v1/status/:jobId` ('pending' | 'generating' |
+  /// 'publishing'); [_lastActiveStatus] is the last non-error client
+  /// phase, needed because a failure overwrites `status` with `error` and
+  /// would otherwise lose which step actually broke.
+  final Map<String, String> _serverPhase = {};
+  final Map<String, WebsiteGenStatus> _lastActiveStatus = {};
+
+  /// Server phase for [generationId], or null if none has been observed.
+  String? serverPhaseFor(String generationId) => _serverPhase[generationId];
+
+  /// Last non-error client phase for [generationId].
+  WebsiteGenStatus? lastActiveStatusFor(String generationId) =>
+      _lastActiveStatus[generationId];
+
+  void _notify(WebsiteGeneration g) {
+    // Record the last phase the generation was genuinely working in, so a
+    // later `error` can be attributed to the right step.
+    if (g.status != WebsiteGenStatus.error &&
+        g.status != WebsiteGenStatus.completed) {
+      _lastActiveStatus[g.id] = g.status;
+    }
+    notifyListeners();
+  }
+
+  /// Fold a freshly-polled server phase in, never walking backwards.
+  void _recordServerPhase(String generationId, String? phase) {
+    final next = advanceServerPhase(_serverPhase[generationId], phase);
+    if (next != null) _serverPhase[generationId] = next;
+  }
+
+  /// Drop transient progress detail once a generation is finished with.
+  void _forgetPhase(String generationId) {
+    _serverPhase.remove(generationId);
+    _lastActiveStatus.remove(generationId);
+  }
 
   /// Create a website group — a `websites-` prefixed tag, exactly like
   /// the app (websiteProvider.createWebsite).
@@ -877,9 +922,19 @@ class WebWebsiteService extends ChangeNotifier {
       final status = jsonDecode(statusResponse.body) as Map<String, dynamic>;
       final serverStatus = status['status'] as String?;
       final statusMsg = status['statusMessage'] as String?;
+      // The server has always sent its own phase here; it used to be
+      // read only to detect 'completed'/'error'. Keeping it is what lets
+      // the card tick "Generate site" → "Publish to IPFS" for real
+      // instead of guessing.
+      final phaseAdvanced =
+          advanceServerPhase(_serverPhase[generation.id], serverStatus) !=
+              _serverPhase[generation.id];
+      _recordServerPhase(generation.id, serverStatus);
       if (statusMsg != null) {
         generation.statusMessage = statusMsg;
         generation.updatedAt = DateTime.now();
+        _notify(generation);
+      } else if (phaseAdvanced) {
         _notify(generation);
       }
 
@@ -890,6 +945,11 @@ class WebWebsiteService extends ChangeNotifier {
         generation.status = WebsiteGenStatus.completed;
         generation.statusMessage = 'Website generated successfully';
         generation.updatedAt = DateTime.now();
+        // A completed generation renders every step done regardless of
+        // phase, so the transient detail is dead weight from here on.
+        // NOT done on the error path — a failed card keeps rendering the
+        // step that actually broke.
+        _forgetPhase(generation.id);
         _notify(generation);
 
         await _appendToCloudManifest(generation);
