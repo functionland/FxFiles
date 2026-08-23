@@ -892,6 +892,9 @@ class WebWebsiteService extends ChangeNotifier {
               // The group's display name, sent as its own field rather
               // than scraped from the prompt (free text the user wrote).
               'listing_name': generation.tagName,
+              // Per-WEBSITE key so the directory shows one entry per
+              // website instead of one per regeneration.
+              'listing_group': generation.tagId,
             }),
           )
           .timeout(const Duration(seconds: 30));
