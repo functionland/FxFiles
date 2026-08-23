@@ -146,6 +146,8 @@ void _recordRecent(
   );
 }
 
+/// Snackbar that is safe to call after an await — the guard is here so
+/// every call site does not have to repeat it.
 void _snack(BuildContext context, String msg) {
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -180,6 +182,7 @@ Future<void> downloadWebFile({
     );
     _recordRecent(object, bucket, base, nameOf);
   } catch (e) {
+    if (!context.mounted) return;
     _snack(context, 'Download failed: $e');
   }
 }
@@ -374,6 +377,7 @@ Future<void> _previewText({
       ),
     );
   } catch (e) {
+    if (!context.mounted) return;
     _snack(context, 'Preview failed: $e');
   }
 }
@@ -404,6 +408,7 @@ Future<void> _previewMedia({
       ),
     );
   } catch (e) {
+    if (!context.mounted) return;
     _snack(context, 'Playback failed: $e');
   }
 }

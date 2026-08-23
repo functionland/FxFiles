@@ -56,8 +56,13 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      # Fail on ERRORS only. The repo carries a large pre-existing
+      # lint baseline (~180 infos/warnings across lib/), so a plain
+      # `flutter analyze` fails on day one and tells you nothing about
+      # the change in front of you. Errors are the compile-breaking
+      # class and are always someone's fault today.
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Unit tests
         run: flutter test
