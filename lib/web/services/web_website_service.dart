@@ -494,10 +494,9 @@ class WebWebsiteService extends ChangeNotifier {
   }) async {
     // Throws 'No API key configured' when the session is gone.
     final jwt = await _jwt();
-    final aiEndpoint =
-        (WebFeatures.instance.aiEndpoint?.trim().isNotEmpty == true)
-            ? WebFeatures.instance.aiEndpoint!.trim()
-            : _defaultAiEndpoint;
+    final aiEndpoint = await SecureStorageService.instance
+            .read(SecureStorageKeys.aiEndpointUrl) ??
+        _defaultAiEndpoint;
 
     final http.Response response;
     try {
@@ -554,10 +553,9 @@ class WebWebsiteService extends ChangeNotifier {
     if (cached != null) return cached;
     try {
       final jwt = await _jwt();
-      final aiEndpoint =
-          (WebFeatures.instance.aiEndpoint?.trim().isNotEmpty == true)
-              ? WebFeatures.instance.aiEndpoint!.trim()
-              : _defaultAiEndpoint;
+      final aiEndpoint = await SecureStorageService.instance
+              .read(SecureStorageKeys.aiEndpointUrl) ??
+          _defaultAiEndpoint;
       final response = await http.get(
         Uri.parse('$aiEndpoint/api/v1/status/$generationId'),
         headers: {'Authorization': 'Bearer $jwt'},
