@@ -34,7 +34,7 @@ void main() {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const CircleAvatar(radius: 12),
                   const SizedBox(height: 2),
@@ -151,8 +151,11 @@ void main() {
     final badge = tester.getRect(find.byType(WebRankBadge));
     expect(badge.top, greaterThanOrEqualTo(avatar.bottom - 1),
         reason: 'rank should be stacked under the profile icon');
-    // And left-aligned with it, not centred off to one side.
-    expect((badge.left - avatar.left).abs(), lessThan(2));
+    // CENTRED over the insignia, not parked at its left edge — the
+    // avatar is ~24px against a much wider badge, so left-aligning puts
+    // the icon in the corner instead of over the rank it belongs to.
+    expect((badge.center.dx - avatar.center.dx).abs(), lessThan(2),
+        reason: 'profile icon should sit centred above the rank');
   });
 
   testWidgets('on a phone viewport the label drops, pips remain',

@@ -226,7 +226,11 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          // CENTRED, not start-aligned: the avatar is ~24px and the
+          // insignia beneath it is much wider, so left-aligning the two
+          // parks the icon off in the corner instead of over the rank it
+          // belongs to. Centring reads as one identity block.
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Tooltip(
               message: 'Profile',
