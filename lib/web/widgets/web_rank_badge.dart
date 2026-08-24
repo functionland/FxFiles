@@ -49,6 +49,17 @@ class WebRankBadge extends StatelessWidget {
   /// the title and two action icons.
   static const double _kLabelMinWidth = 420;
 
+  /// Tap-target height. The glyph row is only ~13px, far below a usable
+  /// touch target, so the hit area is padded out vertically.
+  ///
+  /// 28 rather than the ideal 48: the badge is stacked UNDER the profile
+  /// avatar inside a fixed 56px toolbar, so the whole column (avatar 24 +
+  /// gap 2 + badge 28 = 54) has to fit without growing the header. The
+  /// header height was an explicit requirement, so it wins over the
+  /// larger target — but the tap area is still more than twice the
+  /// glyph row.
+  static const double _kTapTargetHeight = 28;
+
   static Color colorFor(UserRank rank) => switch (rank) {
         // Chosen to read on the app's dark surface, and to keep Silver
         // and Platinum apart: Silver is neutral grey, Platinum is a
@@ -59,14 +70,17 @@ class WebRankBadge extends StatelessWidget {
         UserRank.platinum => const Color(0xFF9FE3F0),
       };
 
-  String _tooltip() {
+  /// The hint: what this rank is, and what it takes to reach the next
+  /// one. Phrased as an action ("add X") rather than a bare number,
+  /// because the whole point is telling the user what to DO.
+  String hintText() {
     final label = userRankLabel(rank);
     final remaining = bytesToNextRank(paidStorageBytes);
     final next = nextRankAfter(rank);
     if (remaining == null || next == null) {
-      return '$label — top rank';
+      return '$label — the top rank. Nothing left to unlock.';
     }
-    return '$label · ${_fmtBytes(remaining)} more storage for '
+    return '$label — add ${_fmtBytes(remaining)} of storage to reach '
         '${userRankLabel(next)}';
   }
 
@@ -87,31 +101,58 @@ class WebRankBadge extends StatelessWidget {
     final stars = userRankStars(rank);
 
     return Tooltip(
-      message: _tooltip(),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.start,
-        children: [
-          for (var i = 0; i < stars; i++)
-            Icon(Icons.star_rounded, size: _kStarSize, color: color),
-          if (showLabel) ...[
-            const SizedBox(width: 4),
-            Text(
-              userRankLabel(rank),
-              maxLines: 1,
-              overflow: TextOverflow.clip,
-              style: TextStyle(
-                fontSize: _kLabelSize,
-                // height 1.0 keeps the text box exactly the glyph height,
-                // so the label cannot be what grows the toolbar.
-                height: 1.0,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.3,
-                color: color,
-              ),
-            ),
-          ],
-        ],
+      message: hintText(),
+      // Desktop shows this on hover for free. Touch does NOT — Tooltip's
+      // default touch trigger is a LONG PRESS, which nobody discovers.
+      // `tap` adds the tap trigger without removing hover, so the same
+      // hint is reachable both ways.
+      triggerMode: TooltipTriggerMode.tap,
+      // Long enough to actually read on a phone; the default (1.5s) is
+      // tuned for a hover the user can simply hold.
+      showDuration: const Duration(seconds: 5),
+      child: SizedBox(
+        // A taller TAP TARGET than the 13px glyph row, because a 13px
+        // target is not tappable on a phone. This does NOT grow the
+        // header: an AppBar is a fixed `toolbarHeight` (56) and centres
+        // its title inside, so a 36px title child changes no geometry —
+        // the widget tests assert exactly that.
+        height: _kTapTargetHeight,
+        child: Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.start,
+            children: [
+              for (var i = 0; i < stars; i++)
+                Icon(Icons.star_rounded, size: _kStarSize, color: color),
+              if (showLabel) ...[
+                const SizedBox(width: 4),
+                // Flexible + ellipsis so the label can NEVER overflow the
+                // width it is given. The pips are the rank signal and stay
+                // fixed; the name is what yields. This is not theoretical:
+                // an OS-level text-scale setting makes "Platinum" wider
+                // than the reserved leading slot, and an unconstrained Row
+                // would paint the overflow stripes into the header.
+                Flexible(
+                  child: Text(
+                    userRankLabel(rank),
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: _kLabelSize,
+                      // height 1.0 keeps the text box exactly the glyph
+                      // height, so the label cannot grow the toolbar.
+                      height: 1.0,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: color,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

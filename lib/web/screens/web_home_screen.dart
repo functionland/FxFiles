@@ -195,7 +195,56 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     );
   }
 
-  /// Rank insignia for the header, or nothing at all.
+  /// Width reserved for the leading identity block (avatar above rank).
+  ///
+  /// Depends on the viewport and the signed-in flag ONLY — never on the
+  /// rank, which arrives asynchronously. If it did, the title would jump
+  /// sideways the moment billing resolved.
+  double _leadingWidth(BuildContext context) {
+    if (!WebSession.instance.isSignedIn) return 56;
+    // Enough for four pips plus the widest tier name ("Platinum") when
+    // the label is shown, pips-only otherwise.
+    return MediaQuery.sizeOf(context).width >= 420 ? 132 : 76;
+  }
+
+  /// Profile avatar with the rank insignia stacked beneath it.
+  ///
+  /// Fits the FIXED 56px toolbar: avatar 24 + gap 2 + badge 28 = 54.
+  /// That budget is why the avatar is radius 12 here rather than the
+  /// 14 used elsewhere, and why the badge's tap target is 28 rather
+  /// than the ideal 48 — the header must not grow.
+  ///
+  /// The avatar and the badge are SEPARATE tap targets on purpose:
+  /// tapping the avatar opens the profile sheet, tapping the rank shows
+  /// its hint. One shared gesture region would make the hint
+  /// unreachable.
+  Widget _identityBlock(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Tooltip(
+              message: 'Profile',
+              child: InkWell(
+                onTap: _showProfileSheet,
+                customBorder: const CircleBorder(),
+                child: _profileAvatar(context, radius: 12),
+              ),
+            ),
+            const SizedBox(height: 2),
+            _rankBadge(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Rank insignia, or nothing at all.
   ///
   /// Renders NOTHING while signed out, while the billing fetch is in
   /// flight, and on error — deliberately not a placeholder or spinner.
@@ -217,12 +266,9 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
           return const SizedBox.shrink();
         }
         final paid = snap.data!.paidStorageBytes;
-        return Padding(
-          padding: const EdgeInsets.only(left: 8),
-          child: WebRankBadge(
-            rank: rankForPaidStorageBytes(paid),
-            paidStorageBytes: paid,
-          ),
+        return WebRankBadge(
+          rank: rankForPaidStorageBytes(paid),
+          paidStorageBytes: paid,
         );
       },
     );
@@ -235,31 +281,19 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
       // avatar (left, opens the identity/sign-out sheet), plain
       // "FxFiles" title (no logo), settings (right → cloud portal).
       appBar: AppBar(
+        // Reserved width for the identity block. Derived ONLY from the
+        // viewport and the signed-in flag — both known synchronously —
+        // so the rank arriving later fills reserved space instead of
+        // shoving the title sideways.
+        leadingWidth: _leadingWidth(context),
         leading: WebSession.instance.isSignedIn
-            ? IconButton(
-                tooltip: 'Profile',
-                onPressed: _showProfileSheet,
-                icon: _profileAvatar(context),
-              )
+            ? _identityBlock(context)
             : IconButton(
                 tooltip: 'Sign in',
                 onPressed: _openLoginSheet,
                 icon: const Icon(Icons.account_circle_outlined),
               ),
-        // Title + rank insignia. The Row is min-width and the TITLE is
-        // the flexible part, so on a narrow phone "FxFiles" ellipsizes
-        // instead of the two texts running into each other, and the
-        // badge (shorter than the title's line height) can never grow
-        // the toolbar. See WebRankBadge's layout contract.
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Flexible(
-              child: Text('FxFiles', overflow: TextOverflow.ellipsis),
-            ),
-            _rankBadge(),
-          ],
-        ),
+        title: const Text('FxFiles', overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
             tooltip: 'Search',
