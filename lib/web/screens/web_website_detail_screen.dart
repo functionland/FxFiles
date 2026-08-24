@@ -71,13 +71,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// Opt-in: false unless the user ticked the box.
   bool _listInDirectory = false;
 
-  /// Id of the newest completed generation — the one the directory
-  /// lists, and so the only card that carries the listing switch.
-  /// `_generations` is sorted newest-first, so this is the first
-  /// completed entry.
-  String? get _latestCompletedId {
+  /// The newest completed generation — the build the directory entry
+  /// represents. `_generations` is sorted newest-first, so this is the
+  /// first completed entry.
+  WebsiteGeneration? get _latestCompleted {
     for (final g in _generations) {
-      if (g.status == WebsiteGenStatus.completed) return g.id;
+      if (g.status == WebsiteGenStatus.completed) return g;
     }
     return null;
   }
@@ -609,6 +608,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                       padding: const EdgeInsets.all(16),
                       children: [
                         _stableLinkSection(theme),
+                        // Directly under the shareable link, at the top.
+                        //
+                        // Listing is a statement about THAT address, so
+                        // the control belongs beside it. It lives here
+                        // rather than inside the link card because the
+                        // card collapses while the IPNS pointer is being
+                        // published — and a switch that disappears while
+                        // some unrelated thing loads is exactly how this
+                        // ended up looking unshipped.
+                        if (_latestCompleted != null)
+                          _DirectoryListingCard(
+                              generation: _latestCompleted!),
                         _assetsSection(theme),
                         const SizedBox(height: 16),
                         SizedBox(
@@ -642,8 +653,6 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                           for (final g in _generations)
                             _GenerationCard(
                               generation: g,
-                              isLatestCompleted:
-                                  g.id == _latestCompletedId,
                               onRecreate: g.status ==
                                           WebsiteGenStatus.completed &&
                                       !_isGenerating
@@ -1117,20 +1126,11 @@ class _GenerationCard extends StatelessWidget {
   final SocialPostRecord? socialRecord;
   final VoidCallback? onCreateSocial;
 
-  /// True for the newest COMPLETED generation of this website.
-  ///
-  /// The directory keeps one entry per website (the newest listed
-  /// generation), so only this card owns the listing switch. Showing it
-  /// on every historical card would both mislead and cost one status
-  /// request per card on screen open.
-  final bool isLatestCompleted;
-
   const _GenerationCard({
     required this.generation,
     this.onRecreate,
     this.socialRecord,
     this.onCreateSocial,
-    this.isLatestCompleted = false,
   });
 
   @override
@@ -1230,14 +1230,6 @@ class _GenerationCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // Public-directory switch, directly under the shareable
-              // link: listing is a statement about THIS address, so the
-              // control belongs beside it rather than below the actions,
-              // where it read as an afterthought and was easy to miss.
-              // Shown on the newest completed generation only — that is
-              // the build the directory entry represents.
-              if (isLatestCompleted)
-                _DirectoryListingSwitch(generation: g),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1320,6 +1312,29 @@ class _GenerationCard extends StatelessWidget {
     if (d.inDays < 30) return '${d.inDays}d ago';
     return '${t.day.toString().padLeft(2, '0')}/'
         '${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+}
+
+/// The listing switch as a top-of-page section, under the shareable
+/// link.
+///
+/// A thin wrapper so the control reads as part of the link block rather
+/// than a stray row: same padding and radius, no colour of its own.
+class _DirectoryListingCard extends StatelessWidget {
+  final WebsiteGeneration generation;
+  const _DirectoryListingCard({required this.generation});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: _DirectoryListingSwitch(generation: generation),
+    );
   }
 }
 
