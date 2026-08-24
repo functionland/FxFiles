@@ -445,6 +445,13 @@ class WebWebsiteService extends ChangeNotifier {
   final Map<String, String> _serverPhase = {};
   final Map<String, WebsiteGenStatus> _lastActiveStatus = {};
 
+  /// Furthest generation PASS observed, per generation. Derived from the
+  /// server's `statusMessage` ('Designing…' / 'Building…' / 'Polishing…')
+  /// and, like the phase above, monotonic and transient.
+  final Map<String, WebsiteSubStep> _subStep = {};
+
+  WebsiteSubStep? subStepFor(String generationId) => _subStep[generationId];
+
   /// Directory opt-in for an IN-FLIGHT generation, keyed by generation
   /// id. Transient for the same reason as the two maps above: it is only
   /// needed between `startGeneration` and the `/generate` POST, after
@@ -480,6 +487,7 @@ class WebWebsiteService extends ChangeNotifier {
     _serverPhase.remove(generationId);
     _lastActiveStatus.remove(generationId);
     _listInDirectory.remove(generationId);
+    _subStep.remove(generationId);
   }
 
   /// Turn a completed website's public-directory listing on or off.
@@ -1053,6 +1061,11 @@ class WebWebsiteService extends ChangeNotifier {
           advanceServerPhase(_serverPhase[generation.id], serverStatus) !=
               _serverPhase[generation.id];
       _recordServerPhase(generation.id, serverStatus);
+      // The three generation passes are reported through statusMessage,
+      // so the sub-step is folded in from the same value.
+      final nextSub = advanceSubStep(_subStep[generation.id], statusMsg);
+      if (nextSub != null) _subStep[generation.id] = nextSub;
+
       if (statusMsg != null) {
         generation.statusMessage = statusMsg;
         generation.updatedAt = DateTime.now();

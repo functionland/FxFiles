@@ -190,6 +190,84 @@ void main() {
     });
   });
 
+  group('generation passes (sub-steps)', () {
+    // These strings come from ai/src/services/claudeService.ts, which
+    // reports each pass through the job's statusMessage.
+    test('maps the three real server pass markers', () {
+      expect(subStepFromStatusMessage('Designing art direction...'),
+          WebsiteSubStep.design);
+      expect(subStepFromStatusMessage('Building your website...'),
+          WebsiteSubStep.build);
+      expect(subStepFromStatusMessage('Polishing design and motion...'),
+          WebsiteSubStep.polish);
+    });
+
+    test('"Polishing design and motion" is POLISH, not design', () {
+      // It contains the word "design", so a naive contains-check reports
+      // the wrong pass for the last one.
+      expect(subStepFromStatusMessage('Polishing design and motion...'),
+          isNot(WebsiteSubStep.design));
+    });
+
+    test('the legacy single-pass message names no pass', () {
+      expect(subStepFromStatusMessage('Generating website...'), isNull);
+      expect(subStepFromStatusMessage('Queued for generation'), isNull);
+      expect(subStepFromStatusMessage(null), isNull);
+    });
+
+    test('advanceSubStep never walks backwards', () {
+      expect(advanceSubStep(null, 'Designing art direction...'),
+          WebsiteSubStep.design);
+      expect(
+          advanceSubStep(WebsiteSubStep.build, 'Polishing design and motion...'),
+          WebsiteSubStep.polish);
+      // A late/stale poll must not un-tick a pass already seen.
+      expect(advanceSubStep(WebsiteSubStep.polish, 'Building your website...'),
+          WebsiteSubStep.polish);
+      // An unrecognised line leaves the pass alone rather than clearing it.
+      expect(advanceSubStep(WebsiteSubStep.build, 'Almost there'),
+          WebsiteSubStep.build);
+    });
+
+    test('passes hang off Generate site, and only once one is known', () {
+      final none = buildWebsiteGenerationSteps(
+        status: WebsiteGenStatus.generating,
+      );
+      expect(none[2].subSteps, isEmpty);
+
+      final building = buildWebsiteGenerationSteps(
+        status: WebsiteGenStatus.generating,
+        subStep: WebsiteSubStep.build,
+      );
+      expect(building[2].subSteps.map((s) => s.title).toList(),
+          ['Design', 'Build', 'Polish']);
+      expect(building[2].subSteps[0].state, WebsiteStepState.done);
+      expect(building[2].subSteps[1].state, WebsiteStepState.active);
+      expect(building[2].subSteps[2].state, WebsiteStepState.pending);
+      // No other step grows sub-steps.
+      expect(building.where((s) => s.subSteps.isNotEmpty).length, 1);
+    });
+
+    test('a failure inside generation fails the pass it was on', () {
+      final steps = buildWebsiteGenerationSteps(
+        status: WebsiteGenStatus.error,
+        lastActiveStatus: WebsiteGenStatus.generating,
+        subStep: WebsiteSubStep.polish,
+      );
+      expect(steps[2].state, WebsiteStepState.failed);
+      expect(steps[2].subSteps[2].state, WebsiteStepState.failed);
+      expect(steps[2].subSteps[0].state, WebsiteStepState.done);
+    });
+
+    test('a completed generation collapses the passes away', () {
+      final steps = buildWebsiteGenerationSteps(
+        status: WebsiteGenStatus.completed,
+        subStep: WebsiteSubStep.polish,
+      );
+      expect(steps[2].subSteps, isEmpty);
+    });
+  });
+
   group('serverPhaseRank', () {
     test('ranks the three known phases in pipeline order', () {
       expect(serverPhaseRank(kServerPhasePending), 0);
