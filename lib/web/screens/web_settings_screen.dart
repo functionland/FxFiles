@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -14,7 +14,7 @@ import 'package:fula_files/web/services/web_session.dart';
 
 /// App version label shown in About + the home footer. Kept in one place
 /// so the two stay in sync (the home footer imports this).
-const String kWebAppVersion = 'v1.11.10.0';
+const String kWebAppVersion = 'v1.11.11.0';
 
 /// In-app web Settings page. Replaces the old behavior where the gear icon
 /// opened cloud.fx.land in a new tab. Mirrors the mobile Settings screen's
@@ -99,14 +99,14 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Account ──────────────────────────────────────────────────────────
+  // â”€â”€ Account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _accountSection(BuildContext context) {
     final user = WebSession.instance.user;
     final isVault = user?.isVault ?? true;
     final identity = user == null
         ? 'Not signed in'
         : isVault
-            ? 'Vault ${user.id.length >= 8 ? user.id.substring(0, 8) : user.id}…'
+            ? 'Vault ${user.id.length >= 8 ? user.id.substring(0, 8) : user.id}â€¦'
             : user.email;
     final subtitle = user == null
         ? null
@@ -161,7 +161,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Your Share ID ────────────────────────────────────────────────────
+  // â”€â”€ Your Share ID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _shareIdSection(BuildContext context) {
     return _Section(
       label: 'YOUR SHARE ID',
@@ -170,7 +170,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
             'Share this ID with someone so they can send you files. It is your '
-            'public key — safe to share.',
+            'public key â€” safe to share.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
@@ -178,7 +178,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           future: _shareId,
           builder: (context, snap) {
             if (snap.connectionState != ConnectionState.done) {
-              return const _LoadingRow(label: 'Generating…');
+              return const _LoadingRow(label: 'Generatingâ€¦');
             }
             if (snap.hasError || snap.data == null) {
               return _ErrorRow(message: 'Could not generate Share ID',
@@ -194,7 +194,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── NFT Wallet ───────────────────────────────────────────────────────
+  // â”€â”€ NFT Wallet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _nftWalletSection(BuildContext context) {
     return _Section(
       label: 'NFT WALLET',
@@ -211,7 +211,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           future: _nftAddress,
           builder: (context, snap) {
             if (snap.connectionState != ConnectionState.done) {
-              return const _LoadingRow(label: 'Deriving…');
+              return const _LoadingRow(label: 'Derivingâ€¦');
             }
             final addr = snap.data;
             if (snap.hasError || addr == null || addr.isEmpty) {
@@ -228,7 +228,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Security ─────────────────────────────────────────────────────────
+  // â”€â”€ Security â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // The raw master key is NEVER shown just from opening Settings (web's
   // DOM is reachable by extensions/XSS). By default we show a SHA-256
   // fingerprint + "key is set"; the raw key is revealed only after an
@@ -249,7 +249,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           future: _encryptionKey,
           builder: (context, snap) {
             if (snap.connectionState != ConnectionState.done) {
-              return const _LoadingRow(label: 'Loading…');
+              return const _LoadingRow(label: 'Loadingâ€¦');
             }
             final key = snap.data;
             if (snap.hasError || key == null || key.isEmpty) {
@@ -315,7 +315,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  /// Non-reversible identifier for the key (SHA-256 prefix) — safe to show
+  /// Non-reversible identifier for the key (SHA-256 prefix) â€” safe to show
   /// so the user can confirm which key is active without exposing it.
   String _fingerprint(String base64Key) {
     try {
@@ -324,7 +324,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
       return '${p.substring(0, 4)} ${p.substring(4, 8)} '
           '${p.substring(8, 12)} ${p.substring(12, 16)}';
     } catch (_) {
-      return '—';
+      return 'â€”';
     }
   }
 
@@ -336,7 +336,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
         content: const Text(
             'Your raw encryption key will be shown on screen. Anyone who sees '
             'or captures it can decrypt all your files. Reveal it only somewhere '
-            'private — not on a shared or screen-shared display.'),
+            'private â€” not on a shared or screen-shared display.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -350,7 +350,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     if (ok == true && mounted) setState(() => _revealKey = true);
   }
 
-  // ── API Configuration (opens the dedicated editor) ───────────────────
+  // â”€â”€ API Configuration (opens the dedicated editor) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _apiConfigSection(BuildContext context) {
     return _Section(
       label: 'API CONFIGURATION',
@@ -367,7 +367,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Integrations (Buffer) ────────────────────────────────────────────
+  // â”€â”€ Integrations (Buffer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _integrationsSection(BuildContext context) {
     return _Section(
       label: 'INTEGRATIONS',
@@ -384,7 +384,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Sync queue (manage uploads) ──────────────────────────────────────
+  // â”€â”€ Sync queue (manage uploads) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _syncQueueSection(BuildContext context) {
     return _Section(
       label: 'UPLOADS',
@@ -400,7 +400,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── Other (everything else → cloud.fx.land) ──────────────────────────
+  // â”€â”€ Other (everything else â†’ cloud.fx.land) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _otherSection(BuildContext context) {
     return _Section(
       label: 'OTHER',
@@ -419,7 +419,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // ── About ────────────────────────────────────────────────────────────
+  // â”€â”€ About â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _aboutSection(BuildContext context) {
     return _Section(
       label: 'ABOUT',
@@ -434,7 +434,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
   }
 }
 
-// ── Shared little widgets ──────────────────────────────────────────────
+// â”€â”€ Shared little widgets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _Section extends StatelessWidget {
   final String label;

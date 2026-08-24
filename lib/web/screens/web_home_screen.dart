@@ -5,12 +5,14 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/storage_info.dart';
+import 'package:fula_files/core/models/user_rank.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/web/screens/web_settings_screen.dart' show kWebAppVersion;
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/widgets/web_login_bar.dart';
 import 'package:fula_files/web/widgets/web_login_sheet.dart';
+import 'package:fula_files/web/widgets/web_rank_badge.dart';
 import 'package:fula_files/web/widgets/web_recent_files_section.dart';
 import 'package:fula_files/web/widgets/web_storage_section.dart';
 
@@ -193,6 +195,39 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     );
   }
 
+  /// Rank insignia for the header, or nothing at all.
+  ///
+  /// Renders NOTHING while signed out, while the billing fetch is in
+  /// flight, and on error — deliberately not a placeholder or spinner.
+  /// The badge appearing later costs no vertical space (it is shorter
+  /// than the title text), so there is no layout shift to smooth over,
+  /// and a spinner in the title is exactly the jitter to avoid.
+  ///
+  /// Reuses the `_storage` future the Storage section already awaits —
+  /// no extra network call for the badge.
+  Widget _rankBadge() {
+    final storage = _storage;
+    if (storage == null) return const SizedBox.shrink();
+    return FutureBuilder<StorageInfo>(
+      future: storage,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done ||
+            snap.hasError ||
+            !snap.hasData) {
+          return const SizedBox.shrink();
+        }
+        final paid = snap.data!.paidStorageBytes;
+        return Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: WebRankBadge(
+            rank: rankForPaidStorageBytes(paid),
+            paidStorageBytes: paid,
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -211,7 +246,20 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                 onPressed: _openLoginSheet,
                 icon: const Icon(Icons.account_circle_outlined),
               ),
-        title: const Text('FxFiles'),
+        // Title + rank insignia. The Row is min-width and the TITLE is
+        // the flexible part, so on a narrow phone "FxFiles" ellipsizes
+        // instead of the two texts running into each other, and the
+        // badge (shorter than the title's line height) can never grow
+        // the toolbar. See WebRankBadge's layout contract.
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Flexible(
+              child: Text('FxFiles', overflow: TextOverflow.ellipsis),
+            ),
+            _rankBadge(),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: 'Search',
