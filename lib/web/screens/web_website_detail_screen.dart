@@ -71,13 +71,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   /// Opt-in: false unless the user ticked the box.
   bool _listInDirectory = false;
 
-  /// Id of the newest completed generation — the one the directory
-  /// lists, and so the only card that carries the listing switch.
-  /// `_generations` is sorted newest-first, so this is the first
-  /// completed entry.
-  String? get _latestCompletedId {
+  /// The newest completed generation — the build the directory entry
+  /// represents. `_generations` is sorted newest-first, so this is the
+  /// first completed entry.
+  WebsiteGeneration? get _latestCompleted {
     for (final g in _generations) {
-      if (g.status == WebsiteGenStatus.completed) return g.id;
+      if (g.status == WebsiteGenStatus.completed) return g;
     }
     return null;
   }
@@ -609,6 +608,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                       padding: const EdgeInsets.all(16),
                       children: [
                         _stableLinkSection(theme),
+                        // Directly under the shareable link, at the top.
+                        //
+                        // Listing is a statement about THAT address, so
+                        // the control belongs beside it. It lives here
+                        // rather than inside the link card because the
+                        // card collapses while the IPNS pointer is being
+                        // published — and a switch that disappears while
+                        // some unrelated thing loads is exactly how this
+                        // ended up looking unshipped.
+                        if (_latestCompleted != null)
+                          _DirectoryListingCard(
+                              generation: _latestCompleted!),
                         _assetsSection(theme),
                         const SizedBox(height: 16),
                         SizedBox(
@@ -642,8 +653,6 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                           for (final g in _generations)
                             _GenerationCard(
                               generation: g,
-                              isLatestCompleted:
-                                  g.id == _latestCompletedId,
                               onRecreate: g.status ==
                                           WebsiteGenStatus.completed &&
                                       !_isGenerating
@@ -1117,20 +1126,11 @@ class _GenerationCard extends StatelessWidget {
   final SocialPostRecord? socialRecord;
   final VoidCallback? onCreateSocial;
 
-  /// True for the newest COMPLETED generation of this website.
-  ///
-  /// The directory keeps one entry per website (the newest listed
-  /// generation), so only this card owns the listing switch. Showing it
-  /// on every historical card would both mislead and cost one status
-  /// request per card on screen open.
-  final bool isLatestCompleted;
-
   const _GenerationCard({
     required this.generation,
     this.onRecreate,
     this.socialRecord,
     this.onCreateSocial,
-    this.isLatestCompleted = false,
   });
 
   @override
@@ -1266,12 +1266,6 @@ class _GenerationCard extends StatelessWidget {
                     ),
                 ],
               ),
-              // Public-directory switch, on the newest completed
-              // generation only — that is the one the directory lists.
-              // Changeable here so a user never has to regenerate a site
-              // to take it out of the directory.
-              if (isLatestCompleted)
-                _DirectoryListingSwitch(generation: g),
               // Click-tracking stats below the link (native parity:
               // shown only for generations created with tracking on).
               if (g.trackingEnabled &&
@@ -1321,6 +1315,29 @@ class _GenerationCard extends StatelessWidget {
   }
 }
 
+/// The listing switch as a top-of-page section, under the shareable
+/// link.
+///
+/// A thin wrapper so the control reads as part of the link block rather
+/// than a stray row: same padding and radius, no colour of its own.
+class _DirectoryListingCard extends StatelessWidget {
+  final WebsiteGeneration generation;
+  const _DirectoryListingCard({required this.generation});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: _DirectoryListingSwitch(generation: generation),
+    );
+  }
+}
+
 /// "List in public directory" switch for a completed generation.
 ///
 /// Reads the state from the SERVER rather than assuming it: a generation
@@ -1338,7 +1355,7 @@ class _DirectoryListingSwitch extends StatefulWidget {
 }
 
 class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
-  ({bool listed, bool delistedByAdmin})? _state;
+  ({bool listed, bool delistedByAdmin, bool hasStableUrl})? _state;
   bool _busy = false;
   bool _unavailable = false;
 
@@ -1358,6 +1375,20 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
       _state = state;
       _unavailable = state == null;
     });
+
+    // A site listed before this client began sending the stable share
+    // link carries the raw per-generation gateway URL in the directory,
+    // which points at one build and goes stale on regeneration. Only the
+    // browser knows the IPNS front door, so push it here rather than
+    // asking the user to toggle listing off and on to repair it.
+    await WebWebsiteService.instance
+        .ensureStableLinkPublished(widget.generation);
+    if (!mounted) return;
+    final repaired =
+        WebWebsiteService.instance.listedOnServer(widget.generation.tagId);
+    if (repaired != null && repaired != _state) {
+      setState(() => _state = repaired);
+    }
   }
 
   Future<void> _set(bool listed) async {
@@ -1366,7 +1397,15 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
       await WebWebsiteService.instance
           .setDirectoryListing(widget.generation, listed: listed);
       if (!mounted) return;
-      setState(() => _state = (listed: listed, delistedByAdmin: false));
+      // Take the state the service recorded rather than reconstructing
+      // it: it knows whether the stable link was actually accepted.
+      setState(() => _state =
+          WebWebsiteService.instance.listedOnServer(widget.generation.tagId) ??
+              (
+                listed: listed,
+                delistedByAdmin: false,
+                hasStableUrl: false,
+              ));
     } catch (e) {
       if (!mounted) return;
       // Surface the failure and leave the switch where it was, rather
@@ -1382,7 +1421,31 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final state = _state;
-    if (_unavailable || state == null) return const SizedBox.shrink();
+
+    // Never disappear.
+    //
+    // This used to render nothing whenever the server state could not be
+    // read, on the reasoning that a wrong switch is worse than no
+    // switch. That was a mistake: when the listing endpoint was
+    // unreachable the control silently ceased to exist, and the only
+    // signal was a user hunting for a feature that looked unshipped. A
+    // disabled switch that says why is honest; an absent one is not.
+    if (state == null) {
+      return SwitchListTile(
+        value: false,
+        onChanged: null,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        title: const Text('List in public directory',
+            style: TextStyle(fontSize: 13)),
+        subtitle: Text(
+          _unavailable
+              ? 'Directory unavailable right now — try again shortly'
+              : 'Checking…',
+          style: theme.textTheme.bodySmall,
+        ),
+      );
+    }
 
     if (state.delistedByAdmin) {
       return Padding(
