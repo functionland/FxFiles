@@ -126,18 +126,27 @@ class WebRankBadge extends StatelessWidget {
                 Icon(Icons.star_rounded, size: _kStarSize, color: color),
               if (showLabel) ...[
                 const SizedBox(width: 4),
-                Text(
-                  userRankLabel(rank),
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  style: TextStyle(
-                    fontSize: _kLabelSize,
-                    // height 1.0 keeps the text box exactly the glyph
-                    // height, so the label cannot grow the toolbar.
-                    height: 1.0,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.3,
-                    color: color,
+                // Flexible + ellipsis so the label can NEVER overflow the
+                // width it is given. The pips are the rank signal and stay
+                // fixed; the name is what yields. This is not theoretical:
+                // an OS-level text-scale setting makes "Platinum" wider
+                // than the reserved leading slot, and an unconstrained Row
+                // would paint the overflow stripes into the header.
+                Flexible(
+                  child: Text(
+                    userRankLabel(rank),
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: _kLabelSize,
+                      // height 1.0 keeps the text box exactly the glyph
+                      // height, so the label cannot grow the toolbar.
+                      height: 1.0,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: color,
+                    ),
                   ),
                 ),
               ],

@@ -281,6 +281,19 @@ void main() {
     });
   });
 
+  testWidgets('the label yields rather than overflowing its slot',
+      (tester) async {
+    // The reserved leading width is finite, and a large OS text scale
+    // makes the tier name wider than it. The pips must survive and the
+    // name must ellipsize — never overflow stripes in the header.
+    await setViewport(tester, 800);
+    await tester.pumpWidget(header(rank: UserRank.platinum, leadingWidth: 70));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byIcon(Icons.star_rounded), findsNWidgets(4));
+  });
+
   testWidgets('each tier has a distinct colour', (tester) async {
     final seen = <Color>{};
     for (final rank in UserRank.values) {
