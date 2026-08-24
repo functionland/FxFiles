@@ -4,33 +4,50 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fula_files/core/models/user_rank.dart';
 import 'package:fula_files/web/widgets/web_rank_badge.dart';
 
-/// These tests exist for one reason: the badge lives in the AppBar title,
-/// and the requirement was that it must not enlarge the header, push
-/// content down, or let the header texts collide on a phone. Those are
-/// geometry claims, so they are asserted as geometry rather than trusted.
+/// These tests exist for two reasons.
+///
+/// 1. The badge lives in the AppBar title, and the requirement was that
+///    it must not enlarge the header, push content down, or let the
+///    header texts collide on a phone. Those are geometry claims, so
+///    they are asserted as geometry rather than trusted.
+/// 2. The hint has to be reachable on TOUCH. Desktop gets it on hover
+///    for free; Tooltip's default touch trigger is a long press, which
+///    nobody discovers — so tap-to-hint is pinned down here.
 void main() {
-  /// The header as it is actually assembled in web_home_screen.dart.
-  Widget header({UserRank? rank, String title = 'FxFiles'}) {
+  /// The header as it is actually assembled in web_home_screen.dart:
+  /// the rank sits BELOW the profile avatar in the leading slot, not in
+  /// the title.
+  Widget header({
+    UserRank? rank,
+    String title = 'FxFiles',
+    int paidStorageBytes = 600 * 1024 * 1024 * 1024,
+    double leadingWidth = 132,
+  }) {
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(
-          leading: const Icon(Icons.account_circle_outlined),
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
-                child: Text(title, overflow: TextOverflow.ellipsis),
+          leadingWidth: rank == null ? 56 : leadingWidth,
+          leading: Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CircleAvatar(radius: 12),
+                  const SizedBox(height: 2),
+                  if (rank != null)
+                    WebRankBadge(
+                      rank: rank,
+                      paidStorageBytes: paidStorageBytes,
+                    ),
+                ],
               ),
-              if (rank != null)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8),
-                  child: WebRankBadge(
-                    rank: rank,
-                    paidStorageBytes: 600 * 1024 * 1024 * 1024,
-                  ),
-                ),
-            ],
+            ),
           ),
+          title: Text(title, overflow: TextOverflow.ellipsis),
           actions: const [
             Icon(Icons.search),
             Icon(Icons.settings_outlined),
@@ -78,7 +95,8 @@ void main() {
     expect(bodyTopWith, bodyTopWithout);
   });
 
-  testWidgets('every tier renders its pips and stays short', (tester) async {
+  testWidgets('every tier renders its pips and fits the toolbar',
+      (tester) async {
     await setViewport(tester, 800);
     for (final rank in UserRank.values) {
       await tester.pumpWidget(header(rank: rank));
@@ -87,12 +105,54 @@ void main() {
       expect(find.byIcon(Icons.star_rounded), findsNWidgets(userRankStars(rank)),
           reason: '${rank.name} pip count');
 
-      // The badge must stay under the AppBar title's own line box.
-      final badgeHeight =
-          tester.getSize(find.byType(WebRankBadge)).height;
-      expect(badgeHeight, lessThanOrEqualTo(20),
+      // The badge must fit inside the fixed 56px toolbar. The stronger
+      // claim — that it changes nothing — is asserted by the AppBar
+      // height and body-offset tests above.
+      final badgeHeight = tester.getSize(find.byType(WebRankBadge)).height;
+      expect(badgeHeight, lessThanOrEqualTo(kToolbarHeight),
           reason: '${rank.name} badge is ${badgeHeight}px tall');
     }
+  });
+
+  testWidgets('the tap target is bigger than the glyph row', (tester) async {
+    await setViewport(tester, 360);
+    await tester.pumpWidget(header(rank: UserRank.gold));
+    await tester.pumpAndSettle();
+
+    // The glyph row is ~13px; without a padded hit area this is not
+    // tappable, which would make tap-to-hint useless. Capped at 28 by
+    // the 56px toolbar budget it shares with the avatar above it.
+    final size = tester.getSize(find.byType(WebRankBadge));
+    expect(size.height, greaterThanOrEqualTo(28));
+  });
+
+  testWidgets('avatar + badge together fit the fixed toolbar',
+      (tester) async {
+    await setViewport(tester, 800);
+    await tester.pumpWidget(header(rank: UserRank.platinum));
+    await tester.pumpAndSettle();
+
+    // The whole reason the avatar is radius 12 and the badge target is
+    // 28: the stacked column must not exceed the toolbar, or the header
+    // grows.
+    final avatar = tester.getRect(find.byType(CircleAvatar));
+    final badge = tester.getRect(find.byType(WebRankBadge));
+    final columnHeight = badge.bottom - avatar.top;
+    expect(columnHeight, lessThanOrEqualTo(kToolbarHeight));
+  });
+
+  testWidgets('the badge sits BELOW the avatar, not beside it',
+      (tester) async {
+    await setViewport(tester, 800);
+    await tester.pumpWidget(header(rank: UserRank.gold));
+    await tester.pumpAndSettle();
+
+    final avatar = tester.getRect(find.byType(CircleAvatar));
+    final badge = tester.getRect(find.byType(WebRankBadge));
+    expect(badge.top, greaterThanOrEqualTo(avatar.bottom - 1),
+        reason: 'rank should be stacked under the profile icon');
+    // And left-aligned with it, not centred off to one side.
+    expect((badge.left - avatar.left).abs(), lessThan(2));
   });
 
   testWidgets('on a phone viewport the label drops, pips remain',
@@ -129,14 +189,96 @@ void main() {
     await tester.pumpWidget(header(
       rank: UserRank.platinum,
       title: 'A Very Long Product Name That Cannot Possibly Fit',
+      leadingWidth: 76,
     ));
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    // The badge keeps its natural width; the title is the flexible part.
+    // The badge keeps its natural size in the reserved leading slot.
     final badge = tester.getSize(find.byType(WebRankBadge));
     expect(badge.width, greaterThan(0));
-    expect(badge.height, lessThanOrEqualTo(20));
+    expect(badge.height, lessThanOrEqualTo(kToolbarHeight));
+  });
+
+  testWidgets('the rank never overlaps the title', (tester) async {
+    await setViewport(tester, 360);
+    await tester.pumpWidget(
+        header(rank: UserRank.platinum, leadingWidth: 76));
+    await tester.pumpAndSettle();
+
+    // Pips-only at 360px must stay inside the reserved leading width.
+    final badge = tester.getRect(find.byType(WebRankBadge));
+    final titleLeft = tester.getRect(find.text('FxFiles')).left;
+    expect(badge.right, lessThanOrEqualTo(titleLeft),
+        reason: 'rank ran into the title');
+  });
+
+  group('the hint is reachable by TAP, not just hover', () {
+    // Desktop gets the hint on hover for free. Touch does not — Tooltip's
+    // default touch trigger is a long press, which nobody discovers — so
+    // the badge sets triggerMode: tap. These tests pin that down.
+    testWidgets('tapping shows what is needed for the next rank',
+        (tester) async {
+      await setViewport(tester, 360);
+      await tester.pumpWidget(header(rank: UserRank.gold));
+      await tester.pumpAndSettle();
+
+      // Nothing before the tap (and at 360px the tier name is hidden
+      // too, so any 'Gold' on screen must have come from the hint).
+      expect(find.textContaining('Platinum'), findsNothing);
+
+      await tester.tap(find.byType(WebRankBadge));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('reach Platinum'), findsOneWidget);
+      expect(find.textContaining('Gold'), findsOneWidget);
+    });
+
+    testWidgets('the hint names an amount, not just a tier', (tester) async {
+      await setViewport(tester, 360);
+      await tester.pumpWidget(header(rank: UserRank.gold));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(WebRankBadge));
+      await tester.pumpAndSettle();
+
+      // 600 GiB held, 2 TiB needed -> "add 1.4 TB of storage".
+      expect(find.textContaining('add 1.4 TB'), findsOneWidget);
+    });
+
+    testWidgets('at the top rank it says so instead of asking for more',
+        (tester) async {
+      await setViewport(tester, 360);
+      await tester.pumpWidget(header(
+        rank: UserRank.platinum,
+        paidStorageBytes: 4096 * 1024 * 1024 * 1024,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(WebRankBadge));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('top rank'), findsOneWidget);
+      expect(find.textContaining('add '), findsNothing);
+    });
+
+    testWidgets('showing the hint does not resize the header',
+        (tester) async {
+      await setViewport(tester, 360);
+      await tester.pumpWidget(header(rank: UserRank.gold));
+      await tester.pumpAndSettle();
+      final before = tester.getSize(find.byType(AppBar)).height;
+      final bodyBefore =
+          tester.getTopLeft(find.byKey(const ValueKey('body'))).dy;
+
+      await tester.tap(find.byType(WebRankBadge));
+      await tester.pumpAndSettle();
+
+      // The hint is an overlay; it must not reflow the header beneath it.
+      expect(tester.getSize(find.byType(AppBar)).height, before);
+      expect(tester.getTopLeft(find.byKey(const ValueKey('body'))).dy,
+          bodyBefore);
+    });
   });
 
   testWidgets('each tier has a distinct colour', (tester) async {
