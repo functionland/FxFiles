@@ -32,6 +32,53 @@ const String kServerPhasePublishing = 'publishing';
 
 enum WebsiteStepState { pending, active, done, failed }
 
+/// The server's three generation passes, surfaced as sub-steps under
+/// "Generate site".
+///
+/// These are REAL — `claudeService.ts` reports each pass through the job's
+/// `statusMessage`:
+///
+///   'Designing art direction...'    -> [design]
+///   'Building your website...'      -> [build]
+///   'Polishing design and motion...'-> [polish]
+///
+/// The legacy single-pass path reports 'Generating website...' instead and
+/// maps to null, which correctly renders no sub-steps rather than
+/// inventing three.
+enum WebsiteSubStep { design, build, polish }
+
+String websiteSubStepLabel(WebsiteSubStep s) => switch (s) {
+      WebsiteSubStep.design => 'Design',
+      WebsiteSubStep.build => 'Build',
+      WebsiteSubStep.polish => 'Polish',
+    };
+
+/// Which pass a `statusMessage` describes, or null when it names none.
+///
+/// Matched on the leading VERB, not the whole sentence: the wording is the
+/// server's to change, and 'Polishing design and motion' also contains the
+/// word "design" — so a naive `contains('design')` would report the wrong
+/// pass for the last one. The verbs do not overlap.
+WebsiteSubStep? subStepFromStatusMessage(String? message) {
+  if (message == null) return null;
+  final m = message.toLowerCase();
+  if (m.contains('polish')) return WebsiteSubStep.polish;
+  if (m.contains('building')) return WebsiteSubStep.build;
+  if (m.contains('designing')) return WebsiteSubStep.design;
+  return null;
+}
+
+/// Fold a newly-observed pass into the one already held, never going
+/// backwards — same rule as [advanceServerPhase]. An unrecognised message
+/// (a status line that is not a pass marker) leaves the pass untouched
+/// rather than clearing it.
+WebsiteSubStep? advanceSubStep(WebsiteSubStep? previous, String? message) {
+  final incoming = subStepFromStatusMessage(message);
+  if (incoming == null) return previous;
+  if (previous == null) return incoming;
+  return incoming.index >= previous.index ? incoming : previous;
+}
+
 class WebsiteStep {
   final String title;
   final WebsiteStepState state;
@@ -39,10 +86,15 @@ class WebsiteStep {
   /// Shown under the title. Only ever populated for the current step.
   final String? subtitle;
 
+  /// Nested passes, currently only on "Generate site" and only once the
+  /// server has actually named one. Empty otherwise.
+  final List<WebsiteStep> subSteps;
+
   const WebsiteStep({
     required this.title,
     required this.state,
     this.subtitle,
+    this.subSteps = const [],
   });
 
   @override
@@ -112,6 +164,10 @@ List<WebsiteStep> buildWebsiteGenerationSteps({
   String? errorMessage,
   int uploadedAssets = 0,
   int totalAssets = 0,
+
+  /// Furthest generation pass observed. Null until the server names one,
+  /// which is also the legacy single-pass case — then no sub-steps show.
+  WebsiteSubStep? subStep,
 }) {
   final failed = status == WebsiteGenStatus.error;
   final completed = status == WebsiteGenStatus.completed;
@@ -151,7 +207,34 @@ List<WebsiteStep> buildWebsiteGenerationSteps({
       title: kWebsiteStepTitles[i],
       state: state,
       subtitle: subtitle,
+      // Passes belong to "Generate site" (index 2) and only exist once
+      // the server has named one. A completed generation collapses them
+      // away — the detail is only interesting while it is running.
+      subSteps: (i == 2 && subStep != null && !completed)
+          ? _passSteps(subStep, parentState: state)
+          : const [],
     ));
   }
   return steps;
+}
+
+/// The three passes, resolved against the furthest one reached.
+List<WebsiteStep> _passSteps(
+  WebsiteSubStep reached, {
+  required WebsiteStepState parentState,
+}) {
+  return [
+    for (final pass in WebsiteSubStep.values)
+      WebsiteStep(
+        title: websiteSubStepLabel(pass),
+        state: pass.index < reached.index
+            ? WebsiteStepState.done
+            : pass.index == reached.index
+                // A failure inside the generate step failed THIS pass.
+                ? (parentState == WebsiteStepState.failed
+                    ? WebsiteStepState.failed
+                    : WebsiteStepState.active)
+                : WebsiteStepState.pending,
+      ),
+  ];
 }

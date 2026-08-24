@@ -18,6 +18,17 @@ class StepRow extends StatelessWidget {
   final Widget? expanded;
   final bool optional;
 
+  /// Draw the filled, outlined card around the row.
+  ///
+  /// True suits `setup_unlock_sheet`, where each row IS a tappable action.
+  /// Set false for a pure PROGRESS list: there the boxes read as buttons
+  /// and invite a tap that does nothing.
+  final bool bordered;
+
+  /// Compact scale for nested rows (the generation passes under
+  /// "Generate site"): smaller badge and type, tighter padding.
+  final bool dense;
+
   const StepRow({
     super.key,
     required this.state,
@@ -29,6 +40,8 @@ class StepRow extends StatelessWidget {
     this.onCta,
     this.expanded,
     this.optional = false,
+    this.bordered = true,
+    this.dense = false,
   });
 
   @override
@@ -53,24 +66,29 @@ class StepRow extends StatelessWidget {
             : theme.dividerColor.withValues(alpha: 0.4);
 
     return Container(
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: isActive ? 1.5 : 1),
-      ),
+      decoration: bordered
+          ? BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(12),
+              border:
+                  Border.all(color: borderColor, width: isActive ? 1.5 : 1),
+            )
+          : null,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.all(14),
+            padding: bordered
+                ? const EdgeInsets.all(14)
+                : EdgeInsets.symmetric(vertical: dense ? 3 : 5),
             child: Column(
               children: [
                 Row(
                   children: [
                     _badge(isDone, isActive, isError, number, context),
-                    const SizedBox(width: 12),
+                    SizedBox(width: dense ? 8 : 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -84,7 +102,7 @@ class StepRow extends StatelessWidget {
                                 child: Text(
                                   title,
                                   style: TextStyle(
-                                    fontSize: 13,
+                                    fontSize: dense ? 12 : 13,
                                     fontWeight: isActive || isError
                                         ? FontWeight.w600
                                         : FontWeight.w500,
@@ -162,9 +180,10 @@ class StepRow extends StatelessWidget {
         : done || active
             ? AppColors.primary
             : Colors.transparent;
+    final size = dense ? 16.0 : 24.0;
     return Container(
-      width: 24,
-      height: 24,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         color: fill,
         shape: BoxShape.circle,
@@ -177,16 +196,18 @@ class StepRow extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: error
-          ? const Icon(LucideIcons.x, color: Colors.white, size: 14)
+          ? Icon(LucideIcons.x,
+              color: Colors.white, size: dense ? 10 : 14)
           : done
-              ? const Icon(LucideIcons.check, color: Colors.white, size: 14)
+              ? Icon(LucideIcons.check,
+                  color: Colors.white, size: dense ? 10 : 14)
               : Text(
                   n ?? '',
                   style: TextStyle(
                     color: active
                         ? Colors.white
                         : Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
+                    fontSize: dense ? 9 : 12,
                     fontWeight: FontWeight.w600,
                   ),
                 ),

@@ -1448,6 +1448,7 @@ class _StepChecklist extends StatelessWidget {
       errorMessage: null,
       uploadedAssets: g.uploadedAssets,
       totalAssets: g.totalAssets,
+      subStep: service.subStepFor(g.id),
     );
 
     final rows = <Widget>[];
@@ -1455,26 +1456,52 @@ class _StepChecklist extends StatelessWidget {
       final step = steps[i];
       final isUploadInFlight =
           i == 0 && step.state == WebsiteStepState.active && g.totalAssets > 0;
-      if (i > 0) rows.add(const SizedBox(height: 6));
+
+      // Generation passes, indented under their parent step. Rendered in
+      // the `expanded` slot so they move with it.
+      final Widget? nested = step.subSteps.isEmpty
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(left: 4, top: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final sub in step.subSteps)
+                    StepRow(
+                      state: _rowState(sub.state),
+                      title: sub.title,
+                      bordered: false,
+                      dense: true,
+                    ),
+                ],
+              ),
+            );
+
       rows.add(StepRow(
-        state: switch (step.state) {
-          WebsiteStepState.pending => StepRowState.pending,
-          WebsiteStepState.active => StepRowState.active,
-          WebsiteStepState.done => StepRowState.done,
-          WebsiteStepState.failed => StepRowState.error,
-        },
+        state: _rowState(step.state),
         number: '${i + 1}',
         title: step.title,
         subtitle: step.subtitle,
+        // Borderless: this is a progress list, not a menu. The boxed
+        // variant reads as tappable buttons and invites a tap that does
+        // nothing.
+        bordered: false,
         expanded: isUploadInFlight
             ? LinearProgressIndicator(
                 value: g.uploadedAssets / g.totalAssets,
               )
-            : null,
+            : nested,
       ));
     }
-    return Column(children: rows);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: rows);
   }
+
+  static StepRowState _rowState(WebsiteStepState s) => switch (s) {
+        WebsiteStepState.pending => StepRowState.pending,
+        WebsiteStepState.active => StepRowState.active,
+        WebsiteStepState.done => StepRowState.done,
+        WebsiteStepState.failed => StepRowState.error,
+      };
 }
 
 /// Click-tracking stats line for one generation — mirror of the native
