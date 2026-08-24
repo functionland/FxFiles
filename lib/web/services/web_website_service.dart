@@ -567,19 +567,70 @@ class WebWebsiteService extends ChangeNotifier {
     if (response.statusCode != 200) {
       throw Exception('Could not update the listing (${response.statusCode})');
     }
-    _listedOnServer[generation.tagId] =
-        (listed: listed, delistedByAdmin: false);
+    // `urlAccepted` tells us whether the server actually stored the link
+    // it was sent — a malformed one is rejected without failing the
+    // toggle, and recording it as stored would suppress the repair.
+    var stored = _listedOnServer[generation.tagId]?.hasStableUrl ?? false;
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map && body['urlAccepted'] == true) stored = true;
+    } catch (_) {
+      // A 200 with an unreadable body still toggled; leave `stored` as
+      // it was so the repair can retry later.
+    }
+    _listedOnServer[generation.tagId] = (
+      listed: listed,
+      delistedByAdmin: false,
+      hasStableUrl: stored,
+    );
     _notify(generation);
   }
 
   /// Last known server-side listing state, keyed by website GROUP (tag
   /// id), so the switch reflects reality after a toggle without
   /// re-fetching.
-  final Map<String, ({bool listed, bool delistedByAdmin})> _listedOnServer =
-      {};
+  final Map<
+      String,
+      ({
+        bool listed,
+        bool delistedByAdmin,
+        bool hasStableUrl,
+      })> _listedOnServer = {};
 
-  ({bool listed, bool delistedByAdmin})? listedOnServer(String tagId) =>
+  ({bool listed, bool delistedByAdmin, bool hasStableUrl})? listedOnServer(
+          String tagId) =>
       _listedOnServer[tagId];
+
+  /// Groups this session has already tried to repair, so a site whose
+  /// front door genuinely cannot be published does not re-POST on every
+  /// visit to the screen.
+  final Set<String> _linkRepairAttempted = {};
+
+  /// Push the stable share link for a site that is listed without one.
+  ///
+  /// The server CANNOT work this address out. The IPNS pointer lives in
+  /// this user's encrypted manifest and is published to w3name from the
+  /// browser, so only the client can supply it — and a site listed
+  /// before the client started sending it shows the raw per-generation
+  /// gateway URL in the directory, which points at ONE build and goes
+  /// stale on the next regeneration.
+  ///
+  /// Repairing that silently is deliberate: the alternative is asking a
+  /// user to toggle listing off and on to fix data they did not break.
+  /// Failures are swallowed — this is a background repair, and the entry
+  /// keeps its old link either way.
+  Future<void> ensureStableLinkPublished(WebsiteGeneration generation) async {
+    final tagId = generation.tagId;
+    final state = _listedOnServer[tagId];
+    if (state == null || !state.listed || state.hasStableUrl) return;
+    if (_frontDoorUrlFor(tagId) == null) return;
+    if (!_linkRepairAttempted.add(tagId)) return;
+    try {
+      await setDirectoryListing(generation, listed: true);
+    } catch (e) {
+      debugPrint('Could not publish the stable link for $tagId: $e');
+    }
+  }
 
   /// Read a website's directory state from the server.
   ///
@@ -590,8 +641,8 @@ class WebWebsiteService extends ChangeNotifier {
   ///
   /// Returns null when the state cannot be determined, and the caller
   /// then shows no switch rather than a wrong one.
-  Future<({bool listed, bool delistedByAdmin})?> fetchListingState(
-      String tagId) async {
+  Future<({bool listed, bool delistedByAdmin, bool hasStableUrl})?>
+      fetchListingState(String tagId) async {
     final cached = _listedOnServer[tagId];
     if (cached != null) return cached;
     try {
@@ -610,6 +661,10 @@ class WebWebsiteService extends ChangeNotifier {
       final state = (
         listed: body['listed'] == true,
         delistedByAdmin: body['delistedByAdmin'] == true,
+        // Absent on a backend that predates the stable link, which is
+        // the same situation as "no link stored": treat it as missing
+        // and let the repair push one.
+        hasStableUrl: body['hasStableUrl'] == true,
       );
       _listedOnServer[tagId] = state;
       return state;

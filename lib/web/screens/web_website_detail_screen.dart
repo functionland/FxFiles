@@ -1230,6 +1230,14 @@ class _GenerationCard extends StatelessWidget {
                   ],
                 ),
               ),
+              // Public-directory switch, directly under the shareable
+              // link: listing is a statement about THIS address, so the
+              // control belongs beside it rather than below the actions,
+              // where it read as an afterthought and was easy to miss.
+              // Shown on the newest completed generation only — that is
+              // the build the directory entry represents.
+              if (isLatestCompleted)
+                _DirectoryListingSwitch(generation: g),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1266,12 +1274,6 @@ class _GenerationCard extends StatelessWidget {
                     ),
                 ],
               ),
-              // Public-directory switch, on the newest completed
-              // generation only — that is the one the directory lists.
-              // Changeable here so a user never has to regenerate a site
-              // to take it out of the directory.
-              if (isLatestCompleted)
-                _DirectoryListingSwitch(generation: g),
               // Click-tracking stats below the link (native parity:
               // shown only for generations created with tracking on).
               if (g.trackingEnabled &&
@@ -1338,7 +1340,7 @@ class _DirectoryListingSwitch extends StatefulWidget {
 }
 
 class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
-  ({bool listed, bool delistedByAdmin})? _state;
+  ({bool listed, bool delistedByAdmin, bool hasStableUrl})? _state;
   bool _busy = false;
   bool _unavailable = false;
 
@@ -1358,6 +1360,20 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
       _state = state;
       _unavailable = state == null;
     });
+
+    // A site listed before this client began sending the stable share
+    // link carries the raw per-generation gateway URL in the directory,
+    // which points at one build and goes stale on regeneration. Only the
+    // browser knows the IPNS front door, so push it here rather than
+    // asking the user to toggle listing off and on to repair it.
+    await WebWebsiteService.instance
+        .ensureStableLinkPublished(widget.generation);
+    if (!mounted) return;
+    final repaired =
+        WebWebsiteService.instance.listedOnServer(widget.generation.tagId);
+    if (repaired != null && repaired != _state) {
+      setState(() => _state = repaired);
+    }
   }
 
   Future<void> _set(bool listed) async {
@@ -1366,7 +1382,15 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
       await WebWebsiteService.instance
           .setDirectoryListing(widget.generation, listed: listed);
       if (!mounted) return;
-      setState(() => _state = (listed: listed, delistedByAdmin: false));
+      // Take the state the service recorded rather than reconstructing
+      // it: it knows whether the stable link was actually accepted.
+      setState(() => _state =
+          WebWebsiteService.instance.listedOnServer(widget.generation.tagId) ??
+              (
+                listed: listed,
+                delistedByAdmin: false,
+                hasStableUrl: false,
+              ));
     } catch (e) {
       if (!mounted) return;
       // Surface the failure and leave the switch where it was, rather
@@ -1382,7 +1406,31 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final state = _state;
-    if (_unavailable || state == null) return const SizedBox.shrink();
+
+    // Never disappear.
+    //
+    // This used to render nothing whenever the server state could not be
+    // read, on the reasoning that a wrong switch is worse than no
+    // switch. That was a mistake: when the listing endpoint was
+    // unreachable the control silently ceased to exist, and the only
+    // signal was a user hunting for a feature that looked unshipped. A
+    // disabled switch that says why is honest; an absent one is not.
+    if (state == null) {
+      return SwitchListTile(
+        value: false,
+        onChanged: null,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        title: const Text('List in public directory',
+            style: TextStyle(fontSize: 13)),
+        subtitle: Text(
+          _unavailable
+              ? 'Directory unavailable right now — try again shortly'
+              : 'Checking…',
+          style: theme.textTheme.bodySmall,
+        ),
+      );
+    }
 
     if (state.delistedByAdmin) {
       return Padding(
