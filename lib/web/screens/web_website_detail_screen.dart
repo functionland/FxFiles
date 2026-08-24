@@ -1349,8 +1349,10 @@ class _DirectoryListingSwitchState extends State<_DirectoryListingSwitch> {
   }
 
   Future<void> _load() async {
+    // Keyed on the website GROUP — the client's generation id is not the
+    // server's row id.
     final state = await WebWebsiteService.instance
-        .fetchListingState(widget.generation.id);
+        .fetchListingState(widget.generation.tagId);
     if (!mounted) return;
     setState(() {
       _state = state;

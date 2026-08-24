@@ -528,7 +528,16 @@ class WebWebsiteService extends ChangeNotifier {
     try {
       response = await http
           .post(
-            Uri.parse('$aiEndpoint/api/v1/generations/${generation.id}/listing'),
+            // Keyed on the website GROUP, not the generation.
+            //
+            // `generation.id` is a CLIENT-side uuid; the server's row id
+            // is the jobId it returned from /generate, which this client
+            // only holds while the job is in flight and discards on
+            // completion. Addressing the server by generation.id 404s for
+            // every finished site — which is what silently hid the
+            // listing switch. The group (tag id) is stable and always
+            // known here.
+            Uri.parse('$aiEndpoint/api/v1/websites/${generation.tagId}/listing'),
             headers: {
               'Authorization': 'Bearer $jwt',
               'Content-Type': 'application/json',
@@ -558,30 +567,32 @@ class WebWebsiteService extends ChangeNotifier {
     if (response.statusCode != 200) {
       throw Exception('Could not update the listing (${response.statusCode})');
     }
-    _listedOnServer[generation.id] =
+    _listedOnServer[generation.tagId] =
         (listed: listed, delistedByAdmin: false);
     _notify(generation);
   }
 
-  /// Last known server-side listing state, so the switch reflects reality
-  /// after a successful toggle without re-fetching.
+  /// Last known server-side listing state, keyed by website GROUP (tag
+  /// id), so the switch reflects reality after a toggle without
+  /// re-fetching.
   final Map<String, ({bool listed, bool delistedByAdmin})> _listedOnServer =
       {};
 
-  ({bool listed, bool delistedByAdmin})? listedOnServer(
-          String generationId) =>
-      _listedOnServer[generationId];
+  ({bool listed, bool delistedByAdmin})? listedOnServer(String tagId) =>
+      _listedOnServer[tagId];
 
-  /// Read a completed generation's directory state from the server.
+  /// Read a website's directory state from the server.
   ///
-  /// A generation restored from the cloud manifest carries no listing
-  /// flag (the manifest is the client's own encrypted record and the
-  /// directory lives server-side), so the toggle asks rather than
-  /// guessing. Returns null when the state cannot be determined — the
-  /// caller should then show no switch instead of a wrong one.
+  /// Keyed on the GROUP: the client's generation id is not the server's
+  /// row id (that is the jobId, discarded once a job completes), so an
+  /// id-keyed lookup 404s for every finished site — which is what hid
+  /// the switch entirely.
+  ///
+  /// Returns null when the state cannot be determined, and the caller
+  /// then shows no switch rather than a wrong one.
   Future<({bool listed, bool delistedByAdmin})?> fetchListingState(
-      String generationId) async {
-    final cached = _listedOnServer[generationId];
+      String tagId) async {
+    final cached = _listedOnServer[tagId];
     if (cached != null) return cached;
     try {
       final jwt = await _jwt();
@@ -589,7 +600,7 @@ class WebWebsiteService extends ChangeNotifier {
               .read(SecureStorageKeys.aiEndpointUrl) ??
           _defaultAiEndpoint;
       final response = await http.get(
-        Uri.parse('$aiEndpoint/api/v1/status/$generationId'),
+        Uri.parse('$aiEndpoint/api/v1/websites/$tagId/listing'),
         headers: {'Authorization': 'Bearer $jwt'},
       ).timeout(const Duration(seconds: 15));
       if (response.statusCode != 200) return null;
@@ -600,10 +611,10 @@ class WebWebsiteService extends ChangeNotifier {
         listed: body['listed'] == true,
         delistedByAdmin: body['delistedByAdmin'] == true,
       );
-      _listedOnServer[generationId] = state;
+      _listedOnServer[tagId] = state;
       return state;
     } catch (e) {
-      debugPrint('Listing state unavailable for $generationId: $e');
+      debugPrint('Listing state unavailable for $tagId: $e');
       return null;
     }
   }
