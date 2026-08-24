@@ -452,6 +452,21 @@ class WebWebsiteService extends ChangeNotifier {
 
   WebsiteSubStep? subStepFor(String generationId) => _subStep[generationId];
 
+  /// The website group's stable IPNS front door
+  /// (`https://fxfiles.top/w/<k51…>`), or null before the pointer has
+  /// been minted.
+  ///
+  /// This is the link the app shows as "the" website address, and the
+  /// one the public directory should carry: it survives regeneration,
+  /// whereas the per-generation `gatewayUrl` points at a single build.
+  /// The SERVER cannot work it out — the pointer lives in this user's
+  /// encrypted manifest and is published to w3name from the browser —
+  /// so the client has to hand it over.
+  String? _frontDoorUrlFor(String tagId) {
+    final url = WebIpnsService.instance.pointersByTag[tagId]?.frontDoorUrl;
+    return (url != null && url.isNotEmpty) ? url : null;
+  }
+
   /// Directory opt-in for an IN-FLIGHT generation, keyed by generation
   /// id. Transient for the same reason as the two maps above: it is only
   /// needed between `startGeneration` and the `/generate` POST, after
@@ -496,6 +511,9 @@ class WebWebsiteService extends ChangeNotifier {
   /// regenerate a site to take it out of the directory. Throws with a
   /// readable message so the caller can surface a failure instead of
   /// silently reverting the switch.
+  ///
+  /// Also (re)sends the group's stable share link — see
+  /// [_frontDoorUrlFor].
   Future<void> setDirectoryListing(
     WebsiteGeneration generation, {
     required bool listed,
@@ -518,6 +536,12 @@ class WebWebsiteService extends ChangeNotifier {
             body: jsonEncode({
               'listed': listed,
               'name': generation.tagName,
+              // The group's stable IPNS front door, when it has been
+              // minted. The directory falls back to the raw
+              // per-generation gateway URL without it — which points at
+              // ONE build and goes stale on the next regeneration.
+              if (_frontDoorUrlFor(generation.tagId) != null)
+                'url': _frontDoorUrlFor(generation.tagId),
             }),
           )
           .timeout(const Duration(seconds: 20));
@@ -1081,6 +1105,9 @@ class WebWebsiteService extends ChangeNotifier {
         generation.status = WebsiteGenStatus.completed;
         generation.statusMessage = 'Website generated successfully';
         generation.updatedAt = DateTime.now();
+        // Read BEFORE _forgetPhase, which clears it: needed further down
+        // to decide whether to hand the directory the stable link.
+        final wasListed = _listInDirectory[generation.id] ?? false;
         // A completed generation renders every step done regardless of
         // phase, so the transient detail is dead weight from here on.
         // NOT done on the error path — a failed card keeps rendering the
@@ -1098,8 +1125,21 @@ class WebWebsiteService extends ChangeNotifier {
         if (cid != null && cid.isNotEmpty) {
           unawaited(WebIpnsService.instance
               .publishLatest(generation.tagId, cid)
-              .then((_) => _notify(generation))
-              .catchError((Object e) {
+              .then((_) async {
+            _notify(generation);
+            // The front door only exists once the pointer is minted and
+            // published, which is AFTER the job completes — so a listed
+            // site is created with the raw gateway URL and upgraded to
+            // the stable link here. Best-effort: a failure leaves the
+            // entry listed with the gateway URL rather than unlisted.
+            if (wasListed) {
+              try {
+                await setDirectoryListing(generation, listed: true);
+              } catch (e) {
+                debugPrint('Directory link update failed (non-fatal): $e');
+              }
+            }
+          }).catchError((Object e) {
             debugPrint('Stable-link IPNS publish failed (non-fatal): $e');
           }));
         }
