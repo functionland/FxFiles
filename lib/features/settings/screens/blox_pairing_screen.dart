@@ -1,10 +1,12 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
+import 'package:fula_files/core/services/blox_pairing_links.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/blox_discovery_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -329,7 +331,7 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
     // Get the JWT token for the pinning service
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
     final ipfsServer = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl)
-        ?? 'https://api.cloud.fx.land';
+        ?? kDefaultPinningEndpoint;
 
     if (jwtToken == null || jwtToken.isEmpty) {
       if (mounted) {
@@ -340,27 +342,83 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       return;
     }
 
-    // Build deeplink URL to FxBlox app
-    final token = Uri.encodeComponent(jwtToken);
-    final endpoint = Uri.encodeComponent(ipfsServer);
-    final returnUrl = Uri.encodeComponent(
-      'fxfiles://autopin-complete?secret=\$secret&hardwareId=\$hardwareId&bloxPeerId=\$bloxPeerId&bloxName=\$bloxName',
-    );
+    // Outbound hand-off links (docs/AUTOPIN-HANDOFF.md): the SAME
+    // token/endpoint/returnUrl-template params on two carriers — the FxBlox
+    // app deep link and the web FxBlox at blox.fx.land. The return template
+    // (kAutopinReturnTemplate) is the https FRAGMENT form, so the pairing
+    // secret FxBlox hands back never reaches a server; the four
+    // `$placeholders` are literal and substituted by FxBlox.
+    final webUrl = buildBloxWebPairUrl(token: jwtToken, endpoint: ipfsServer);
 
-    final deeplinkUrl = 'fxblox://autopin-pair?token=$token&endpoint=$endpoint&returnUrl=$returnUrl';
+    if (kIsWeb) {
+      // The web shell has its own dart:io-free screen (web_blox_pairing_screen)
+      // so this branch is not reached today; keep the contract explicit: in a
+      // browser the web FxBlox is the only target.
+      await _openInBrowser(webUrl);
+      return;
+    }
 
+    // Native: try the FxBlox app first …
+    final deeplinkUrl = buildBloxNativePairUrl(token: jwtToken, endpoint: ipfsServer);
+    var launched = false;
     try {
-      final uri = Uri.parse(deeplinkUrl);
-      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!launched && mounted) {
+      launched = await launchUrl(deeplinkUrl, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      // url_launcher throws (Android: no activity for the scheme) or returns
+      // false (iOS: canOpenURL false) when FxBlox is not installed — both mean
+      // the same thing here.
+      debugPrint('BloxPairing: fxblox:// launch failed: $e');
+    }
+    if (launched || !mounted) return;
+
+    // … and fall back to pairing in the browser.
+    await _offerPairInBrowser(webUrl);
+  }
+
+  /// FxBlox app not available → let the user pair through blox.fx.land
+  /// instead (replaces the old "app not installed" dead-end snackbar).
+  Future<void> _offerPairInBrowser(Uri webUrl) async {
+    final choice = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('FxBlox app not found'),
+        content: const Text(
+          'Install the FxBlox app from the app store, or pair in your browser '
+          'at blox.fx.land instead. Your browser brings you back to FxFiles '
+          'when pairing is done.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(LucideIcons.globe, size: 18),
+            label: const Text('Pair in browser'),
+          ),
+        ],
+      ),
+    );
+    if (choice == true && mounted) await _openInBrowser(webUrl);
+  }
+
+  Future<void> _openInBrowser(Uri webUrl) async {
+    try {
+      final ok = await launchUrl(
+        webUrl,
+        mode: LaunchMode.externalApplication,
+        webOnlyWindowName: '_self',
+      );
+      if (!ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('FxBlox app not installed. Please install it from the app store.')),
+          const SnackBar(content: Text('Could not open blox.fx.land.')),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'launch FxBlox'))),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open blox.fx.land'))),
         );
       }
     }
@@ -631,7 +689,7 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
   Future<void> _showManualPairingDialog() async {
     final jwtToken = await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
     final ipfsEndpoint = await SecureStorageService.instance.read(SecureStorageKeys.ipfsServerUrl)
-        ?? 'https://api.cloud.fx.land';
+        ?? kDefaultPinningEndpoint;
 
     if (!mounted) return;
 
@@ -899,6 +957,40 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
     );
   }
 
+  /// Desktop alternative to the QR + paste flow: open the web FxBlox
+  /// (blox.fx.land) with the same hand-off params. When it finishes, the
+  /// browser lands on files.fx.land/autopin-complete → "Open in FxFiles"
+  /// (`fxfiles://autopin-complete?…`) → DeepLinkService completes the
+  /// pairing, so this dialog closes itself once the browser is open.
+  Future<void> _pairInBrowser() async {
+    final token = widget.jwtToken;
+    if (token == null || token.isEmpty) return;
+    final url = buildBloxWebPairUrl(token: token, endpoint: widget.ipfsEndpoint);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      final ok = await launchUrl(url, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Could not open blox.fx.land.')),
+        );
+        return;
+      }
+    } catch (e) {
+      messenger?.showSnackBar(
+        SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open blox.fx.land'))),
+      );
+      return;
+    }
+    if (!mounted) return;
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Finish pairing in your browser — FxFiles opens automatically when it is done.'),
+        duration: Duration(seconds: 6),
+      ),
+    );
+    Navigator.pop(context);
+  }
+
   @override
   Widget build(BuildContext context) {
     final qrData = _qrData;
@@ -1047,6 +1139,26 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
         _buildStep(3, 'Tap "Scan QR Code" and scan this code'),
         _buildStep(4, 'Tap "Get Secret"'),
         _buildStep(5, 'Copy the shown secret (it is only shown once) and paste it in the "Pairing Secret" field'),
+        const SizedBox(height: 16),
+        Text(
+          'No phone handy?',
+          style: TextStyle(
+            color: AppColors.primary,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: qrData == null ? null : _pairInBrowser,
+          icon: const Icon(LucideIcons.globe, size: 18),
+          label: const Text('Pair in browser'),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Opens blox.fx.land; it brings you back to FxFiles when pairing is done.',
+          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+        ),
       ],
     );
   }
