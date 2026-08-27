@@ -78,8 +78,11 @@ class _WebBloxPairingScreenState extends State<WebBloxPairingScreen> {
           const SnackBar(content: Text('Blox paired successfully')),
         );
         if (widget.fromReturnUrl) {
-          // Clean URL: the fresh /blox-pairing screen re-reads storage.
-          context.go('/blox-pairing');
+          // Clean URL: REPLACE (not go/push) so the secret-carrying
+          // `/autopin-complete?…` history entry is overwritten — a browser
+          // Back must not land on it and re-run this persist. The fresh
+          // /blox-pairing screen re-reads storage.
+          context.replace('/blox-pairing');
           return;
         }
       }

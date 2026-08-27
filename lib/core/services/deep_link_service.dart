@@ -341,7 +341,7 @@ class DeepLinkService {
     // reaches a server; iOS universal links and Android app links both hand
     // us the full URL, and the shared parser reads the fragment first, then
     // the query (the forwarder's / legacy form).
-    if (path == kAutopinReturnPath || path == '$kAutopinReturnPath/') {
+    if (isAutopinReturnRoutePath(path)) {
       debugPrint('DeepLinkService: Blox pairing complete universal link received');
       await _handleAutoPinComplete(uri);
       return;

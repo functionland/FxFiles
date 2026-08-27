@@ -242,11 +242,7 @@ AutopinCompleteParams? _paramsFromFragment(String fragment) {
   if (fragment.startsWith('/')) {
     // Hash-route form: the fragment is itself a path?query.
     final routed = Uri.tryParse(fragment);
-    if (routed == null) return null;
-    if (routed.path != kAutopinReturnPath &&
-        !routed.path.endsWith(kAutopinReturnPath)) {
-      return null;
-    }
+    if (routed == null || !isAutopinReturnRoutePath(routed.path)) return null;
     final q = _safeQueryParameters(routed);
     return q == null ? null : AutopinCompleteParams.fromMap(q);
   }
@@ -258,6 +254,16 @@ AutopinCompleteParams? _paramsFromFragment(String fragment) {
     return null;
   }
   return AutopinCompleteParams.fromMap(kv);
+}
+
+/// True iff [path] is the autopin return route — `/autopin-complete`, with or
+/// without a trailing slash (GitHub Pages and some routers add one), possibly
+/// under a prefix.
+bool isAutopinReturnRoutePath(String path) {
+  final normalized =
+      path.endsWith('/') ? path.substring(0, path.length - 1) : path;
+  return normalized == kAutopinReturnPath ||
+      normalized.endsWith(kAutopinReturnPath);
 }
 
 Map<String, String>? _safeQueryParameters(Uri uri) {

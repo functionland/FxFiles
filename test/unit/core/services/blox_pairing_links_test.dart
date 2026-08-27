@@ -161,6 +161,21 @@ void main() {
       expect(p.bloxName, 'Nm');
     });
 
+    test('web hash-route form tolerates a trailing slash', () {
+      final p = parseAutopinCompleteParams(Uri.parse(
+          'https://files.fx.land/app/#/autopin-complete/?secret=abc&bloxName=Nm'));
+      expect(p?.secret, 'abc');
+      expect(p?.bloxName, 'Nm');
+    });
+
+    test('isAutopinReturnRoutePath accepts both slash forms only', () {
+      expect(isAutopinReturnRoutePath('/autopin-complete'), isTrue);
+      expect(isAutopinReturnRoutePath('/autopin-complete/'), isTrue);
+      expect(isAutopinReturnRoutePath('/settings'), isFalse);
+      expect(isAutopinReturnRoutePath('/autopin-completed'), isFalse);
+      expect(isAutopinReturnRoutePath('/'), isFalse);
+    });
+
     test('a hash route that is NOT /autopin-complete is ignored', () {
       final p = parseAutopinCompleteParams(
           Uri.parse('https://files.fx.land/app/#/settings?secret=abc'));

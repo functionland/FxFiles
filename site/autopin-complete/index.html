@@ -150,8 +150,8 @@
     </div>
 
     <p class="status error" id="invalid">
-      This link is incomplete (no pairing secret). Go back to FxBlox and run
-      the pairing again.
+      This link is incomplete or was already used (no pairing secret). Go back
+      to FxBlox and run the pairing again.
     </p>
 
     <button class="btn-primary" id="open-btn" onclick="openApp()">
@@ -206,6 +206,16 @@
     const bloxPeerId = param('bloxPeerId');
     const bloxName = param('bloxName');
     const hasSecret = secret.length > 0;
+
+    // Scrub the secret from the address bar / history as soon as it is in
+    // memory: a later refresh, a copied URL or a shared tab must not replay
+    // it. The buttons keep working from the captured variables. (A reload
+    // after this shows the "incomplete link" message — re-run pairing.)
+    if (hasSecret && window.history && window.history.replaceState) {
+      try {
+        window.history.replaceState(null, '', window.location.pathname);
+      } catch (e) { /* non-fatal */ }
+    }
 
     // Show the non-secret identity so the user can confirm which Blox paired.
     if (bloxName || hardwareId) {
