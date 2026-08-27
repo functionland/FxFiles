@@ -91,16 +91,19 @@ FxFiles app
 
 ### Additional UX — Pairing
 
-Contract: `docs/AUTOPIN-HANDOFF.md` (v1). URL builders + the return parser live in
+Contract: `docs/AUTOPIN-HANDOFF.md` (v1.1). URL builders + the return parser live in
 `lib/core/services/blox_pairing_links.dart` (dart:io-free; unit-tested).
 
 1. User goes to **Settings → My Devices → Pair Blox**
 2. FxFiles hands off to FxBlox with the SAME params on one of two carriers:
    - **App** (mobile): `fxblox://autopin-pair?token=<JWT>&endpoint=<https api base>&returnUrl=<template>`
-   - **Web** (`https://blox.fx.land/autopin-pair?token=…&endpoint=…&returnUrl=…`): always from the
-     web build (`lib/web/screens/web_blox_pairing_screen.dart`, same-tab), from desktop's manual
-     pairing dialog ("Pair in browser"), and as the mobile fallback when the FxBlox app is not
-     installed (`launchUrl` false/throws → "Pair in browser" dialog).
+     (query — the custom scheme is routed by the OS, never a server)
+   - **Web** (`https://blox.fx.land/autopin-pair#token=…&endpoint=…&returnUrl=…` — **fragment**, v1.1,
+     so the JWT never reaches the Pages server/CDN logs or a Referer; FxBlox-web reads `location.hash`
+     first and accepts the v1 `?token=…` query as a fallback): always from the web build
+     (`lib/web/screens/web_blox_pairing_screen.dart`, same-tab), from desktop's manual pairing dialog
+     ("Pair in browser"), and as the mobile fallback when the FxBlox app is not installed
+     (`launchUrl` false/throws → "Pair in browser" dialog).
    - `returnUrl` is a URL-encoded **template** with the literal placeholders `$secret`, `$hardwareId`,
      `$bloxPeerId`, `$bloxName`: `https://files.fx.land/autopin-complete#secret=$secret&hardwareId=$hardwareId&bloxPeerId=$bloxPeerId&bloxName=$bloxName`
      (fragment form — the bearer secret never reaches a server).

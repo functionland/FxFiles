@@ -1,13 +1,18 @@
 /// Blox auto-pin pairing hand-off links — the FxFiles side of the contract in
-/// `docs/AUTOPIN-HANDOFF.md` (v1).
+/// `docs/AUTOPIN-HANDOFF.md` (v1.1).
 ///
 /// This file is deliberately free of `dart:io`, `package:web` and Flutter
 /// imports so it compiles in EVERY graph (native, desktop, the web shell) and
 /// is unit-testable on the Dart VM.
 ///
-/// Outbound (FxFiles → FxBlox):
-///   native  `fxblox://autopin-pair?token=<t>&endpoint=<e>&returnUrl=<r>`
-///   web     `https://blox.fx.land/autopin-pair?token=<t>&endpoint=<e>&returnUrl=<r>`
+/// Outbound (FxFiles → FxBlox) — the SAME three params on two carriers:
+///   native  `fxblox://autopin-pair?token=<t>&endpoint=<e>&returnUrl=<r>`   (query)
+///   web     `https://blox.fx.land/autopin-pair#token=<t>&endpoint=<e>&returnUrl=<r>`   (FRAGMENT)
+/// The web carrier uses the fragment (v1.1) so the bearer JWT never reaches
+/// the blox.fx.land server / CDN logs, browser history sync or a Referer
+/// header; FxBlox-web reads `location.hash` first and still accepts the v1
+/// `?token=…` query as a fallback. The custom-scheme link is routed by the OS
+/// (no server), so it keeps the query form.
 /// `returnUrl` is a URL-encoded TEMPLATE carrying the literal placeholders
 /// `$secret`, `$hardwareId`, `$bloxPeerId`, `$bloxName`; FxBlox substitutes
 /// them (each value `encodeURIComponent`-ed) and navigates to the result.
@@ -77,14 +82,18 @@ String _pairQuery({
       'must contain all of $kAutopinReturnPlaceholders',
     );
   }
-  // Uri.encodeComponent percent-encodes `$ & = # : /` so the template survives
-  // as ONE query value; FxBlox `decodeURIComponent`s it back verbatim.
+  // Uri.encodeComponent percent-encodes `$ & = # : / ?` so the template
+  // survives as ONE key=value entry (query or fragment); FxBlox
+  // `decodeURIComponent`s it back verbatim.
   return 'token=${Uri.encodeComponent(token)}'
       '&endpoint=${Uri.encodeComponent(endpoint)}'
       '&returnUrl=${Uri.encodeComponent(returnTemplate)}';
 }
 
-/// `https://blox.fx.land/autopin-pair?token=…&endpoint=…&returnUrl=…`
+/// `https://blox.fx.land/autopin-pair#token=…&endpoint=…&returnUrl=…`
+///
+/// FRAGMENT form (v1.1): the params — including the cloud JWT — stay in the
+/// browser and are never sent to the blox.fx.land server. No query is emitted.
 ///
 /// Throws [ArgumentError] on an empty [token]/[endpoint] or a
 /// [returnTemplate] missing a placeholder (fail-closed: never hand FxBlox a
@@ -94,16 +103,17 @@ Uri buildBloxWebPairUrl({
   required String endpoint,
   String returnTemplate = kAutopinReturnTemplate,
 }) {
-  final q = _pairQuery(
+  final params = _pairQuery(
     token: token,
     endpoint: endpoint,
     returnTemplate: returnTemplate,
   );
-  return Uri.parse('$kBloxWebPairBase?$q');
+  return Uri.parse('$kBloxWebPairBase#$params');
 }
 
 /// `fxblox://autopin-pair?token=…&endpoint=…&returnUrl=…` — the SAME params
-/// as [buildBloxWebPairUrl], only the scheme/host differ.
+/// as [buildBloxWebPairUrl] but as a QUERY (the custom scheme is routed by
+/// the OS, never a server), only the scheme/host differ.
 Uri buildBloxNativePairUrl({
   required String token,
   required String endpoint,

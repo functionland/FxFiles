@@ -18,7 +18,7 @@ import 'package:fula_files/web/services/web_autopin_return.dart';
 ///    off from the web home as go_router `extra`, or from the
 ///    `/autopin-complete` fallback route's query), VALIDATES them and writes
 ///    the four keys;
-///  - "Pair Blox" opens `https://blox.fx.land/autopin-pair?…` in THIS tab
+///  - "Pair Blox" opens `https://blox.fx.land/autopin-pair#…` (fragment) in THIS tab
 ///    (same-tab hand-off; the page unloads and FxBlox brings the user back);
 ///  - "Unpair" clears the keys.
 ///
