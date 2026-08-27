@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
+import 'package:fula_files/core/services/blox_pairing_links.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/auth_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
@@ -248,7 +249,7 @@ class DeepLinkService {
     // Handle HTTPS universal/app links from our domain
     if ((uri.scheme == 'https' || uri.scheme == 'http') &&
         uri.host == _universalLinkHost) {
-      _handleUniversalLink(uri);
+      await _handleUniversalLink(uri);
       return;
     }
 
@@ -326,7 +327,7 @@ class DeepLinkService {
   }
 
   /// Handle HTTPS universal links from files.fx.land
-  void _handleUniversalLink(Uri uri) {
+  Future<void> _handleUniversalLink(Uri uri) async {
     final path = uri.path;
 
     if (path == '/nft-claim') {
@@ -335,22 +336,37 @@ class DeepLinkService {
       return;
     }
 
+    // FxBlox → FxFiles pairing return (docs/AUTOPIN-HANDOFF.md, v1). The
+    // secret rides in the FRAGMENT (`/autopin-complete#secret=…`) so it never
+    // reaches a server; iOS universal links and Android app links both hand
+    // us the full URL, and the shared parser reads the fragment first, then
+    // the query (the forwarder's / legacy form).
+    if (path == kAutopinReturnPath || path == '$kAutopinReturnPath/') {
+      debugPrint('DeepLinkService: Blox pairing complete universal link received');
+      await _handleAutoPinComplete(uri);
+      return;
+    }
+
     debugPrint('DeepLinkService: Unknown universal link path: $path');
   }
 
+  /// Complete a Blox pairing from `fxfiles://autopin-complete?…` (query) or
+  /// `https://files.fx.land/autopin-complete#…` (fragment). Validated before
+  /// anything is persisted (non-empty secret, per-field length caps, no
+  /// control characters — see AutopinCompleteParams.validationError).
   Future<void> _handleAutoPinComplete(Uri uri) async {
-    final params = <String, String?>{
-      'secret': uri.queryParameters['secret'],
-      'hardwareId': uri.queryParameters['hardwareId'],
-      'bloxPeerId': uri.queryParameters['bloxPeerId'],
-      'bloxName': uri.queryParameters['bloxName'],
-    };
-
-    final secret = params['secret'];
-    if (secret == null || secret.isEmpty) {
+    final parsed = parseAutopinCompleteParams(uri);
+    if (parsed == null) {
       debugPrint('DeepLinkService: autopin-complete missing secret');
       return;
     }
+    final validationError = parsed.validationError;
+    if (validationError != null) {
+      debugPrint('DeepLinkService: autopin-complete rejected: $validationError');
+      return;
+    }
+    final params = parsed.toLegacyMap();
+    final secret = parsed.secret;
 
     // Store pairing credentials
     await SecureStorageService.instance.write(SecureStorageKeys.bloxPairingSecret, secret);
