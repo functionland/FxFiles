@@ -272,6 +272,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
         const Divider(height: 1),
         _integrationsSection(context),
         const Divider(height: 1),
+        _devicesSection(context),
+        const Divider(height: 1),
         _syncQueueSection(context),
         const Divider(height: 1),
         _otherSection(context),
@@ -520,6 +522,23 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
+  // My Devices — pair a Blox (via blox.fx.land) so it auto-pins the user's
+  // cloud files. Mirrors the native Settings → My Devices entry; the web
+  // screen is dart:io-free (no mDNS / LAN gateway in a browser).
+  Widget _devicesSection(BuildContext context) {
+    return _Section(
+      label: 'MY DEVICES',
+      children: [
+        ListTile(
+          leading: const Icon(Icons.storage_outlined),
+          title: const Text('Blox pairing'),
+          subtitle: const Text('Pair a Blox to auto-pin your files'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.push('/blox-pairing'),
+        ),
+      ],
+    );
+  }
   // â”€â”€ Other (everything else â†’ cloud.fx.land) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   Widget _otherSection(BuildContext context) {
     return _Section(

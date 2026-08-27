@@ -46,6 +46,7 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/web/app_web.dart';
+import 'package:fula_files/web/services/web_autopin_return.dart';
 import 'package:fula_files/web/services/web_breaker_persistence.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_features.dart';
@@ -77,6 +78,13 @@ Future<void> main() async {
   // a Dart timeout can't cancel it. Native keeps the old behaviour (flag
   // stays false there): it has its own block cache and storage tiers.
   BucketHealthBreaker.enabled = true;
+
+  // CAPTURE (Blox pairing return): read `#/autopin-complete?secret=…` (or the
+  // bare-fragment / query forms) from the location, stash the params, and
+  // strip them from the URL BEFORE the hash router boots — its logged-out
+  // redirect would otherwise bounce to `/` and drop them. The params are
+  // consumed post-login by the web home (→ /blox-pairing). No-op otherwise.
+  captureAutopinReturn();
 
   Object? bootError;
   var restored = false;
