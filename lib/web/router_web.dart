@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import 'package:fula_files/core/services/blox_pairing_links.dart';
 import 'package:fula_files/core/services/wallet_service.dart'
     show walletNavigatorKey;
 import 'package:fula_files/features/ai_connections/screens/ai_connections_screen.dart';
@@ -7,6 +8,7 @@ import 'package:fula_files/web/screens/web_api_config_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_detail_screen.dart';
 import 'package:fula_files/web/screens/web_automate_task_run_screen.dart';
 import 'package:fula_files/web/screens/web_automate_tasks_screen.dart';
+import 'package:fula_files/web/screens/web_blox_pairing_screen.dart';
 import 'package:fula_files/web/screens/web_bucket_screen.dart';
 import 'package:fula_files/web/screens/web_cloud_files_screen.dart';
 import 'package:fula_files/web/screens/web_collab_detail_screen.dart';
@@ -24,6 +26,7 @@ import 'package:fula_files/web/screens/web_sync_queue_screen.dart';
 import 'package:fula_files/web/screens/web_tags_screen.dart';
 import 'package:fula_files/web/screens/web_website_detail_screen.dart';
 import 'package:fula_files/web/screens/web_websites_screen.dart';
+import 'package:fula_files/web/services/web_autopin_return.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// Web-shell router. Deliberately defines ONLY the cloud routes — the
@@ -44,6 +47,16 @@ GoRouter buildWebRouter() {
     redirect: (context, state) {
       final signedIn = WebSession.instance.isSignedIn;
       final loc = state.matchedLocation;
+      // Blox pairing return (`#/autopin-complete?secret=…`). main() normally
+      // captures + strips this BEFORE the router mounts, so reaching here is
+      // the replaceState-failed fallback. Logged out: park the params for the
+      // post-login hand-off (web home init) instead of the blind bounce below
+      // that would drop them; signed in: fall through and let the route
+      // render (it persists the params and then cleans the URL).
+      if (loc == '/autopin-complete' && !signedIn) {
+        stashPendingAutopinReturn(parseAutopinCompleteParams(state.uri));
+        return '/';
+      }
       if (signedIn) {
         // Once authenticated, the standalone sign-in screen has no purpose.
         return loc == '/signin' ? '/' : null;
@@ -135,6 +148,31 @@ GoRouter buildWebRouter() {
             secret: q['hash'] ?? q['secret'],
           );
         },
+      ),
+      // Blox pairing (Settings → My Devices). The post-login hand-off from the
+      // web home lands here with the FxBlox return as `extra` (never a query,
+      // so the secret stays out of the address bar); a query is accepted too
+      // for robustness.
+      GoRoute(
+        path: '/blox-pairing',
+        builder: (context, state) {
+          final extra = state.extra;
+          return WebBloxPairingScreen(
+            incoming: extra is AutopinCompleteParams
+                ? extra
+                : parseAutopinCompleteParams(state.uri),
+          );
+        },
+      ),
+      // Fallback receiver for `#/autopin-complete?secret=…` when main()'s
+      // capture could not strip the URL (see the redirect above): persist,
+      // then move to /blox-pairing so the secret leaves the URL.
+      GoRoute(
+        path: '/autopin-complete',
+        builder: (context, state) => WebBloxPairingScreen(
+          incoming: parseAutopinCompleteParams(state.uri),
+          fromReturnUrl: true,
+        ),
       ),
       GoRoute(
         path: '/playlist/:id',

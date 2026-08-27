@@ -46,6 +46,7 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
 import 'package:fula_files/features/ai_connections/services/web_hosted_oauth.dart';
 import 'package:fula_files/web/app_web.dart';
+import 'package:fula_files/web/services/web_autopin_return.dart';
 import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
@@ -75,6 +76,13 @@ Future<void> main() async {
   // this early. No-op when this is not an OAuth redirect (normal startup). The
   // actual connection is completed later, from the post-login web home init.
   captureWebOauthRedirect();
+
+  // CAPTURE (Blox pairing return): read `#/autopin-complete?secret=…` (or the
+  // bare-fragment / query forms) from the location, stash the params, and
+  // strip them from the URL BEFORE the hash router boots — its logged-out
+  // redirect would otherwise bounce to `/` and drop them. The params are
+  // consumed post-login by the web home (→ /blox-pairing). No-op otherwise.
+  captureAutopinReturn();
 
   Object? bootError;
   var restored = false;

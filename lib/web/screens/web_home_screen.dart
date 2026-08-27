@@ -10,6 +10,7 @@ import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/features/ai_connections/services/web_hosted_oauth.dart';
 import 'package:fula_files/web/screens/web_settings_screen.dart' show kWebAppVersion;
+import 'package:fula_files/web/services/web_autopin_return.dart';
 import 'package:fula_files/web/services/web_prefetch_scheduler.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/widgets/web_login_bar.dart';
@@ -75,6 +76,24 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
     // the one-shot state on every outcome and shows its own success/failure
     // SnackBar, so a no-op on a normal sign-in is silent. Fire-and-forget.
     unawaited(_completeHostedOauthIfAny());
+    // HAND OFF a Blox pairing return captured at startup (web only; the VM
+    // stub holder is always empty). Placed HERE for the same reason as the
+    // OAuth completion: the user must be signed in before the credentials are
+    // persisted against their session. One-shot: `take` clears the holder.
+    _handoffAutopinReturnIfAny();
+  }
+
+  /// If `captureAutopinReturn()` parked FxBlox's return params at startup,
+  /// move to the pairing screen with them as go_router `extra` (never a
+  /// query — the secret must not re-enter the address bar). Scheduled after
+  /// the frame because `_initSignedIn` runs from initState / a listener.
+  void _handoffAutopinReturnIfAny() {
+    final params = takePendingAutopinReturn();
+    if (params == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.go('/blox-pairing', extra: params);
+    });
   }
 
   /// Drive the post-redirect hosted-AI OAuth completion (web only; a no-op

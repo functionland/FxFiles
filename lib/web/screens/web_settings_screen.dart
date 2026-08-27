@@ -87,6 +87,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
                 const Divider(height: 1),
                 _aiConnectionsSection(context),
                 const Divider(height: 1),
+                _devicesSection(context),
+                const Divider(height: 1),
                 _otherSection(context),
                 const Divider(height: 1),
                 _aboutSection(context),
@@ -395,6 +397,24 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           subtitle: const Text('Pair an AI client (MCP) with your workspace'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push('/ai-connections'),
+        ),
+      ],
+    );
+  }
+
+  // My Devices — pair a Blox (via blox.fx.land) so it auto-pins the user's
+  // cloud files. Mirrors the native Settings → My Devices entry; the web
+  // screen is dart:io-free (no mDNS / LAN gateway in a browser).
+  Widget _devicesSection(BuildContext context) {
+    return _Section(
+      label: 'MY DEVICES',
+      children: [
+        ListTile(
+          leading: const Icon(Icons.storage_outlined),
+          title: const Text('Blox pairing'),
+          subtitle: const Text('Pair a Blox to auto-pin your files'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.push('/blox-pairing'),
         ),
       ],
     );
