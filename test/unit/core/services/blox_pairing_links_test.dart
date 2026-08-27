@@ -1,10 +1,11 @@
 // Unit tests for the Blox auto-pin pairing hand-off links
-// (`docs/AUTOPIN-HANDOFF.md` v1). Pure Dart — runs on the VM.
+// (`docs/AUTOPIN-HANDOFF.md` v1.1). Pure Dart — runs on the VM.
 //
 // Covered:
-//  1. Outbound URL building (web + native): base, param set, encoding of the
-//     template as ONE query value, round-trip decode back to the template,
-//     placeholder presence, fail-closed ArgumentErrors.
+//  1. Outbound URL building (web = FRAGMENT carrier, native = query): base,
+//     param set, NO query on the web URL, encoding of the template as ONE
+//     value, round-trip decode back to the template, placeholder presence,
+//     fail-closed ArgumentErrors.
 //  2. The return template constants: fragment form, all four `$placeholders`
 //     kept LITERAL (no Dart interpolation), legacy template shape.
 //  3. parseAutopinCompleteParams: fragment-first precedence over query, the
@@ -24,32 +25,55 @@ void main() {
   // 1. Outbound URL building.
   // ===========================================================================
   group('buildBloxWebPairUrl / buildBloxNativePairUrl', () {
-    test('web URL targets blox.fx.land/autopin-pair with the three params', () {
+    // The web carrier puts the params in the FRAGMENT (v1.1): what FxBlox-web
+    // reads from `location.hash`, decoded the same way the native query is.
+    Map<String, String> webParams(Uri uri) => Uri.splitQueryString(uri.fragment);
+
+    test('web URL targets blox.fx.land/autopin-pair with the three params in '
+        'the FRAGMENT', () {
       final uri = buildBloxWebPairUrl(token: token, endpoint: endpoint);
       expect(uri.scheme, 'https');
       expect(uri.host, 'blox.fx.land');
       expect(uri.path, '/autopin-pair');
-      expect(uri.queryParameters.keys.toSet(),
-          <String>{'token', 'endpoint', 'returnUrl'});
-      expect(uri.queryParameters['token'], token);
-      expect(uri.queryParameters['endpoint'], endpoint);
-      expect(uri.queryParameters['returnUrl'], kAutopinReturnTemplate);
+      final params = webParams(uri);
+      expect(params.keys.toSet(), <String>{'token', 'endpoint', 'returnUrl'});
+      expect(params['token'], token);
+      expect(params['endpoint'], endpoint);
+      expect(params['returnUrl'], kAutopinReturnTemplate);
     });
 
-    test('native URL is fxblox://autopin-pair with the IDENTICAL query', () {
+    test('web URL carries NO query — nothing for the Pages server / Referer',
+        () {
+      final uri = buildBloxWebPairUrl(token: token, endpoint: endpoint);
+      expect(uri.hasQuery, isFalse);
+      expect(uri.query, isEmpty);
+      expect(uri.queryParameters, isEmpty);
+      final raw = uri.toString();
+      expect(raw, isNot(contains('?')));
+      expect(raw, startsWith('https://blox.fx.land/autopin-pair#token='));
+      // The JWT must not appear before the '#'.
+      expect(raw.substring(0, raw.indexOf('#')), isNot(contains(token)));
+    });
+
+    test('native URL is fxblox://autopin-pair with the IDENTICAL params as a '
+        'query', () {
       final web = buildBloxWebPairUrl(token: token, endpoint: endpoint);
       final native = buildBloxNativePairUrl(token: token, endpoint: endpoint);
       expect(native.scheme, 'fxblox');
       expect(native.host, 'autopin-pair');
-      expect(native.query, web.query);
+      expect(native.hasFragment, isFalse);
+      expect(native.query, web.fragment);
+      expect(native.queryParameters, webParams(web));
     });
 
-    test('the template is percent-encoded as ONE value (no raw & # \$ =)', () {
+    test('the template is percent-encoded as ONE value (no raw & # \$ = ?)',
+        () {
       final uri = buildBloxWebPairUrl(token: token, endpoint: endpoint);
       final raw = uri.toString();
       final returnUrlRaw = raw.substring(raw.indexOf('returnUrl=') + 10);
       expect(returnUrlRaw, isNot(contains('&')));
       expect(returnUrlRaw, isNot(contains('#')));
+      expect(returnUrlRaw, isNot(contains('?')));
       expect(returnUrlRaw, isNot(contains(r'$')));
       expect(returnUrlRaw, isNot(contains('=')));
       expect(returnUrlRaw, contains('%24secret'));
@@ -58,11 +82,13 @@ void main() {
       expect(Uri.decodeComponent(returnUrlRaw), kAutopinReturnTemplate);
     });
 
-    test('token characters that are special in URLs survive the round trip',
-        () {
+    test('token characters that are special in URLs survive the round trip '
+        '(both carriers)', () {
       const nasty = 'a b&c=d#e/f?g+h%i\$j';
-      final uri = buildBloxWebPairUrl(token: nasty, endpoint: endpoint);
-      expect(uri.queryParameters['token'], nasty);
+      final web = buildBloxWebPairUrl(token: nasty, endpoint: endpoint);
+      expect(webParams(web)['token'], nasty);
+      final native = buildBloxNativePairUrl(token: nasty, endpoint: endpoint);
+      expect(native.queryParameters['token'], nasty);
     });
 
     test('a custom template is accepted when it has every placeholder', () {
@@ -71,7 +97,7 @@ void main() {
         endpoint: endpoint,
         returnTemplate: kAutopinLegacyReturnTemplate,
       );
-      expect(uri.queryParameters['returnUrl'], kAutopinLegacyReturnTemplate);
+      expect(webParams(uri)['returnUrl'], kAutopinLegacyReturnTemplate);
     });
 
     test('fails closed on an empty token / endpoint', () {
