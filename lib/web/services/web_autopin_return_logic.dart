@@ -106,9 +106,7 @@ String stripAutopinReturnFromLocation(Uri location) {
 bool _fragmentCarriesReturn(String fragment) {
   if (fragment.startsWith('/')) {
     final routed = Uri.tryParse(fragment);
-    return routed != null &&
-        (routed.path == kAutopinReturnPath ||
-            routed.path.endsWith(kAutopinReturnPath));
+    return routed != null && isAutopinReturnRoutePath(routed.path);
   }
   try {
     return Uri.splitQueryString(fragment).containsKey('secret');

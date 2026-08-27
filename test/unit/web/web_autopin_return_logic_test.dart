@@ -107,6 +107,13 @@ void main() {
           '$appBase#/b/documents?open=k');
     });
 
+    test('trailing-slash hash route is recognised and reset too', () {
+      expect(
+          stripAutopinReturnFromLocation(
+              Uri.parse('$appBase#/autopin-complete/?secret=s')),
+          '$appBase#/');
+    });
+
     test('bare secret fragment is replaced by the home route', () {
       expect(
           stripAutopinReturnFromLocation(Uri.parse('$appBase#secret=s&bloxName=n')),
