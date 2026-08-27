@@ -816,8 +816,18 @@ design — the web compile graph never imports them.
 - Deploys: any push to `main` touching `lib/`, `web/`, `site/` or
   pubspec redeploys GitHub Pages (`.github/workflows/deploy-pages.yml`).
   The artifact keeps `site/` byte-identical at the domain root (the
-  `/nft-claim` forwarder and `.well-known` app-link files are
-  load-bearing for native deep links) and serves the app under `/app/`.
+  `/nft-claim` and `/autopin-complete` forwarders and `.well-known`
+  app-link files are load-bearing for native deep links) and serves
+  the app under `/app/`.
+- Blox pairing from the web: Settings → My Devices → Pair Blox hands
+  off to https://blox.fx.land (contract: `docs/AUTOPIN-HANDOFF.md`),
+  which returns to `files.fx.land/autopin-complete#secret=…` →
+  "Continue in web app". Known limitation: the web app cannot use the
+  Blox LAN gateway (`http://<lan-ip>` is mixed content and browsers
+  have no mDNS), so web downloads always come from the cloud; pairing
+  still makes the Blox auto-pin your files. The stored credentials are
+  local to that browser — pair native/desktop FxFiles separately
+  (desktop's manual dialog accepts the pairing secret).
 - E2E harness: build with `--dart-define=E2E=true`, then drive
   headless Chrome with `?e2e=create|signin|restore|signout|upload|`
   `download|list|delete|share` (results print with an `[e2e]` prefix).
