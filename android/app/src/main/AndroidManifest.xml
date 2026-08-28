@@ -71,12 +71,16 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="fxfiles"/>
             </intent-filter>
-            <!-- HTTPS App Links for shareable NFT claim URLs -->
+            <!-- HTTPS App Links for shareable NFT claim URLs and the Blox
+                 pairing return (files.fx.land/autopin-complete#secret=…;
+                 the fragment is delivered with the intent data). Paths must
+                 also be listed in site/.well-known (AASA for iOS). -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="https" android:host="files.fx.land" android:pathPrefix="/nft-claim"/>
+                <data android:scheme="https" android:host="files.fx.land" android:pathPrefix="/autopin-complete"/>
             </intent-filter>
             <!-- WalletConnect callback for signature responses -->
             <intent-filter>

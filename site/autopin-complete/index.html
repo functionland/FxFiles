@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Finish Blox Pairing - FxFiles</title>
+  <meta property="og:title" content="Finish Blox Pairing - FxFiles">
+  <meta property="og:description" content="Your Blox is paired. Open FxFiles to finish.">
+  <meta property="og:type" content="website">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #fafafa;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      text-align: center;
+      padding: 2rem;
+      max-width: 480px;
+    }
+    .icon {
+      width: 80px;
+      height: 80px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 20px;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #a1a1aa; margin-bottom: 1.5rem; line-height: 1.5; }
+    .info {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+      text-align: left;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.4rem 0;
+      font-size: 0.9rem;
+    }
+    .info-label { color: #71717a; white-space: nowrap; }
+    .info-value {
+      color: #d4d4d8;
+      font-family: monospace;
+      font-size: 0.85rem;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+    .btn-primary {
+      display: inline-block;
+      padding: 0.875rem 2rem;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+      text-decoration: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      width: 100%;
+      max-width: 300px;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary {
+      display: inline-block;
+      padding: 0.875rem 2rem;
+      margin-top: 0.75rem;
+      background: transparent;
+      color: #c4b5fd;
+      text-decoration: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      border: 1px solid #6366f1;
+      cursor: pointer;
+      transition: background 0.2s;
+      width: 100%;
+      max-width: 300px;
+    }
+    .btn-secondary:hover { background: rgba(99, 102, 241, 0.12); }
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin: 1.5rem 0;
+      color: #52525b;
+      font-size: 0.85rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #27272a;
+    }
+    .stores { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+    .stores a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.625rem 1.25rem;
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 10px;
+      color: #fafafa;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: border-color 0.2s;
+    }
+    .stores a:hover { border-color: #6366f1; }
+    .status { color: #a1a1aa; font-size: 0.85rem; margin-top: 1rem; }
+    .status.success { color: #4ade80; }
+    .status.error { color: #f87171; }
+    #fallback { display: none; }
+    #invalid { display: none; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">&#x1F4E6;</div>
+    <h1>Blox paired</h1>
+    <p class="subtitle">Open FxFiles to finish connecting your Blox</p>
+
+    <div class="info" id="pair-info" style="display:none">
+      <div class="info-row">
+        <span class="info-label">Blox</span>
+        <span class="info-value" id="blox-name">-</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Hardware ID</span>
+        <span class="info-value" id="hardware-id">-</span>
+      </div>
+    </div>
+
+    <p class="status error" id="invalid">
+      This link is incomplete or was already used (no pairing secret). Go back
+      to FxBlox and run the pairing again.
+    </p>
+
+    <button class="btn-primary" id="open-btn" onclick="openApp()">
+      Open in FxFiles
+    </button>
+
+    <button class="btn-secondary" id="webapp-btn" onclick="openWebApp()">
+      Continue in web app
+    </button>
+
+    <p class="status" id="status">Attempting to open FxFiles...</p>
+
+    <div id="fallback">
+      <div class="divider">or</div>
+      <p class="subtitle">Don't have FxFiles yet? Download it:</p>
+      <div class="stores">
+        <a href="https://apps.apple.com/app/fxfiles/id6504747875" target="_blank" rel="noopener">
+          <span>&#x1F34E;</span> App Store
+        </a>
+        <a href="https://play.google.com/store/apps/details?id=land.fx.files.dev" target="_blank" rel="noopener">
+          <span>&#x1F4F1;</span> Google Play
+        </a>
+      </div>
+      <p class="status">After installing, tap the link again to finish pairing.</p>
+    </div>
+  </div>
+
+  <script>
+    // Return leg of the Blox auto-pin pairing hand-off (docs/AUTOPIN-HANDOFF.md
+    // v1). FxBlox (app or blox.fx.land) substitutes the placeholders in the
+    // template FxFiles sent and navigates here:
+    //   https://files.fx.land/autopin-complete#secret=…&hardwareId=…&bloxPeerId=…&bloxName=…
+    // The pairing SECRET lives in the URL FRAGMENT so it never leaves the
+    // browser (fragments aren't sent to servers / logged). The query form
+    // (?secret=…) is accepted as a fallback for hand-typed / legacy links.
+    //
+    // On iOS/Android with a verified app link this page is normally skipped —
+    // the OS opens FxFiles directly with the full URL. It renders when the app
+    // is missing, the link is not (yet) verified, or on desktop.
+    const search = new URLSearchParams(window.location.search);
+    const fragment = new URLSearchParams(
+      (window.location.hash || '').replace(/^#/, '')
+    );
+
+    function param(name) {
+      const v = fragment.get(name) || search.get(name) || '';
+      return v;
+    }
+
+    const secret = param('secret');
+    const hardwareId = param('hardwareId');
+    const bloxPeerId = param('bloxPeerId');
+    const bloxName = param('bloxName');
+    const hasSecret = secret.length > 0;
+
+    // Scrub the secret from the address bar / history as soon as it is in
+    // memory: a later refresh, a copied URL or a shared tab must not replay
+    // it. The buttons keep working from the captured variables. (A reload
+    // after this shows the "incomplete link" message — re-run pairing.)
+    if (hasSecret && window.history && window.history.replaceState) {
+      try {
+        window.history.replaceState(null, '', window.location.pathname);
+      } catch (e) { /* non-fatal */ }
+    }
+
+    // Show the non-secret identity so the user can confirm which Blox paired.
+    if (bloxName || hardwareId) {
+      document.getElementById('pair-info').style.display = 'block';
+      document.getElementById('blox-name').textContent = bloxName || '-';
+      document.getElementById('hardware-id').textContent = hardwareId || '-';
+    }
+    if (!hasSecret) {
+      document.getElementById('invalid').style.display = 'block';
+      document.getElementById('open-btn').disabled = true;
+      document.getElementById('webapp-btn').disabled = true;
+    }
+
+    function returnParams() {
+      const p = new URLSearchParams();
+      p.set('secret', secret);
+      if (hardwareId) p.set('hardwareId', hardwareId);
+      if (bloxPeerId) p.set('bloxPeerId', bloxPeerId);
+      if (bloxName) p.set('bloxName', bloxName);
+      return p.toString();
+    }
+
+    // Native deep link: the custom scheme carries the params as a QUERY —
+    // the legacy contract the app has always accepted (some Android browsers
+    // drop the fragment when launching a custom-scheme intent). Desktop
+    // FxFiles registers fxfiles:// too, so this also works from a PC.
+    function buildDeepLink() {
+      return 'fxfiles://autopin-complete?' + returnParams();
+    }
+
+    // Web-app option: files.fx.land/app/ is HASH-routed, so the params live
+    // in the fragment after "#/" — never sent to a server. The app captures
+    // and strips them before its router boots and finishes the pairing after
+    // sign-in (Settings → My Devices).
+    function buildWebAppLink() {
+      return 'https://files.fx.land/app/#/autopin-complete?' + returnParams();
+    }
+
+    function openWebApp() {
+      if (!hasSecret) return;
+      window.location.href = buildWebAppLink();
+    }
+
+    function openApp() {
+      if (!hasSecret) return;
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Opening FxFiles...';
+      statusEl.className = 'status';
+
+      // Try the deep link
+      window.location.href = buildDeepLink();
+
+      // If still here after 2.5s, the app didn't open — show the fallback
+      // (store links only; we never auto-navigate to the web app, so a
+      // successful app launch is not shadowed by a second navigation).
+      setTimeout(function() {
+        if (!document.hidden) {
+          statusEl.textContent = 'Could not open the app automatically. Use "Continue in web app" or install FxFiles.';
+          statusEl.className = 'status error';
+          document.getElementById('fallback').style.display = 'block';
+        }
+      }, 2500);
+    }
+
+    // Auto-attempt on page load (only on mobile, only with a secret)
+    if (hasSecret && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      openApp();
+    } else {
+      document.getElementById('status').textContent = hasSecret
+        ? 'Tap "Open in FxFiles" (phone or desktop app) or continue in the web app.'
+        : '';
+      document.getElementById('fallback').style.display = hasSecret ? 'block' : 'none';
+    }
+  </script>
+</body>
+</html>

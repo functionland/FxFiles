@@ -91,13 +91,46 @@ FxFiles app
 
 ### Additional UX — Pairing
 
+Contract: `docs/AUTOPIN-HANDOFF.md` (v1.1). URL builders + the return parser live in
+`lib/core/services/blox_pairing_links.dart` (dart:io-free; unit-tested).
+
 1. User goes to **Settings → My Devices → Pair Blox**
-2. App opens deeplink to **FxBlox companion app**, passing JWT
-3. FxBlox app calls blox's `AutoPinPair(token, endpoint)` via libp2p
+2. FxFiles hands off to FxBlox with the SAME params on one of two carriers:
+   - **App** (mobile): `fxblox://autopin-pair?token=<JWT>&endpoint=<https api base>&returnUrl=<template>`
+     (query — the custom scheme is routed by the OS, never a server)
+   - **Web** (`https://blox.fx.land/autopin-pair#token=…&endpoint=…&returnUrl=…` — **fragment**, v1.1,
+     so the JWT never reaches the Pages server/CDN logs or a Referer; FxBlox-web reads `location.hash`
+     first and accepts the v1 `?token=…` query as a fallback): always from the web build
+     (`lib/web/screens/web_blox_pairing_screen.dart`, same-tab), from desktop's manual pairing dialog
+     ("Pair in browser"), and as the mobile fallback when the FxBlox app is not installed
+     (`launchUrl` false/throws → "Pair in browser" dialog).
+   - `returnUrl` is a URL-encoded **template** with the literal placeholders `$secret`, `$hardwareId`,
+     `$bloxPeerId`, `$bloxName`: `https://files.fx.land/autopin-complete#secret=$secret&hardwareId=$hardwareId&bloxPeerId=$bloxPeerId&bloxName=$bloxName`
+     (fragment form — the bearer secret never reaches a server).
+3. FxBlox calls the blox's `AutoPinPair(token, endpoint)` via libp2p
    - go-fula stores `auto_pin_token`, `auto_pin_endpoint`, `auto_pin_pairing_secret` in `box_props.json`
    - Returns pairing secret + hardware ID
-4. FxBlox app returns deeplink: `fxfiles://autopin-complete?secret=...&hardwareId=...`
-5. FxFiles stores pairing secret, hardware ID, peer ID in SecureStorage
+4. FxBlox substitutes the placeholders and navigates (user click) to the result. Receivers:
+   - **Native app link** (`DeepLinkService._handleUniversalLink` → `_handleAutoPinComplete`): iOS
+     (AASA `/autopin-complete*`) and Android (manifest `pathPrefix="/autopin-complete"`) open FxFiles
+     directly with the full URL; the parser reads the fragment first, then the query. The legacy
+     `fxfiles://autopin-complete?secret=…` deep link is still accepted.
+   - **Static forwarder** `site/autopin-complete/index.html` (when the app link is not verified, the
+     app is missing, or on desktop): reads the fragment, on mobile auto-tries
+     `fxfiles://autopin-complete?…` (2.5 s `document.hidden` fallback), otherwise offers
+     "Open in FxFiles" and "Continue in web app" → `https://files.fx.land/app/#/autopin-complete?…`.
+   - **Web build** (`lib/main_web.dart` → `captureAutopinReturn()` BEFORE `runApp`): stashes the
+     params (memory + sessionStorage) and `history.replaceState`s the URL to `#/` so the secret leaves
+     the address bar and the logged-out router redirect cannot drop it; the web home's post-login init
+     `takePendingAutopinReturn()`s and navigates to `/blox-pairing` with the params as go_router
+     `extra`. `/autopin-complete` also exists as a router fallback.
+5. FxFiles validates (non-empty secret, length caps, no control chars) and stores pairing secret,
+   hardware ID, peer ID, name in SecureStorage.
+
+Web limitation: the web build cannot use the Blox LAN gateway (`http://<ip>:9000` is mixed content
+from an https page and browsers have no mDNS), so web downloads always come from the cloud; pairing
+from the web still makes the Blox auto-pin. The credentials are device-local (that browser); native /
+desktop FxFiles pair separately (desktop's manual dialog accepts the pairing secret).
 
 ### Additional UX — Blox Discovery
 
