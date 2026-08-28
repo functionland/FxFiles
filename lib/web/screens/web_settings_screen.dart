@@ -522,7 +522,7 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     );
   }
 
-  // My Devices — pair a Blox (via blox.fx.land) so it auto-pins the user's
+  // My Devices — pair a Blox (via FxBlox Web) so it auto-pins the user's
   // cloud files. Mirrors the native Settings → My Devices entry; the web
   // screen is dart:io-free (no mDNS / LAN gateway in a browser).
   Widget _devicesSection(BuildContext context) {

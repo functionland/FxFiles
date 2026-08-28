@@ -7,9 +7,10 @@
 ///
 /// Outbound (FxFiles → FxBlox) — the SAME three params on two carriers:
 ///   native  `fxblox://autopin-pair?token=<t>&endpoint=<e>&returnUrl=<r>`   (query)
-///   web     `https://blox.fx.land/autopin-pair#token=<t>&endpoint=<e>&returnUrl=<r>`   (FRAGMENT)
+///   web     `https://docs.fx.land/fxblox-web/autopin-pair#token=<t>&endpoint=<e>&returnUrl=<r>`
+///           (FRAGMENT)
 /// The web carrier uses the fragment (v1.1) so the bearer JWT never reaches
-/// the blox.fx.land server / CDN logs, browser history sync or a Referer
+/// the FxBlox Web server / CDN logs, browser history sync or a Referer
 /// header; FxBlox-web reads `location.hash` first and still accepts the v1
 /// `?token=…` query as a fallback. The custom-scheme link is routed by the OS
 /// (no server), so it keeps the query form.
@@ -26,7 +27,14 @@
 library;
 
 /// Web FxBlox pairing entry point.
-const String kBloxWebPairBase = 'https://blox.fx.land/autopin-pair';
+///
+/// FxBlox Web is served from the functionland GitHub Pages project site, whose
+/// org custom domain is `docs.fx.land` — hence the `/fxblox-web/` path prefix.
+/// `blox.fx.land` was the intended production host but has no GitHub Pages DNS
+/// record, so sending users there is a 404. Keep this in step with the app's
+/// Vite `base`: if the site ever moves to its own domain, `base` becomes `/`
+/// and this loses the `/fxblox-web` segment.
+const String kBloxWebPairBase = 'https://docs.fx.land/fxblox-web/autopin-pair';
 
 /// Native FxBlox app pairing deep link.
 const String kBloxNativePairBase = 'fxblox://autopin-pair';
@@ -90,10 +98,10 @@ String _pairQuery({
       '&returnUrl=${Uri.encodeComponent(returnTemplate)}';
 }
 
-/// `https://blox.fx.land/autopin-pair#token=…&endpoint=…&returnUrl=…`
+/// `<kBloxWebPairBase>#token=…&endpoint=…&returnUrl=…`
 ///
 /// FRAGMENT form (v1.1): the params — including the cloud JWT — stay in the
-/// browser and are never sent to the blox.fx.land server. No query is emitted.
+/// browser and are never sent to the FxBlox Web server. No query is emitted.
 ///
 /// Throws [ArgumentError] on an empty [token]/[endpoint] or a
 /// [returnTemplate] missing a placeholder (fail-closed: never hand FxBlox a
