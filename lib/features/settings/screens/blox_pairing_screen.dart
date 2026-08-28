@@ -344,7 +344,7 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
 
     // Outbound hand-off links (docs/AUTOPIN-HANDOFF.md): the SAME
     // token/endpoint/returnUrl-template params on two carriers — the FxBlox
-    // app deep link and the web FxBlox at blox.fx.land. The return template
+    // app deep link and FxBlox Web (`kBloxWebPairBase`). The return template
     // (kAutopinReturnTemplate) is the https FRAGMENT form, so the pairing
     // secret FxBlox hands back never reaches a server; the four
     // `$placeholders` are literal and substituted by FxBlox.
@@ -375,8 +375,10 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
     await _offerPairInBrowser(webUrl);
   }
 
-  /// FxBlox app not available → let the user pair through blox.fx.land
-  /// instead (replaces the old "app not installed" dead-end snackbar).
+  /// FxBlox app not available → let the user pair through FxBlox Web instead
+  /// (replaces the old "app not installed" dead-end snackbar). The host lives
+  /// in `kBloxWebPairBase`; user-facing copy deliberately names the product,
+  /// not the domain, so a move does not leave the UI lying.
   Future<void> _offerPairInBrowser(Uri webUrl) async {
     final choice = await showDialog<bool>(
       context: context,
@@ -384,7 +386,7 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
         title: const Text('FxBlox app not found'),
         content: const Text(
           'Install the FxBlox app from the app store, or pair in your browser '
-          'at blox.fx.land instead. Your browser brings you back to FxFiles '
+          'with FxBlox Web instead. Your browser brings you back to FxFiles '
           'when pairing is done.',
         ),
         actions: [
@@ -412,13 +414,13 @@ class _BloxPairingScreenState extends State<BloxPairingScreen> {
       );
       if (!ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open blox.fx.land.')),
+          const SnackBar(content: Text('Could not open FxBlox Web.')),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open blox.fx.land'))),
+          SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open FxBlox Web'))),
         );
       }
     }
@@ -957,8 +959,8 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
     );
   }
 
-  /// Desktop alternative to the QR + paste flow: open the web FxBlox
-  /// (blox.fx.land) with the same hand-off params. When it finishes, the
+  /// Desktop alternative to the QR + paste flow: open FxBlox Web
+  /// (`kBloxWebPairBase`) with the same hand-off params. When it finishes, the
   /// browser lands on files.fx.land/autopin-complete → "Open in FxFiles"
   /// (`fxfiles://autopin-complete?…`) → DeepLinkService completes the
   /// pairing, so this dialog closes itself once the browser is open.
@@ -971,13 +973,13 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
       final ok = await launchUrl(url, mode: LaunchMode.externalApplication);
       if (!ok) {
         messenger?.showSnackBar(
-          const SnackBar(content: Text('Could not open blox.fx.land.')),
+          const SnackBar(content: Text('Could not open FxBlox Web.')),
         );
         return;
       }
     } catch (e) {
       messenger?.showSnackBar(
-        SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open blox.fx.land'))),
+        SnackBar(content: Text(ErrorMessages.getUserFriendlyMessage(e, context: 'open FxBlox Web'))),
       );
       return;
     }
@@ -1156,7 +1158,7 @@ class _ManualPairingDialogState extends State<_ManualPairingDialog> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Opens blox.fx.land; it brings you back to FxFiles when pairing is done.',
+          'Opens FxBlox Web; it brings you back to FxFiles when pairing is done.',
           style: TextStyle(fontSize: 12, color: Colors.grey[600]),
         ),
       ],

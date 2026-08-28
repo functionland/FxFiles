@@ -1,18 +1,18 @@
 # Auto-pin pairing hand-off spec (v1.1)
 
-Contract between **FxFiles** (mobile, desktop, files.fx.land) and **FxBlox** (mobile app or blox.fx.land).
+Contract between **FxFiles** (mobile, desktop, files.fx.land) and **FxBlox** (mobile app or FxBlox Web).
 
 ## Outbound (FxFiles → FxBlox)
 
 Mobile deep link (unchanged): `fxblox://autopin-pair?token=<t>&endpoint=<e>&returnUrl=<r>`
-Web (v1.1, **fragment**): `https://blox.fx.land/autopin-pair#token=<t>&endpoint=<e>&returnUrl=<r>`
+Web (v1.1, **fragment**): `https://docs.fx.land/fxblox-web/autopin-pair#token=<t>&endpoint=<e>&returnUrl=<r>`
 
 The web carrier puts the parameters in the URL **fragment** so the bearer `token` never reaches the
-blox.fx.land server / CDN access logs, is not sent in a `Referer` header, and is not synced as part of
+FxBlox Web server / CDN access logs, is not sent in a `Referer` header, and is not synced as part of
 browser history. The custom-scheme link is routed by the OS (no server), so it keeps the query form.
 
 **Receiver (FxBlox-web) rule:** read `location.hash` first; the v1 query form
-(`https://blox.fx.land/autopin-pair?token=…`) remains **accepted as a fallback** for older senders.
+(`https://docs.fx.land/fxblox-web/autopin-pair?token=…`) remains **accepted as a fallback** for older senders.
 FxBlox-web should `history.replaceState`-strip the fragment once the params are in memory and serve the
 page with `<meta name="referrer" content="no-referrer">`.
 

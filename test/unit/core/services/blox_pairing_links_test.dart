@@ -29,12 +29,19 @@ void main() {
     // reads from `location.hash`, decoded the same way the native query is.
     Map<String, String> webParams(Uri uri) => Uri.splitQueryString(uri.fragment);
 
-    test('web URL targets blox.fx.land/autopin-pair with the three params in '
-        'the FRAGMENT', () {
+    test('web URL targets the FxBlox Web autopin-pair route with the three '
+        'params in the FRAGMENT', () {
       final uri = buildBloxWebPairUrl(token: token, endpoint: endpoint);
+      final base = Uri.parse(kBloxWebPairBase);
       expect(uri.scheme, 'https');
-      expect(uri.host, 'blox.fx.land');
-      expect(uri.path, '/autopin-pair');
+      // Asserted against the constant, not a literal host: FxBlox Web is served
+      // from the org GitHub Pages domain (docs.fx.land/fxblox-web/) rather than
+      // blox.fx.land, which has no Pages DNS record, and the host may move
+      // again. What must hold is that users are sent to the SAME place the
+      // constant names, and that it ends in /autopin-pair.
+      expect(uri.host, base.host);
+      expect(uri.path, base.path);
+      expect(uri.path, endsWith('/autopin-pair'));
       final params = webParams(uri);
       expect(params.keys.toSet(), <String>{'token', 'endpoint', 'returnUrl'});
       expect(params['token'], token);
@@ -50,7 +57,7 @@ void main() {
       expect(uri.queryParameters, isEmpty);
       final raw = uri.toString();
       expect(raw, isNot(contains('?')));
-      expect(raw, startsWith('https://blox.fx.land/autopin-pair#token='));
+      expect(raw, startsWith('$kBloxWebPairBase#token='));
       // The JWT must not appear before the '#'.
       expect(raw.substring(0, raw.indexOf('#')), isNot(contains(token)));
     });

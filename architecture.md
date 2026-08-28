@@ -98,7 +98,7 @@ Contract: `docs/AUTOPIN-HANDOFF.md` (v1.1). URL builders + the return parser liv
 2. FxFiles hands off to FxBlox with the SAME params on one of two carriers:
    - **App** (mobile): `fxblox://autopin-pair?token=<JWT>&endpoint=<https api base>&returnUrl=<template>`
      (query — the custom scheme is routed by the OS, never a server)
-   - **Web** (`https://blox.fx.land/autopin-pair#token=…&endpoint=…&returnUrl=…` — **fragment**, v1.1,
+   - **Web** (`https://docs.fx.land/fxblox-web/autopin-pair#token=…&endpoint=…&returnUrl=…` — **fragment**, v1.1,
      so the JWT never reaches the Pages server/CDN logs or a Referer; FxBlox-web reads `location.hash`
      first and accepts the v1 `?token=…` query as a fallback): always from the web build
      (`lib/web/screens/web_blox_pairing_screen.dart`, same-tab), from desktop's manual pairing dialog

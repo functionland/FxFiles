@@ -18,7 +18,7 @@ import 'package:fula_files/web/services/web_autopin_return.dart';
 ///    off from the web home as go_router `extra`, or from the
 ///    `/autopin-complete` fallback route's query), VALIDATES them and writes
 ///    the four keys;
-///  - "Pair Blox" opens `https://blox.fx.land/autopin-pair#…` (fragment) in THIS tab
+///  - "Pair Blox" opens `<kBloxWebPairBase>#…` (fragment) in THIS tab
 ///    (same-tab hand-off; the page unloads and FxBlox brings the user back);
 ///  - "Unpair" clears the keys.
 ///
@@ -148,7 +148,7 @@ class _WebBloxPairingScreenState extends State<WebBloxPairingScreen> {
         endpoint: endpoint.isEmpty ? kDefaultPinningEndpoint : endpoint,
       );
       final ok = await launchUrl(url, webOnlyWindowName: '_self');
-      if (!ok) _snack('Could not open blox.fx.land.');
+      if (!ok) _snack('Could not open FxBlox Web.');
     } catch (e) {
       _snack('Could not start pairing: $e');
     } finally {
@@ -355,7 +355,7 @@ class _WebBloxPairingScreenState extends State<WebBloxPairingScreen> {
         ListTile(
           leading: const Icon(LucideIcons.refreshCw),
           title: const Text('Pair again'),
-          subtitle: const Text('Re-run pairing on blox.fx.land (new secret)'),
+          subtitle: const Text('Re-run pairing on FxBlox Web (new secret)'),
           trailing: _launching
               ? const SizedBox(
                   width: 18,
@@ -398,7 +398,7 @@ class _WebBloxPairingScreenState extends State<WebBloxPairingScreen> {
               Text(
                 'Pair your Blox so it automatically pins (keeps a local copy '
                 'of) the files you upload to the cloud. Pairing opens '
-                'blox.fx.land in this tab; when it finishes you are brought '
+                'FxBlox Web in this tab; when it finishes you are brought '
                 'back here.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),

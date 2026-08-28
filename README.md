@@ -820,7 +820,7 @@ design — the web compile graph never imports them.
   app-link files are load-bearing for native deep links) and serves
   the app under `/app/`.
 - Blox pairing from the web: Settings → My Devices → Pair Blox hands
-  off to https://blox.fx.land (contract: `docs/AUTOPIN-HANDOFF.md`),
+  off to FxBlox Web (contract: `docs/AUTOPIN-HANDOFF.md`),
   which returns to `files.fx.land/autopin-complete#secret=…` →
   "Continue in web app". Known limitation: the web app cannot use the
   Blox LAN gateway (`http://<lan-ip>` is mixed content and browsers
