@@ -838,21 +838,14 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
           ),
           const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                icon: const Icon(LucideIcons.copy, size: 14),
-                label: const Text('Copy IPFS hash'),
-                onPressed: () => _copyValue(cid, 'IPFS hash'),
-              ),
-              OutlinedButton.icon(
-                icon: const Icon(LucideIcons.copy, size: 14),
-                label: const Text('Copy DNSLink value'),
-                onPressed: () => _copyValue('/ipfs/$cid', 'DNSLink value'),
-              ),
-            ],
+          // Only the `/ipfs/<cid>` form is copyable: that is the string
+          // Cloudflare's DNSLink field wants. The bare hash above is shown
+          // for reference, not for pasting anywhere.
+          OutlinedButton.icon(
+            icon: const Icon(LucideIcons.copy, size: 14),
+            label: const Text('Copy link value for Cloudflare'),
+            onPressed: () =>
+                _copyValue('/ipfs/$cid', 'Cloudflare link value'),
           ),
         ],
       ],
