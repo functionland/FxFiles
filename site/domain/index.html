@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Use your own domain — FxFiles</title>
+<meta name="description" content="Point your own domain at a website you generated in FxFiles, using Cloudflare's free plan. Step-by-step, with screenshots.">
+<meta property="og:title" content="Use your own domain — FxFiles">
+<meta property="og:description" content="Point your own domain at your FxFiles website using Cloudflare. Step-by-step, with screenshots.">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='512' height='512' rx='102' fill='%230A0A0A'/%3E%3Cpath d='M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200L180 260L260 260Q290 260 290 290Q290 320 260 320L180 320L180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120L100 120Z' fill='%2306B597'/%3E%3Cpath d='M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240L392 200L350 200Z' fill='%2306B597'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0A0A0A; --bg-card: #161616; --bg-alt: #101010; --bg-hover: #1E1E1E;
+    --brand-1: #00D4AA; --brand-2: #06B597; --brand-3: #049B8F;
+    --accent: #187AF9; --warn: #F5A524; --danger: #F4364C;
+    --text: #FAFAFA; --text-2: #A1A1AA; --text-3: #71717A;
+    --border: #262626; --r: 16px;
+  }
+  *, ::before, ::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--bg); color: var(--text); line-height: 1.65;
+    overflow-x: hidden; -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(rgba(0, 212, 170, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  a { color: var(--brand-1); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .container { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+  .gradient-text {
+    background-image: linear-gradient(120deg, var(--brand-1), var(--brand-2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  /* ---- nav (mirrors the landing page) ---- */
+  nav {
+    position: sticky; top: 0; z-index: 50; backdrop-filter: blur(12px);
+    background: rgba(10,10,10,0.82); border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 62px; max-width: 1100px; }
+  .nav-brand { display: flex; align-items: center; gap: 9px; font-weight: 800; color: var(--text); font-size: 1.05rem; }
+  .nav-brand:hover { text-decoration: none; }
+  .nav-brand svg { width: 28px; height: 28px; border-radius: 7px; }
+  .nav-cta {
+    display: inline-flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: 10px;
+    background: linear-gradient(120deg, var(--brand-1), var(--brand-2)); color: #04211C;
+    font-weight: 700; font-size: 0.9rem;
+  }
+  .nav-cta:hover { text-decoration: none; opacity: 0.9; }
+
+  /* ---- hero ---- */
+  header.hero { padding: 56px 0 34px; }
+  h1 { font-size: clamp(2rem, 5.5vw, 3rem); font-weight: 900; line-height: 1.1; letter-spacing: -0.03em; }
+  .lede { color: var(--text-2); font-size: 1.08rem; margin-top: 14px; max-width: 60ch; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .fact {
+    font-size: 0.82rem; font-weight: 600; color: var(--text-2);
+    border: 1px solid var(--border); background: var(--bg-card);
+    padding: 6px 12px; border-radius: 999px;
+  }
+
+  /* ---- sections ---- */
+  section { padding: 34px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(1.35rem, 3.4vw, 1.75rem); font-weight: 800; letter-spacing: -0.02em; line-height: 1.25; }
+  h2 .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.7em; height: 1.7em; margin-right: 12px; flex: none;
+    border-radius: 10px; font-size: 0.66em; font-weight: 800;
+    background: linear-gradient(120deg, var(--brand-1), var(--brand-2)); color: #04211C;
+  }
+  h3 { font-size: 1.02rem; font-weight: 700; margin-top: 26px; }
+  p { margin-top: 10px; color: var(--text-2); }
+  p strong, li strong { color: var(--text); font-weight: 600; }
+  ol, ul { margin: 12px 0 0 0; padding-left: 22px; color: var(--text-2); }
+  li { margin-bottom: 8px; }
+  li::marker { color: var(--brand-2); font-weight: 700; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #0d1f1c; border: 1px solid #1d3b36; color: #7ff0d8;
+    padding: 1px 6px; border-radius: 6px; font-size: 0.87em;
+    overflow-wrap: break-word; word-break: break-word;
+  }
+
+  /* ---- screenshots ---- */
+  figure { margin: 18px 0 0; }
+  figure img {
+    display: block; width: 100%; height: auto; border-radius: 12px;
+    border: 1px solid var(--border); background: #fff;
+  }
+  figcaption { margin-top: 9px; font-size: 0.85rem; color: var(--text-3); }
+  figcaption b { color: var(--text-2); font-weight: 600; }
+
+  /* ---- callouts ---- */
+  .note {
+    margin-top: 18px; padding: 14px 16px; border-radius: 12px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-left: 3px solid var(--brand-2); font-size: 0.94rem; color: var(--text-2);
+  }
+  .note.warn { border-left-color: var(--warn); }
+  .note b { color: var(--text); }
+  .note p { margin-top: 6px; }
+  .note :first-child { margin-top: 0; }
+
+  /* ---- tabs ---- */
+  .tabs { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+  .tab {
+    flex: 1 1 220px; text-align: left; cursor: pointer; font: inherit;
+    padding: 13px 16px; border-radius: 12px; color: var(--text-2);
+    background: var(--bg-card); border: 1px solid var(--border);
+    font-size: 0.94rem; font-weight: 600; line-height: 1.35;
+  }
+  .tab:hover { background: var(--bg-hover); color: var(--text); }
+  .tab[aria-selected="true"] {
+    color: var(--text); border-color: var(--brand-2);
+    background: linear-gradient(180deg, rgba(0,212,170,0.10), rgba(0,212,170,0.03));
+  }
+  .tab small { display: block; font-weight: 500; color: var(--text-3); margin-top: 3px; font-size: 0.82rem; }
+  .tab[aria-selected="true"] small { color: var(--brand-2); }
+  .panel[hidden] { display: none; }
+  .panel { margin-top: 6px; }
+
+  /* ---- details ---- */
+  details {
+    margin-top: 16px; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--bg-card); overflow: hidden;
+  }
+  summary {
+    cursor: pointer; padding: 13px 16px; font-weight: 650; color: var(--text);
+    font-size: 0.95rem; list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--brand-2); font-weight: 700; }
+  details[open] summary::before { content: "▾ "; }
+  details[open] summary { border-bottom: 1px solid var(--border); }
+  .details-body { padding: 4px 16px 16px; }
+  .details-body > :first-child { margin-top: 10px; }
+
+  /* ---- troubleshooting ---- */
+  .tsq { font-weight: 650; color: var(--text); margin-top: 22px; }
+  .tsq:first-of-type { margin-top: 10px; }
+  .err {
+    display: block; margin-top: 8px; padding: 9px 12px; border-radius: 8px;
+    background: #1c1214; border: 1px solid #3a2024; color: #ff9aa6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem; overflow-wrap: break-word; word-break: break-word;
+  }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 34px 0 44px;
+    color: var(--text-3); font-size: 0.88rem; margin-top: 20px;
+  }
+  footer a { color: var(--text-2); }
+
+  @media (max-width: 560px) {
+    header.hero { padding: 38px 0 26px; }
+    h2 .num { display: flex; margin: 0 0 10px; }
+    h2 { display: block; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="/" class="nav-brand">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="512" height="512" rx="102" fill="#0A0A0A"></rect>
+        <defs><linearGradient id="ng" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00D4AA"></stop><stop offset="100%" stop-color="#06B597"></stop></linearGradient></defs>
+        <path d="M100 120L290 120Q330 120 330 160Q330 200 290 200L180 200 180 260 260 260Q290 260 290 290Q290 320 260 320L180 320 180 380Q180 412 148 412Q116 412 116 380L116 160Q116 120 156 120Z" fill="url(#ng)"></path>
+        <path d="M350 200L350 392Q350 412 370 412L412 412Q432 412 432 392L432 240 392 200Z" fill="url(#ng)"></path>
+      </svg>
+      FxFiles
+    </a>
+    <a href="/app/" class="nav-cta">Open Web App</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="container">
+    <h1>Use <span class="gradient-text">your own domain</span></h1>
+    <p class="lede">
+      You made a website in FxFiles. Right now it lives at a long link. This page shows you
+      how to put it on <code>yourdomain.com</code> instead — using Cloudflare, on their free plan.
+    </p>
+    <div class="facts">
+      <span class="fact">⏱ ~15 minutes of clicking</span>
+      <span class="fact">💳 Free plan is enough</span>
+      <span class="fact">🧑‍💻 No coding</span>
+    </div>
+    <p class="lede" style="font-size:0.92rem;margin-top:18px;color:var(--text-3)">
+      The pictures below are from Cloudflare on a computer. On a phone it is the same screens
+      in one column — tap <b>☰</b> at the top left wherever these steps mention the side menu.
+    </p>
+  </div>
+</header>
+
+<section>
+  <div class="container">
+    <h2><span class="num">1</span>Copy your website address</h2>
+    <p>
+      Open your website in FxFiles on the web, and find the <b>Use your own domain</b> box under
+      the shareable link. Tap <b>Copy DNSLink value</b> — that copies a line that looks like this:
+    </p>
+    <p><code>/ipfs/bafybeiejegeowlh5warqnrjjmhbkf7hdjaiuhnpqajbktx6ta77urqmljy</code></p>
+    <p>Keep it on your clipboard. You will paste it once, near the end.</p>
+    <div class="note">
+      <b>What is this?</b>
+      <p>
+        It is your website's address on IPFS — the storage network FxFiles publishes to.
+        It is not a secret, and it changes every time you regenerate the site.
+        <a href="#update">Step 4</a> covers how to update it.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2><span class="num">2</span>Get your domain into Cloudflare</h2>
+    <p>Pick the one that matches you:</p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-buy" aria-controls="panel-buy" aria-selected="true">
+        I don't have a domain yet
+        <small>Buy it at Cloudflare — quickest</small>
+      </button>
+      <button class="tab" role="tab" id="tab-move" aria-controls="panel-move" aria-selected="false">
+        I already own a domain
+        <small>Bought at GoDaddy, Namecheap, etc.</small>
+      </button>
+    </div>
+
+    <!-- ============ A: buy at Cloudflare ============ -->
+    <div class="panel" id="panel-buy" role="tabpanel" aria-labelledby="tab-buy">
+      <p>
+        Create a free account at <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">cloudflare.com</a>,
+        then type the domain you want in the <b>Add a domain</b> box on the home page.
+      </p>
+
+      <figure>
+        <img src="img/cf-buy-branch.jpg" alt="Cloudflare account home. A card titled 'Add a domain' contains a text box with a domain typed in it, and below it the message 'This domain is available for purchase.' with a Buy button." loading="lazy">
+        <figcaption><b>Available?</b> Cloudflare offers a <b>Buy</b> button right there.</figcaption>
+      </figure>
+
+      <p>Press <b>Buy</b>, fill in your contact details, and pay. A <code>.com</code> is usually around $10–12 a year; other endings vary a lot.</p>
+
+      <figure>
+        <img src="img/cf-register-checkout.jpg" alt="Cloudflare 'Complete your registration' page showing the domain, a registration period of 1 year, automatic renewal switched on, a subtotal, and a form for registrant name, email and address." loading="lazy">
+        <figcaption>The registration page. Your email is filled in automatically.</figcaption>
+      </figure>
+
+      <div class="note">
+        <b>Good news — you can skip the hard part.</b>
+        <p>
+          A domain bought at Cloudflare is already connected to Cloudflare. There are no
+          nameservers to change. Go straight to <a href="#step3">Step 3</a>.
+        </p>
+      </div>
+    </div>
+
+    <!-- ============ B: domain elsewhere ============ -->
+    <div class="panel" id="panel-move" role="tabpanel" aria-labelledby="tab-move" hidden>
+      <p>
+        Your domain stays where you bought it. You are only changing who answers DNS for it —
+        that becomes Cloudflare. Start by creating a free account at
+        <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">cloudflare.com</a>
+        and typing your domain into <b>Add a domain</b>.
+      </p>
+
+      <figure>
+        <img src="img/cf-connect-branch.jpg" alt="Cloudflare account home. The 'Add a domain' box shows the message 'This domain is already registered. If you own it, you can connect it to Cloudflare.' with a Connect button." loading="lazy">
+        <figcaption>Because you already own it, Cloudflare shows <b>Connect</b> instead of Buy.</figcaption>
+      </figure>
+
+      <p>
+        Press <b>Connect</b>. Leave the suggested options as they are and press <b>Continue</b>.
+        Cloudflare copies your existing DNS records across so your email and any current
+        website keep working.
+      </p>
+
+      <figure>
+        <img src="img/cf-connect-your-domain.jpg" alt="Cloudflare 'Connect your domain' page with the domain name filled in, a section of AI training and search policy dropdowns left at their recommended values, an 'Import DNS records' row set to Automatic, and a Continue button." loading="lazy">
+        <figcaption>Defaults are fine. Press <b>Continue</b>.</figcaption>
+      </figure>
+
+      <h3>Now switch the nameservers</h3>
+      <p>
+        Cloudflare shows you <b>two nameservers</b>. Copy them both.
+      </p>
+
+      <figure>
+        <img src="img/cf-nameservers.jpg" alt="Cloudflare overview page for a pending domain. Step 2, 'Replace your current nameservers with Cloudflare nameservers', lists two assigned nameservers each with a copy button, and below that a list of current nameservers to delete. A 'Make sure DNSSEC is off' recommendation appears underneath." loading="lazy">
+        <figcaption>Your two nameservers. They are unique to you — use the ones on <b>your</b> screen, not these.</figcaption>
+      </figure>
+
+      <p>
+        Then log in where you bought the domain, find the <b>Nameservers</b> setting, delete what
+        is there, and put Cloudflare's two in instead. Here is that screen at the common registrars:
+      </p>
+      <ul>
+        <li><a href="https://www.godaddy.com/help/change-my-domain-nameservers-664" target="_blank" rel="noopener">GoDaddy</a></li>
+        <li><a href="https://www.namecheap.com/support/knowledgebase/article.aspx/767/10/how-to-change-dns-for-a-domain/" target="_blank" rel="noopener">Namecheap</a></li>
+        <li><a href="https://developers.cloudflare.com/dns/zone-setups/full-setup/setup/" target="_blank" rel="noopener">Any other registrar</a> — Cloudflare's own guide</li>
+      </ul>
+
+      <div class="note warn">
+        <b>Before you switch: turn DNSSEC off at your registrar.</b>
+        <p>
+          If DNSSEC is enabled and you change nameservers without disabling it first, your domain
+          can go completely offline. If you have never heard of DNSSEC, it is almost certainly
+          already off — but it is worth a look.
+        </p>
+      </div>
+
+      <p>
+        Cloudflare then needs to see the change. That is usually well under an hour, but the
+        official window is up to 24 hours. You will get an email when your domain goes
+        <b>Active</b>. Wait for that email before doing Step 3.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="step3">
+  <div class="container">
+    <h2><span class="num">3</span>Point the domain at your website</h2>
+    <p>
+      In Cloudflare, click your domain, then scroll to the <b>bottom</b> of the left-hand menu
+      and choose <b>Web3</b>. Press <b>Create Gateway</b>.
+    </p>
+
+    <div class="note">
+      <b>📱 On a phone?</b>
+      <p>
+        There is no side menu on a narrow screen — tap the <b>☰</b> button at the top left to
+        open it, then scroll down to <b>Web3</b>. Everything else is identical to the pictures
+        below, just stacked into one column.
+      </p>
+    </div>
+
+    <figure>
+      <img src="img/cf-web3-page.jpg" alt="Cloudflare Web3 page for a domain. A 'Web3 Gateways' card says 'You have used 0 of 15 IPFS DNSlink Gateways' and has a Create Gateway button. In the left sidebar, Web3 is the last item." loading="lazy">
+      <figcaption><b>Web3</b> is the last item in the sidebar. The free plan includes 15 gateways.</figcaption>
+    </figure>
+
+    <p>Fill in three things:</p>
+    <ol>
+      <li><b>Hostname</b> — the address people will type, for example <code>site.yourdomain.com</code>.</li>
+      <li><b>Gateway Type</b> — choose <b>IPFS DNSLink</b>.</li>
+      <li><b>DNSLink</b> — paste the <code>/ipfs/…</code> line you copied in Step 1.</li>
+    </ol>
+
+    <figure>
+      <img src="img/cf-gateway-type.jpg" alt="The Create Gateway form with the Gateway Type dropdown open, showing a single option under a STORAGE heading: IPFS DNSLink." loading="lazy">
+      <figcaption><b>IPFS DNSLink</b> is the only option — pick it.</figcaption>
+    </figure>
+
+    <figure>
+      <img src="img/cf-create-gateway-filled.jpg" alt="The Create Gateway form filled in: Hostname 'site.example.com', description 'My FxFiles website', Gateway Type 'IPFS DNSLink', and a DNSLink field containing a path beginning /ipfs/bafybei. A Deploy button sits at the bottom right." loading="lazy">
+      <figcaption>Filled in and ready. Press <b>Deploy</b>.</figcaption>
+    </figure>
+
+    <p>That's it. Cloudflare creates the DNS records for you and issues the HTTPS certificate.</p>
+
+    <figure>
+      <img src="img/cf-gateway-created.jpg" alt="The Web3 page after deploying. A table row shows the new gateway with status Pending, the hostname, type IPFS DNSLink and its description, plus Edit. Below, a 'Web3 Gateway DNS records' table lists a CNAME pointing to ipfs.cloudflare.com and a TXT record named _dnslink with the dnslink value." loading="lazy">
+      <figcaption>Done. The two records at the bottom were created automatically — you don't touch them.</figcaption>
+    </figure>
+
+    <div class="note">
+      <b>Which hostname should I use?</b>
+      <p>
+        <b>A subdomain is easiest</b> — <code>site.yourdomain.com</code>, <code>blog.yourdomain.com</code>,
+        anything you like. Nothing else is using it, so it just works.
+      </p>
+      <p>
+        <b>To use <code>www.yourdomain.com</code></b>, first go to <b>DNS → Records</b> and delete any
+        existing <code>A</code> or <code>AAAA</code> record named <code>www</code>. Cloudflare refuses to
+        create the gateway while one is in the way.
+      </p>
+      <p>
+        <b>To make the bare <code>yourdomain.com</code> work too</b>, set the gateway up on
+        <code>www</code> (or your subdomain), then add a redirect — see below.
+      </p>
+    </div>
+
+    <details>
+      <summary>Also make the bare <code>yourdomain.com</code> work</summary>
+      <div class="details-body">
+        <p>
+          The gateway lives on a subdomain, so someone typing just <code>yourdomain.com</code>
+          won't land on it. Cloudflare has a ready-made rule for this — you only change
+          <b>two boxes</b>.
+        </p>
+
+        <p><b>1.</b> In your domain, click <b>Rules</b> in the left menu. You'll see a grid of
+        <b>Rule templates</b>. Find <b>Redirect to a different domain</b> and press
+        <b>Create from template</b>.</p>
+
+        <figure>
+          <img src="img/cf-redirect-templates.jpg" alt="Cloudflare Rules overview showing a grid of rule templates including 'Redirect from HTTP to HTTPS', 'Redirect from WWW to root', 'Redirect to a different domain' and 'Redirect from root to WWW', each with a 'Create from template' button." loading="lazy">
+          <figcaption>Use <b>Redirect to a different domain</b>.</figcaption>
+        </figure>
+
+        <p><b>2.</b> The form opens already filled in with example values. Change these two, and
+        <b>leave everything else exactly as it is</b>:</p>
+
+        <ul>
+          <li>
+            The <b>Value</b> box (next to <i>Hostname</i> and <i>equals</i>) — replace it with
+            your bare domain:<br>
+            <code>yourdomain.com</code>
+          </li>
+          <li>
+            The <b>Expression</b> box under <i>Then…</i> — replace it with this, putting your own
+            subdomain inside the quotes:<br>
+            <code>concat("https://site.yourdomain.com", http.request.uri.path)</code>
+          </li>
+        </ul>
+
+        <p><b>3.</b> Press <b>Deploy</b>. That's it.</p>
+
+        <figure>
+          <img src="img/cf-redirect-rule.jpg" alt="The Cloudflare redirect rule form. Field is Hostname, operator equals, value yourdomain.com. The expression preview reads (http.host eq &quot;yourdomain.com&quot;). Under Then, Type is Dynamic, the Expression box contains concat(&quot;https://site.yourdomain.com&quot;, http.request.uri.path), status code is 301 Permanent Redirect and 'Preserve query string' is ticked." loading="lazy">
+          <figcaption>How it should look. <b>Type</b>, <b>Status code</b> and the tickbox are already correct — don't touch them.</figcaption>
+        </figure>
+
+        <div class="note">
+          <b>Used <code>www</code> for your gateway instead?</b>
+          <p>
+            Then skip all of the above and use the <b>Redirect from root to WWW</b> template
+            in that same grid. It needs no editing at all.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Where your DNS records live, if you want to look</summary>
+      <div class="details-body">
+        <p>
+          <b>DNS → Records</b> lists everything for your domain. This is also where you delete a
+          conflicting <code>www</code> record before creating a gateway on <code>www</code>.
+        </p>
+        <figure>
+          <img src="img/cf-dns-records.jpg" alt="Cloudflare DNS records page listing A, AAAA, MX and TXT records for a domain, each with a name, type, content, proxy status and TTL, plus an Add record button." loading="lazy">
+          <figcaption>The DNS records page. Most people never need to touch this.</figcaption>
+        </figure>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section id="update">
+  <div class="container">
+    <h2><span class="num">4</span>When you change your website</h2>
+    <p>
+      Every time you regenerate the site in FxFiles it gets a <b>new</b> IPFS address, and your
+      domain keeps serving the old one until you tell it otherwise. Updating takes about
+      thirty seconds:
+    </p>
+    <ol>
+      <li>In FxFiles, press <b>Copy DNSLink value</b> again.</li>
+      <li>In Cloudflare, go to <b>Web3</b> and press <b>Edit</b> on your gateway.</li>
+      <li>Replace the <b>DNSLink</b> field with the new value and press <b>Reapply</b>.</li>
+    </ol>
+
+    <figure>
+      <img src="img/cf-gateway-edit.jpg" alt="The Edit Gateway form. Hostname and Gateway Type are greyed out and cannot be changed. The description and DNSLink fields are editable, and the button at the bottom right reads Reapply." loading="lazy">
+      <figcaption>Only the DNSLink changes. Press <b>Reapply</b>.</figcaption>
+    </figure>
+
+    <details>
+      <summary>I don't want to do this every time</summary>
+      <div class="details-body">
+        <p>
+          Then skip the gateway entirely and use a redirect instead. Your FxFiles
+          <b>shareable link</b> (the <code>fxfiles.top/w/…</code> one) always points at your
+          newest version by itself, so it never needs updating.
+        </p>
+        <p>
+          Set it up the same way as the rule above — <b>Rules → Redirect to a different
+          domain → Create from template</b> — but put your <b>shareable link</b> in the
+          Expression box instead:
+        </p>
+        <p><code>concat("https://fxfiles.top/w/YOUR-LINK-ID", http.request.uri.path)</code></p>
+        <p>
+          <b>The trade-off:</b> visitors get moved to the <code>fxfiles.top</code> address, so
+          that is what shows in their address bar — not your domain. Nothing to maintain, but
+          it is not really "your" domain any more.
+        </p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2><span class="num">?</span>If something goes wrong</h2>
+
+    <p class="tsq">Deploy does nothing, or the gateway never appears</p>
+    <code class="err">A DNS record (A or AAAA) with a name matching the provided hostname already exists.</code>
+    <p>
+      Something already answers for that hostname. Go to <b>DNS → Records</b>, delete the
+      <code>A</code> and <code>AAAA</code> records with that exact name, then create the gateway
+      again. Or just pick a hostname nothing is using, like <code>site.yourdomain.com</code>.
+      This is the most common failure, and it is silent — the button simply appears to do nothing.
+    </p>
+
+    <p class="tsq">Cloudflare won't let me add my domain</p>
+    <code class="err">This web property cannot be added to Cloudflare at this time.</code>
+    <p>
+      Cloudflare blocks domains you are not associated with, and reserved names like
+      <code>example.com</code>. Use a domain you actually own.
+    </p>
+
+    <p class="tsq">My gateway says "Pending" and won't turn active</p>
+    <p>
+      Pending means Cloudflare is not yet answering DNS for your domain. Finish the nameserver
+      switch in Step 2 and wait for the "domain is active" email. A gateway on a domain that
+      never completes that step will stay Pending forever.
+    </p>
+
+    <p class="tsq">My domain went offline after changing nameservers</p>
+    <p>
+      Most likely DNSSEC was still enabled at your registrar. Turn DNSSEC off there, then wait
+      for DNS to settle. See
+      <a href="https://developers.cloudflare.com/dns/zone-setups/full-setup/setup/" target="_blank" rel="noopener">Cloudflare's guide</a>.
+    </p>
+
+    <p class="tsq">My domain shows an old version of my site</p>
+    <p>
+      The IPFS address changed when you regenerated. Redo <a href="#update">Step 4</a>.
+      If you just updated it, give it a couple of minutes and try a private window.
+    </p>
+
+    <p class="tsq">I followed an old tutorial and it doesn't work</p>
+    <p>
+      Guides written before August 2024 tell you to point a <code>CNAME</code> at
+      <code>cloudflare-ipfs.com</code>. Cloudflare
+      <a href="https://blog.cloudflare.com/cloudflares-public-ipfs-gateways-and-supporting-interplanetary-shipyard/" target="_blank" rel="noopener">shut that gateway down</a>
+      on 14 August 2024. Use the Web3 page as described here instead.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2><span class="num">i</span>Good to know</h2>
+    <ul>
+      <li>Cloudflare's free plan includes <b>15 gateways</b> and <b>50 GB</b> of traffic through them per month. Beyond that it is billed by usage — see <a href="https://developers.cloudflare.com/web3/reference/limits/" target="_blank" rel="noopener">Cloudflare's limits page</a>.</li>
+      <li>HTTPS is handled for you. Cloudflare issues the certificate when the gateway is created.</li>
+      <li>Your website files stay on IPFS. Cloudflare is only the front door that makes your domain point there.</li>
+      <li>Nothing here is permanent — you can delete the gateway at any time and the domain is yours again.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>
+      Still stuck? Open the <a href="/app/">FxFiles web app</a> or read
+      <a href="https://developers.cloudflare.com/web3/" target="_blank" rel="noopener">Cloudflare's Web3 documentation</a>.
+    </p>
+    <p style="margin-top:10px">© 2026 Functionland Inc. · <a href="/">FxFiles</a></p>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var tabs = [].slice.call(document.querySelectorAll('.tab'));
+    function select(tab) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      });
+    }
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () { select(t); });
+    });
+  })();
+</script>
+
+</body>
+</html>
