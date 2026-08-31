@@ -753,9 +753,81 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          _ownDomainBlock(theme, pointer),
         ],
       ),
     );
+  }
+
+  /// The IPFS address of the live site, for people pointing their own domain at
+  /// it (see `site/domain/` — https://files.fx.land/domain). The hash is
+  /// per-version: it changes every time the site is regenerated, so we label it
+  /// as "this version" and tell people to re-copy it after a regenerate.
+  Widget _ownDomainBlock(ThemeData theme, WebsiteGroupPointer pointer) {
+    final cid = pointer.currentCid;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(LucideIcons.globe, size: 16, color: AppColors.primary),
+            SizedBox(width: 8),
+            Text('Use your own domain',
+                style: TextStyle(
+                    fontWeight: FontWeight.w600, color: AppColors.primary)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          cid == null
+              ? 'The IPFS address appears here once your site finishes publishing.'
+              : 'Paste this IPFS address into Cloudflare to serve the site from '
+                  'your own domain. It changes each time you regenerate — copy '
+                  'it again after every update.',
+          style: theme.textTheme.bodySmall,
+        ),
+        if (cid != null) ...[
+          const SizedBox(height: 8),
+          SelectableText(
+            cid,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                icon: const Icon(LucideIcons.copy, size: 14),
+                label: const Text('Copy IPFS hash'),
+                onPressed: () => _copyValue(cid, 'IPFS hash'),
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(LucideIcons.copy, size: 14),
+                label: const Text('Copy DNSLink value'),
+                onPressed: () => _copyValue('/ipfs/$cid', 'DNSLink value'),
+              ),
+              TextButton.icon(
+                icon: const Icon(LucideIcons.externalLink, size: 14),
+                label: const Text('How to set it up'),
+                onPressed: () => launchUrl(
+                    Uri.parse('https://files.fx.land/domain'),
+                    webOnlyWindowName: '_blank'),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _copyValue(String value, String label) {
+    Clipboard.setData(ClipboardData(text: value));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$label copied to clipboard')));
   }
 
   Widget _assetsSection(ThemeData theme) {
