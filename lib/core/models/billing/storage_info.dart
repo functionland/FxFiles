@@ -8,6 +8,23 @@ class StorageInfo extends Equatable {
   final double usedCredits;
   final double totalCredits;
 
+  /// Lifetime FULA deposited from the blockchain. Excludes referral
+  /// bonuses, which the backend accrues to a separate counter.
+  final double totalDeposited;
+
+  /// Lifetime FULA consumed by storage, as a POSITIVE number.
+  final double totalDeducted;
+
+  /// FULA consumed by storage over the trailing 12 months, as a POSITIVE
+  /// number. This — not [totalDeducted] — is the "tokens used" half of the
+  /// user's status score; see `user_rank.dart`.
+  ///
+  /// DEFAULTS TO 0 when the backend does not send it, which makes a
+  /// too-old server degrade to ranking on holdings alone rather than
+  /// throwing. That is the intended failure mode: a slightly low tier,
+  /// never a missing badge or a crash.
+  final double deductedLast12Months;
+
   const StorageInfo({
     required this.currentStorageBytes,
     required this.freeTierBytes,
@@ -15,6 +32,11 @@ class StorageInfo extends Equatable {
     required this.balanceFula,
     required this.usedCredits,
     required this.totalCredits,
+    // Defaulted, not required: these arrived after the model shipped, and
+    // every existing construction site (and test) predates them.
+    this.totalDeposited = 0,
+    this.totalDeducted = 0,
+    this.deductedLast12Months = 0,
   });
 
   factory StorageInfo.fromJson(Map<String, dynamic> json) {
@@ -25,6 +47,12 @@ class StorageInfo extends Equatable {
       balanceFula: _parseDouble(json['balanceFula'] ?? json['balance_fula']),
       usedCredits: _parseDouble(json['usedCredits'] ?? json['used_credits']),
       totalCredits: _parseDouble(json['totalCredits'] ?? json['total_credits']),
+      totalDeposited:
+          _parseDouble(json['totalDeposited'] ?? json['total_deposited']),
+      totalDeducted:
+          _parseDouble(json['totalDeducted'] ?? json['total_deducted']),
+      deductedLast12Months: _parseDouble(json['deductedFulaLast12Months'] ??
+          json['deducted_fula_last_12_months']),
     );
   }
 
@@ -52,6 +80,9 @@ class StorageInfo extends Equatable {
       'balanceFula': balanceFula,
       'usedCredits': usedCredits,
       'totalCredits': totalCredits,
+      'totalDeposited': totalDeposited,
+      'totalDeducted': totalDeducted,
+      'deductedFulaLast12Months': deductedLast12Months,
     };
   }
 
@@ -99,5 +130,8 @@ class StorageInfo extends Equatable {
         balanceFula,
         usedCredits,
         totalCredits,
+        totalDeposited,
+        totalDeducted,
+        deductedLast12Months,
       ];
 }

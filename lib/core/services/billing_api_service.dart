@@ -44,8 +44,13 @@ class BillingApiService {
     _ensureConfigured(baseUrl, token);
 
     try {
+      // `include=usage` opts in to `deductedFulaLast12Months`, the trailing
+      // window spend the status tier needs. It is opt-in server-side
+      // because the same endpoint is on the Fula gateway's upload path,
+      // where that aggregate would be paid for on every write. An older
+      // server just omits the field and StorageInfo defaults it to 0.
       final response = await http.get(
-        Uri.parse('$baseUrl/api/v1/storage'),
+        Uri.parse('$baseUrl/api/v1/storage?include=usage'),
         headers: await _getHeaders(),
       ).timeout(const Duration(seconds: 15));
 

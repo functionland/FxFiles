@@ -221,9 +221,14 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
   /// sideways the moment billing resolved.
   double _leadingWidth(BuildContext context) {
     if (!WebSession.instance.isSignedIn) return 56;
-    // Enough for four pips plus the widest tier name ("Platinum") when
-    // the label is shown, pips-only otherwise.
-    return MediaQuery.sizeOf(context).width >= 420 ? 132 : 76;
+    // One width at EVERY viewport, unlike the earlier pips-plus-optional-
+    // label badge. A whale glyph marks five of the eight tiers, so the
+    // name can no longer be dropped on a phone without making the badge
+    // ambiguous — the width has to be reserved everywhere instead.
+    //
+    // The budget still works on a 360px phone: 150 here plus ~96 of
+    // action icons leaves ~114 for a title that measures ~78.
+    return WebRankBadge.kReservedLeadingWidth;
   }
 
   /// Profile avatar with the rank insignia stacked beneath it.
@@ -288,10 +293,17 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
             !snap.hasData) {
           return const SizedBox.shrink();
         }
-        final paid = snap.data!.paidStorageBytes;
+        final info = snap.data!;
+        // Tokens held PLUS tokens spent in the last 12 months, so using
+        // the product never costs the user standing. `user_rank.dart`
+        // owns what the two numbers mean.
+        final score = userRankScore(
+          balanceFula: info.balanceFula,
+          deductedLast12Months: info.deductedLast12Months,
+        );
         return WebRankBadge(
-          rank: rankForPaidStorageBytes(paid),
-          paidStorageBytes: paid,
+          rank: rankForTokenScore(score),
+          tokenScore: score,
         );
       },
     );
