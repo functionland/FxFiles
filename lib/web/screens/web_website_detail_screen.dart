@@ -753,11 +753,53 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 10),
+          _guideLink(theme),
           const SizedBox(height: 14),
           const Divider(height: 1),
           const SizedBox(height: 12),
           _ownDomainBlock(theme, pointer),
         ],
+      ),
+    );
+  }
+
+  /// One-line pointer to the step-by-step guide, sat directly under the
+  /// shareable link — that is where someone realises they would rather have
+  /// their own address than the fxfiles.top one.
+  Widget _guideLink(ThemeData theme) {
+    const url = 'https://files.fx.land/domain';
+    return InkWell(
+      onTap: () => launchUrl(Uri.parse(url), webOnlyWindowName: '_blank'),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(LucideIcons.globe, size: 13, color: AppColors.primary),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    const TextSpan(text: 'Want to use your own domain? '),
+                    TextSpan(
+                      text: 'Follow these instructions',
+                      style: TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                        decoration: TextDecoration.underline,
+                        decorationColor: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -809,13 +851,6 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
                 icon: const Icon(LucideIcons.copy, size: 14),
                 label: const Text('Copy DNSLink value'),
                 onPressed: () => _copyValue('/ipfs/$cid', 'DNSLink value'),
-              ),
-              TextButton.icon(
-                icon: const Icon(LucideIcons.externalLink, size: 14),
-                label: const Text('How to set it up'),
-                onPressed: () => launchUrl(
-                    Uri.parse('https://files.fx.land/domain'),
-                    webOnlyWindowName: '_blank'),
               ),
             ],
           ),
