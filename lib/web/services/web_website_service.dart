@@ -22,6 +22,7 @@ import 'package:fula_files/core/services/website_manifest_logic.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart' as file_utils;
 import 'package:fula_files/web/services/web_cache_sync.dart';
+import 'package:fula_files/web/services/web_website_generate_logic.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_generation_steps.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
@@ -401,6 +402,15 @@ class _WebsitePollPaused implements Exception {
   const _WebsitePollPaused(this.message);
 }
 
+/// Thrown when the server reports that an edit would change nothing.
+///
+/// Not an error: no job was created and nothing was charged, because the
+/// site the user already has IS the answer. Unwinds the pipeline so the
+/// placeholder generation can be withdrawn instead of failing.
+class _WebsiteUnchanged implements Exception {
+  const _WebsiteUnchanged();
+}
+
 /// Web counterpart of the native WebsiteService generation pipeline:
 /// upload assets (unencrypted, same bucket/key/caps) → parse what the
 /// browser can (text; placeholders elsewhere — same as the desktop app,
@@ -473,6 +483,24 @@ class WebWebsiteService extends ChangeNotifier {
   /// which the server owns the flag and the website screen's toggle is
   /// what changes it.
   final Map<String, bool> _listInDirectory = {};
+
+  /// Which site an in-flight generation is EDITING, and what the user
+  /// asked to change. Transient for the same reason as the map above: it
+  /// is only needed between `startGeneration` and the `/generate` POST,
+  /// after which the server owns it.
+  final Map<String, ({String baseCid, String request})> _revisionOf = {};
+
+  /// One-shot message for the screen to surface — set when something
+  /// worth saying happened outside a status change (today: the server
+  /// reporting that a revision would change nothing). Drained by the
+  /// reader so it is shown once.
+  String? _notice;
+
+  String? takeNotice() {
+    final n = _notice;
+    _notice = null;
+    return n;
+  }
 
   /// Server phase for [generationId], or null if none has been observed.
   String? serverPhaseFor(String generationId) => _serverPhase[generationId];
@@ -736,6 +764,36 @@ class WebWebsiteService extends ChangeNotifier {
     return null;
   }
 
+  bool? _supportsRevision;
+
+  /// Whether the AI service can EDIT an existing site ("Recreate") rather
+  /// than design a new one.
+  ///
+  /// Asked BEFORE submitting, never after: `/generate`'s schema is
+  /// non-strict, so a server that predates the feature drops `base_cid`
+  /// silently, accepts the job, charges for it, and returns a brand-new
+  /// design. By then refusing is too late. An older server omits this
+  /// field entirely, and absent reads correctly as "cannot".
+  ///
+  /// Cached per session: a deployment does not gain the capability while
+  /// a tab is open, and this sits in front of a user action.
+  Future<bool> supportsRevision() async {
+    final cached = _supportsRevision;
+    if (cached != null) return cached;
+    try {
+      final response = await http
+          .get(Uri.parse('$_defaultAiEndpoint/api/v1/pricing'))
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return _supportsRevision = body['supportsRevision'] == true;
+      }
+    } catch (_) {}
+    // Unreachable is not the same as unsupported — leave it uncached so a
+    // transient failure doesn't disable editing for the whole session.
+    return false;
+  }
+
   Future<String> _jwt() async {
     final jwt =
         await SecureStorageService.instance.read(SecureStorageKeys.jwtToken);
@@ -763,6 +821,15 @@ class WebWebsiteService extends ChangeNotifier {
     /// when a user actively asked for it — here, or later via the
     /// website screen's toggle.
     bool listInDirectory = false,
+
+    /// `resultCid` of the build being EDITED. When set, the server revises
+    /// that site's own source instead of designing a new one, so anything
+    /// [revisionRequest] does not mention comes back untouched.
+    String? baseCid,
+
+    /// What the user asked to change. Empty with a [baseCid] set means
+    /// "change nothing" — the server answers that without running the AI.
+    String revisionRequest = '',
   }) async {
     final websiteName = tagName.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
 
@@ -790,6 +857,9 @@ class WebWebsiteService extends ChangeNotifier {
       trackingEnabled: enableTracking,
     );
     _listInDirectory[generation.id] = listInDirectory;
+    if (baseCid != null && baseCid.isNotEmpty) {
+      _revisionOf[generation.id] = (baseCid: baseCid, request: revisionRequest);
+    }
     liveGenerations.insert(0, generation);
     _notify(generation);
 
@@ -804,6 +874,16 @@ class WebWebsiteService extends ChangeNotifier {
       await _ensureUploadedPhase(generation, websiteName, picked);
       await _parsePhase(generation, websiteName, picked);
       await _generatePhase(generation);
+    } on _WebsiteUnchanged {
+      // Not a failure and not a build: the edit asked for nothing, so the
+      // site stands as it is. Drop the placeholder rather than leave a
+      // duplicate entry in the history claiming a build happened.
+      liveGenerations.removeWhere((g) => g.id == generation.id);
+      _revisionOf.remove(generation.id);
+      _listInDirectory.remove(generation.id);
+      _forgetPhase(generation.id);
+      _notice = 'No changes described — your website is unchanged.';
+      notifyListeners();
     } catch (e) {
       generation.status = WebsiteGenStatus.error;
       generation.errorMessage = e.toString();
@@ -968,6 +1048,7 @@ class WebWebsiteService extends ChangeNotifier {
         if (a.comment != null && a.comment!.trim().isNotEmpty)
           (fileName: a.fileName, cid: a.cid, comment: a.comment!),
     ];
+    final revision = _revisionOf[generation.id];
 
     final http.Response response;
     try {
@@ -978,25 +1059,19 @@ class WebWebsiteService extends ChangeNotifier {
               'Authorization': 'Bearer $jwt',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode({
-              'prompt':
-                  buildWebsiteAiPrompt(generation.prompt, assetNotes: assetNotes),
-              'assets': assetPayloads,
-              'enable_tracking': generation.trackingEnabled,
-              // Capability: opt into the backend's multi-pass pipeline
-              // (this client polls for up to 20 minutes below).
-              'pipeline_version': 2,
-              // Public directory. Sent explicitly — the server column
-              // defaults to false, so an older client (or a resumed job)
-              // can never publish a user into the directory by omission.
-              'listed': _listInDirectory[generation.id] ?? false,
+            body: jsonEncode(buildGenerateRequestBody(
+              prompt: buildWebsiteAiPrompt(generation.prompt,
+                  assetNotes: assetNotes),
+              assets: assetPayloads,
+              enableTracking: generation.trackingEnabled,
+              listed: _listInDirectory[generation.id] ?? false,
               // The group's display name, sent as its own field rather
               // than scraped from the prompt (free text the user wrote).
-              'listing_name': generation.tagName,
-              // Per-WEBSITE key so the directory shows one entry per
-              // website instead of one per regeneration.
-              'listing_group': generation.tagId,
-            }),
+              listingName: generation.tagName,
+              listingGroup: generation.tagId,
+              baseCid: revision?.baseCid,
+              revisionRequest: revision?.request ?? '',
+            )),
           )
           .timeout(const Duration(seconds: 30));
     } on TimeoutException {
@@ -1017,13 +1092,38 @@ class WebWebsiteService extends ChangeNotifier {
     if (response.statusCode == 429) {
       throw Exception('Rate limit exceeded. Please try again later.');
     }
-    if (response.statusCode != 202) {
-      throw Exception(
-          'Generation request failed (${response.statusCode}): ${response.body}');
+
+    Map<String, dynamic> accepted;
+    try {
+      accepted = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      accepted = const {};
     }
 
-    final jobId =
-        (jsonDecode(response.body) as Map<String, dynamic>)['jobId'] as String;
+    switch (classifyGenerateResponse(response.statusCode, accepted)) {
+      case GenerateOutcome.accepted:
+        break;
+      case GenerateOutcome.unchanged:
+        // The edit asked for nothing: no job, nothing charged, and the
+        // site stands as it is. Republishing identical bytes would only
+        // add a duplicate history entry.
+        throw const _WebsiteUnchanged();
+      case GenerateOutcome.baseUnusable:
+        throw Exception(generateFailureMessage(accepted));
+      case GenerateOutcome.failed:
+        throw Exception(
+            'Generation request failed (${response.statusCode}): ${response.body}');
+    }
+
+    // Belt and braces behind the pre-flight capability check: if a server
+    // still took this as a fresh build, say so rather than let the user
+    // discover it in the finished site. The job is already accepted and
+    // charged at this point, which is exactly why the real guard is the
+    // `supportsRevision()` probe before submitting.
+    if (revision != null && accepted['mode'] != 'revision') {
+      debugPrint('WebWebsiteService: server did not honour base_cid');
+    }
+    final jobId = accepted['jobId'] as String;
 
     // Persist the job handle BEFORE polling. Everything up to here lived
     // only in this tab's memory; from this point a closed/killed tab (the

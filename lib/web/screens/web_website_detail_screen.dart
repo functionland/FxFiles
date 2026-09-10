@@ -114,7 +114,16 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   }
 
   void _onServiceTick() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    // One-shot messages the service can't show itself — today: an edit
+    // that turned out to change nothing, which never becomes a job and
+    // so would otherwise happen silently.
+    final notice = WebWebsiteService.instance.takeNotice();
+    if (notice != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(notice)));
+    }
   }
 
   /// Fold completed upload jobs into the asset rows (byteless: name +
@@ -410,7 +419,12 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   List<WebPickedAsset> get _readyAssets =>
       [for (final a in _assets) if (a.isCidBacked) a];
 
-  Future<void> _publishFromResult(WebGeneratePromptResult result) async {
+  /// [baseCid] is set when this is an EDIT of an existing build: the
+  /// server uses it to find that site's source and revise it in place.
+  Future<void> _publishFromResult(
+    WebGeneratePromptResult result, {
+    String? baseCid,
+  }) async {
     final enrichedPrompt = composeEnrichedWebsitePrompt(
       websiteName: result.websiteName,
       category: result.category,
@@ -427,10 +441,15 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       picked: List.of(_readyAssets),
       enableTracking: result.enableTracking,
       listInDirectory: _listInDirectory,
+      baseCid: baseCid,
+      revisionRequest: result.revisionRequest,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Website generation started')),
+        SnackBar(
+            content: Text(baseCid != null
+                ? 'Applying your changes...'
+                : 'Website generation started')),
       );
     }
   }
@@ -512,11 +531,38 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     }
   }
 
-  /// Native Recreate parity: reopen the generator prefilled from the
-  /// generation's parsed prompt, with the prior-site reference seeded
-  /// into the creative direction; the group's current assets are
-  /// reused on publish.
+  /// Recreate = EDIT this site, not design a new one.
+  ///
+  /// The generator reopens prefilled from the generation's parsed prompt
+  /// and asks the one question that matters — what should change. The
+  /// site's own source is what the AI edits (the server holds it, keyed
+  /// by this build's CID), so anything the user does not ask about comes
+  /// back untouched. An empty change request keeps the site exactly as it
+  /// is; the server answers that one without running the model at all.
   Future<void> _recreate(WebsiteGeneration gen) async {
+    final baseCid = gen.resultCid;
+    if (baseCid == null || baseCid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'This build has no published copy to edit — create a new website instead')));
+      return;
+    }
+    // Asked before the user invests any effort, because the answer can
+    // only be acted on beforehand: the generate endpoint ignores an
+    // unknown field, so a server without this feature would accept the
+    // job, charge for it, and return a redesigned site.
+    final canRevise = await WebWebsiteService.instance.supportsRevision();
+    if (!mounted) return;
+    if (!canRevise) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Editing an existing website is not available on this server yet')));
+      return;
+    }
+    return _recreateFrom(gen, baseCid);
+  }
+
+  Future<void> _recreateFrom(WebsiteGeneration gen, String baseCid) async {
     // Same public-content acknowledgement as Create Website (native
     // parity), including the directory choice — a recreate produces a
     // NEW generation, so it gets its own decision rather than silently
@@ -530,13 +576,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     if (accepted != true || !mounted) return;
     _listInDirectory = listInDirectory.value;
     final parsed = parseStoredWebsitePrompt(gen.prompt);
-    final priorUrl = gen.gatewayUrl ?? '';
-    final priorPromptForRef =
-        parsed.userBody.isNotEmpty ? parsed.userBody : gen.prompt.trim();
-    final seededPrompt =
-        'The website "$priorUrl" was created for prompt: "$priorPromptForRef"\n\n'
-        '[Describe what to change or add for the new version]';
-
+    // The creative direction is restored VERBATIM — no "the website X was
+    // created for prompt Y" preamble. That sentence used to be the only
+    // link back to the previous site, and reading it as a fresh brief is
+    // exactly why Recreate produced a different site every time.
     final result =
         await Navigator.of(context).push<WebGeneratePromptResult>(
       MaterialPageRoute(
@@ -547,10 +590,11 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
           initialCategory: parsed.category,
           initialStyles: parsed.styles,
           initialPalette: parsed.palette,
-          initialPrompt: seededPrompt,
+          initialPrompt: parsed.userBody,
           initialEnableTracking: gen.trackingEnabled,
           initialContactForm: parsed.contactForm,
           initialLanguages: parsed.languages,
+          revisionMode: true,
         ),
       ),
     );
@@ -561,7 +605,7 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
               'No reusable assets in this group — import files first')));
       return;
     }
-    await _publishFromResult(result);
+    await _publishFromResult(result, baseCid: baseCid);
   }
 
   @override

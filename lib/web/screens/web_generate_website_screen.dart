@@ -13,7 +13,7 @@ import 'package:fula_files/core/services/google_forms_service.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
 
 /// Result returned when the user taps Publish — same shape as the
-/// native GenerateWebsitePromptResult.
+/// native GenerateWebsitePromptResult, plus [revisionRequest].
 typedef WebGeneratePromptResult = ({
   String websiteName,
   String category,
@@ -23,6 +23,14 @@ typedef WebGeneratePromptResult = ({
   String prompt,
   bool enableTracking,
   ContactFormConfig? contactForm,
+
+  /// What the user asked to CHANGE about an existing site. Empty for a
+  /// first-time build, and empty on a revision where the user only moved
+  /// the settings above (or nothing at all).
+  ///
+  /// Deliberately separate from [prompt]: [prompt] stays the site's own
+  /// description, so the two can be compared to see what actually moved.
+  String revisionRequest,
 });
 
 class _PaletteOption {
@@ -153,6 +161,14 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
   final ContactFormConfig? initialContactForm;
   final List<String>? initialLanguages;
 
+  /// Editing an existing site rather than building a new one.
+  ///
+  /// Changes what the screen ASKS for: the fields below describe a site
+  /// that already exists and is already approved, so the question becomes
+  /// "what should change?" rather than "what should this be?". Leaving
+  /// everything alone is a valid answer and keeps the site as it is.
+  final bool revisionMode;
+
   const WebGenerateWebsiteScreen({
     super.key,
     required this.defaultName,
@@ -165,6 +181,7 @@ class WebGenerateWebsiteScreen extends StatefulWidget {
     this.initialEnableTracking = false,
     this.initialContactForm,
     this.initialLanguages,
+    this.revisionMode = false,
   });
 
   @override
@@ -179,6 +196,10 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
           : widget.defaultName);
   late final TextEditingController _promptController =
       TextEditingController(text: widget.initialPrompt ?? '');
+
+  /// Revision mode only — what the user wants changed. Starts EMPTY: an
+  /// empty field means "change nothing", which is a real answer here.
+  final TextEditingController _revisionController = TextEditingController();
   late String _category = _categoryOptions.contains(widget.initialCategory)
       ? widget.initialCategory!
       : _categoryOptions.first;
@@ -244,6 +265,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
   void dispose() {
     _nameController.dispose();
     _promptController.dispose();
+    _revisionController.dispose();
     _destinationController.dispose();
     _emailSubjectController.dispose();
     _titleController.dispose();
@@ -306,6 +328,19 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     ));
   }
 
+  /// Everything about a contact form EXCEPT where it delivers to.
+  ///
+  /// Two configs with the same spec describe the same form, so an existing
+  /// Google Form still serves it — only a spec change needs a new one.
+  static String _contactFormSpecOf(ContactFormConfig cfg) => ContactFormConfig(
+        enabled: cfg.enabled,
+        channel: cfg.channel,
+        destination: '',
+        emailSubject: cfg.emailSubject,
+        title: cfg.title,
+        fields: cfg.fields,
+      ).encode();
+
   Future<void> _submit() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) return;
@@ -321,7 +356,30 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
         return;
       }
 
-      if (contactForm.channel == ContactFormChannel.sheets) {
+      // An UNCHANGED Sheets form on a revision keeps the form it already
+      // has. Creating a new one would abandon the responses collected so
+      // far, change the iframe URL in the page, and — because the
+      // responder URL is part of the stored prompt — make every edit look
+      // like a settings change, so "change nothing" could never be
+      // honoured on a site with a Google form.
+      final existing = widget.initialContactForm;
+      final formUnchanged = widget.revisionMode &&
+          existing != null &&
+          existing.channel == ContactFormChannel.sheets &&
+          existing.destination.trim().isNotEmpty &&
+          _contactFormSpecOf(existing) == _contactFormSpecOf(contactForm);
+      if (formUnchanged) {
+        contactForm = ContactFormConfig(
+          enabled: contactForm.enabled,
+          channel: contactForm.channel,
+          destination: existing.destination,
+          emailSubject: contactForm.emailSubject,
+          title: contactForm.title,
+          fields: contactForm.fields,
+        );
+      }
+
+      if (contactForm.channel == ContactFormChannel.sheets && !formUnchanged) {
         bool isLoadingShown = false;
         try {
           final granted = await AuthService.instance.requestFormsScope();
@@ -390,6 +448,8 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
         prompt: _promptController.text.trim(),
         enableTracking: _enableTracking,
         contactForm: contactForm.enabled ? contactForm : null,
+        revisionRequest:
+            widget.revisionMode ? _revisionController.text.trim() : '',
       ));
     }
   }
@@ -443,13 +503,48 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
     final theme = Theme.of(context);
     final nameEmpty = _nameController.text.trim().isEmpty;
     return Scaffold(
-      appBar: AppBar(title: const Text('Generate Website')),
+      appBar: AppBar(
+          title: Text(
+              widget.revisionMode ? 'Update Website' : 'Generate Website')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              // Revision mode leads with the only question that matters:
+              // what should change. Everything below it already describes
+              // a site the user has and approved, so it is shown as
+              // adjustable settings rather than as a fresh brief.
+              if (widget.revisionMode) ...[
+                TextField(
+                  controller: _revisionController,
+                  maxLength: 8000,
+                  minLines: 3,
+                  maxLines: 6,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'What should change?',
+                    hintText:
+                        'e.g. "Change the headline to Aurora Design Studio" '
+                        'or "Add a contact section under the gallery"',
+                    helperText:
+                        'Only what you describe here (and any setting you '
+                        'change below) will be altered — the rest of the site '
+                        'stays exactly as it is. Leave this empty to keep the '
+                        'site unchanged.',
+                    helperMaxLines: 4,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'The settings below are how this site was built. Change one '
+                  'only if you want it applied to the existing site.',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 16),
+              ],
               TextField(
                 controller: _nameController,
                 maxLength: 60,
@@ -602,14 +697,21 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                 minLines: 4,
                 maxLines: 6,
                 decoration: InputDecoration(
-                  labelText: 'Your creative direction',
-                  hintText:
-                      'Add anything specific about content, layout, or theme '
-                      '— leave blank to use only the category and styles '
-                      'above.',
-                  helperText: 'Category- and style-specific instructions plus '
-                      'technical constraints (static site, IPFS hosting, '
-                      'responsive design) are added automatically.',
+                  labelText: widget.revisionMode
+                      ? 'Creative direction this site was built from'
+                      : 'Your creative direction',
+                  hintText: widget.revisionMode
+                      ? null
+                      : 'Add anything specific about content, layout, or theme '
+                          '— leave blank to use only the category and styles '
+                          'above.',
+                  helperText: widget.revisionMode
+                      ? 'Editing this rewrites the brief for the whole site. '
+                          'For a targeted change, use the field at the top '
+                          'instead.'
+                      : 'Category- and style-specific instructions plus '
+                          'technical constraints (static site, IPFS hosting, '
+                          'responsive design) are added automatically.',
                   helperMaxLines: 3,
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
@@ -644,7 +746,7 @@ class _WebGenerateWebsiteScreenState extends State<WebGenerateWebsiteScreen> {
                 style:
                     FilledButton.styleFrom(backgroundColor: AppColors.primary),
                 icon: const Icon(LucideIcons.sparkles, size: 18),
-                label: const Text('Publish'),
+                label: Text(widget.revisionMode ? 'Apply changes' : 'Publish'),
               ),
             ],
           ),
