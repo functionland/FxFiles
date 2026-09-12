@@ -24,11 +24,17 @@ class IpfsGatewayHelper {
   /// returned 200 from Filebase for the same CID at the same moment.
   static const String filebaseTemplate = 'https://ipfs.filebase.io/ipfs/';
 
-  /// fx's own gateway. This was the pre-v0.4 default, and [init] used to
-  /// migrate people AWAY from it and onto dweb — that migration is gone,
-  /// because the destination is now the thing that is dying. It is offered as
-  /// a first-class preset again: it serves these CIDs with correct content
-  /// types (verified 2026-09-12) and, unlike any third party, it is ours.
+  /// fx's own gateway.
+  ///
+  /// NOT offered in the picker: it serves an interstitial "content withheld"
+  /// page before HTML (measured 2026-09-12 in a browser — curl bypasses it),
+  /// which is a poor thing to put in front of someone opening a shared
+  /// website, and is almost certainly why it stopped being the default.
+  ///
+  /// It remains useful, and is kept, because raw ASSETS are served normally
+  /// (correct `image/jpeg`, no interstitial): it is the second entry in the
+  /// published fallback chain, so a site is never at the mercy of one third
+  /// party. Also still accepted as a `?gw=fx` key on the resolver.
   static const String fxTemplate = 'https://ipfs.cloud.fx.land/gateway/';
 
   static const String defaultTemplate = filebaseTemplate;
@@ -46,7 +52,6 @@ class IpfsGatewayHelper {
   /// a gateway that [init] would migrate away from on next launch is a trap.
   static const Map<String, String> presets = <String, String>{
     'Filebase': filebaseTemplate,
-    'fx.land': fxTemplate,
   };
 
   /// Preset label for [template], or null when it is a custom value.
