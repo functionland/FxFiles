@@ -48,7 +48,7 @@ class _WebApiConfigScreenState extends State<WebApiConfigScreen> {
         'https://ai.cloud.fx.land', 'https://ai.cloud.fx.land'),
     // NOTE: the IPFS gateway template is deliberately NOT here. It moved to
     // its own section in Settings, below Billing — it is a choice ordinary
-    // users make (dweb.link rate-limits, Filebase does not), not an endpoint
+    // users make (gateways get retired — dweb.link was), not an endpoint
     // override, and it needs a picker rather than a raw text field. Editing
     // it in two places would let this one store a near-miss of a preset that
     // silently degrades to "custom".
