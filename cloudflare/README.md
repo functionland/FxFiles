@@ -14,15 +14,27 @@ GET https://fxfiles.top/w/<ipnsName>/page.html  -> 302 https://<cid>.ipfs.dweb.l
 An optional `?gw=` selects which gateway the redirect lands on:
 
 ```
-GET /w/<ipnsName>?gw=dweb      -> 302 https://<cid>.ipfs.dweb.link/
-GET /w/<ipnsName>?gw=filebase  -> 302 https://ipfs.filebase.io/ipfs/<cid>
+GET /w/<ipnsName>?gw=filebase  -> 302 https://ipfs.filebase.io/ipfs/<cid>   (default)
+GET /w/<ipnsName>?gw=fx        -> 302 https://ipfs.cloud.fx.land/gateway/<cid>
 ```
 
-It exists because **dweb.link returns HTTP 429 once a site sees real traffic**
-(measured 2026-09-12: a freshly generated site 429'd on dweb.link and returned
-200 from Filebase at the same moment). The app appends this automatically from
-the gateway chosen in Settings, so a user who switches gets working links
-without re-minting anything.
+The app appends this automatically from the gateway chosen in Settings, so a
+user who switches gets working links without re-minting anything.
+
+### dweb.link is retired — do not re-add it
+
+The IPFS Foundation **shut dweb.link down permanently on 2026-09-21**
+(gatewaychanges.ipfs.io). The HTTP 429s seen beforehand, with a `Retry-After` of
+around half an hour, were its announced escalating pauses — not load.
+
+`dweb` is therefore absent from `GATEWAYS`, and that is deliberate in a way
+worth spelling out: links minted while dweb was the default carry an **explicit**
+`?gw=dweb`, and an explicit key normally beats the default. But that "choice"
+was manufactured by the default rather than made by anyone, so honouring it
+would send those links to a dead host. Dropping the key makes them fall back to
+the default instead. The app makes the matching move — `IpfsGatewayHelper`
+lists the dweb template in `retiredTemplates`, which migrates any user still
+holding it onto the current default at startup.
 
 `GATEWAYS` in the Worker is a **fixed allowlist**, and that is load-bearing:
 this is a link anyone can share, so accepting a caller-supplied destination
@@ -93,9 +105,14 @@ If you deploy to a different host, set the secure-storage key
 
 - Redirect is **302** (never 301) with `Cache-Control: max-age=30`, so a
   regeneration propagates within ~30s while still allowing edge caching.
-- The `dweb` gateway assumes CIDv1 (a CIDv0 `Qm…` cannot go in a subdomain —
-  hostnames are case-insensitive and base58 is not). `filebase` is path-style
-  and has no such constraint. The app mints CIDv1, so this is not a live issue.
+- Both current gateways are **path-style**, so CID encoding is a non-issue. A
+  subdomain-style gateway would need the guard back: a CIDv0 (`Qm…`, base58 and
+  case-sensitive) or a CID over the 63-character DNS label limit silently
+  corrupts when used as a hostname, but is fine in a path.
 - The Worker rejects paths whose name isn't a plausible `k51…` IPNS name, and
   charset-checks the CID before interpolating it, so it can't be abused as an
   open redirector.
+- When w3name is unreachable the Worker returns a plain **502**. It used to
+  redirect to `{name}.ipns.dweb.link`, which never resolved (w3name does not
+  publish to the DHT) and is now a dead host — redirecting there only turned our
+  error into a more confusing one.

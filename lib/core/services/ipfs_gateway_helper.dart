@@ -12,25 +12,41 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 class IpfsGatewayHelper {
   IpfsGatewayHelper._();
 
-  /// Subdomain-style dweb.link template, used as the app-wide default.
-  static const String defaultTemplate = 'https://{cid}.ipfs.dweb.link/';
+  /// Subdomain-style dweb.link template. The app-wide default until
+  /// 2026-09-12, now RETIRED: the IPFS Foundation is shutting this gateway
+  /// down for good on 2026-09-21 (gatewaychanges.ipfs.io), and the HTTP 429s
+  /// seen beforehand are its announced escalating pauses, not load. Kept as a
+  /// constant ONLY so [init] can recognise and migrate anyone still on it.
+  static const String dwebTemplate = 'https://{cid}.ipfs.dweb.link/';
 
-  /// Pre-v0.4 default. Anyone still on this exact value is upgraded to
-  /// [defaultTemplate] on the next [init].
-  static const String legacyDefault = 'https://ipfs.cloud.fx.land/gateway/';
-
-  /// Path-style Filebase gateway. Offered as a preset because dweb.link
-  /// rate-limits (HTTP 429) once a site gets any real traffic — measured
-  /// 2026-09-12, a freshly generated site returned 429 from dweb.link and
-  /// 200 from Filebase at the same moment.
+  /// Path-style Filebase gateway, and the app-wide default since dweb's
+  /// retirement — measured 2026-09-12, a site that returned 429 from dweb.link
+  /// returned 200 from Filebase for the same CID at the same moment.
   static const String filebaseTemplate = 'https://ipfs.filebase.io/ipfs/';
+
+  /// fx's own gateway. This was the pre-v0.4 default, and [init] used to
+  /// migrate people AWAY from it and onto dweb — that migration is gone,
+  /// because the destination is now the thing that is dying. It is offered as
+  /// a first-class preset again: it serves these CIDs with correct content
+  /// types (verified 2026-09-12) and, unlike any third party, it is ours.
+  static const String fxTemplate = 'https://ipfs.cloud.fx.land/gateway/';
+
+  static const String defaultTemplate = filebaseTemplate;
+
+  /// Templates that are dead or dying. A stored value matching one of these is
+  /// replaced with [defaultTemplate] on the next [init] — deliberately
+  /// overriding what looks like a user's choice, because for most people the
+  /// "choice" was just the old default, and leaving it would hand them a
+  /// broken site. Match-and-replace is idempotent, so no migration flag.
+  static const Set<String> retiredTemplates = <String>{dwebTemplate};
 
   /// The presets the settings picker offers, in display order. Anything
   /// else the user types is "Custom" — [buildUrl] accepts any template in
-  /// either of the two supported shapes.
+  /// either of the two supported shapes. dweb is deliberately ABSENT: offering
+  /// a gateway that [init] would migrate away from on next launch is a trap.
   static const Map<String, String> presets = <String, String>{
-    'dweb.link': defaultTemplate,
     'Filebase': filebaseTemplate,
+    'fx.land': fxTemplate,
   };
 
   /// Preset label for [template], or null when it is a custom value.
@@ -51,8 +67,8 @@ class IpfsGatewayHelper {
   /// asset URLs written into the site (client-side, no such risk), while the
   /// stable link falls back to the resolver's default.
   static const Map<String, String> _frontDoorKeys = <String, String>{
-    defaultTemplate: 'dweb',
     filebaseTemplate: 'filebase',
+    fxTemplate: 'fx',
   };
 
   static String? frontDoorGatewayKey([String? template]) =>
@@ -67,12 +83,18 @@ class IpfsGatewayHelper {
   /// exact staleness that made the setting look inert for asset URLs.
   ///
   /// A preset emits its key even when it matches the resolver's own default,
-  /// rather than leaving the link bare. Omitting it would read as "no
-  /// opinion", and the resolver is then free to send the link somewhere else
-  /// if its default ever moves — but a user who picked dweb.link in Settings
-  /// HAS an opinion, and it should survive that. Bare links stay reserved for
-  /// callers that genuinely have none (custom gateways, which the resolver
-  /// cannot honour anyway).
+  /// rather than leaving the link bare, so that an explicit choice survives a
+  /// later change of that default. Bare links stay reserved for callers that
+  /// genuinely have no opinion (custom gateways, which the resolver cannot
+  /// honour anyway).
+  ///
+  /// CAVEAT, learned the hard way when dweb.link was retired: freezing the
+  /// gateway into a copied link cuts both ways. Every link copied while dweb
+  /// was the default carries `?gw=dweb`, and that key had to be dropped from
+  /// the resolver's allowlist so those links would fall back instead of
+  /// pointing at a dead host. Decorating is right while the set of live
+  /// gateways is stable; once a per-site preference exists, prefer bare links
+  /// so they keep following the owner's current choice.
   static String decorateFrontDoorUrl(String frontDoorUrl, {String? template}) {
     final key = frontDoorGatewayKey(template);
     if (key == null || frontDoorUrl.isEmpty) return frontDoorUrl;
@@ -87,21 +109,37 @@ class IpfsGatewayHelper {
   static String get cachedTemplate => _cachedTemplate;
 
   /// Run after [SecureStorageService.init] and before any consumer reads
-  /// the gateway. Performs the one-time replacement of the legacy default
-  /// — match-and-replace is naturally idempotent, so no migration flag.
+  /// the gateway.
+  ///
+  /// Note this WRITES on first run, which is why retiring a default is not
+  /// just a matter of changing the constant: every user who has ever launched
+  /// the app has the then-current default persisted, so a new [defaultTemplate]
+  /// would reach new installs only. [retiredTemplates] is what actually moves
+  /// existing users off a dead gateway.
   static Future<void> init() async {
     final stored = await SecureStorageService.instance
         .read(SecureStorageKeys.ipfsGatewayUrl);
 
-    if (stored == null || stored.isEmpty || stored == legacyDefault) {
+    final resolved = resolveStoredTemplate(stored);
+    if (resolved != stored) {
       await SecureStorageService.instance.write(
         SecureStorageKeys.ipfsGatewayUrl,
-        defaultTemplate,
+        resolved,
       );
-      _cachedTemplate = defaultTemplate;
-    } else {
-      _cachedTemplate = stored;
     }
+    _cachedTemplate = resolved;
+  }
+
+  /// The template [init] should end up with, given what is currently stored.
+  ///
+  /// Split out as a pure function so the migration is testable without a
+  /// storage backend — it is the part that decides whether a user keeps
+  /// working after a gateway is retired, which is worth covering directly.
+  static String resolveStoredTemplate(String? stored) {
+    if (stored == null || stored.trim().isEmpty) return defaultTemplate;
+    final trimmed = stored.trim();
+    if (retiredTemplates.contains(trimmed)) return defaultTemplate;
+    return trimmed;
   }
 
   /// Refresh the in-memory cache after the user saves a new value in

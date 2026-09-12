@@ -185,8 +185,8 @@ Future<ProviderContainer> _initializeApp() async {
     debugPrint('SecureStorageService initialization failed: $e');
   }
 
-  // Migrate the legacy ipfs.cloud.fx.land gateway default to dweb.link and
-  // populate the sync cache that model getters/widgets read.
+  // Migrate anyone still on a retired gateway (dweb.link, switched off
+  // 2026-09-21) and populate the sync cache that model getters/widgets read.
   try {
     await IpfsGatewayHelper.init().timeout(const Duration(seconds: 3));
   } catch (e) {

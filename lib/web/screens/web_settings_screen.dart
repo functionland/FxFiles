@@ -265,8 +265,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
   // Promoted OUT of More → API Configuration to the top level: this is the one
   // endpoint setting with a user-visible consequence — it decides which gateway
   // serves the images in a generated website and where a shared link resolves.
-  // dweb.link rate-limits (429) once a site gets traffic, so people need to
-  // reach this without hunting through an advanced editor.
+  // Gateways come and go — dweb.link was switched off entirely on 2026-09-21 —
+  // so people need to reach this without hunting through an advanced editor.
   //
   // This is now the ONLY editor for the key — the raw text field was removed
   // from More → API Configuration rather than left alongside, so a near-miss

@@ -13,10 +13,19 @@ void main() {
   group('buildUrl', () {
     const cid = 'bafybeifx7yeb55armcsxwwitkymga5xf53dxiarykms3ygqic223w5sk3m';
 
+    // The subdomain SHAPE is still supported for custom templates even though
+    // no preset uses it any more, so it stays covered.
     test('substitutes {cid} for subdomain-style templates', () {
       expect(
-        IpfsGatewayHelper.buildUrl(IpfsGatewayHelper.defaultTemplate, cid),
+        IpfsGatewayHelper.buildUrl(IpfsGatewayHelper.dwebTemplate, cid),
         'https://$cid.ipfs.dweb.link/',
+      );
+    });
+
+    test('the default template is the path-style Filebase one', () {
+      expect(
+        IpfsGatewayHelper.buildUrl(IpfsGatewayHelper.defaultTemplate, cid),
+        'https://ipfs.filebase.io/ipfs/$cid',
       );
     });
 
@@ -55,14 +64,67 @@ void main() {
     });
   });
 
-  group('presetLabelFor', () {
-    test('names the two presets and nothing else', () {
-      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.defaultTemplate),
-          'dweb.link');
+  // dweb.link is switched off for good on 2026-09-21, and `init` WRITES the
+  // default into storage on first run — so every existing user has the old
+  // default persisted and changing the constant alone would reach new installs
+  // only. This group covers the bit that actually moves people off it.
+  group('retirement migration', () {
+    test('the default is no longer dweb', () {
+      expect(IpfsGatewayHelper.defaultTemplate,
+          isNot(IpfsGatewayHelper.dwebTemplate));
+      expect(IpfsGatewayHelper.defaultTemplate,
+          IpfsGatewayHelper.filebaseTemplate);
+    });
+
+    test('a stored dweb template is migrated to the default', () {
       expect(
-          IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.filebaseTemplate),
+        IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.dwebTemplate),
+        IpfsGatewayHelper.defaultTemplate,
+      );
+    });
+
+    test('nothing else is disturbed', () {
+      for (final keep in <String>[
+        IpfsGatewayHelper.filebaseTemplate,
+        IpfsGatewayHelper.fxTemplate,
+        'https://my-host/ipfs/',
+      ]) {
+        expect(IpfsGatewayHelper.resolveStoredTemplate(keep), keep);
+      }
+    });
+
+    test('absent or blank falls back to the default', () {
+      expect(IpfsGatewayHelper.resolveStoredTemplate(null),
+          IpfsGatewayHelper.defaultTemplate);
+      expect(IpfsGatewayHelper.resolveStoredTemplate(''),
+          IpfsGatewayHelper.defaultTemplate);
+      expect(IpfsGatewayHelper.resolveStoredTemplate('   '),
+          IpfsGatewayHelper.defaultTemplate);
+    });
+
+    test('is idempotent — re-running never churns the value', () {
+      final once =
+          IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.dwebTemplate);
+      expect(IpfsGatewayHelper.resolveStoredTemplate(once), once);
+    });
+
+    test('no retired template is offered as a preset', () {
+      for (final template in IpfsGatewayHelper.presets.values) {
+        expect(IpfsGatewayHelper.retiredTemplates, isNot(contains(template)),
+            reason: 'offering a gateway that init() migrates away is a trap');
+      }
+    });
+  });
+
+  group('presetLabelFor', () {
+    test('names the presets and nothing else', () {
+      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.filebaseTemplate),
           'Filebase');
+      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.fxTemplate),
+          'fx.land');
       expect(IpfsGatewayHelper.presetLabelFor('https://my-host/ipfs/'), isNull);
+      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.dwebTemplate),
+          isNull);
     });
 
     test('tolerates surrounding whitespace', () {
@@ -83,9 +145,15 @@ void main() {
   group('frontDoorGatewayKey', () {
     test('maps the presets to the resolver keys', () {
       expect(IpfsGatewayHelper.frontDoorGatewayKey(
-          IpfsGatewayHelper.defaultTemplate), 'dweb');
-      expect(IpfsGatewayHelper.frontDoorGatewayKey(
           IpfsGatewayHelper.filebaseTemplate), 'filebase');
+      expect(IpfsGatewayHelper.frontDoorGatewayKey(
+          IpfsGatewayHelper.fxTemplate), 'fx');
+    });
+
+    test('the retired dweb template has no key', () {
+      expect(
+          IpfsGatewayHelper.frontDoorGatewayKey(IpfsGatewayHelper.dwebTemplate),
+          isNull);
     });
 
     test('a custom gateway has no key — the resolver allowlists, by design',
@@ -102,7 +170,7 @@ void main() {
     // The worker's allowlist is the other half of this contract: a key here
     // that it does not know would silently fall back to its default.
     test('only ever emits keys the worker allowlists', () {
-      const workerKeys = {'dweb', 'filebase'};
+      const workerKeys = {'filebase', 'fx'};
       for (final template in IpfsGatewayHelper.presets.values) {
         expect(workerKeys, contains(
             IpfsGatewayHelper.frontDoorGatewayKey(template)));
@@ -118,9 +186,9 @@ void main() {
       expect(IpfsGatewayHelper.decorateFrontDoorUrl(link), '$link?gw=filebase');
     });
 
-    test('appends the dweb key explicitly, so the link is self-describing',
+    test('appends the default key explicitly, so the link is self-describing',
         () {
-      expect(IpfsGatewayHelper.decorateFrontDoorUrl(link), '$link?gw=dweb');
+      expect(IpfsGatewayHelper.decorateFrontDoorUrl(link), '$link?gw=filebase');
     });
 
     test('uses & when the link already carries a query', () {

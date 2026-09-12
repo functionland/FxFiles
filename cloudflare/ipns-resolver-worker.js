@@ -2,11 +2,11 @@
  * FxFiles stable-link resolver — a STATELESS Cloudflare Worker that is the
  * fast, pretty front door over each website group's IPNS name.
  *
- *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=dweb|filebase]
+ *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=filebase|fx]
  *      -> resolve <ipnsName> to its current CID via w3name's plain HTTP API
  *      -> 302 to that gateway's URL for the CID, e.g.
- *         https://<cid>.ipfs.dweb.link/<subpath>          (gw=dweb, default)
- *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>   (gw=filebase)
+ *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>       (gw=filebase, default)
+ *         https://ipfs.cloud.fx.land/gateway/<cid>/<subpath>  (gw=fx)
  *
  * Why this design:
  *  - The app never talks to Cloudflare and holds NO credential here. The IPNS
@@ -14,15 +14,15 @@
  *    record and redirects. Anyone can redeploy it; losing it loses nothing.
  *  - Resolving through w3name's HTTP API is fast (no DHT wait) and lands on the
  *    immutable per-CID URL, which gateways cache aggressively.
- *  - If w3name is slow/unavailable, we fall back to the raw IPNS gateway URL.
- *    NOTE (measured 2026-05-30): that fallback only resolves if the record is
- *    ALSO published to the IPFS DHT — w3name does NOT do that, so today a bare
- *    {name}.ipns.dweb.link does NOT resolve on a plain gateway (it 500s). So
- *    name->CID resolution currently depends on this Worker reading w3name (both
- *    non-fx). The CONTENT (CID) IS fully public-reachable via IPFS gateways
- *    (verified 200). Net: the link survives fx being down, but not Cloudflare +
- *    w3name both being down. See README for the optional DHT-publish step that
- *    makes any gateway work.
+ *  - When w3name is unreachable we return a plain 502 rather than redirecting
+ *    anywhere. There used to be a fallback to {name}.ipns.dweb.link; it never
+ *    actually resolved (w3name does not publish to the DHT, so a bare name 500s
+ *    on a plain gateway — measured 2026-05-30) and that host is switched off for
+ *    good on 2026-09-21 anyway. So name->CID resolution depends on this Worker
+ *    reading w3name, both non-fx. The CONTENT (CID) stays fully public-reachable
+ *    via any IPFS gateway. Net: a link survives fx being down, but not
+ *    Cloudflare + w3name both being down. See README for the optional
+ *    DHT-publish step that would make any gateway resolve the name directly.
  *
  * Abuse posture (it MUST stay publicly reachable so links + previews work):
  *  - Not an open redirector: the destination host comes from a FIXED allowlist
@@ -37,12 +37,11 @@
  *    (only active if `RW_LIMITER` is configured in wrangler.toml). Pair with a
  *    dashboard WAF Rate Limiting Rule on `/w/*` for global enforcement.
  *
- * Cloudflare's own IPFS gateway was decommissioned in Aug 2024 — irrelevant
- * here; this Worker `fetch()`es the IPFS Foundation gateways (dweb.link/ipfs.io).
+ * Gateway churn is the norm, which is why the destination is a one-line change
+ * here rather than a property of published content: Cloudflare retired its IPFS
+ * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
 
-const GATEWAY_HOST = 'ipfs.dweb.link';
-const IPNS_GATEWAY_HOST = 'ipns.dweb.link';
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
 const MAX_NAME_LEN = 80; // base36 `k51…` libp2p-key names are ~62 chars
@@ -53,20 +52,6 @@ const CID_RE = /^[A-Za-z0-9]{40,120}$/;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 /**
- * Can this CID be a DNS label, i.e. is the subdomain gateway shape usable?
- *
- * Two ways it cannot, both of which silently corrupt the CID rather than
- * failing loudly:
- *   - CIDv0 (`Qm…`) is base58 and CASE-SENSITIVE, but hostnames are not — the
- *     resolver lowercases the label and the gateway receives a different CID.
- *   - A DNS label caps at 63 characters (RFC 1035). CIDv1-base32 over SHA-256
- *     is 59, but a larger hash function would overrun it.
- * Either way the answer is the same: use the gateway's path form, which
- * preserves case and has no length limit.
- */
-const SUBDOMAIN_SAFE_CID = /^[a-z0-9]{1,63}$/;
-
-/**
  * Gateways this Worker may redirect to, selected with `?gw=<key>`.
  *
  * A FIXED ALLOWLIST, deliberately — the app lets a user set any IPFS gateway
@@ -75,22 +60,27 @@ const SUBDOMAIN_SAFE_CID = /^[a-z0-9]{1,63}$/;
  * open redirector, which is exactly the property the checks below exist to
  * protect. Unknown or missing `gw` falls back to the default.
  *
- * `cid` builds the immutable per-CID URL in whichever shape the gateway wants:
- *   subdomain — https://<cid>.ipfs.dweb.link/<path>
- *   path      — https://ipfs.filebase.io/ipfs/<cid>/<path>
+ * `dweb` IS DELIBERATELY ABSENT. The IPFS Foundation switched dweb.link off for
+ * good on 2026-09-21. Links minted while it was the default carry an explicit
+ * `?gw=dweb`, and an explicit key would normally beat the default — but that
+ * "choice" was manufactured by the default rather than made by anyone, so
+ * honouring it would send those links to a dead host. Dropping the key makes
+ * them fall back here instead, which is the whole point.
+ *
+ * Both remaining gateways are PATH-style (`https://host/ipfs/<cid>/<path>`), so
+ * there is no subdomain-safety problem to handle. A subdomain gateway would need
+ * that guard back: a case-sensitive CIDv0 (`Qm…`) or a CID over the 63-character
+ * DNS label limit silently corrupts as a hostname, but is fine in a path.
  */
 const GATEWAYS = {
-  dweb: {
-    cid: (cid, path) =>
-      SUBDOMAIN_SAFE_CID.test(cid)
-        ? `https://${cid}.${GATEWAY_HOST}${path}`
-        : `https://dweb.link/ipfs/${cid}${path}`,
-  },
   filebase: {
-    // dweb.link starts returning 429 once a site sees real traffic; Filebase
-    // served the same CID fine at the same moment (measured 2026-09-12).
-    // Path-style, so it needs no subdomain-safety dance.
+    // Served the same CID fine at the moment dweb.link was 429ing it
+    // (measured 2026-09-12).
     cid: (cid, path) => `https://ipfs.filebase.io/ipfs/${cid}${path}`,
+  },
+  fx: {
+    // Ours. Verified 2026-09-12 to serve these CIDs with correct content types.
+    cid: (cid, path) => `https://ipfs.cloud.fx.land/gateway/${cid}${path}`,
   },
 };
 
@@ -111,7 +101,7 @@ function joinPath(inner, subpath) {
 }
 
 /** Default when `?gw=` is absent — keeps every already-shared link working. */
-const DEFAULT_GATEWAY = 'dweb';
+const DEFAULT_GATEWAY = 'filebase';
 
 export default {
   async fetch(request, env) {
@@ -167,26 +157,24 @@ export default {
     forwarded.delete('gw');
     const query = forwarded.toString() ? `?${forwarded}` : '';
 
-    // Unknown keys fall back rather than erroring: a link with a typo should
-    // still resolve, just on the default gateway.
+    // Unknown keys fall back rather than erroring: a link with a typo — or a
+    // retired key like `gw=dweb` — should still resolve, just on the default.
     //
     // hasOwn, NOT a bare `GATEWAYS[gwKey] ||` — gwKey is caller-controlled and
     // a plain object literal inherits from Object.prototype, so `?gw=toString`
     // and `?gw=__proto__` would hand back a TRUTHY inherited value whose `.cid`
-    // is undefined. That throws inside the try below and drops the request on
-    // the IPNS fallback, which (see the note at the top) does not resolve. The
-    // typo would break the link instead of quietly using the default.
+    // is undefined. That throws inside the try below and the request ends as a
+    // 502, so the typo would break the link instead of using the default.
     const gateway = Object.hasOwn(GATEWAYS, gwKey ?? '')
       ? GATEWAYS[gwKey]
       : GATEWAYS[DEFAULT_GATEWAY];
 
-    // The happy path below never uses an IPNS gateway: w3name resolves the
-    // name here and we redirect to the immutable /ipfs/<cid>, which every
-    // gateway serves. This fallback only runs when w3name is unreachable, and
-    // per the note at the top it does not resolve anyway (the record is not on
-    // the DHT). Left on dweb because it is the only host that would even try.
-    const ipnsFallback =
-      `https://${name}.${IPNS_GATEWAY_HOST}${subpath}${query}`;
+    // NOTE: there is no IPNS-gateway fallback any more. It pointed at
+    // ipns.dweb.link, which (a) never resolved anyway — w3name does not publish
+    // to the DHT, so a bare name 500s on a plain gateway — and (b) is being
+    // switched off entirely on 2026-09-21. Redirecting a visitor to a host that
+    // is guaranteed to fail just turns our error into someone else's confusing
+    // one, so when w3name is unreachable we now say so plainly instead.
 
     try {
       const res = await fetch(`${W3NAME_ENDPOINT}/name/${name}`, {
@@ -219,10 +207,24 @@ export default {
         }
       }
     } catch (_) {
-      // fall through to the IPNS gateway fallback
+      // fall through to the plain error below
     }
 
-    return redirect(ipnsFallback);
+    // Reached when w3name is unreachable, returns a non-OK, or hands back a
+    // value that is not a usable `/ipfs/<cid>`. 502, because the failure is
+    // upstream of us and the visitor's link is probably fine.
+    return new Response(
+      'Could not resolve this FxFiles link right now. The IPNS name service ' +
+        'is unreachable — please try again shortly.',
+      {
+        status: 502,
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Retry-After': '30',
+        },
+      },
+    );
   },
 };
 
