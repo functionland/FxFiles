@@ -2,9 +2,11 @@
  * FxFiles stable-link resolver — a STATELESS Cloudflare Worker that is the
  * fast, pretty front door over each website group's IPNS name.
  *
- *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>]
+ *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=dweb|filebase]
  *      -> resolve <ipnsName> to its current CID via w3name's plain HTTP API
- *      -> 302 to https://<cid>.ipfs.dweb.link/<subpath>
+ *      -> 302 to that gateway's URL for the CID, e.g.
+ *         https://<cid>.ipfs.dweb.link/<subpath>          (gw=dweb, default)
+ *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>   (gw=filebase)
  *
  * Why this design:
  *  - The app never talks to Cloudflare and holds NO credential here. The IPNS
@@ -23,8 +25,12 @@
  *    makes any gateway work.
  *
  * Abuse posture (it MUST stay publicly reachable so links + previews work):
- *  - Not an open redirector: only ever redirects to a derived dweb.link URL,
- *    and rejects anything that isn't a plausible `k51…` IPNS name.
+ *  - Not an open redirector: the destination host comes from a FIXED allowlist
+ *    (see GATEWAYS) keyed by `?gw=`, never from caller-supplied text, and the
+ *    path is a CID this Worker resolved itself. A user's custom gateway
+ *    template is honoured for their own asset URLs in the app, but is
+ *    deliberately NOT accepted here. Anything that isn't a plausible `k51…`
+ *    IPNS name is rejected outright.
  *  - GET/HEAD only; implausible/oversized names get a cheap 400 before any
  *    upstream call.
  *  - Optional per-IP rate limit via the built-in Workers rate-limiting binding
@@ -40,6 +46,72 @@ const IPNS_GATEWAY_HOST = 'ipns.dweb.link';
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
 const MAX_NAME_LEN = 80; // base36 `k51…` libp2p-key names are ~62 chars
+/** CIDv1 base32 (`bafy…`) and CIDv0 base58 (`Qm…`) are both alphanumeric. */
+const CID_RE = /^[A-Za-z0-9]{40,120}$/;
+/** CR, LF and friends — anything that could split a header value. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Can this CID be a DNS label, i.e. is the subdomain gateway shape usable?
+ *
+ * Two ways it cannot, both of which silently corrupt the CID rather than
+ * failing loudly:
+ *   - CIDv0 (`Qm…`) is base58 and CASE-SENSITIVE, but hostnames are not — the
+ *     resolver lowercases the label and the gateway receives a different CID.
+ *   - A DNS label caps at 63 characters (RFC 1035). CIDv1-base32 over SHA-256
+ *     is 59, but a larger hash function would overrun it.
+ * Either way the answer is the same: use the gateway's path form, which
+ * preserves case and has no length limit.
+ */
+const SUBDOMAIN_SAFE_CID = /^[a-z0-9]{1,63}$/;
+
+/**
+ * Gateways this Worker may redirect to, selected with `?gw=<key>`.
+ *
+ * A FIXED ALLOWLIST, deliberately — the app lets a user set any IPFS gateway
+ * template they like for their own asset URLs, but that value must never reach
+ * here. Honouring arbitrary input would turn a link anyone can share into an
+ * open redirector, which is exactly the property the checks below exist to
+ * protect. Unknown or missing `gw` falls back to the default.
+ *
+ * `cid` builds the immutable per-CID URL in whichever shape the gateway wants:
+ *   subdomain — https://<cid>.ipfs.dweb.link/<path>
+ *   path      — https://ipfs.filebase.io/ipfs/<cid>/<path>
+ */
+const GATEWAYS = {
+  dweb: {
+    cid: (cid, path) =>
+      SUBDOMAIN_SAFE_CID.test(cid)
+        ? `https://${cid}.${GATEWAY_HOST}${path}`
+        : `https://dweb.link/ipfs/${cid}${path}`,
+  },
+  filebase: {
+    // dweb.link starts returning 429 once a site sees real traffic; Filebase
+    // served the same CID fine at the same moment (measured 2026-09-12).
+    // Path-style, so it needs no subdomain-safety dance.
+    cid: (cid, path) => `https://ipfs.filebase.io/ipfs/${cid}${path}`,
+  },
+};
+
+/**
+ * Join the path an IPNS record points INTO with the one the visitor asked for.
+ *
+ * A record's value is usually a bare `/ipfs/<cid>`, which is all this app ever
+ * publishes — but the format allows `/ipfs/<cid>/site/index.html`, and dropping
+ * that suffix would silently serve the wrong page for any name that uses one.
+ */
+function joinPath(inner, subpath) {
+  if (!inner) return subpath;
+  // A bare `/` from the visitor means "whatever the record points at", so hand
+  // back the record's own path untouched — appending a slash would ask the
+  // gateway for `/site/index.html/`, which is not the same resource as the
+  // file. A directory needs no slash either; gateways redirect to add it.
+  return subpath === '/' ? inner : `${inner}${subpath}`;
+}
+
+/** Default when `?gw=` is absent — keeps every already-shared link working. */
+const DEFAULT_GATEWAY = 'dweb';
 
 export default {
   async fetch(request, env) {
@@ -87,8 +159,34 @@ export default {
     }
 
     const subpath = match[2] || '/';
+
+    // `gw` is ours, not the gateway's — strip it before forwarding so the
+    // upstream never sees a stray query param it does not understand.
+    const forwarded = new URLSearchParams(url.search);
+    const gwKey = forwarded.get('gw');
+    forwarded.delete('gw');
+    const query = forwarded.toString() ? `?${forwarded}` : '';
+
+    // Unknown keys fall back rather than erroring: a link with a typo should
+    // still resolve, just on the default gateway.
+    //
+    // hasOwn, NOT a bare `GATEWAYS[gwKey] ||` — gwKey is caller-controlled and
+    // a plain object literal inherits from Object.prototype, so `?gw=toString`
+    // and `?gw=__proto__` would hand back a TRUTHY inherited value whose `.cid`
+    // is undefined. That throws inside the try below and drops the request on
+    // the IPNS fallback, which (see the note at the top) does not resolve. The
+    // typo would break the link instead of quietly using the default.
+    const gateway = Object.hasOwn(GATEWAYS, gwKey ?? '')
+      ? GATEWAYS[gwKey]
+      : GATEWAYS[DEFAULT_GATEWAY];
+
+    // The happy path below never uses an IPNS gateway: w3name resolves the
+    // name here and we redirect to the immutable /ipfs/<cid>, which every
+    // gateway serves. This fallback only runs when w3name is unreachable, and
+    // per the note at the top it does not resolve anyway (the record is not on
+    // the DHT). Left on dweb because it is the only host that would even try.
     const ipnsFallback =
-      `https://${name}.${IPNS_GATEWAY_HOST}${subpath}${url.search}`;
+      `https://${name}.${IPNS_GATEWAY_HOST}${subpath}${query}`;
 
     try {
       const res = await fetch(`${W3NAME_ENDPOINT}/name/${name}`, {
@@ -98,11 +196,25 @@ export default {
         const data = await res.json();
         const value = data && data.value; // e.g. "/ipfs/<cid>"
         if (typeof value === 'string' && value.startsWith('/ipfs/')) {
-          const cid = value.slice('/ipfs/'.length).split('/')[0];
-          if (cid) {
-            return redirect(
-              `https://${cid}.${GATEWAY_HOST}${subpath}${url.search}`,
-            );
+          const rest = value.slice('/ipfs/'.length);
+          const slash = rest.indexOf('/');
+          const cid = slash === -1 ? rest : rest.slice(0, slash);
+          const inner = slash === -1 ? '' : rest.slice(slash);
+          // Charset-check the CID before it is interpolated. For the
+          // subdomain shape it lands in the AUTHORITY (`https://<cid>.ipfs…`),
+          // where a `@`, a backslash or a dot would re-point the host — so a
+          // hostile or compromised w3name answer must not be able to put one
+          // there. Real CIDs are base32 (`bafy…`) or base58 (`Qm…`): both are
+          // alphanumeric, so this rejects nothing legitimate.
+          // `inner` is raw text from the record and ends up inside a header
+          // value. The CID above already terminates the authority, so it
+          // cannot move the host — but a control character could split the
+          // Location header. The Workers `Headers` class would throw on that
+          // (caught below, so the link would break rather than leak), and a
+          // header split is not something to leave to a runtime check.
+          if (cid && CID_RE.test(cid) && !CONTROL_CHARS.test(inner)) {
+            const path = joinPath(inner, subpath);
+            return redirect(`${gateway.cid(cid, path)}${query}`);
           }
         }
       }

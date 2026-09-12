@@ -12,6 +12,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/social_post_record.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/shared/widgets/ipfs_public_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/step_row.dart';
@@ -514,9 +515,18 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
     final pointer =
         _pointer ?? WebIpnsService.instance.pointerFor(widget.tagId);
     try {
+      final frontDoor = pointer?.frontDoorUrl;
       await WebSocialPostService.instance.startGeneration(
         generation: gen,
-        frontDoorUrl: pointer?.frontDoorUrl,
+        // A caption is a permanent public artifact, so this one DOES
+        // freeze the gateway at post time — deliberately. The point of
+        // choosing a gateway is that links reach it; a post carrying the
+        // default anyway would defeat that. A stale key still resolves:
+        // the resolver falls back rather than erroring on one it does not
+        // know.
+        frontDoorUrl: frontDoor == null
+            ? null
+            : IpfsGatewayHelper.decorateFrontDoorUrl(frontDoor),
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -744,7 +754,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
       );
     }
 
-    final link = pointer.frontDoorUrl;
+    // Decorated on READ so the shown/copied link lands on the gateway the
+    // user has selected in Settings today, not the one selected on the day
+    // the pointer was minted.
+    final link = IpfsGatewayHelper.decorateFrontDoorUrl(pointer.frontDoorUrl);
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(14),

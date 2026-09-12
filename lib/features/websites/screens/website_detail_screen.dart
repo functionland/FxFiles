@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/core/models/contact_form_config.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/website_generation.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/ipns_pointer_service.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
 import 'package:fula_files/core/services/website_service.dart';
@@ -171,7 +172,10 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
       );
     }
 
-    final link = pointer.frontDoorUrl;
+    // Decorated on READ so the shown/copied link lands on the gateway the
+    // user has selected in Settings today, not the one selected on the day
+    // the pointer was minted.
+    final link = IpfsGatewayHelper.decorateFrontDoorUrl(pointer.frontDoorUrl);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Container(

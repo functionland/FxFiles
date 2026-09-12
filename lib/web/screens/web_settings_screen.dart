@@ -10,6 +10,7 @@ import 'package:fula_files/core/models/billing/storage_info.dart';
 import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/billing_api_service.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
@@ -29,6 +30,9 @@ const String kWebAppVersion = 'v1.11.16.0';
 /// their billing/storage — sit at the top, and everything else lives behind a
 /// collapsed "More" tile so the page reads as a short list rather than a wall
 /// of sections.
+/// Dropdown sentinel for "not one of the presets".
+const String _kCustomGateway = '__custom__';
+
 class WebSettingsScreen extends StatefulWidget {
   const WebSettingsScreen({super.key});
 
@@ -50,6 +54,21 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
   late final Future<StorageInfo?> _storage = _loadStorage();
 
   bool _revealKey = false;
+
+  /// The IPFS gateway template currently in effect. Seeded from the cache
+  /// (populated at startup by [IpfsGatewayHelper.init]) so the row renders
+  /// the right value on first paint without awaiting storage.
+  String _gatewayTemplate = IpfsGatewayHelper.cachedTemplate;
+  bool _gatewayCustomMode = false;
+  bool _savingGateway = false;
+  final TextEditingController _customGatewayController =
+      TextEditingController();
+
+  @override
+  void dispose() {
+    _customGatewayController.dispose();
+    super.dispose();
+  }
 
   Future<String> _resolveShareId() async {
     final pk = await FulaApiService.instance.getPublicKey();
@@ -120,6 +139,8 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
                 _accountSection(context),
                 const Divider(height: 1),
                 _billingSection(context),
+                const Divider(height: 1),
+                _ipfsGatewaySection(context),
                 const Divider(height: 1),
                 _moreSection(context),
                 const SizedBox(height: 24),
@@ -238,6 +259,131 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
     return credits == credits.roundToDouble()
         ? credits.toStringAsFixed(0)
         : credits.toStringAsFixed(2);
+  }
+
+  // ── IPFS gateway ──────────────────────────────────────────────────────────
+  // Promoted OUT of More → API Configuration to the top level: this is the one
+  // endpoint setting with a user-visible consequence — it decides which gateway
+  // serves the images in a generated website and where a shared link resolves.
+  // dweb.link rate-limits (429) once a site gets traffic, so people need to
+  // reach this without hunting through an advanced editor.
+  //
+  // This is now the ONLY editor for the key — the raw text field was removed
+  // from More → API Configuration rather than left alongside, so a near-miss
+  // typed there can't silently demote a preset user to "custom" (and with it,
+  // lose the `?gw=` that makes their shared links follow this choice).
+  Widget _ipfsGatewaySection(BuildContext context) {
+    final preset = IpfsGatewayHelper.presetLabelFor(_gatewayTemplate);
+    // Custom mode is explicit state, not inferred from the string: picking
+    // "Custom…" while the saved value happens to be a preset must still open
+    // the editor.
+    final showCustom = _gatewayCustomMode || preset == null;
+    return _Section(
+      label: 'IPFS GATEWAY',
+      children: [
+        ListTile(
+          leading: const Icon(Icons.hub_outlined),
+          title: const Text('Gateway for images & links'),
+          subtitle: Text(
+            preset != null
+                ? '$preset — serves the images in your generated websites'
+                : 'Custom — $_gatewayTemplate',
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: DropdownButtonFormField<String>(
+            initialValue: showCustom ? _kCustomGateway : preset,
+            decoration: const InputDecoration(
+              labelText: 'Gateway',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              for (final name in IpfsGatewayHelper.presets.keys)
+                DropdownMenuItem(value: name, child: Text(name)),
+              const DropdownMenuItem(
+                  value: _kCustomGateway, child: Text('Custom…')),
+            ],
+            onChanged: _savingGateway ? null : _onGatewayPicked,
+          ),
+        ),
+        if (showCustom) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: TextField(
+              controller: _customGatewayController,
+              decoration: const InputDecoration(
+                labelText: 'Custom gateway template',
+                helperText:
+                    'https://{cid}.ipfs.example.com/  or  https://example.com/ipfs/',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              onSubmitted: _applyGateway,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _savingGateway
+                    ? null
+                    : () => _applyGateway(_customGatewayController.text),
+                child: const Text('Save gateway'),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _onGatewayPicked(String? choice) {
+    if (choice == null) return;
+    if (choice == _kCustomGateway) {
+      // Seed the editor with what is already in effect rather than an empty
+      // box, and leave the saved value untouched until the user hits Save.
+      _customGatewayController.text = _gatewayTemplate;
+      setState(() => _gatewayCustomMode = true);
+      return;
+    }
+    setState(() => _gatewayCustomMode = false);
+    _applyGateway(IpfsGatewayHelper.presets[choice]!);
+  }
+
+  Future<void> _applyGateway(String template) async {
+    final value = template.trim();
+    if (value.isEmpty) return;
+    setState(() => _savingGateway = true);
+    try {
+      await SecureStorageService.instance
+          .write(SecureStorageKeys.ipfsGatewayUrl, value);
+      IpfsGatewayHelper.updateCache(value);
+      if (!mounted) return;
+      setState(() {
+        _gatewayTemplate = value;
+        // A saved custom value that matches a preset should collapse the
+        // editor and show as that preset.
+        if (IpfsGatewayHelper.presetLabelFor(value) != null) {
+          _gatewayCustomMode = false;
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Gateway set to '
+                '${IpfsGatewayHelper.presetLabelFor(value) ?? value}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save gateway: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingGateway = false);
+    }
   }
 
   // More --------------------------------------------------------------------

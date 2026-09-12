@@ -9,6 +9,31 @@ GET https://fxfiles.top/w/<ipnsName>            -> 302 https://<cid>.ipfs.dweb.l
 GET https://fxfiles.top/w/<ipnsName>/page.html  -> 302 https://<cid>.ipfs.dweb.link/page.html
 ```
 
+## Choosing a gateway (`?gw=`)
+
+An optional `?gw=` selects which gateway the redirect lands on:
+
+```
+GET /w/<ipnsName>?gw=dweb      -> 302 https://<cid>.ipfs.dweb.link/
+GET /w/<ipnsName>?gw=filebase  -> 302 https://ipfs.filebase.io/ipfs/<cid>
+```
+
+It exists because **dweb.link returns HTTP 429 once a site sees real traffic**
+(measured 2026-09-12: a freshly generated site 429'd on dweb.link and returned
+200 from Filebase at the same moment). The app appends this automatically from
+the gateway chosen in Settings, so a user who switches gets working links
+without re-minting anything.
+
+`GATEWAYS` in the Worker is a **fixed allowlist**, and that is load-bearing:
+this is a link anyone can share, so accepting a caller-supplied destination
+host would turn it into an open redirector. The app therefore sends `?gw=` only
+for a *preset*; a user's custom gateway template governs their own asset URLs
+but is not honoured here, and such links fall back to `DEFAULT_GATEWAY`. An
+unknown or absent key falls back the same way rather than erroring, so a typo
+still resolves. Adding a gateway means adding an entry to `GATEWAYS` here **and**
+to `_frontDoorKeys` in `lib/core/services/ipfs_gateway_helper.dart` — a key on
+one side that the other does not know is silently ignored.
+
 ## Resilience — what actually depends on what (measured 2026-05-30)
 
 - **No secrets, no state, no app credential.** The app never calls Cloudflare;
@@ -68,8 +93,9 @@ If you deploy to a different host, set the secure-storage key
 
 - Redirect is **302** (never 301) with `Cache-Control: max-age=30`, so a
   regeneration propagates within ~30s while still allowing edge caching.
-- Assumes CIDv1 (subdomain gateway). The app's default gateway template is the
-  same `https://{cid}.ipfs.dweb.link/`. To use a different gateway, change
-  `GATEWAY_HOST` in `ipns-resolver-worker.js`.
-- The Worker rejects paths whose name isn't a plausible `k51…` IPNS name, so it
-  can't be abused as an open redirector.
+- The `dweb` gateway assumes CIDv1 (a CIDv0 `Qm…` cannot go in a subdomain —
+  hostnames are case-insensitive and base58 is not). `filebase` is path-style
+  and has no such constraint. The app mints CIDv1, so this is not a live issue.
+- The Worker rejects paths whose name isn't a plausible `k51…` IPNS name, and
+  charset-checks the CID before interpolating it, so it can't be abused as an
+  open redirector.
