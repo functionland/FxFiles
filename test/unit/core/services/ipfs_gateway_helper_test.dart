@@ -120,11 +120,19 @@ void main() {
     test('names the presets and nothing else', () {
       expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.filebaseTemplate),
           'Filebase');
-      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.fxTemplate),
-          'fx.land');
       expect(IpfsGatewayHelper.presetLabelFor('https://my-host/ipfs/'), isNull);
       expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.dwebTemplate),
           isNull);
+    });
+
+    // fx serves an interstitial before HTML, so it is a poor thing to put in
+    // front of a shared website — but it serves raw assets fine and stays in
+    // the published fallback chain and as a resolver key.
+    test('fx is NOT offered in the picker but is still a resolver key', () {
+      expect(IpfsGatewayHelper.presets.values,
+          isNot(contains(IpfsGatewayHelper.fxTemplate)));
+      expect(IpfsGatewayHelper.frontDoorGatewayKey(IpfsGatewayHelper.fxTemplate),
+          'fx');
     });
 
     test('tolerates surrounding whitespace', () {
