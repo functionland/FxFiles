@@ -64,33 +64,42 @@ void main() {
     });
   });
 
-  // dweb.link is switched off for good on 2026-09-21, and `init` WRITES the
-  // default into storage on first run — so every existing user has the old
-  // default persisted and changing the constant alone would reach new installs
-  // only. This group covers the bit that actually moves people off it.
+  // `init` WRITES the default into storage on first run, so every existing user
+  // has the then-current default persisted — changing the constant alone would
+  // reach new installs only. `retiredTemplates` is the mechanism that actually
+  // moves people off a gateway; this group pins its behaviour.
   group('retirement migration', () {
-    test('the default is no longer dweb', () {
+    test('the default is filebase, not dweb', () {
       expect(IpfsGatewayHelper.defaultTemplate,
           isNot(IpfsGatewayHelper.dwebTemplate));
       expect(IpfsGatewayHelper.defaultTemplate,
           IpfsGatewayHelper.filebaseTemplate);
     });
 
-    test('a stored dweb template is migrated to the default', () {
-      expect(
-        IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.dwebTemplate),
-        IpfsGatewayHelper.defaultTemplate,
-      );
-    });
-
-    test('nothing else is disturbed', () {
+    test('a gateway that is still valid is never overwritten', () {
       for (final keep in <String>[
         IpfsGatewayHelper.filebaseTemplate,
         IpfsGatewayHelper.fxTemplate,
+        IpfsGatewayHelper.inbrowserTemplate,
         'https://my-host/ipfs/',
       ]) {
         expect(IpfsGatewayHelper.resolveStoredTemplate(keep), keep);
       }
+    });
+
+    test('every retired template IS migrated to the default', () {
+      expect(IpfsGatewayHelper.retiredTemplates, isNotEmpty);
+      for (final retired in IpfsGatewayHelper.retiredTemplates) {
+        expect(IpfsGatewayHelper.resolveStoredTemplate(retired),
+            IpfsGatewayHelper.defaultTemplate);
+      }
+    });
+
+    test('dweb specifically is migrated — it is switched off 2026-09-21', () {
+      expect(
+        IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.dwebTemplate),
+        IpfsGatewayHelper.defaultTemplate,
+      );
     });
 
     test('absent or blank falls back to the default', () {
@@ -104,7 +113,7 @@ void main() {
 
     test('is idempotent — re-running never churns the value', () {
       final once =
-          IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.dwebTemplate);
+          IpfsGatewayHelper.resolveStoredTemplate(IpfsGatewayHelper.filebaseTemplate);
       expect(IpfsGatewayHelper.resolveStoredTemplate(once), once);
     });
 
@@ -120,9 +129,11 @@ void main() {
     test('names the presets and nothing else', () {
       expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.filebaseTemplate),
           'Filebase');
+      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.inbrowserTemplate),
+          'inbrowser.link');
       expect(IpfsGatewayHelper.presetLabelFor('https://my-host/ipfs/'), isNull);
-      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.dwebTemplate),
-          isNull);
+      expect(IpfsGatewayHelper.presetLabelFor(IpfsGatewayHelper.fxTemplate),
+          isNull, reason: 'fx serves an interstitial before HTML');
     });
 
     // fx serves an interstitial before HTML, so it is a poor thing to put in
@@ -158,7 +169,16 @@ void main() {
           IpfsGatewayHelper.fxTemplate), 'fx');
     });
 
-    test('the retired dweb template has no key', () {
+    // Choosing inbrowser has to produce `?gw=inbrowser` on a copied link, or
+    // the choice would be silently ignored the moment the link is shared.
+    test('inbrowser maps to its resolver key too', () {
+      expect(
+          IpfsGatewayHelper.frontDoorGatewayKey(
+              IpfsGatewayHelper.inbrowserTemplate),
+          'inbrowser');
+    });
+
+    test('the retired dweb has no key — links pinned to it fall back', () {
       expect(
           IpfsGatewayHelper.frontDoorGatewayKey(IpfsGatewayHelper.dwebTemplate),
           isNull);
@@ -178,7 +198,7 @@ void main() {
     // The worker's allowlist is the other half of this contract: a key here
     // that it does not know would silently fall back to its default.
     test('only ever emits keys the worker allowlists', () {
-      const workerKeys = {'filebase', 'fx'};
+      const workerKeys = {'filebase', 'fx', 'inbrowser'};
       for (final template in IpfsGatewayHelper.presets.values) {
         expect(workerKeys, contains(
             IpfsGatewayHelper.frontDoorGatewayKey(template)));

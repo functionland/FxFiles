@@ -12,12 +12,29 @@ import 'package:fula_files/core/services/secure_storage_service.dart';
 class IpfsGatewayHelper {
   IpfsGatewayHelper._();
 
-  /// Subdomain-style dweb.link template. The app-wide default until
-  /// 2026-09-12, now RETIRED: the IPFS Foundation is shutting this gateway
-  /// down for good on 2026-09-21 (gatewaychanges.ipfs.io), and the HTTP 429s
-  /// seen beforehand are its announced escalating pauses, not load. Kept as a
-  /// constant ONLY so [init] can recognise and migrate anyone still on it.
+  /// Subdomain-style dweb.link template — the app-wide default until
+  /// 2026-09-12, now retired: the IPFS Foundation shuts it down on 2026-09-21
+  /// (gatewaychanges.ipfs.io), and the HTTP 429s seen beforehand were its
+  /// escalating pauses rather than load. Kept only so [retiredTemplates] can
+  /// recognise and migrate anyone still holding it.
   static const String dwebTemplate = 'https://{cid}.ipfs.dweb.link/';
+
+  /// dweb.link's successor: a SERVICE-WORKER gateway. dweb.link already
+  /// redirects here, so this is where that traffic ends up either way.
+  ///
+  /// Three things make it different from every other option, all measured
+  /// 2026-09-12:
+  ///  * It is BROWSER-ONLY. A request without a browser User-Agent gets 403
+  ///    (pointing at the self-hosting guide). So social-preview crawlers,
+  ///    indexers and any programmatic fetch are refused — a link shared here
+  ///    renders for a human but shows no preview card.
+  ///  * The page it returns is an ~11KB bootstrap, not the content; a service
+  ///    worker fetches the real bytes client-side.
+  ///  * It is SUBDOMAIN-style, so a site's relative asset references cannot
+  ///    reach the assets (they live on another host). The published fallback
+  ///    chain recovers them from an absolute gateway instead — the site is
+  ///    fine, but the gateway choice moves only the page, not its images.
+  static const String inbrowserTemplate = 'https://{cid}.ipfs.inbrowser.link/';
 
   /// Path-style Filebase gateway, and the app-wide default since dweb's
   /// retirement — measured 2026-09-12, a site that returned 429 from dweb.link
@@ -41,17 +58,22 @@ class IpfsGatewayHelper {
 
   /// Templates that are dead or dying. A stored value matching one of these is
   /// replaced with [defaultTemplate] on the next [init] — deliberately
-  /// overriding what looks like a user's choice, because for most people the
-  /// "choice" was just the old default, and leaving it would hand them a
-  /// broken site. Match-and-replace is idempotent, so no migration flag.
+  /// overriding what looks like a user's choice, because for most people such
+  /// a "choice" is just an old default. Match-and-replace is idempotent, so no
+  /// migration flag.
+  ///
+  /// dweb is here and NOT in [presets] — that pairing is the rule. A template
+  /// that is both offered and migrated away from would silently revert on the
+  /// next launch, which is why the two sets must never intersect (pinned by a
+  /// test). Its successor [inbrowserTemplate] is what the picker offers now.
   static const Set<String> retiredTemplates = <String>{dwebTemplate};
 
-  /// The presets the settings picker offers, in display order. Anything
-  /// else the user types is "Custom" — [buildUrl] accepts any template in
-  /// either of the two supported shapes. dweb is deliberately ABSENT: offering
-  /// a gateway that [init] would migrate away from on next launch is a trap.
+  /// The presets the settings picker offers, in display order. Anything else
+  /// the user types is "Custom" — [buildUrl] accepts any template in either of
+  /// the two supported shapes. Filebase is first because it is the default.
   static const Map<String, String> presets = <String, String>{
     'Filebase': filebaseTemplate,
+    'inbrowser.link': inbrowserTemplate,
   };
 
   /// Preset label for [template], or null when it is a custom value.
@@ -74,6 +96,7 @@ class IpfsGatewayHelper {
   static const Map<String, String> _frontDoorKeys = <String, String>{
     filebaseTemplate: 'filebase',
     fxTemplate: 'fx',
+    inbrowserTemplate: 'inbrowser',
   };
 
   static String? frontDoorGatewayKey([String? template]) =>
