@@ -472,6 +472,14 @@ class WebWebsiteService extends ChangeNotifier {
   /// The SERVER cannot work it out — the pointer lives in this user's
   /// encrypted manifest and is published to w3name from the browser —
   /// so the client has to hand it over.
+  ///
+  /// Deliberately NOT run through [IpfsGatewayHelper.decorateFrontDoorUrl],
+  /// unlike the links this app shows its own user. Two reasons, either one
+  /// sufficient: the server's `isAllowedListingUrl` rejects any URL with a
+  /// query string outright (it is how the directory keeps a submitted link
+  /// from being dressed up as something else), and the directory is read by
+  /// everyone — one submitter's gateway preference has no business deciding
+  /// which gateway a stranger's browser is sent to.
   String? _frontDoorUrlFor(String tagId) {
     final url = WebIpnsService.instance.pointersByTag[tagId]?.frontDoorUrl;
     return (url != null && url.isNotEmpty) ? url : null;
@@ -937,10 +945,17 @@ class WebWebsiteService extends ChangeNotifier {
       }
 
       asset.cid = cid;
-      final recordedUrl = picked[i].gatewayUrl;
-      asset.gatewayUrl = (recordedUrl != null && recordedUrl.isNotEmpty)
-          ? recordedUrl
-          : IpfsGatewayHelper.buildUrlForCid(cid);
+      // Build from the CID with the CURRENT gateway template rather than
+      // reusing the URL recorded at import time.
+      //
+      // The recorded URL is stamped by WebWebsiteAssetUploader the moment the
+      // file is uploaded, so preferring it meant the IPFS-gateway setting only
+      // reached assets imported AFTER a change — an asset imported last week
+      // kept pointing at last week's gateway forever, and the setting looked
+      // like it did nothing. The CID is the stable identity; the gateway is a
+      // rendering choice, so it is applied here, at the moment the URL is
+      // baked into the generated site.
+      asset.gatewayUrl = IpfsGatewayHelper.buildUrlForCid(cid);
       asset.uploaded = true;
       uploadedCount++;
       generation.uploadedAssets = uploadedCount;

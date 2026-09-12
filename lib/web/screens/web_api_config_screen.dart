@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 
 import 'package:fula_files/core/services/auth_core.dart';
 import 'package:fula_files/core/services/fula_api_service.dart';
-import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 
 /// One editable API-configuration field: a SecureStorage key + its
@@ -47,8 +46,12 @@ class _WebApiConfigScreenState extends State<WebApiConfigScreen> {
         'https://cloud.fx.land'),
     _ConfigField('AI endpoint URL', SecureStorageKeys.aiEndpointUrl,
         'https://ai.cloud.fx.land', 'https://ai.cloud.fx.land'),
-    _ConfigField('IPFS gateway template', SecureStorageKeys.ipfsGatewayUrl,
-        IpfsGatewayHelper.defaultTemplate, 'https://{cid}.ipfs.dweb.link/'),
+    // NOTE: the IPFS gateway template is deliberately NOT here. It moved to
+    // its own section in Settings, below Billing — it is a choice ordinary
+    // users make (dweb.link rate-limits, Filebase does not), not an endpoint
+    // override, and it needs a picker rather than a raw text field. Editing
+    // it in two places would let this one store a near-miss of a preset that
+    // silently degrades to "custom".
     _ConfigField('IPFS upload endpoint URL', SecureStorageKeys.ipfsEndpointUrl,
         'https://ipfs.cloud.fx.land', 'https://ipfs.cloud.fx.land'),
     _ConfigField('EVM RPC URL (cold-start)', SecureStorageKeys.baseRpcUrl,
@@ -100,8 +103,6 @@ class _WebApiConfigScreenState extends State<WebApiConfigScreen> {
     if (kekB64 == null || kekB64.isEmpty) return false;
     final kek = Uint8List.fromList(base64Decode(kekB64));
     final init = await AuthCore.initializeFulaFromStorage(kek: kek);
-    // Refresh the IPFS-gateway template cache so reads use the new value.
-    await IpfsGatewayHelper.init();
     return init.configured;
   }
 

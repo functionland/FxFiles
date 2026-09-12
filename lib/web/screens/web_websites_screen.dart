@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
+import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/web/services/web_features.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_website_service.dart';
@@ -165,13 +166,17 @@ class _WebWebsitesScreenState extends State<WebWebsitesScreen> {
     return null;
   }
 
-  /// Stable front door first; otherwise the latest generation's
-  /// dweb-gateway URL (g.gatewayUrl re-derives from the CID — never the
-  /// raw legacy resultGatewayUrl).
+  /// Stable front door first; otherwise the latest generation's gateway
+  /// URL (g.gatewayUrl re-derives from the CID — never the raw legacy
+  /// resultGatewayUrl).
+  ///
+  /// Both branches follow the gateway chosen in Settings: the fallback
+  /// because it rebuilds from the CID, the front door because the
+  /// resolver is told which gateway to land on.
   String? _liveUrl(String tagId) {
     final p = _pointers[tagId];
     if (p != null && p.published && p.frontDoorUrl.isNotEmpty) {
-      return p.frontDoorUrl;
+      return IpfsGatewayHelper.decorateFrontDoorUrl(p.frontDoorUrl);
     }
     return _latestFor(tagId)?.gatewayUrl;
   }
