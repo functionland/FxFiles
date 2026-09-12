@@ -60,18 +60,16 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
  * open redirector, which is exactly the property the checks below exist to
  * protect. Unknown or missing `gw` falls back to the default.
  *
- * `dweb` IS DELIBERATELY ABSENT. The IPFS Foundation switched dweb.link off for
- * good on 2026-09-21. Links minted while it was the default carry an explicit
- * `?gw=dweb`, and an explicit key would normally beat the default — but that
- * "choice" was manufactured by the default rather than made by anyone, so
- * honouring it would send those links to a dead host. Dropping the key makes
- * them fall back here instead, which is the whole point.
+ * `dweb` is gone: the IPFS Foundation retires dweb.link on 2026-09-21, and it
+ * already redirects to its successor `inbrowser`, which is listed instead.
  *
- * Both remaining gateways are PATH-style (`https://host/ipfs/<cid>/<path>`), so
- * there is no subdomain-safety problem to handle. A subdomain gateway would need
- * that guard back: a case-sensitive CIDv0 (`Qm…`) or a CID over the 63-character
- * DNS label limit silently corrupts as a hostname, but is fine in a path.
+ * Note `inbrowser` is SUBDOMAIN-style, which is why SUBDOMAIN_SAFE_CID exists
+ * again — a case-sensitive CIDv0 (`Qm…`) or a CID past the 63-character DNS
+ * label limit corrupts silently as a hostname. Such a CID falls back to the
+ * default rather than being served a mangled one.
  */
+const SUBDOMAIN_SAFE_CID = /^[a-z0-9]{1,63}$/;
+
 const GATEWAYS = {
   filebase: {
     // Served the same CID fine at the moment dweb.link was 429ing it
@@ -81,6 +79,14 @@ const GATEWAYS = {
   fx: {
     // Ours. Verified 2026-09-12 to serve these CIDs with correct content types.
     cid: (cid, path) => `https://ipfs.cloud.fx.land/gateway/${cid}${path}`,
+  },
+  inbrowser: {
+    // dweb.link's successor: a service-worker gateway, and BROWSER-ONLY — a
+    // request without a browser User-Agent is refused with 403 (measured
+    // 2026-09-12), so a link sent here renders for a person but gets no
+    // preview card from a crawler.
+    subdomain: true,
+    cid: (cid, path) => `https://${cid}.ipfs.inbrowser.link${path}`,
   },
 };
 
@@ -202,7 +208,15 @@ export default {
           // header split is not something to leave to a runtime check.
           if (cid && CID_RE.test(cid) && !CONTROL_CHARS.test(inner)) {
             const path = joinPath(inner, subpath);
-            return redirect(`${gateway.cid(cid, path)}${query}`);
+            // A subdomain gateway puts the CID in the HOSTNAME, where a
+            // case-sensitive CIDv0 or an over-long CID is silently mangled
+            // into a different (wrong) CID. Serve those from the default
+            // path-style gateway rather than a URL that cannot work.
+            const usable =
+              gateway.subdomain && !SUBDOMAIN_SAFE_CID.test(cid)
+                ? GATEWAYS[DEFAULT_GATEWAY]
+                : gateway;
+            return redirect(`${usable.cid(cid, path)}${query}`);
           }
         }
       }
