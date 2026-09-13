@@ -56,4 +56,4 @@ If you encounter an unlisted error code:
 
 ## Contact
 
-For installation issues, please open an issue at the FxFiles repository or contact Functionland support.
+For installation issues, please open an issue at the FxFiles repository.

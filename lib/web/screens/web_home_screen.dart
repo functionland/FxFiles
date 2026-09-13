@@ -365,8 +365,6 @@ class _WebHomeScreenState extends State<WebHomeScreen> {
                           style: Theme.of(context).textTheme.bodySmall),
                       const Icon(Icons.favorite,
                           size: 13, color: Colors.redAccent),
-                      Text(' by Functionland',
-                          style: Theme.of(context).textTheme.bodySmall),
                     ],
                   ),
                 ),

@@ -93,7 +93,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                       children: [
                         _buildSection(
                           'Welcome to FxFiles',
-                          'By using FxFiles ("the App"), provided by Functionland ("we", "us", "our"), '
+                          'FxFiles ("the App") is free and open-source software released under the MIT License. By using the App, '
                           'you agree to be bound by these Terms of Service. If you do not agree to these terms, '
                           'please do not use the App.',
                         ),
@@ -113,15 +113,15 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '3. Service Termination',
-                          'Functionland reserves the right to terminate, suspend, or modify the service at any time. '
+                          'The service may be terminated, suspended, or modified at any time. '
                           'In the event of service termination, we will provide a minimum of TWO (2) WEEKS advance notice '
                           'via email or in-app notification.\n\n'
                           'IT IS YOUR SOLE RESPONSIBILITY to download and migrate your data before the termination date. '
-                          'Functionland shall not be liable for any data loss resulting from service termination.',
+                          'No entity or contributor shall be liable for any data loss resulting from service termination.',
                         ),
                         _buildSection(
                           '4. Use at Your Own Risk',
-                          'You use this App entirely AT YOUR OWN RISK. Functionland shall not be liable for any direct, '
+                          'You use this App entirely AT YOUR OWN RISK. No entity or contributor shall be liable for any direct, '
                           'indirect, incidental, special, consequential, or exemplary damages, including but not limited to:\n\n'
                           '- Loss of data or files\n'
                           '- Loss of profits or business opportunities\n'
@@ -131,19 +131,19 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '5. Encryption and Security',
-                          'Functionland employs industry-standard encryption algorithms to protect your data. However, '
+                          'The App employs industry-standard encryption algorithms to protect your data. However, '
                           'NO ENCRYPTION IS ABSOLUTELY SECURE.\n\n'
                           'You acknowledge and agree that:\n\n'
                           '- Encryption technology may become vulnerable due to technological advances, newly discovered vulnerabilities, '
                           'or unforeseen bugs\n'
                           '- If at any point encrypted files become decryptable due to technological advances, security vulnerabilities, '
-                          'or any other reason, Functionland shall NOT be held responsible\n'
+                          'or any other reason, no entity or contributor shall be held responsible\n'
                           '- This is an edge technology and security guarantees cannot be absolute\n'
                           '- You should not store extremely sensitive information solely relying on this encryption',
                         ),
                         _buildSection(
                           '6. Private Keys and Account Access',
-                          'IMPORTANT: Functionland does NOT store copies of your private encryption keys.\n\n'
+                          'IMPORTANT: No copies of your private encryption keys are stored.\n\n'
                           'You acknowledge and understand that:\n\n'
                           '- Your encryption key is derived from your sign-in credentials (email/Google account)\n'
                           '- If you lose access to the email address used to sign in, you may PERMANENTLY LOSE access to your encrypted data\n'
@@ -151,7 +151,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           'potentially resulting in loss of access to previously encrypted data\n'
                           '- IT IS YOUR RESPONSIBILITY to back up your private key and store it securely\n'
                           '- Your private key can be viewed and copied in the App Settings\n'
-                          '- Functionland cannot recover your data if you lose your private key',
+                          '- Your data cannot be recovered if you lose your private key',
                         ),
                         _buildSection(
                           '7. Data Ownership and Responsibility',
@@ -162,7 +162,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '8. Limitation of Liability',
-                          'TO THE MAXIMUM EXTENT PERMITTED BY LAW, Functionland and its affiliates, officers, directors, '
+                          'TO THE MAXIMUM EXTENT PERMITTED BY LAW, no entity, contributor, or their affiliates, officers, directors, '
                           'employees, and agents shall not be liable for any claims, damages, losses, or expenses arising '
                           'from or related to:\n\n'
                           '- Your use or inability to use the App\n'
@@ -180,7 +180,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                           '- The internal NFT wallet should ONLY be used to hold NFTs generated by the App and nothing else\n'
                           '- You must NOT transfer tokens (cryptocurrency, ERC-20 tokens, or any other digital assets) to the internal wallet\n'
                           '- If you transfer tokens to the internal wallet, any and all responsibility is solely yours\n'
-                          '- Neither Fula Network nor Functionland Inc. is responsible for any loss as a cause of keeping, '
+                          '- No entity or contributor is responsible for any loss as a cause of keeping, '
                           'transferring, or holding tokens in the internal wallet\n'
                           '- The internal wallet is not designed, audited, or intended for general-purpose asset storage',
                         ),
@@ -195,7 +195,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '11. Indemnification',
-                          'You agree to indemnify, defend, and hold harmless Functionland and its affiliates from any claims, '
+                          'You agree that no entity, contributor, or maintainer bears liability for any claims, '
                           'damages, losses, or expenses arising from your use of the App or violation of these terms.',
                         ),
                         _buildSection(
@@ -205,7 +205,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '13. Contact',
-                          'For questions about these Terms of Service, please contact us at support@fx.land',
+                          'For questions about these Terms of Service, please refer to the project repository',
                         ),
                         const SizedBox(height: 16),
                         Text(
