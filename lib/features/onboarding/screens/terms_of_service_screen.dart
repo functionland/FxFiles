@@ -93,7 +93,12 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                       children: [
                         _buildSection(
                           'Welcome to FxFiles',
-                          'FxFiles ("the App") is free and open-source software released under the MIT License. By using the App, '
+                          'FxFiles ("the App") is free and open-source software released under the MIT License. '
+                          'It is maintained by independent open-source contributors who are not affiliated with, '
+                          'or acting on behalf of, any party or entity.\n\n'
+                          'These Terms take effect on September 9, 2026. Development carried out before that date '
+                          'was done as part of Functionland.\n\n'
+                          'By using the App, '
                           'you agree to be bound by these Terms of Service. If you do not agree to these terms, '
                           'please do not use the App.',
                         ),
@@ -205,7 +210,7 @@ class _TermsOfServiceScreenState extends ConsumerState<TermsOfServiceScreen> {
                         ),
                         _buildSection(
                           '13. Contact',
-                          'For questions about these Terms of Service, please refer to the project repository',
+                          'For questions about these Terms of Service, please open a GitHub issue or discussion at github.com/functionland/FxFiles/issues',
                         ),
                         const SizedBox(height: 16),
                         Text(
