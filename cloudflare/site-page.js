@@ -158,15 +158,18 @@ export function extractPreview(html) {
     300,
   );
 
-  let image =
-    previewImageUrl(metas.get('og:image')) ?? previewImageUrl(metas.get('twitter:image'));
-  if (!image) {
-    for (const [tag] of body.matchAll(/<img\b[^>]*>/gi)) {
-      image = previewImageUrl(attribute(tag, 'src'));
-      if (image) break;
-    }
+  // Every usable image reference, best first and without repeats: declared
+  // preview images, then the page's own <img>s. The caller may still reject a
+  // candidate — a page can point an <img> at something that is not an image.
+  const images = [];
+  const add = (url) => { if (url && !images.includes(url)) images.push(url); };
+  add(previewImageUrl(metas.get('og:image')));
+  add(previewImageUrl(metas.get('twitter:image')));
+  for (const [tag] of body.matchAll(/<img\b[^>]*>/gi)) {
+    add(previewImageUrl(attribute(tag, 'src')));
+    if (images.length >= 6) break;
   }
-  return { title, description, image };
+  return { title, description, image: images[0] ?? null, images };
 }
 
 /**
@@ -175,8 +178,11 @@ export function extractPreview(html) {
  * and escaped; the Worker also serves it under `default-src 'none'`, so a
  * hostile page cannot turn this into markup or script of its own.
  */
-export function buildPreviewHtml(html, link, target) {
-  const { title, description, image } = extractPreview(html);
+export function buildPreviewHtml(html, link, target, chosenImage) {
+  const extracted = extractPreview(html);
+  const { title, description } = extracted;
+  // `chosenImage` (null = none) lets the caller substitute a verified image.
+  const image = chosenImage === undefined ? extracted.image : chosenImage;
   const shownTitle = title || 'Website';
   const lines = [
     '<!doctype html>',

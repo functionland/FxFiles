@@ -40,10 +40,12 @@ const V2_PAGE = `<!doctype html><html><head><script data-fx data-fx-v="2">/* dat
 
 /**
  * Stub the network. `value` is the w3name record (null => w3name rejects);
- * `page` is what the published-page read returns (null => the read fails).
+ * `page` is what reading the record's CID returns (null => the read fails).
+ * Any other CID is an image, unless listed in `htmlCids`.
  */
-function stubNetwork(value, page) {
+function stubNetwork(value, page, htmlCids = []) {
   const original = globalThis.fetch;
+  const pageCid = typeof value === 'string' ? value.match(/^\/ipfs\/([^/]+)/)?.[1] : null;
   globalThis.fetch = async (input) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.startsWith('https://name.web3.storage/')) {
@@ -54,8 +56,17 @@ function stubNetwork(value, page) {
       });
     }
     if (url.startsWith('https://ipfs.filebase.io/ipfs/')) {
-      if (page === null) throw new Error('gateway unreachable');
-      return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
+      const cid = url.slice('https://ipfs.filebase.io/ipfs/'.length);
+      if (cid === pageCid) {
+        if (page === null) throw new Error('gateway unreachable');
+        return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      return htmlCids.includes(cid)
+        ? new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
+        : new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
+    }
+    if (url.startsWith('https://example.com/')) {
+      return new Response('x', { status: 206, headers: { 'content-type': 'image/png' } });
     }
     throw new Error(`unexpected fetch ${url}`);
   };
@@ -64,9 +75,9 @@ function stubNetwork(value, page) {
 
 async function get(
   path,
-  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE } = {},
+  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE, htmlCids = [] } = {},
 ) {
-  const restore = stubNetwork(value, page);
+  const restore = stubNetwork(value, page, htmlCids);
   try {
     const headers = ua === null ? {} : { 'user-agent': ua };
     return await worker.fetch(
@@ -296,10 +307,26 @@ test('a hostile page cannot inject markup into the preview', async () => {
   for (const [, content] of body.matchAll(/content="([^"]*)"/g)) assert.ok(!content.includes('<'), content);
 });
 
+// Measured on a live site: its <img> pointed at a CID that is an HTML page, so
+// the preview must move on to a candidate that really is an image.
+test('a preview skips an image candidate that is not an image', async () => {
+  const NOT_AN_IMAGE = 'bafkr4ifprbzw3laveupep757nt6scr662bs2letknzwsscot3c4umbtmui';
+  const page = `<title>Event</title><img src="https://${NOT_AN_IMAGE}.ipfs.dweb.link/"><img src="https://${ASSET}.ipfs.dweb.link/">`;
+  const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page, htmlCids: [NOT_AN_IMAGE] })).text();
+  assert.ok(!body.includes(NOT_AN_IMAGE), body);
+  assert.match(body, new RegExp(`og:image" content="https://ipfs\\.filebase\\.io/ipfs/${ASSET}"`));
+
+  // and with no real image at all, the card is a plain summary
+  const only = `<title>Event</title><img src="https://${NOT_AN_IMAGE}.ipfs.dweb.link/">`;
+  const plain = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: only, htmlCids: [NOT_AN_IMAGE] })).text();
+  assert.ok(!plain.includes('og:image'), plain);
+  assert.match(plain, /twitter:card" content="summary"/);
+});
+
 test('extractPreview prefers declared tags and falls back sensibly', () => {
   assert.deepEqual(
     extractPreview(`<meta property="og:title" content="Declared"><title>Tag</title><meta property="og:image" content="../${ASSET}">`),
-    { title: 'Declared', description: '', image: FB(ASSET, '') },
+    { title: 'Declared', description: '', image: FB(ASSET, ''), images: [FB(ASSET, '')] },
   );
   const fallback = extractPreview(`<h1>Heading <em>only</em></h1><script>var p = "<p>not prose at all, this is inside a script tag</p>";</script><p>short</p><p>This paragraph is long enough to be a useful description of the site.</p><img src="data:image/png;base64,AAAA"><img src="https://example.com/a.png">`);
   assert.equal(fallback.title, 'Heading only');

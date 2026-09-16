@@ -48,7 +48,7 @@
  * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
 
-import { buildPreviewHtml, chooseGateway, PATH_GATEWAY_BASE } from './site-page.js';
+import { buildPreviewHtml, chooseGateway, extractPreview, PATH_GATEWAY_BASE } from './site-page.js';
 
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
@@ -284,7 +284,7 @@ export default {
             if (PREVIEW_BOT_RE.test(userAgent)) {
               const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS) : null;
               return typeof page === 'string'
-                ? previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
+                ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
                 : redirect(pathTarget);
             }
             // Clients that cannot run a service-worker gateway go to the path
@@ -349,6 +349,33 @@ function redirect(location) {
   });
 }
 
+const PREVIEW_IMAGE_CANDIDATES = 4;
+const PREVIEW_IMAGE_TIMEOUT_MS = 3000;
+
+/**
+ * The first candidate that is not PROVEN to be something other than an image.
+ * A page can point an <img> at a CID that is really an HTML page (measured on
+ * a live site 2026-09-16) and a crawler then shows no picture at all. One
+ * byte is enough to read the content type, and the answer is cached like the
+ * page. A timeout proves nothing, so that candidate is kept.
+ */
+async function pickPreviewImage(candidates) {
+  for (const url of candidates.slice(0, PREVIEW_IMAGE_CANDIDATES)) {
+    try {
+      const res = await fetch(url, {
+        headers: { Range: 'bytes=0-0' },
+        cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },
+        signal: AbortSignal.timeout(PREVIEW_IMAGE_TIMEOUT_MS),
+      });
+      await res.body?.cancel();
+      if (res.ok && /^image\//i.test(res.headers.get('content-type') || '')) return url;
+    } catch (_) {
+      return url;
+    }
+  }
+  return null;
+}
+
 /** readPage's answer for an entry that was read fine but is not a page. */
 const NOT_HTML = Symbol('not-html');
 
@@ -403,8 +430,9 @@ async function readPage(cid, timeoutMs) {
  * `default-src 'none'`: it needs no subresource, so nothing taken from the
  * site can load or run anything.
  */
-function previewResponse(html, link, target) {
-  return new Response(buildPreviewHtml(html, link, target), {
+async function previewResponse(html, link, target) {
+  const image = await pickPreviewImage(extractPreview(html).images);
+  return new Response(buildPreviewHtml(html, link, target, image), {
     status: 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',
