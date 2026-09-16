@@ -14,6 +14,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 
 /// Manual "Add note" flow. The user enters multi-line text + optional
 /// tags; on Save the text is staged as a `.txt` file and pushed
@@ -73,6 +74,8 @@ class _ShelfAddNoteScreenState extends ConsumerState<ShelfAddNoteScreen> {
   Future<void> _save() async {
     final text = _controller.text;
     if (text.trim().isEmpty) return;
+    // Saving uploads the note to the cloud.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     setState(() => _saving = true);
 
     try {

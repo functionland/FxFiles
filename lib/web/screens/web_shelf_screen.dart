@@ -291,6 +291,8 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
       _snack('Enter a valid http(s) link.');
       return;
     }
+    // Saved to cloud storage like any other Shelf item.
+    if (!mounted || !await showBetaUploadDialog(context) || !mounted) return;
     await _runAdd(() => WebShelfService.instance.addLink(clean), 'link');
   }
 
@@ -327,6 +329,8 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
     );
     controller.dispose();
     if (text == null || text.trim().isEmpty) return;
+    // Saved to cloud storage like any other Shelf item.
+    if (!mounted || !await showBetaUploadDialog(context) || !mounted) return;
     await _runAdd(() => WebShelfService.instance.addNote(text), 'note');
   }
 
