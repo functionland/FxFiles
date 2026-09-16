@@ -1,25 +1,65 @@
 # FxFiles stable-link resolver (Cloudflare Worker)
 
-A ~40-line **stateless** Worker that is the fast, pretty front door for the
-app's stable per-website links. It resolves a group's IPNS name to its current
-CID and 302-redirects to the immutable IPFS gateway URL.
+A **stateless** Worker that is the fast, pretty front door for the app's stable
+per-website links. It resolves a group's IPNS name to its current CID and sends
+the visitor to an immutable IPFS gateway URL.
 
 ```
-GET https://fxfiles.top/w/<ipnsName>            -> 302 https://<cid>.ipfs.dweb.link/
-GET https://fxfiles.top/w/<ipnsName>/page.html  -> 302 https://<cid>.ipfs.dweb.link/page.html
+GET https://fxfiles.top/w/<ipnsName>            -> 302 https://<cid>.ipfs.inbrowser.link/
+GET https://fxfiles.top/w/<ipnsName>/page.html  -> 302 https://<cid>.ipfs.inbrowser.link/page.html
 ```
 
 ## Choosing a gateway (`?gw=`)
 
-An optional `?gw=` selects which gateway the redirect lands on:
+An optional `?gw=` selects which gateway a browser lands on:
 
 ```
-GET /w/<ipnsName>?gw=filebase  -> 302 https://ipfs.filebase.io/ipfs/<cid>   (default)
-GET /w/<ipnsName>?gw=fx        -> 302 https://ipfs.cloud.fx.land/gateway/<cid>
+GET /w/<ipnsName>                 -> 302 https://<cid>.ipfs.inbrowser.link/   (default)
+GET /w/<ipnsName>?gw=filebase     -> 302 https://ipfs.filebase.io/ipfs/<cid>/
+GET /w/<ipnsName>?gw=fx           -> 302 https://ipfs.cloud.fx.land/gateway/<cid>/
 ```
 
 The app appends this automatically from the gateway chosen in Settings, so a
 user who switches gets working links without re-minting anything.
+
+### The page decides when it has to (no republish)
+
+A published page is immutable, so where it can render is fixed when it is
+published. The Worker reads the entry page (edge-cached for a year — the bytes
+never change) and overrides `?gw=` when the page cannot render there
+(`chooseGateway` in `site-page.js`):
+
+| Page | Browser lands on | Why |
+|---|---|---|
+| Published before relative assets (no `data-fx-try`) | inbrowser, always | Every asset is an absolute `dweb.link` URL. dweb.link answers 429 and is off from 2026-09-21; inbrowser's service worker intercepts those URLs and serves them (measured: images, video, documents). |
+| Relative assets, images only (`data-fx-try`, no `data-fx-v`) | inbrowser | Its fallback rescues images there, and inbrowser runs the inline scripts and Google Forms embeds Filebase's CSP blocks. |
+| Relative assets plus video / links / CSS backgrounds | filebase | Those references only resolve on a path gateway. |
+| Declares `data-fx-v="2"` or later | as asked | The page rewrites its own references on subdomain gateways. |
+| Could not be read in time | as asked, but `filebase` becomes inbrowser | Filebase just failed to serve it. |
+
+### Crawlers and other clients
+
+inbrowser is a **service-worker gateway**: without a browser it answers 403 or
+a bootstrap page. So:
+
+- **Link-preview crawlers** (Facebook, X, LinkedIn, WhatsApp, Slack, Telegram,
+  Discord, …) get a 200 page of Open Graph tags built from the site: its
+  declared `og:` tags, else `<title>`, the meta description or first real
+  paragraph, and the first image — re-pointed at Filebase, since the host a
+  legacy page names may be dead. Every value is decoded, capped and escaped,
+  and the page is served under `Content-Security-Policy: default-src 'none'`.
+- **In-app browsers of social apps** (Instagram, Facebook, Messenger, Threads,
+  TikTok, Snapchat, LinkedIn, LINE, WeChat, Pinterest) are redirected to the
+  path-style Filebase URL. On iOS they are WKWebView, which has no service
+  workers, so inbrowser.link would show its "Service Worker Required" page
+  instead of the site. On Filebase every page renders — a pre-relative-assets
+  site without its dweb.link images there. Telegram's in-app browser sends a
+  plain Safari user agent and cannot be recognised.
+  The crawler list holds crawler tokens only: an in-app browser often carries
+  its app's name (`Snapchat/…`, `Line/…`, `[Pinterest/iOS]`), and matching those
+  once handed people the preview page instead of the site.
+- **Every other non-browser client** (search engines, curl, libraries) is
+  redirected to the path-style Filebase URL.
 
 ### dweb.link is retired — do not re-add it
 
@@ -105,10 +145,10 @@ If you deploy to a different host, set the secure-storage key
 
 - Redirect is **302** (never 301) with `Cache-Control: max-age=30`, so a
   regeneration propagates within ~30s while still allowing edge caching.
-- Both current gateways are **path-style**, so CID encoding is a non-issue. A
-  subdomain-style gateway would need the guard back: a CIDv0 (`Qm…`, base58 and
-  case-sensitive) or a CID over the 63-character DNS label limit silently
-  corrupts when used as a hostname, but is fine in a path.
+- inbrowser is **subdomain-style**, so the CID lands in a hostname: a CIDv0
+  (`Qm…`, base58 and case-sensitive) or a CID over the 63-character DNS label
+  limit would silently corrupt there, and is served from Filebase instead.
+- Responses carry `Vary: User-Agent` — the answer depends on the client.
 - The Worker rejects paths whose name isn't a plausible `k51…` IPNS name, and
   charset-checks the CID before interpolating it, so it can't be abused as an
   open redirector.

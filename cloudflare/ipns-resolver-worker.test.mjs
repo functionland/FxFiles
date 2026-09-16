@@ -3,42 +3,85 @@
  *
  *   node --test cloudflare/ipns-resolver-worker.test.mjs
  *
- * No wrangler, no network: the Worker's only outbound call is `fetch` to
- * w3name, which is stubbed per-test. Everything else is pure URL handling.
+ * No wrangler, no network: the Worker's outbound calls — w3name, and a read of
+ * the published page — are stubbed per-test. Everything else is URL handling.
  *
  * This Worker fronts EVERY shared link the app has ever minted, so the cases
  * below are mostly about what happens when the input is not what we expect —
- * a typo'd `?gw=`, a hostile w3name answer, an unreachable upstream.
+ * a typo'd `?gw=`, a hostile w3name answer or page, an unreachable upstream.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker from './ipns-resolver-worker.js';
+import {
+  chooseGateway,
+  extractPreview,
+  hasNonImageRelativeRefs,
+  pipelineVersion,
+  previewImageUrl,
+} from './site-page.js';
 
 const NAME = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
 const CID = 'bafybeifx7yeb55armcsxwwitkymga5xf53dxiarykms3ygqic223w5sk3m';
+const ASSET = 'bafkr4igkfdgbt4wedjgzsalyegd5mcnw7ibgphmh5kg4n5tf7uyrvv74lu';
 
 const FB = (cid = CID, path = '/') => `https://ipfs.filebase.io/ipfs/${cid}${path}`;
 const FX = (cid = CID, path = '/') => `https://ipfs.cloud.fx.land/gateway/${cid}${path}`;
+const IB = (cid = CID, path = '/') => `https://${cid}.ipfs.inbrowser.link${path}`;
 
-/** Stub w3name. `value` null => the call rejects, exercising the error path. */
-function withW3Name(value) {
+const BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+
+// Page shapes, one per publish pipeline.
+const LEGACY_PAGE = `<!doctype html><html><head><title>Old site</title></head><body><img src="https://${ASSET}.ipfs.dweb.link/"></body></html>`;
+const V1_IMAGES_ONLY = `<!doctype html><html><head><script data-fx>/* data-fx-try */</script></head><body><img src="../${ASSET}"><script data-fx defer src="../${ASSET}"></script></body></html>`;
+const V1_WITH_VIDEO = `<!doctype html><html><head><script>/* data-fx-try */</script></head><body><video><source src="../${ASSET}"></video></body></html>`;
+const V2_PAGE = `<!doctype html><html><head><script data-fx data-fx-v="2">/* data-fx-try */</script></head><body><img src="../${ASSET}"></body></html>`;
+
+/**
+ * Stub the network. `value` is the w3name record (null => w3name rejects);
+ * `page` is what reading the record's CID returns (null => the read fails).
+ * Any other CID is an image, unless listed in `htmlCids`.
+ */
+function stubNetwork(value, page, htmlCids = []) {
   const original = globalThis.fetch;
-  globalThis.fetch = async () => {
-    if (value === null) throw new Error('w3name unreachable');
-    return new Response(JSON.stringify({ value }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
+  const pageCid = typeof value === 'string' ? value.match(/^\/ipfs\/([^/]+)/)?.[1] : null;
+  globalThis.fetch = async (input) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.startsWith('https://name.web3.storage/')) {
+      if (value === null) throw new Error('w3name unreachable');
+      return new Response(JSON.stringify({ value }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.startsWith('https://ipfs.filebase.io/ipfs/')) {
+      const cid = url.slice('https://ipfs.filebase.io/ipfs/'.length);
+      if (cid === pageCid) {
+        if (page === null) throw new Error('gateway unreachable');
+        return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      return htmlCids.includes(cid)
+        ? new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
+        : new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
+    }
+    if (url.startsWith('https://example.com/')) {
+      return new Response('x', { status: 206, headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
   };
   return () => { globalThis.fetch = original; };
 }
 
-async function get(path, { value = `/ipfs/${CID}`, method = 'GET' } = {}) {
-  const restore = withW3Name(value);
+async function get(
+  path,
+  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE, htmlCids = [] } = {},
+) {
+  const restore = stubNetwork(value, page, htmlCids);
   try {
+    const headers = ua === null ? {} : { 'user-agent': ua };
     return await worker.fetch(
-      new Request(`https://fxfiles.top${path}`, { method }),
+      new Request(`https://fxfiles.top${path}`, { method, headers }),
       {},
     );
   } finally {
@@ -54,22 +97,21 @@ function assertUnresolved(res) {
   assert.equal(location(res), null, 'a 502 must not carry a Location');
 }
 
-test('defaults to filebase', async () => {
+// ------------------------------------------------------------- gateway choice
+
+test('defaults to inbrowser', async () => {
   const res = await get(`/w/${NAME}`);
   assert.equal(res.status, 302);
-  assert.equal(location(res), FB());
+  assert.equal(location(res), IB());
 });
 
 test('gw=fx switches to our own gateway', async () => {
   assert.equal(location(await get(`/w/${NAME}?gw=fx`)), FX());
 });
 
-test('gw=filebase is honoured explicitly', async () => {
+test('gw=filebase is honoured for a current page', async () => {
   assert.equal(location(await get(`/w/${NAME}?gw=filebase`)), FB());
 });
-
-// dweb.link's successor, and the one subdomain-style entry in the allowlist.
-const IB = (cid = CID, path = '/') => `https://${cid}.ipfs.inbrowser.link${path}`;
 
 test('gw=inbrowser is honoured, in subdomain form', async () => {
   const res = await get(`/w/${NAME}?gw=inbrowser`);
@@ -80,42 +122,267 @@ test('gw=inbrowser is honoured, in subdomain form', async () => {
 // dweb is retired and no longer an allowlist key, so links pinned to it fall
 // back rather than pointing at a host that is being switched off.
 test('the retired gw=dweb falls back to the default', async () => {
-  assert.equal(location(await get(`/w/${NAME}?gw=dweb`)), FB());
+  assert.equal(location(await get(`/w/${NAME}?gw=dweb`)), IB());
 });
 
-test('inbrowser is NOT the default — a bare link still goes to filebase', async () => {
-  assert.equal(location(await get(`/w/${NAME}`)), FB());
-  assert.equal(location(await get(`/w/${NAME}?gw=bogus`)), FB());
+test('an unknown gw key falls back rather than erroring', async () => {
+  assert.equal(location(await get(`/w/${NAME}?gw=cloudflare`)), IB());
+  assert.equal(location(await get(`/w/${NAME}?gw=bogus`)), IB());
 });
 
-// The hazard a subdomain gateway reintroduces: the CID lands in the HOSTNAME,
-// where case is lost and labels cap at 63 chars. Serving a mangled hostname
-// would silently fetch a DIFFERENT cid, so these fall back instead.
-test('a CIDv0 asked for on a subdomain gateway falls back to path-style', async () => {
+// The regression this block exists for. A plain object literal inherits from
+// Object.prototype, so a bare `GATEWAYS[gwKey] ||` treats these as a HIT and
+// then throws on the undefined `.cid`, turning a typo into a dead link.
+for (const key of ['__proto__', 'toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+  test(`?gw=${key} falls back to the default instead of breaking`, async () => {
+    const res = await get(`/w/${NAME}?gw=${encodeURIComponent(key)}`);
+    assert.equal(res.status, 302);
+    assert.equal(location(res), IB());
+  });
+}
+
+// ------------------------------------------------------ pages that cannot move
+
+/**
+ * A published page is immutable, so where it can render is decided here. The
+ * sites published before relative assets name dweb.link for every image — an
+ * explicit ?gw=filebase on such a link (the app decorated links with it while
+ * Filebase was the default) must NOT land them where every image is dead.
+ */
+test('a pre-relative-assets page goes to inbrowser whatever was asked', async () => {
+  for (const gw of ['', '?gw=filebase', '?gw=fx', '?gw=inbrowser']) {
+    assert.equal(location(await get(`/w/${NAME}${gw}`, { page: LEGACY_PAGE })), IB(), gw);
+  }
+});
+
+test('a version-1 page that only needs images goes to inbrowser', async () => {
+  assert.equal(location(await get(`/w/${NAME}?gw=filebase`, { page: V1_IMAGES_ONLY })), IB());
+});
+
+test('a version-1 page with a video stays on the path gateway', async () => {
+  assert.equal(location(await get(`/w/${NAME}?gw=inbrowser`, { page: V1_WITH_VIDEO })), FB());
+  assert.equal(location(await get(`/w/${NAME}`, { page: V1_WITH_VIDEO })), FB());
+});
+
+test('an unreadable page is served as asked, except on the gateway that just failed it', async () => {
+  assert.equal(location(await get(`/w/${NAME}`, { page: null })), IB());
+  assert.equal(location(await get(`/w/${NAME}?gw=fx`, { page: null })), FX());
+  // Filebase could not serve this page in time, and most pages that exist
+  // (pre-relative-assets) cannot render there at all
+  assert.equal(location(await get(`/w/${NAME}?gw=filebase`, { page: null })), IB());
+  assert.equal(chooseGateway(null, 'filebase'), 'inbrowser');
+});
+
+test('a non-HTML entry (a bare file) is served as asked', async () => {
+  const restore = (() => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://name.web3.storage/')) {
+        return new Response(JSON.stringify({ value: `/ipfs/${CID}` }), { status: 200 });
+      }
+      return new Response('%PDF-1.7', { status: 200, headers: { 'content-type': 'application/pdf' } });
+    };
+    return () => { globalThis.fetch = original; };
+  })();
+  try {
+    const res = await worker.fetch(
+      new Request(`https://fxfiles.top/w/${NAME}?gw=filebase`, { headers: { 'user-agent': BROWSER } }),
+      {},
+    );
+    assert.equal(location(res), FB());
+  } finally {
+    restore();
+  }
+});
+
+// --------------------------------------------------------- who is asking
+
+// inbrowser is a service-worker gateway: it answers anything that is not a
+// browser with 403 or its bootstrap page. Those clients get the path gateway.
+test('non-browser clients are sent to the path gateway', async () => {
+  for (const ua of [null, 'curl/8.4.0', 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)', 'python-requests/2.31']) {
+    assert.equal(location(await get(`/w/${NAME}`, { ua, page: LEGACY_PAGE })), FB(), String(ua));
+  }
+});
+
+// Real in-app browser user agents. On iOS these are WKWebView (no service
+// workers → inbrowser's error page), so every one must land on the path
+// gateway — and none may be mistaken for a crawler and handed the preview
+// page instead of the site.
+const IN_APP = {
+  instagramIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 339.0.3.12.91 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 624456287)',
+  facebookIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/470.0.0.40.109;FBBV/630553372;FBDV/iPhone15,2;FBMD/iPhone;FBSN/iOS;FBSV/17.5;FBSS/3;FBID/phone;FBLC/en_US;FBOP/5;FBRV/0]',
+  facebookAndroid: 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UD1A.230803.041; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.71 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/470.0.0.41.109;]',
+  messengerIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/MessengerForiOS;FBAV/467.0.0.37.109;FBBV/626339960;FBDV/iPhone15,2;FBMD/iPhone;FBSN/iOS;FBSV/17.5]',
+  threadsIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Barcelona 339.0.0.23.109 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 624470301)',
+  tiktokIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 musical_ly_35.3.0 JsSdk/2.0 NetType/WIFI Channel/App Store ByteLocale/en Region/US ByteFullLocale/en-US isDarkMode/0 WKWebView/1 RevealType/Dialog BytedanceWebview/d8a21c6',
+  snapchatIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Snapchat/13.5.0.44 (like Safari/8618.2.12.10.9, panda)',
+  linkedinIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [LinkedInApp]/9.30.2311',
+  lineIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari Line/14.10.0',
+  wechatIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49(0x18003130) NetType/WIFI Language/en',
+  pinterestIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [Pinterest/iOS]',
+};
+
+for (const [label, ua] of Object.entries(IN_APP)) {
+  test(`in-app browser ${label} lands on the path gateway, never the preview page`, async () => {
+    for (const page of [LEGACY_PAGE, V2_PAGE]) {
+      const res = await get(`/w/${NAME}?gw=inbrowser`, { ua, page });
+      assert.equal(res.status, 302, `${label} got ${res.status}`);
+      assert.equal(location(res), FB());
+    }
+  });
+}
+
+test('ordinary mobile browsers still get inbrowser for a legacy page', async () => {
+  const safari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
+  const chrome = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+  for (const ua of [safari, chrome]) {
+    assert.equal(location(await get(`/w/${NAME}?gw=filebase`, { ua, page: LEGACY_PAGE })), IB());
+  }
+});
+
+test('clients that go to the path gateway do not wait for a page read', async () => {
+  let reads = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('https://name.web3.storage/')) {
+      return new Response(JSON.stringify({ value: `/ipfs/${CID}` }), { status: 200 });
+    }
+    reads++;
+    return new Response(LEGACY_PAGE, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    for (const ua of [IN_APP.instagramIOS, 'curl/8.4.0']) {
+      await worker.fetch(new Request(`https://fxfiles.top/w/${NAME}`, { headers: { 'user-agent': ua } }), {});
+    }
+    assert.equal(reads, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// ---------------------------------------------------------- link previews
+
+test('a preview crawler gets Open Graph tags, not a redirect', async () => {
+  const page = `<!doctype html><html><head><title>Final Expense Insurance</title>
+    <meta name="description" content="Affordable coverage &amp; peace of mind."></head>
+    <body><img src="https://${ASSET}.ipfs.dweb.link/" alt="hero"></body></html>`;
+  const res = await get(`/w/${NAME}?gw=inbrowser`, { ua: 'facebookexternalhit/1.1', page });
+  assert.equal(res.status, 200);
+  assert.equal(location(res), null);
+  assert.equal(res.headers.get('content-security-policy'), "default-src 'none'");
+  const body = await res.text();
+  assert.match(body, /<meta property="og:title" content="Final Expense Insurance">/);
+  assert.match(body, /<meta property="og:description" content="Affordable coverage &#38; peace of mind.">/);
+  // dweb.link is dead and inbrowser is browser-only: the image goes via the path gateway
+  assert.match(body, new RegExp(`<meta property="og:image" content="https://ipfs\\.filebase\\.io/ipfs/${ASSET}">`));
+  assert.match(body, new RegExp(`<meta property="og:url" content="https://fxfiles\\.top/w/${NAME}">`));
+  assert.match(body, /summary_large_image/);
+});
+
+for (const ua of ['Twitterbot/1.0', 'LinkedInBot/1.0 (compatible; Mozilla/5.0)', 'WhatsApp/2.23.20.0 A', 'Slackbot-LinkExpanding 1.0', 'TelegramBot (like TwitterBot)', 'Mozilla/5.0 (compatible; Discordbot/2.0)']) {
+  test(`preview for ${ua.split(/[ /]/)[0]}`, async () => {
+    const res = await get(`/w/${NAME}`, { ua, page: LEGACY_PAGE });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /og:title" content="Old site"/);
+  });
+}
+
+test('a preview crawler whose page cannot be read is redirected to the path gateway', async () => {
+  const res = await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: null });
+  assert.equal(location(res), FB());
+});
+
+test('a hostile page cannot inject markup into the preview', async () => {
+  const page = `<title>"><script>alert(1)</script></title>
+    <meta property="og:description" content="x&quot;&gt;&lt;img src=x onerror=alert(2)&gt;">
+    <meta property="og:image" content="javascript:alert(3)">`;
+  const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page })).text();
+  assert.ok(!/<script>/i.test(body), body);
+  assert.ok(!/<img/i.test(body), body);
+  assert.ok(!/javascript:/i.test(body), body);
+  // every attribute value stays inside its quotes
+  for (const [, content] of body.matchAll(/content="([^"]*)"/g)) assert.ok(!content.includes('<'), content);
+});
+
+// Measured on a live site: its <img> pointed at a CID that is an HTML page, so
+// the preview must move on to a candidate that really is an image.
+test('a preview skips an image candidate that is not an image', async () => {
+  const NOT_AN_IMAGE = 'bafkr4ifprbzw3laveupep757nt6scr662bs2letknzwsscot3c4umbtmui';
+  const page = `<title>Event</title><img src="https://${NOT_AN_IMAGE}.ipfs.dweb.link/"><img src="https://${ASSET}.ipfs.dweb.link/">`;
+  const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page, htmlCids: [NOT_AN_IMAGE] })).text();
+  assert.ok(!body.includes(NOT_AN_IMAGE), body);
+  assert.match(body, new RegExp(`og:image" content="https://ipfs\\.filebase\\.io/ipfs/${ASSET}"`));
+
+  // and with no real image at all, the card is a plain summary
+  const only = `<title>Event</title><img src="https://${NOT_AN_IMAGE}.ipfs.dweb.link/">`;
+  const plain = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: only, htmlCids: [NOT_AN_IMAGE] })).text();
+  assert.ok(!plain.includes('og:image'), plain);
+  assert.match(plain, /twitter:card" content="summary"/);
+});
+
+test('extractPreview prefers declared tags and falls back sensibly', () => {
+  assert.deepEqual(
+    extractPreview(`<meta property="og:title" content="Declared"><title>Tag</title><meta property="og:image" content="../${ASSET}">`),
+    { title: 'Declared', description: '', image: FB(ASSET, ''), images: [FB(ASSET, '')] },
+  );
+  const fallback = extractPreview(`<h1>Heading <em>only</em></h1><script>var p = "<p>not prose at all, this is inside a script tag</p>";</script><p>short</p><p>This paragraph is long enough to be a useful description of the site.</p><img src="data:image/png;base64,AAAA"><img src="https://example.com/a.png">`);
+  assert.equal(fallback.title, 'Heading only');
+  assert.equal(fallback.description, 'This paragraph is long enough to be a useful description of the site.');
+  assert.equal(fallback.image, 'https://example.com/a.png');
+});
+
+test('previewImageUrl re-points every CID shape at the path gateway', () => {
+  const want = FB(ASSET, '');
+  for (const raw of [`https://${ASSET}.ipfs.dweb.link/`, `https://${ASSET}.ipfs.inbrowser.link/`, `https://ipfs.cloud.fx.land/gateway/${ASSET}`, `../${ASSET}`, ASSET]) {
+    assert.equal(previewImageUrl(raw), want, raw);
+  }
+  for (const raw of ['data:image/png;base64,AA', 'http://example.com/a.png', 'javascript:alert(1)', 'not a url', '']) {
+    assert.equal(previewImageUrl(raw), null, raw);
+  }
+});
+
+test('pipeline versions and routing decisions', () => {
+  assert.equal(pipelineVersion(LEGACY_PAGE), 0);
+  assert.equal(pipelineVersion(V1_IMAGES_ONLY), 1);
+  assert.equal(pipelineVersion(V2_PAGE), 2);
+  assert.equal(hasNonImageRelativeRefs(V1_IMAGES_ONLY), false);
+  assert.equal(hasNonImageRelativeRefs(V1_WITH_VIDEO), true);
+  assert.equal(hasNonImageRelativeRefs(`<a href="../${ASSET}/">page</a>`), true);
+  assert.equal(hasNonImageRelativeRefs(`<div style="background:url(../${ASSET})"></div>`), true);
+  assert.equal(hasNonImageRelativeRefs(`<img src="../${ASSET}" srcset="../${ASSET} 2x">`), true);
+  assert.equal(chooseGateway(V2_PAGE, 'fx'), 'fx');
+  assert.equal(chooseGateway(V2_PAGE, 'filebase'), 'filebase');
+});
+
+// ------------------------------------------------ CID / hostname hazards
+
+// The hazard a subdomain gateway brings: the CID lands in the HOSTNAME, where
+// case is lost and labels cap at 63 chars. Serving a mangled hostname would
+// silently fetch a DIFFERENT cid, so these fall back to path-style instead.
+test('a CIDv0 on a subdomain gateway falls back to path-style', async () => {
   const v0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
-  const loc = location(await get(`/w/${NAME}?gw=inbrowser`, { value: `/ipfs/${v0}` }));
+  const loc = location(await get(`/w/${NAME}`, { value: `/ipfs/${v0}` }));
   assert.equal(loc, FB(v0));
-  assert.ok(!loc.includes('.ipfs.inbrowser.link'), 'must not be mangled into a hostname');
+  assert.ok(loc.includes(v0), `case-mangled: ${loc}`);
+  // even a legacy page, which would otherwise be sent to inbrowser
+  assert.equal(location(await get(`/w/${NAME}`, { value: `/ipfs/${v0}`, page: LEGACY_PAGE })), FB(v0));
 });
 
 test('an over-63-char CID on a subdomain gateway falls back too', async () => {
   const long = 'b' + 'a'.repeat(75);
-  assert.equal(location(await get(`/w/${NAME}?gw=inbrowser`, { value: `/ipfs/${long}` })), FB(long));
+  assert.equal(location(await get(`/w/${NAME}`, { value: `/ipfs/${long}` })), FB(long));
 });
 
-test('a normal CIDv1 still uses the subdomain form', async () => {
+test('a normal CIDv1 uses the subdomain form', async () => {
   assert.equal(location(await get(`/w/${NAME}?gw=inbrowser`)), IB());
 });
 
-test('a subpath is carried through on both gateways', async () => {
-  assert.equal(
-    location(await get(`/w/${NAME}/about/page.html`)),
-    FB(CID, '/about/page.html'),
-  );
-  assert.equal(
-    location(await get(`/w/${NAME}/about/page.html?gw=fx`)),
-    FX(CID, '/about/page.html'),
-  );
+test('a subpath is carried through', async () => {
+  assert.equal(location(await get(`/w/${NAME}/about/page.html`)), IB(CID, '/about/page.html'));
+  assert.equal(location(await get(`/w/${NAME}/about/page.html?gw=fx`)), FX(CID, '/about/page.html'));
 });
 
 test('gw is stripped from the forwarded query, other params survive', async () => {
@@ -125,22 +392,7 @@ test('gw is stripped from the forwarded query, other params survive', async () =
 });
 
 test('a query with no gw is forwarded untouched', async () => {
-  assert.equal(location(await get(`/w/${NAME}?utm=x`)), `${FB()}?utm=x`);
-});
-
-// The regression this file exists for. A plain object literal inherits from
-// Object.prototype, so a bare `GATEWAYS[gwKey] ||` treats these as a HIT and
-// then throws on the undefined `.cid`, turning a typo into a dead link.
-for (const key of ['__proto__', 'toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
-  test(`?gw=${key} falls back to the default instead of breaking`, async () => {
-    const res = await get(`/w/${NAME}?gw=${encodeURIComponent(key)}`);
-    assert.equal(res.status, 302);
-    assert.equal(location(res), FB());
-  });
-}
-
-test('an unknown gw key falls back rather than erroring', async () => {
-  assert.equal(location(await get(`/w/${NAME}?gw=cloudflare`)), FB());
+  assert.equal(location(await get(`/w/${NAME}?utm=x`)), `${IB()}?utm=x`);
 });
 
 // A CID is interpolated straight into the redirect target, so a hostile or
@@ -159,20 +411,6 @@ for (const evil of [
   });
 }
 
-test('a real CIDv0 is accepted', async () => {
-  const v0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
-  // Both gateways are path-style, so a case-sensitive base58 CID survives
-  // intact — the hazard that needed guarding when a subdomain gateway existed.
-  const loc = location(await get(`/w/${NAME}`, { value: `/ipfs/${v0}` }));
-  assert.equal(loc, FB(v0));
-  assert.ok(loc.includes(v0), `case-mangled: ${loc}`);
-});
-
-test('a long CID is fine on a path-style gateway', async () => {
-  const long = 'b' + 'a'.repeat(75);
-  assert.equal(location(await get(`/w/${NAME}`, { value: `/ipfs/${long}` })), FB(long));
-});
-
 // A record may point INTO a directory. Dropping that suffix would serve the
 // wrong page. (This app publishes a bare /ipfs/<cid>, but the Worker resolves
 // any name.)
@@ -182,14 +420,14 @@ test('an inner path in the IPNS record is preserved', async () => {
   // points at".
   assert.equal(
     location(await get(`/w/${NAME}`, { value: `/ipfs/${CID}/site/index.html` })),
-    FB(CID, '/site/index.html'),
+    IB(CID, '/site/index.html'),
   );
 });
 
 test('an inner path composes with the visitor subpath', async () => {
   assert.equal(
     location(await get(`/w/${NAME}/a.html`, { value: `/ipfs/${CID}/site` })),
-    FB(CID, '/site/a.html'),
+    IB(CID, '/site/a.html'),
   );
 });
 
@@ -237,36 +475,31 @@ test('non-GET/HEAD is refused', async () => {
 
 /**
  * Generated sites reference their assets DOCUMENT-RELATIVELY (`../<cid>`) so
- * they render on whatever gateway serves them. That makes two properties of
- * this Worker load-bearing for every site's images:
+ * they render on whatever PATH gateway serves them. That makes two properties
+ * of this Worker load-bearing:
  *
  *  1. The redirect target must keep its TRAILING SLASH. From `/ipfs/<page>/`
  *     the reference resolves to `/ipfs/<cid>`; from `/ipfs/<page>` it resolves
- *     to `/<cid>` and 404s. The site still renders — an injected fallback chain
- *     recovers the image from an absolute gateway — but it is no longer being
- *     served by the gateway the visitor chose.
- *  2. It must REDIRECT, never proxy. If this Worker ever served the page
- *     itself, the document URL would be `fxfiles.top/w/<name>` and `../<cid>`
- *     would resolve back into the Worker as a bogus IPNS name instead of
- *     reaching a gateway at all.
+ *     to `/<cid>` and 404s.
+ *  2. It must REDIRECT browsers, never proxy the site. If this Worker served
+ *     the page itself, the document URL would be `fxfiles.top/w/<name>` and
+ *     `../<cid>` would resolve back into the Worker instead of reaching a
+ *     gateway at all. (Crawlers get a preview page that references nothing
+ *     relatively.)
  */
 test('keeps the trailing slash — relative asset refs depend on it', async () => {
-  const loc = location(await get(`/w/${NAME}`));
+  const loc = location(await get(`/w/${NAME}?gw=filebase`));
   assert.ok(loc.endsWith('/'), `no trailing slash: ${loc}`);
   // and the reference a generated page carries resolves back onto the gateway
   assert.equal(new URL(`../${CID}`, loc).href, FB(CID, '').replace(/\/$/, ''));
 });
 
-test('a subpath target still forwards the subpath', async () => {
-  const loc = location(await get(`/w/${NAME}/about/page.html`));
-  assert.equal(loc, FB(CID, '/about/page.html'));
-});
-
-test('redirects are 302 and short-cached, never 301', async () => {
+test('redirects are 302, short-cached, and vary by client', async () => {
   const res = await get(`/w/${NAME}`);
   assert.equal(res.status, 302);
   assert.match(res.headers.get('cache-control'), /max-age=30/);
   assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(res.headers.get('vary'), 'User-Agent');
 });
 
 // The Location header is built by string interpolation, so prove the pieces
@@ -278,10 +511,11 @@ test('no CR/LF can reach the Location header', async () => {
   assert.equal(res.headers.get('x-injected'), null);
 });
 
-test('a subpath cannot move the redirect off the gateway host', async () => {
-  // Either the request is refused outright or it lands on the gateway host —
+test('a subpath cannot move the redirect off a gateway host', async () => {
+  // Either the request is refused outright or it lands on a gateway host —
   // never anywhere else. `/a/../../evil` takes the first branch: URL
   // normalization rewrites it to /w/evil, whose "name" fails the k51 check.
+  const allowed = new Set(['ipfs.filebase.io', 'ipfs.cloud.fx.land', `${CID}.ipfs.inbrowser.link`]);
   for (const p of ['//evil.com', '/..%2f..%2fevil', '/a/../../evil', '/\\evil.com']) {
     const res = await get(`/w/${NAME}${p}`);
     const loc = location(res);
@@ -289,6 +523,6 @@ test('a subpath cannot move the redirect off the gateway host', async () => {
       assert.ok(res.status >= 400, `no redirect but status ${res.status} for ${p}`);
       continue;
     }
-    assert.equal(new URL(loc).host, 'ipfs.filebase.io', `escaped via ${p}`);
+    assert.ok(allowed.has(new URL(loc).host), `escaped via ${p}: ${loc}`);
   }
 });
