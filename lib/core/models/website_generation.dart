@@ -204,12 +204,28 @@ class WebsiteGeneration extends HiveObject {
   /// Public URL for the completed website built via [publicGatewayUrlForCid].
   /// Prefers `resultCid`; falls back to extracting the CID from a legacy
   /// `resultGatewayUrl`.
+  ///
+  /// ALWAYS ends in `/`. A published site references its assets relatively
+  /// (`../<cid>`), and that resolves correctly only from the slashed form:
+  /// from `https://host/ipfs/<cid>` it lands on `/<asset>` and 404s, while
+  /// from `https://host/ipfs/<cid>/` it lands on `/ipfs/<asset>`. The
+  /// published fallback that would otherwise rescue the image is an inline
+  /// script, and Filebase — the default gateway — blocks inline scripts with
+  /// `Content-Security-Policy: default-src 'self'` (measured 2026-09-16). So on
+  /// Filebase the slash is the ONLY thing that makes a site's images load.
+  ///
+  /// Every consumer of this getter is a link to the site PAGE (Open, Copy
+  /// URL, list fallback, social caption, contact-form check, native card),
+  /// which is why the slash lives here and not in [publicGatewayUrlForCid]:
+  /// that one also builds public FILE-share links, which must stay bare.
+  /// Subdomain-style templates already end in `/`, so this is a no-op there.
   String? get gatewayUrl {
     final cid = (resultCid != null && resultCid!.isNotEmpty)
         ? resultCid
         : _extractCidFromUrl(resultGatewayUrl);
     if (cid == null || cid.isEmpty) return null;
-    return publicGatewayUrlForCid(cid);
+    final url = publicGatewayUrlForCid(cid);
+    return url.endsWith('/') ? url : '$url/';
   }
 
   /// Extract the trailing CID from a gateway-style URL such as
