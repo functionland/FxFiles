@@ -195,6 +195,63 @@ test('non-browser clients are sent to the path gateway', async () => {
   }
 });
 
+// Real in-app browser user agents. On iOS these are WKWebView (no service
+// workers → inbrowser's error page), so every one must land on the path
+// gateway — and none may be mistaken for a crawler and handed the preview
+// page instead of the site.
+const IN_APP = {
+  instagramIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 339.0.3.12.91 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 624456287)',
+  facebookIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/470.0.0.40.109;FBBV/630553372;FBDV/iPhone15,2;FBMD/iPhone;FBSN/iOS;FBSV/17.5;FBSS/3;FBID/phone;FBLC/en_US;FBOP/5;FBRV/0]',
+  facebookAndroid: 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UD1A.230803.041; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.71 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/470.0.0.41.109;]',
+  messengerIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/MessengerForiOS;FBAV/467.0.0.37.109;FBBV/626339960;FBDV/iPhone15,2;FBMD/iPhone;FBSN/iOS;FBSV/17.5]',
+  threadsIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Barcelona 339.0.0.23.109 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 624470301)',
+  tiktokIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 musical_ly_35.3.0 JsSdk/2.0 NetType/WIFI Channel/App Store ByteLocale/en Region/US ByteFullLocale/en-US isDarkMode/0 WKWebView/1 RevealType/Dialog BytedanceWebview/d8a21c6',
+  snapchatIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Snapchat/13.5.0.44 (like Safari/8618.2.12.10.9, panda)',
+  linkedinIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [LinkedInApp]/9.30.2311',
+  lineIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari Line/14.10.0',
+  wechatIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49(0x18003130) NetType/WIFI Language/en',
+  pinterestIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [Pinterest/iOS]',
+};
+
+for (const [label, ua] of Object.entries(IN_APP)) {
+  test(`in-app browser ${label} lands on the path gateway, never the preview page`, async () => {
+    for (const page of [LEGACY_PAGE, V2_PAGE]) {
+      const res = await get(`/w/${NAME}?gw=inbrowser`, { ua, page });
+      assert.equal(res.status, 302, `${label} got ${res.status}`);
+      assert.equal(location(res), FB());
+    }
+  });
+}
+
+test('ordinary mobile browsers still get inbrowser for a legacy page', async () => {
+  const safari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
+  const chrome = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+  for (const ua of [safari, chrome]) {
+    assert.equal(location(await get(`/w/${NAME}?gw=filebase`, { ua, page: LEGACY_PAGE })), IB());
+  }
+});
+
+test('clients that go to the path gateway do not wait for a page read', async () => {
+  let reads = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('https://name.web3.storage/')) {
+      return new Response(JSON.stringify({ value: `/ipfs/${CID}` }), { status: 200 });
+    }
+    reads++;
+    return new Response(LEGACY_PAGE, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    for (const ua of [IN_APP.instagramIOS, 'curl/8.4.0']) {
+      await worker.fetch(new Request(`https://fxfiles.top/w/${NAME}`, { headers: { 'user-agent': ua } }), {});
+    }
+    assert.equal(reads, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 // ---------------------------------------------------------- link previews
 
 test('a preview crawler gets Open Graph tags, not a redirect', async () => {

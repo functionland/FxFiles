@@ -150,8 +150,26 @@ const PAGE_CACHE_SECONDS = 31536000;
  * worker, and a site that never declared og: tags would otherwise have no
  * preview at all.
  */
+//
+// Crawler tokens ONLY. An app's in-app BROWSER often carries the app's name
+// too (`Snapchat/12.90`, `Line/14.10`, `[Pinterest/iOS]`, `KAKAOTALK`), and a
+// person tapping a link there must get the site, not this page — so bare app
+// names do not belong here. Pinned by tests with real in-app user agents.
 const PREVIEW_BOT_RE =
-  /facebookexternalhit|facebookcatalog|facebot|twitterbot|linkedinbot|slackbot|discordbot|whatsapp|telegrambot|pinterest|redditbot|applebot|skypeuripreview|vkshare|embedly|iframely|mastodon|bluesky|cardyb|snapchat|viber|kakaotalk|zalo|tumblr|line\//i;
+  /facebookexternalhit|facebookcatalog|facebot|twitterbot|linkedinbot|slackbot|discordbot|whatsapp\/|telegrambot|pinterestbot|redditbot|applebot|skypeuripreview|vkshare|embedly|iframely|mastodon\/|cardyb|snap url preview|kakaotalk-scrap/i;
+
+/**
+ * In-app browsers of social apps. On iOS they are WKWebView, which has no
+ * service workers (Apple, and MDN compat data), so inbrowser.link shows its
+ * "Service Worker Required" page instead of the site. They are sent to the
+ * path gateway, where every page at least renders. Applied on Android too:
+ * whether each app leaves service workers enabled in its WebView is not
+ * something we can verify from here, and a page without some images is a
+ * better failure than no page. Telegram's in-app browser sends a plain Safari
+ * user agent, so it cannot be recognised.
+ */
+const IN_APP_BROWSER_RE =
+  /instagram|fban|fbav|fb_iab|fb4a|fbios|barcelona|musical_ly|bytedancewebview|tiktok|snapchat|linkedinapp|\bline\/|micromessenger|\[pinterest/i;
 
 /** Any other non-browser client (search engines, fetch libraries, curl):
  *  redirected to the path gateway, which serves them. */
@@ -263,20 +281,23 @@ export default {
             // Only the site's entry page is read: it is what carries the
             // pipeline markers and the preview metadata. A subpath is served
             // as asked.
-            const isPreviewBot = PREVIEW_BOT_RE.test(userAgent);
-            const page = path === '/'
-              ? await readPage(cid, isPreviewBot ? PAGE_READ_TIMEOUT_CRAWLER_MS : PAGE_READ_TIMEOUT_MS)
-              : null;
-
-            if (isPreviewBot) {
+            if (PREVIEW_BOT_RE.test(userAgent)) {
+              const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS) : null;
               return typeof page === 'string'
                 ? previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
                 : redirect(pathTarget);
             }
-            if (!/mozilla\//i.test(userAgent) || NON_BROWSER_RE.test(userAgent)) {
+            // Clients that cannot run a service-worker gateway go to the path
+            // gateway whatever the page — no need to read it first.
+            if (
+              !/mozilla\//i.test(userAgent) ||
+              NON_BROWSER_RE.test(userAgent) ||
+              IN_APP_BROWSER_RE.test(userAgent)
+            ) {
               return redirect(pathTarget);
             }
 
+            const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_MS) : null;
             // A file that is not a page has no pipeline to account for.
             const gateway = GATEWAYS[
               page === NOT_HTML ? requestedKey : chooseGateway(page, requestedKey)

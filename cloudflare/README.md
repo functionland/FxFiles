@@ -48,6 +48,16 @@ a bootstrap page. So:
   paragraph, and the first image — re-pointed at Filebase, since the host a
   legacy page names may be dead. Every value is decoded, capped and escaped,
   and the page is served under `Content-Security-Policy: default-src 'none'`.
+- **In-app browsers of social apps** (Instagram, Facebook, Messenger, Threads,
+  TikTok, Snapchat, LinkedIn, LINE, WeChat, Pinterest) are redirected to the
+  path-style Filebase URL. On iOS they are WKWebView, which has no service
+  workers, so inbrowser.link would show its "Service Worker Required" page
+  instead of the site. On Filebase every page renders — a pre-relative-assets
+  site without its dweb.link images there. Telegram's in-app browser sends a
+  plain Safari user agent and cannot be recognised.
+  The crawler list holds crawler tokens only: an in-app browser often carries
+  its app's name (`Snapchat/…`, `Line/…`, `[Pinterest/iOS]`), and matching those
+  once handed people the preview page instead of the site.
 - **Every other non-browser client** (search engines, curl, libraries) is
   redirected to the path-style Filebase URL.
 
