@@ -15,6 +15,7 @@ import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 
 /// Modal bottom sheet shown from `ShelfScreen`'s FAB. Three actions:
 ///   - Add note → push `/dump/add/note`
@@ -93,6 +94,9 @@ class ShelfAddSheet extends ConsumerWidget {
   }
 
   Future<void> _importFile(BuildContext context, WidgetRef ref) async {
+    // The sheet's own context is gone once it pops; the navigator it was
+    // shown on stays mounted and can host the upload notice.
+    final hostContext = Navigator.of(context).context;
     Navigator.of(context).pop();
     FilePickerResult? result;
     try {
@@ -113,6 +117,9 @@ class ShelfAddSheet extends ConsumerWidget {
     if (result == null) return; // cancelled
     final picked = result.files.where((f) => f.path != null).toList();
     if (picked.isEmpty) return;
+    if (!hostContext.mounted || !await showBetaUploadDialog(hostContext)) {
+      return;
+    }
 
     final stagedPaths = <String>[];
     final mimeTypes = <String?>[];

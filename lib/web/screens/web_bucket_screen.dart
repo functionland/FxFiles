@@ -22,6 +22,7 @@ import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_listing_cache.dart';
 import 'package:fula_files/web/services/web_listing_swr.dart';
 import 'package:fula_files/web/services/web_share_service.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_upload_manager.dart';
@@ -334,7 +335,9 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
     // there, and on completion the manager refreshes this tab's cache + pings
     // us via onBucketCompleted (own-write path).
     final picked = await pickFilesForUpload(accept: _pickerAccept);
-    if (picked.isEmpty) return;
+    if (picked.isEmpty || !mounted) return;
+    // After the picker, never before it: it must open inside the tap.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     WebUploadManager.instance.enqueue(
       base: widget.base,
       bucket: BucketVersionResolver.writeBucket(widget.base),
@@ -492,6 +495,7 @@ class _WebBucketScreenState extends State<WebBucketScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     // The whole file is held in memory here, and `pinBytes` layers a
     // multipart copy on top — the same reason the Cloud Files screen caps
     // rename/move. Without this a big file OOM-kills a low-RAM phone tab,

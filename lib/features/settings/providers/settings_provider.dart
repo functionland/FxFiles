@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fula_files/core/services/local_storage_service.dart';
+import 'package:fula_files/shared/legal/terms_content.dart';
 
 class AppSettings {
   final ThemeMode themeMode;
   final bool autoSync;
   final bool wifiOnly;
   final bool thumbScrollEnabled;
+
+  /// The CURRENT Terms version ([kTermsVersion]) has been accepted.
   final bool tosAccepted;
+
+  /// Some earlier version was accepted — the gate then presents the Terms as
+  /// an update rather than as a first-time request.
+  final bool tosAcceptedBefore;
   final String? orgName;
 
   AppSettings({
@@ -16,6 +23,7 @@ class AppSettings {
     this.wifiOnly = true,
     this.thumbScrollEnabled = true,
     this.tosAccepted = false,
+    this.tosAcceptedBefore = false,
     this.orgName,
   });
 
@@ -25,6 +33,7 @@ class AppSettings {
     bool? wifiOnly,
     bool? thumbScrollEnabled,
     bool? tosAccepted,
+    bool? tosAcceptedBefore,
     String? orgName,
     bool clearOrgName = false,
   }) {
@@ -34,6 +43,7 @@ class AppSettings {
       wifiOnly: wifiOnly ?? this.wifiOnly,
       thumbScrollEnabled: thumbScrollEnabled ?? this.thumbScrollEnabled,
       tosAccepted: tosAccepted ?? this.tosAccepted,
+      tosAcceptedBefore: tosAcceptedBefore ?? this.tosAcceptedBefore,
       orgName: clearOrgName ? null : (orgName ?? this.orgName),
     );
   }
@@ -52,7 +62,10 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final autoSync = LocalStorageService.instance.getSetting<bool>('autoSync');
     final wifiOnly = LocalStorageService.instance.getSetting<bool>('wifiOnly');
     final thumbScrollEnabled = LocalStorageService.instance.getSetting<bool>('thumbScrollEnabled');
-    final tosAccepted = LocalStorageService.instance.getSetting<bool>('tosAccepted');
+    final legacyTosAccepted =
+        LocalStorageService.instance.getSetting<bool>('tosAccepted') ?? false;
+    final tosAcceptedVersion =
+        LocalStorageService.instance.getSetting<int>('tosAcceptedVersion');
     final storedOrgName = LocalStorageService.instance.getSetting<String>('orgName');
     final orgName = (storedOrgName != null && storedOrgName.isNotEmpty) ? storedOrgName : null;
 
@@ -63,7 +76,11 @@ class SettingsNotifier extends Notifier<AppSettings> {
       autoSync: autoSync ?? true,
       wifiOnly: wifiOnly ?? true,
       thumbScrollEnabled: thumbScrollEnabled ?? true,
-      tosAccepted: tosAccepted ?? false,
+      tosAccepted: !termsAcceptanceRequired(
+        acceptedVersion: tosAcceptedVersion,
+        legacyAccepted: legacyTosAccepted,
+      ),
+      tosAcceptedBefore: legacyTosAccepted || tosAcceptedVersion != null,
       orgName: orgName,
     );
   }
@@ -88,9 +105,20 @@ class SettingsNotifier extends Notifier<AppSettings> {
     await LocalStorageService.instance.saveSetting('thumbScrollEnabled', value);
   }
 
+  /// Record acceptance of the CURRENT Terms: which version, and when (UTC).
+  /// The legacy boolean is kept for older builds reading the same box.
   Future<void> setTosAccepted(bool value) async {
-    state = state.copyWith(tosAccepted: value);
+    state = state.copyWith(
+      tosAccepted: value,
+      tosAcceptedBefore: value ? true : null,
+    );
     await LocalStorageService.instance.saveSetting('tosAccepted', value);
+    if (value) {
+      await LocalStorageService.instance
+          .saveSetting('tosAcceptedVersion', kTermsVersion);
+      await LocalStorageService.instance.saveSetting(
+          'tosAcceptedAt', DateTime.now().toUtc().toIso8601String());
+    }
   }
 
   Future<void> setOrgName(String? value) async {

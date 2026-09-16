@@ -743,6 +743,9 @@ class _WebsiteDetailScreenState extends ConsumerState<WebsiteDetailScreen> {
   }
 
   void _retryGeneration(WebsiteGeneration gen, FileTag? currentTag) async {
+    // A retry is a new generation: same notice as Create and Recreate.
+    final accepted = await showLegalDisclaimerDialog(context);
+    if (accepted != true || !mounted) return;
     final files =
         await ref.read(taggedFilesProvider(widget.tagId).future);
     if (!mounted) return;

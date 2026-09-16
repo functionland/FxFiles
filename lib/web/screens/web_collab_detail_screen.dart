@@ -9,6 +9,7 @@ import 'package:fula_files/core/models/collaboration_group.dart';
 import 'package:fula_files/core/services/collaboration_service.dart';
 import 'package:fula_files/features/sharing/utils/collab_folder_tree.dart';
 import 'package:fula_files/features/sharing/widgets/share_with_ai_dialog.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
 
@@ -107,6 +108,7 @@ class _WebCollabDetailScreenState extends State<WebCollabDetailScreen> {
     final file = picked?.files.firstOrNull;
     final bytes = file?.bytes;
     if (file == null || bytes == null || !mounted) return;
+    if (!await showBetaUploadDialog(context) || !mounted) return;
 
     // Encryption copies the buffer, so a big file spikes tab memory at
     // 2×+ its size on the main thread. Confirm before committing.

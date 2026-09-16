@@ -10,6 +10,7 @@ import 'package:fula_files/core/services/whatsapp_backup_service.dart';
 import 'package:fula_files/features/apps/providers/app_provider.dart';
 import 'package:fula_files/features/apps/widgets/password_setup_dialog.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 
 String _formatTimeAgo(DateTime dateTime) {
   final diff = DateTime.now().difference(dateTime);
@@ -222,6 +223,10 @@ class _WhatsAppBackupScreenState extends ConsumerState<WhatsAppBackupScreen> {
     if (Platform.isIOS && activated?.iosFolderPath != null) {
       overrideDir = Directory(activated!.iosFolderPath!);
     }
+
+    // A backup uploads the chats and their media.
+    if (!context.mounted || !await showBetaUploadDialog(context)) return;
+    if (!context.mounted) return;
 
     ref.read(appProvider.notifier).startBackup(
       widget.appId,

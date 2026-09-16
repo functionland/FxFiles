@@ -8,6 +8,7 @@ import 'package:web/web.dart' as web;
 
 import 'package:fula_files/core/services/bucket_version_resolver.dart';
 import 'package:fula_files/core/utils/file_type_utils.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/web/services/web_recent_files_service.dart';
 import 'package:fula_files/web/services/web_session.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
@@ -80,7 +81,16 @@ class _WebRecentFilesSectionState extends State<WebRecentFilesSection> {
   Future<void> _pickAndUpload() async {
     // No accept filter — this tile takes ANY file and routes it by type.
     final picked = await pickFilesForUpload();
-    _enqueueByCategory(picked);
+    await _confirmAndEnqueue(picked);
+  }
+
+  /// The beta notice comes AFTER the files are in hand: the picker must open
+  /// inside the tap (iOS Safari), and a drop's files are read synchronously
+  /// in the event, then stay valid.
+  Future<void> _confirmAndEnqueue(List<WebPickedFile> files) async {
+    if (files.isEmpty || !mounted) return;
+    if (!await showBetaUploadDialog(context) || !mounted) return;
+    _enqueueByCategory(files);
   }
 
   /// Group files by their auto-detected category and enqueue one batch per
@@ -127,7 +137,7 @@ class _WebRecentFilesSectionState extends State<WebRecentFilesSection> {
       final isOver =
           _pointerOverAddTile(de.clientX.toDouble(), de.clientY.toDouble());
       if (_dragOverAddTile) setState(() => _dragOverAddTile = false);
-      if (isOver) _enqueueByCategory(filesFromDataTransfer(de.dataTransfer));
+      if (isOver) _confirmAndEnqueue(filesFromDataTransfer(de.dataTransfer));
     }).toJS;
     final leave = ((web.Event e) {
       if (!mounted) return;

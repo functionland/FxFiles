@@ -14,6 +14,7 @@ import 'package:fula_files/core/models/website_generation.dart';
 import 'package:fula_files/core/models/website_group_pointer.dart';
 import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/website_prompt_builder.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/shared/widgets/ipfs_public_disclaimer_dialog.dart';
 import 'package:fula_files/shared/widgets/step_row.dart';
 import 'package:fula_files/web/screens/web_generate_website_screen.dart';
@@ -371,6 +372,10 @@ class _WebWebsiteDetailScreenState extends State<WebWebsiteDetailScreen> {
   Future<void> _importAssets() async {
     final files = await pickFilesForUpload();
     if (files.isEmpty || !mounted) return;
+    // These upload the moment they are picked, well before the generation
+    // notice — so they get the upload notice. After the picker: it must open
+    // inside the tap.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     final r = WebWebsiteAssetUploader.instance.enqueue(
       tagId: widget.tagId,
       websiteName: _displayName,

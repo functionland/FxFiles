@@ -26,6 +26,7 @@ import 'package:fula_files/features/settings/providers/settings_provider.dart';
 import 'package:fula_files/features/onboarding/screens/terms_of_service_screen.dart';
 import 'package:fula_files/features/sharing/widgets/create_collaboration_dialog.dart';
 import 'package:fula_files/features/sharing/widgets/create_share_dialog.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/shared/widgets/keyboard_shortcuts.dart';
 import 'package:fula_files/shared/widgets/mini_player.dart';
 
@@ -373,6 +374,12 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
         filePath: filePath,
       );
       if (!confirmed) return;
+      final betaCtx = walletNavigatorKey.currentContext;
+      if (betaCtx == null ||
+          !betaCtx.mounted ||
+          !await showBetaUploadDialog(betaCtx)) {
+        return;
+      }
 
       final name = filePath.split(Platform.pathSeparator).last;
 
@@ -763,7 +770,10 @@ class _FulaFilesAppState extends ConsumerState<FulaFilesApp>
       builder: (context, child) {
         // Show ToS screen if not accepted
         if (!tosAccepted) {
-          return TermsOfServiceScreen(onAccepted: _onTosAccepted);
+          return TermsOfServiceScreen(
+            onAccepted: _onTosAccepted,
+            isUpdate: settings.tosAcceptedBefore,
+          );
         }
 
         return DesktopKeyboardShortcuts(

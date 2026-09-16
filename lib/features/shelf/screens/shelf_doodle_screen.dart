@@ -19,6 +19,7 @@ import 'package:fula_files/core/services/shelf_service.dart';
 import 'package:fula_files/features/shelf/painters/shelf_doodle_painter.dart';
 import 'package:fula_files/features/tags/providers/tag_provider.dart';
 import 'package:fula_files/features/tags/widgets/tag_chip.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 
 /// Camera-capture annotation editor. Receives the path of a freshly
 /// captured photo (from `image_picker`) and lets the user overlay
@@ -230,6 +231,8 @@ class _ShelfDoodleScreenState extends ConsumerState<ShelfDoodleScreen> {
 
   Future<void> _save() async {
     if (_workingImagePath == null) return;
+    // Saving uploads the photo to the cloud.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     setState(() => _saving = true);
 
     try {

@@ -15,6 +15,7 @@ import 'package:fula_files/core/services/tabular_parser.dart';
 import 'package:fula_files/core/utils/target_uri_builder.dart';
 import 'package:fula_files/core/utils/template_renderer.dart';
 import 'package:fula_files/features/automate/widgets/placeholder_chip_bar.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/shared/widgets/legal_disclaimer_dialog.dart';
 import 'package:fula_files/web/services/web_automate_csv_store.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
@@ -790,7 +791,8 @@ class _WebAutomateTaskDetailScreenState
           }
           if (!mounted) return;
           final ipfsOk = await _confirmIpfsUpload();
-          if (ipfsOk != true) return;
+          if (ipfsOk != true || !mounted) return;
+          if (!await showBetaUploadDialog(context)) return;
           setState(() => _uploadStatus = 'Uploading attachment to IPFS…');
           final result = await IpfsPublicService.instance.pinBytes(
             attachment.bytes,

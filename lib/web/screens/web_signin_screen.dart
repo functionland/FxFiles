@@ -4,6 +4,7 @@ import 'package:google_sign_in_web/web_only.dart' as gsi_web;
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import 'package:fula_files/core/services/issuer_client.dart';
+import 'package:fula_files/shared/widgets/terms_of_service_view.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// Web sign-in mirroring the native onboarding flow
@@ -472,6 +473,15 @@ class _WebSignInScreenState extends State<WebSignInScreen> {
               title: const Text(
                 'I agree to the FxFiles Terms of Service.',
                 style: TextStyle(fontSize: 13),
+              ),
+              // Agreeing to terms one cannot open is not informed consent.
+              secondary: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const TermsOfServicePage(),
+                  ),
+                ),
+                child: const Text('Read'),
               ),
             ),
             FilledButton(

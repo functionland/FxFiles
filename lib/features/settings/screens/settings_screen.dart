@@ -29,6 +29,8 @@ import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/deep_link_service.dart';
 import 'package:fula_files/core/utils/platform_capabilities.dart';
 import 'package:fula_files/shared/utils/error_messages.dart';
+import 'package:fula_files/shared/legal/terms_content.dart';
+import 'package:fula_files/shared/widgets/terms_of_service_view.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -201,6 +203,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     subtitle: Text(version),
                   );
                 },
+              ),
+              ListTile(
+                leading: const Icon(LucideIcons.fileText),
+                title: const Text('Terms of Service'),
+                subtitle: const Text('Last updated: $kTermsLastUpdated'),
+                trailing: const Icon(LucideIcons.chevronRight),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const TermsOfServicePage(),
+                  ),
+                ),
               ),
             ],
           ),
