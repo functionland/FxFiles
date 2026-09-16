@@ -2,11 +2,17 @@
  * FxFiles stable-link resolver — a STATELESS Cloudflare Worker that is the
  * fast, pretty front door over each website group's IPNS name.
  *
- *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=filebase|fx]
+ *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=inbrowser|filebase|fx]
  *      -> resolve <ipnsName> to its current CID via w3name's plain HTTP API
- *      -> 302 to that gateway's URL for the CID, e.g.
- *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>       (gw=filebase, default)
+ *      -> for a BROWSER, 302 to the gateway that can render that page:
+ *         https://<cid>.ipfs.inbrowser.link/<subpath>         (default)
+ *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>       (gw=filebase)
  *         https://ipfs.cloud.fx.land/gateway/<cid>/<subpath>  (gw=fx)
+ *         — overridden when the page itself cannot render on the one asked
+ *         for (see chooseGateway in site-page.js)
+ *      -> for a LINK-PREVIEW CRAWLER, 200 with Open Graph tags built from the
+ *         page (a crawler cannot run inbrowser's service worker)
+ *      -> for any OTHER client, 302 to the path-style Filebase URL
  *
  * Why this design:
  *  - The app never talks to Cloudflare and holds NO credential here. The IPNS
@@ -41,6 +47,8 @@
  * here rather than a property of published content: Cloudflare retired its IPFS
  * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
+
+import { buildPreviewHtml, chooseGateway, PATH_GATEWAY_BASE } from './site-page.js';
 
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
@@ -106,8 +114,49 @@ function joinPath(inner, subpath) {
   return subpath === '/' ? inner : `${inner}${subpath}`;
 }
 
-/** Default when `?gw=` is absent — keeps every already-shared link working. */
-const DEFAULT_GATEWAY = 'filebase';
+/**
+ * Default when `?gw=` is absent or unknown.
+ *
+ * inbrowser, not filebase (changed 2026-09-16): Filebase answers every page
+ * with `Content-Security-Policy: default-src 'self'`, which blocks a site's
+ * inline scripts and its Google Forms contact embed, and the sites published
+ * before relative assets name dweb.link for every image — which only
+ * inbrowser's service worker still serves. inbrowser sends no CSP.
+ */
+const DEFAULT_GATEWAY = 'inbrowser';
+
+/**
+ * Path-style gateway for everything a service-worker gateway cannot serve: a
+ * CID that is not a valid DNS label, and any client that is not a browser
+ * (inbrowser answers those with 403 or its bootstrap page).
+ */
+const PATH_GATEWAY = 'filebase';
+
+/** Where the Worker READS a page to decide how to serve it. Path-style and
+ *  reachable without a browser; the bytes are immutable, so they are cached at
+ *  the edge for a year and read at most once per location. */
+const PAGE_READ_BASE = PATH_GATEWAY_BASE;
+// A cold Filebase read of a page took 3.9 s (measured 2026-09-16); after that
+// it is served from the edge cache. A crawler is given longer: it waits, and a
+// missed read costs the link its preview.
+const PAGE_READ_TIMEOUT_MS = 6000;
+const PAGE_READ_TIMEOUT_CRAWLER_MS = 9000;
+const PAGE_READ_MAX_BYTES = 512 * 1024;
+const PAGE_CACHE_SECONDS = 31536000;
+
+/**
+ * Link-preview crawlers. They get a small page of Open Graph tags built from
+ * the site instead of a redirect — a crawler cannot run inbrowser's service
+ * worker, and a site that never declared og: tags would otherwise have no
+ * preview at all.
+ */
+const PREVIEW_BOT_RE =
+  /facebookexternalhit|facebookcatalog|facebot|twitterbot|linkedinbot|slackbot|discordbot|whatsapp|telegrambot|pinterest|redditbot|applebot|skypeuripreview|vkshare|embedly|iframely|mastodon|bluesky|cardyb|snapchat|viber|kakaotalk|zalo|tumblr|line\//i;
+
+/** Any other non-browser client (search engines, fetch libraries, curl):
+ *  redirected to the path gateway, which serves them. */
+const NON_BROWSER_RE =
+  /bot\b|bot\/|crawl|spider|slurp|curl\/|wget\/|python|java\/|go-http|node-fetch|axios|okhttp|http-client|libwww|headless/i;
 
 export default {
   async fetch(request, env) {
@@ -171,9 +220,10 @@ export default {
     // and `?gw=__proto__` would hand back a TRUTHY inherited value whose `.cid`
     // is undefined. That throws inside the try below and the request ends as a
     // 502, so the typo would break the link instead of using the default.
-    const gateway = Object.hasOwn(GATEWAYS, gwKey ?? '')
-      ? GATEWAYS[gwKey]
-      : GATEWAYS[DEFAULT_GATEWAY];
+    const requestedKey = Object.hasOwn(GATEWAYS, gwKey ?? '')
+      ? gwKey
+      : DEFAULT_GATEWAY;
+    const userAgent = request.headers.get('user-agent') || '';
 
     // NOTE: there is no IPNS-gateway fallback any more. It pointed at
     // ipns.dweb.link, which (a) never resolved anyway — w3name does not publish
@@ -208,13 +258,36 @@ export default {
           // header split is not something to leave to a runtime check.
           if (cid && CID_RE.test(cid) && !CONTROL_CHARS.test(inner)) {
             const path = joinPath(inner, subpath);
+            const pathTarget = `${GATEWAYS[PATH_GATEWAY].cid(cid, path)}${query}`;
+
+            // Only the site's entry page is read: it is what carries the
+            // pipeline markers and the preview metadata. A subpath is served
+            // as asked.
+            const isPreviewBot = PREVIEW_BOT_RE.test(userAgent);
+            const page = path === '/'
+              ? await readPage(cid, isPreviewBot ? PAGE_READ_TIMEOUT_CRAWLER_MS : PAGE_READ_TIMEOUT_MS)
+              : null;
+
+            if (isPreviewBot) {
+              return typeof page === 'string'
+                ? previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
+                : redirect(pathTarget);
+            }
+            if (!/mozilla\//i.test(userAgent) || NON_BROWSER_RE.test(userAgent)) {
+              return redirect(pathTarget);
+            }
+
+            // A file that is not a page has no pipeline to account for.
+            const gateway = GATEWAYS[
+              page === NOT_HTML ? requestedKey : chooseGateway(page, requestedKey)
+            ];
             // A subdomain gateway puts the CID in the HOSTNAME, where a
             // case-sensitive CIDv0 or an over-long CID is silently mangled
-            // into a different (wrong) CID. Serve those from the default
-            // path-style gateway rather than a URL that cannot work.
+            // into a different (wrong) CID. Serve those from the path-style
+            // gateway rather than a URL that cannot work.
             const usable =
               gateway.subdomain && !SUBDOMAIN_SAFE_CID.test(cid)
-                ? GATEWAYS[DEFAULT_GATEWAY]
+                ? GATEWAYS[PATH_GATEWAY]
                 : gateway;
             return redirect(`${usable.cid(cid, path)}${query}`);
           }
@@ -249,6 +322,76 @@ function redirect(location) {
       Location: location,
       'Cache-Control': `public, max-age=${REDIRECT_CACHE_SECONDS}`,
       'Referrer-Policy': 'no-referrer',
+      // the target depends on the client (browser, crawler, other)
+      Vary: 'User-Agent',
+    },
+  });
+}
+
+/** readPage's answer for an entry that was read fine but is not a page. */
+const NOT_HTML = Symbol('not-html');
+
+/**
+ * Read a published page. Returns its HTML; NOT_HTML when the entry is some
+ * other file; null when it could not be read in time. Neither non-string
+ * answer is an error for the caller.
+ */
+async function readPage(cid, timeoutMs) {
+  try {
+    const res = await fetch(`${PAGE_READ_BASE}${cid}`, {
+      cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
+    if (!/text\/html/i.test(res.headers.get('content-type') || '')) {
+      await res.body?.cancel();
+      return NOT_HTML;
+    }
+    // Bounded: the markers and the preview metadata sit at the top of a page,
+    // so a huge page is read only as far as the cap.
+    const reader = res.body.getReader();
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+      if (size >= PAGE_READ_MAX_BYTES) {
+        await reader.cancel();
+        break;
+      }
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(bytes);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * The page a link-preview crawler gets (see buildPreviewHtml). Served under
+ * `default-src 'none'`: it needs no subresource, so nothing taken from the
+ * site can load or run anything.
+ */
+function previewResponse(html, link, target) {
+  return new Response(buildPreviewHtml(html, link, target), {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': "default-src 'none'",
+      'x-content-type-options': 'nosniff',
+      'cache-control': `public, max-age=${REDIRECT_CACHE_SECONDS}`,
+      'referrer-policy': 'no-referrer',
+      vary: 'User-Agent',
     },
   });
 }
