@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'package:fula_files/app/theme/app_theme.dart';
+import 'package:fula_files/shared/widgets/terms_of_service_view.dart';
 import 'package:fula_files/web/router_web.dart';
+import 'package:fula_files/web/services/web_terms_store.dart';
 import 'package:fula_files/web/widgets/web_mini_audio_player.dart';
 import 'package:fula_files/web/widgets/web_upload_tray.dart';
 
@@ -15,6 +17,13 @@ class FxFilesWebApp extends StatefulWidget {
 
 class _FxFilesWebAppState extends State<FxFilesWebApp> {
   late final router = buildWebRouter();
+
+  /// Same gate as the native app: nothing past the Terms until the CURRENT
+  /// version is accepted on this browser. Read once, synchronously, so the
+  /// first frame is already the right one.
+  late bool _termsRequired = WebTermsStore.instance.acceptanceRequired;
+  late final bool _termsAcceptedBefore =
+      WebTermsStore.instance.acceptedVersion() != null;
 
   @override
   Widget build(BuildContext context) {
@@ -30,6 +39,15 @@ class _FxFilesWebAppState extends State<FxFilesWebApp> {
       // (and, being a thin strip at the very bottom, only minimally over a
       // centred dialog); it renders nothing when no upload is queued.
       builder: (context, child) {
+        if (_termsRequired) {
+          return TermsAcceptanceScreen(
+            isUpdate: _termsAcceptedBefore,
+            onAccept: () async {
+              WebTermsStore.instance.recordAcceptance();
+              setState(() => _termsRequired = false);
+            },
+          );
+        }
         return Stack(
           children: [
             if (child != null) Positioned.fill(child: child),

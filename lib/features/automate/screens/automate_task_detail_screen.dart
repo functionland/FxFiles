@@ -986,7 +986,12 @@ class _AutomateTaskDetailScreenState
           // (the same dialog the website-generation flow shows when
           // pinning files to IPFS) — different from the bulk-send
           // click-to-chat disclaimer we just showed above.
-          final ipfsOk = await ipfs_warning.showLegalDisclaimerDialog(context);
+          // The user's own attachment is being published, not generated
+          // content — so the beta box carries the upload wording.
+          final ipfsOk = await ipfs_warning.showLegalDisclaimerDialog(
+            context,
+            betaAcknowledgement: ipfs_warning.kBetaUploadAcknowledgement,
+          );
           if (ipfsOk != true) {
             // User declined the IPFS warning — abort run; don't send
             // ANY rows (the attachment is required for the {File}

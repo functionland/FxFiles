@@ -16,6 +16,7 @@ import 'package:fula_files/web/services/web_device_class.dart';
 import 'package:fula_files/web/services/web_file_view_mode.dart';
 import 'package:fula_files/web/services/web_foreground_activity.dart';
 import 'package:fula_files/web/services/web_save.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/web/services/web_streaming_file.dart';
 import 'package:fula_files/web/services/web_tag_service.dart';
 import 'package:fula_files/web/services/web_text_viewer_logic.dart';
@@ -246,6 +247,8 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
     // user gesture (iOS Safari), then resolves with the picked files.
     final picked = await pickFilesForUpload();
     if (picked.isEmpty || !mounted) return;
+    // After the picker, never before it: it must open inside the tap.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     WebUploadManager.instance.enqueue(
       base: bucket,
       bucket: bucket,
@@ -581,6 +584,7 @@ class _WebCloudFilesScreenState extends State<WebCloudFilesScreen> {
         confirmLabel: 'Share publicly')) {
       return;
     }
+    if (!mounted || !await showBetaUploadDialog(context)) return;
     if (!_guardCopySize(o, 'shared publicly')) return;
     final bucket = o.sourceBucket ?? _bucket!;
     _snack('Uploading "${o.name}" to IPFS…');

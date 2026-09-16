@@ -10,6 +10,7 @@ import 'package:fula_files/app/theme/app_colors.dart';
 import 'package:fula_files/core/models/billing/supported_chain.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/core/services/wallet_service.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/web/services/web_nft_gas_logic.dart';
 import 'package:fula_files/web/services/web_nft_service.dart';
 import 'package:fula_files/web/services/web_nft_status_logic.dart';
@@ -157,6 +158,9 @@ class _WebNftDetailScreenState extends State<WebNftDetailScreen> {
           const SnackBar(content: Text('Add an image to mint first.')));
       return;
     }
+
+    // Minting uploads the image and its metadata.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
 
     // Config BEFORE the wallet (native ordering) so a wallet modal isn't
     // sitting open while the user fills in the fields.

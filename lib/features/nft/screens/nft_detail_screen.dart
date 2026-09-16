@@ -8,6 +8,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:fula_files/core/models/file_tag.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/core/models/local_file.dart';
 import 'package:fula_files/core/models/nft_token.dart';
 import 'package:fula_files/features/nft/providers/nft_provider.dart';
@@ -413,10 +414,15 @@ class _NftDetailScreenState extends ConsumerState<NftDetailScreen> {
       return;
     }
 
+    // Minting uploads the image and its metadata.
+    if (!await showBetaUploadDialog(context)) return;
+    final previewPath = await _resolveFilePath(localPath);
+    if (!mounted) return;
+
     // Show mint config sheet (image preview + stepped config)
     final config = await showMintConfigDialog(
       context,
-      previewPath: await _resolveFilePath(localPath),
+      previewPath: previewPath,
       defaultEventName: p.basenameWithoutExtension(firstFile.fileName),
     );
     if (config == null || !mounted) return;

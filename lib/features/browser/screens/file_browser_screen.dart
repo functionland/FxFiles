@@ -30,6 +30,7 @@ import 'package:fula_files/core/services/legacy_listing_cache.dart';
 import 'package:fula_files/core/utils/user_id.dart';
 import 'package:fula_files/core/utils/safe_path.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:fula_files/shared/widgets/master_health_banner.dart';
 import 'package:fula_files/core/models/file_tag.dart';
 import 'package:fula_files/core/models/local_file.dart';
@@ -2150,8 +2151,9 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
                 leading: Icon(LucideIcons.upload, color: isLoggedIn ? null : Colors.grey),
                 title: Text('Upload to Cloud', style: TextStyle(color: isLoggedIn ? null : Colors.grey)),
                 subtitle: isLoggedIn ? null : const Text('Sign in required', style: TextStyle(fontSize: 12)),
-                onTap: isLoggedIn ? () {
+                onTap: isLoggedIn ? () async {
                   Navigator.pop(ctx);
+                  if (!await showBetaUploadDialog(context) || !mounted) return;
                   _uploadFile(file);
                 } : null,
               ),
@@ -2396,6 +2398,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _uploadSelected() async {
+    // One notice for the whole selection, not one per file.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     for (final path in _selectedFiles) {
       final file = _files.firstWhere((f) => f.path == path);
       await _uploadFile(file);
@@ -2539,6 +2543,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _enableCategorySync(FileCategory category) async {
+    // Turning sync on starts uploads the user will not confirm one by one.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     try {
       // Check battery optimization for background sync (Android)
       if (Platform.isAndroid) {
@@ -2590,6 +2596,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _syncCategoryNow(FileCategory category) async {
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     try {
       final syncPath = 'category:${widget.category}';
       await FolderWatchService.instance.syncFolder(syncPath);
@@ -2697,6 +2704,8 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _enableFolderSync(LocalFile folder) async {
+    // Turning sync on starts uploads the user will not confirm one by one.
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     try {
       // Check battery optimization for background sync (Android)
       if (Platform.isAndroid) {
@@ -2772,6 +2781,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
   }
 
   Future<void> _syncFolderNow(LocalFile folder) async {
+    if (!await showBetaUploadDialog(context) || !mounted) return;
     try {
       await FolderWatchService.instance.syncFolder(folder.path);
       if (mounted) {
@@ -2827,6 +2837,7 @@ class _FileBrowserScreenState extends ConsumerState<FileBrowserScreen> {
     );
 
     if (confirmed != true || !mounted) return;
+    if (!await showBetaUploadDialog(context) || !mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

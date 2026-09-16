@@ -14,6 +14,8 @@ import 'package:fula_files/core/services/ipfs_gateway_helper.dart';
 import 'package:fula_files/core/services/nft_wallet_service.dart';
 import 'package:fula_files/core/services/secure_storage_service.dart';
 import 'package:fula_files/core/services/share_link_builder.dart';
+import 'package:fula_files/shared/legal/terms_content.dart';
+import 'package:fula_files/shared/widgets/terms_of_service_view.dart';
 import 'package:fula_files/web/services/web_session.dart';
 
 /// App version label shown in About + the home footer. Kept in one place
@@ -714,6 +716,15 @@ class _WebSettingsScreenState extends State<WebSettingsScreen> {
           leading: const Icon(Icons.info_outline),
           title: const Text('FxFiles'),
           subtitle: Text(kWebAppVersion),
+        ),
+        ListTile(
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('Terms of Service'),
+          subtitle: const Text('Last updated: $kTermsLastUpdated'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const TermsOfServicePage()),
+          ),
         ),
       ],
     );

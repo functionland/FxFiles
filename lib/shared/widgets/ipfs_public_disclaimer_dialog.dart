@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
+import 'package:fula_files/shared/legal/terms_content.dart';
+
 /// What is about to be published without encryption.
 enum PublicDisclaimerVariant { website, social }
 
 /// Checkbox-gated warning that assets and the generated result will be
 /// PUBLIC on IPFS. Shown before every website generation (native parity —
 /// no "don't ask again") and before every social-post generation.
-/// Returns true only when the user ticks the box and agrees.
+/// Returns true only when the user ticks BOTH boxes — the terms above and
+/// the beta acknowledgement — and agrees.
 ///
 /// Moved here from lib/features/websites/widgets/legal_disclaimer_dialog.dart
 /// (which remains as a re-export shim) so the web screens can share it —
@@ -33,6 +36,11 @@ Future<bool?> showIpfsPublicDisclaimerDialog(
   /// `Future<bool?>` contract intact for the call sites that don't need
   /// this.
   ValueNotifier<bool>? directoryOptIn,
+
+  /// The required beta acknowledgement. Generation by default; a caller that
+  /// is publishing a user's own file rather than generated content passes
+  /// [kBetaUploadAcknowledgement].
+  String betaAcknowledgement = kBetaGenerateAcknowledgement,
 }) {
   return showDialog<bool>(
     context: context,
@@ -41,6 +49,7 @@ Future<bool?> showIpfsPublicDisclaimerDialog(
       variant: variant,
       footnote: footnote,
       directoryOptIn: directoryOptIn,
+      betaAcknowledgement: betaAcknowledgement,
     ),
   );
 }
@@ -49,10 +58,12 @@ class _IpfsPublicDisclaimerDialog extends StatefulWidget {
   final PublicDisclaimerVariant variant;
   final String? footnote;
   final ValueNotifier<bool>? directoryOptIn;
+  final String betaAcknowledgement;
   const _IpfsPublicDisclaimerDialog({
     required this.variant,
     this.footnote,
     this.directoryOptIn,
+    required this.betaAcknowledgement,
   });
 
   @override
@@ -63,6 +74,7 @@ class _IpfsPublicDisclaimerDialog extends StatefulWidget {
 class _IpfsPublicDisclaimerDialogState
     extends State<_IpfsPublicDisclaimerDialog> {
   bool _accepted = false;
+  bool _betaAccepted = false;
 
   static const String _websiteTerms =
       '1. Files will be uploaded WITHOUT encryption to IPFS, '
@@ -158,6 +170,19 @@ class _IpfsPublicDisclaimerDialogState
               controlAffinity: ListTileControlAffinity.leading,
               contentPadding: EdgeInsets.zero,
             ),
+            // Separate and required: acknowledging the beta status is its own
+            // affirmative act, never folded into, or implied by, the box above.
+            CheckboxListTile(
+              value: _betaAccepted,
+              onChanged: (value) =>
+                  setState(() => _betaAccepted = value ?? false),
+              title: Text(
+                widget.betaAcknowledgement,
+                style: const TextStyle(fontSize: 14),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
           ],
         ),
       ),
@@ -167,8 +192,9 @@ class _IpfsPublicDisclaimerDialogState
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed:
-              _accepted ? () => Navigator.of(context).pop(true) : null,
+          onPressed: _accepted && _betaAccepted
+              ? () => Navigator.of(context).pop(true)
+              : null,
           child: const Text('Agree'),
         ),
       ],

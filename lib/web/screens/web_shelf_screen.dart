@@ -18,6 +18,7 @@ import 'package:fula_files/web/widgets/media_preview_dialog.dart';
 import 'package:fula_files/web/widgets/web_tag_dialogs.dart';
 import 'package:fula_files/features/shelf/widgets/shelf_ask_ai_sheet.dart';
 import 'package:fula_files/shared/utils/adaptive_ui.dart';
+import 'package:fula_files/shared/widgets/beta_upload_dialog.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 /// Mirror of lib/features/shelf/screens/shelf_screen.dart (view-only):
@@ -338,6 +339,7 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
       _snack('Could not read that file.');
       return;
     }
+    if (!mounted || !await showBetaUploadDialog(context) || !mounted) return;
     await _runAdd(
       () => WebShelfService.instance.addBytes(bytes: data, name: f.name),
       'file',
@@ -354,6 +356,8 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
     }
     final c = cap;
     if (c == null) return;
+    // After the capture: the camera input must open inside the tap.
+    if (!mounted || !await showBetaUploadDialog(context) || !mounted) return;
     await _runAdd(
       () => WebShelfService.instance
           .addBytes(bytes: c.bytes, name: c.name, mime: c.mime),
@@ -498,6 +502,7 @@ class _WebShelfScreenState extends State<WebShelfScreen> {
       builder: (ctx) => const _RecordAudioDialog(),
     );
     if (cap == null) return;
+    if (!mounted || !await showBetaUploadDialog(context) || !mounted) return;
     await _runAdd(
       () => WebShelfService.instance
           .addBytes(bytes: cap.bytes, name: cap.name, mime: cap.mime),
