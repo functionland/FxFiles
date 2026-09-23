@@ -25,9 +25,18 @@ user who switches gets working links without re-minting anything.
 ### The page decides when it has to (no republish)
 
 A published page is immutable, so where it can render is fixed when it is
-published. The Worker reads the entry page (edge-cached for a year — the bytes
-never change) and overrides `?gw=` when the page cannot render there
-(`chooseGateway` in `site-page.js`):
+published. The Worker reads the entry page and overrides `?gw=` when the page
+cannot render there (`chooseGateway` in `site-page.js`).
+
+The page is read from **Filebase and the fx gateway at once** — the first to
+answer with HTML wins — edge-cached for a year (the bytes never change), with a
+longer timeout plus one retry for crawlers. Two sources because one is not
+reliable enough: Filebase took 26–30 s for a live site's page while fx served
+the identical bytes in 1.8 s (measured 2026-09-23), and a missed read costs a
+crawler its preview and sends a visitor to a gateway the page may not render
+on. This is the Worker reading on its own behalf — a published site still loads
+from whichever gateway the visitor uses, so it adds **no runtime dependency on
+fx**.
 
 | Page | Browser lands on | Why |
 |---|---|---|
