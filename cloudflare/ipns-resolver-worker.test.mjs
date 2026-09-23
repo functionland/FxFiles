@@ -20,6 +20,7 @@ import {
   hasNonImageRelativeRefs,
   pipelineVersion,
   previewImageUrl,
+  provenNotAnImage,
 } from './site-page.js';
 
 const NAME = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
@@ -43,7 +44,10 @@ const V2_PAGE = `<!doctype html><html><head><script data-fx data-fx-v="2">/* dat
  * `page` is what reading the record's CID returns (null => the read fails).
  * Any other CID is an image, unless listed in `htmlCids`.
  */
-function stubNetwork(value, page, htmlCids = []) {
+const FB_BASE = 'https://ipfs.filebase.io/ipfs/';
+const FX_BASE = 'https://ipfs.cloud.fx.land/gateway/';
+
+function stubNetwork(value, page, htmlCids = [], unhappyCids = [], pageSources = ['filebase', 'fx']) {
   const original = globalThis.fetch;
   const pageCid = typeof value === 'string' ? value.match(/^\/ipfs\/([^/]+)/)?.[1] : null;
   globalThis.fetch = async (input) => {
@@ -55,15 +59,23 @@ function stubNetwork(value, page, htmlCids = []) {
         headers: { 'content-type': 'application/json' },
       });
     }
-    if (url.startsWith('https://ipfs.filebase.io/ipfs/')) {
-      const cid = url.slice('https://ipfs.filebase.io/ipfs/'.length);
+    if (url.startsWith(FB_BASE) || url.startsWith(FX_BASE)) {
+      const fromFx = url.startsWith(FX_BASE);
+      const cid = url.slice((fromFx ? FX_BASE : FB_BASE).length);
       if (cid === pageCid) {
+        if (!pageSources.includes(fromFx ? 'fx' : 'filebase')) {
+          throw new Error(`${fromFx ? 'fx' : 'filebase'} unreachable`);
+        }
         if (page === null) throw new Error('gateway unreachable');
         return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
       }
-      return htmlCids.includes(cid)
-        ? new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
-        : new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
+      if (htmlCids.includes(cid)) {
+        return new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      if (unhappyCids.includes(cid)) {
+        return new Response('slow down', { status: 429, headers: { 'content-type': 'text/plain' } });
+      }
+      return new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
     }
     if (url.startsWith('https://example.com/')) {
       return new Response('x', { status: 206, headers: { 'content-type': 'image/png' } });
@@ -75,9 +87,17 @@ function stubNetwork(value, page, htmlCids = []) {
 
 async function get(
   path,
-  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE, htmlCids = [] } = {},
+  {
+    value = `/ipfs/${CID}`,
+    method = 'GET',
+    ua = BROWSER,
+    page = V2_PAGE,
+    htmlCids = [],
+    unhappyCids = [],
+    pageSources = ['filebase', 'fx'],
+  } = {},
 ) {
-  const restore = stubNetwork(value, page, htmlCids);
+  const restore = stubNetwork(value, page, htmlCids, unhappyCids, pageSources);
   try {
     const headers = ua === null ? {} : { 'user-agent': ua };
     return await worker.fetch(
@@ -171,6 +191,28 @@ test('an unreadable page is served as asked, except on the gateway that just fai
   // (pre-relative-assets) cannot render there at all
   assert.equal(location(await get(`/w/${NAME}?gw=filebase`, { page: null })), IB());
   assert.equal(chooseGateway(null, 'filebase'), 'inbrowser');
+});
+
+// One gateway being slow or down must not decide where a page is served, nor
+// cost it its preview: Filebase took 26-30 s for a live page while fx served
+// the same bytes in 1.8 s (2026-09-23).
+test('either read source alone is enough', async () => {
+  for (const sources of [['filebase'], ['fx']]) {
+    assert.equal(
+      location(await get(`/w/${NAME}?gw=filebase`, { page: LEGACY_PAGE, pageSources: sources })),
+      IB(),
+      `browser, sources=${sources}`,
+    );
+    const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: LEGACY_PAGE, pageSources: sources })).text();
+    assert.match(body, /og:title" content="Old site"/, `crawler, sources=${sources}`);
+  }
+});
+
+test('with NO read source, it serves what was asked', async () => {
+  assert.equal(
+    location(await get(`/w/${NAME}?gw=fx`, { page: LEGACY_PAGE, pageSources: [] })),
+    FX(),
+  );
 });
 
 test('a non-HTML entry (a bare file) is served as asked', async () => {
@@ -321,6 +363,22 @@ test('a preview skips an image candidate that is not an image', async () => {
   const plain = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: only, htmlCids: [NOT_AN_IMAGE] })).text();
   assert.ok(!plain.includes('og:image'), plain);
   assert.match(plain, /twitter:card" content="summary"/);
+});
+
+// A gateway hiccup is not proof. Dropping the image whenever a probe fails
+// cost a live preview its picture (2026-09-23).
+test('a candidate is kept unless it is PROVEN not to be an image', async () => {
+  const page = `<title>Event</title><img src="https://${ASSET}.ipfs.dweb.link/">`;
+  const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page, unhappyCids: [ASSET] })).text();
+  assert.match(body, new RegExp(`og:image" content="https://ipfs\\.filebase\\.io/ipfs/${ASSET}"`));
+  assert.match(body, /summary_large_image/);
+
+  assert.equal(provenNotAnImage(200, 'text/html'), true);
+  assert.equal(provenNotAnImage(206, 'image/jpeg'), false);
+  assert.equal(provenNotAnImage(429, 'text/plain'), false);
+  assert.equal(provenNotAnImage(500, ''), false);
+  assert.equal(provenNotAnImage(404, 'text/plain'), false);
+  assert.equal(provenNotAnImage(200, null), true);
 });
 
 test('extractPreview prefers declared tags and falls back sensibly', () => {

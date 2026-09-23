@@ -48,7 +48,13 @@
  * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
 
-import { buildPreviewHtml, chooseGateway, extractPreview, PATH_GATEWAY_BASE } from './site-page.js';
+import {
+  buildPreviewHtml,
+  chooseGateway,
+  extractPreview,
+  PATH_GATEWAY_BASE,
+  provenNotAnImage,
+} from './site-page.js';
 
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
@@ -132,10 +138,20 @@ const DEFAULT_GATEWAY = 'inbrowser';
  */
 const PATH_GATEWAY = 'filebase';
 
-/** Where the Worker READS a page to decide how to serve it. Path-style and
- *  reachable without a browser; the bytes are immutable, so they are cached at
- *  the edge for a year and read at most once per location. */
-const PAGE_READ_BASE = PATH_GATEWAY_BASE;
+/**
+ * Where the Worker READS a page to decide how to serve it — both sources are
+ * asked at once and the first to answer with HTML wins. The bytes are
+ * immutable, so they are cached at the edge for a year and read at most once
+ * per location.
+ *
+ * Two sources because one is not reliable enough: Filebase took 26-30 s for a
+ * live site's page while fx served the identical bytes in 1.8 s (measured
+ * 2026-09-23), and a read that misses costs a crawler its preview and sends a
+ * visitor to a gateway the page may not render on. This is the WORKER reading
+ * on its own behalf; a published site still loads from whichever gateway the
+ * visitor uses, so it adds no runtime dependency on fx.
+ */
+const PAGE_READ_BASES = [PATH_GATEWAY_BASE, 'https://ipfs.cloud.fx.land/gateway/'];
 // A cold Filebase read of a page took 3.9 s (measured 2026-09-16); after that
 // it is served from the edge cache. A crawler is given longer: it waits, and a
 // missed read costs the link its preview.
@@ -282,7 +298,9 @@ export default {
             // pipeline markers and the preview metadata. A subpath is served
             // as asked.
             if (PREVIEW_BOT_RE.test(userAgent)) {
-              const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS) : null;
+              const page = path === '/'
+                ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS, PAGE_READ_TIMEOUT_MS)
+                : null;
               return typeof page === 'string'
                 ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
                 : redirect(pathTarget);
@@ -356,19 +374,22 @@ const PREVIEW_IMAGE_TIMEOUT_MS = 3000;
  * The first candidate that is not PROVEN to be something other than an image.
  * A page can point an <img> at a CID that is really an HTML page (measured on
  * a live site 2026-09-16) and a crawler then shows no picture at all. One
- * byte is enough to read the content type, and the answer is cached like the
- * page. A timeout proves nothing, so that candidate is kept.
+ * byte is enough to read the content type.
+ *
+ * Anything short of proof — a timeout, a 429, a 5xx — keeps the candidate:
+ * dropping the image because the gateway hiccuped costs every preview its
+ * picture (measured 2026-09-23). Not cached either, for the same reason: a
+ * bad minute must not be remembered.
  */
 async function pickPreviewImage(candidates) {
   for (const url of candidates.slice(0, PREVIEW_IMAGE_CANDIDATES)) {
     try {
       const res = await fetch(url, {
         headers: { Range: 'bytes=0-0' },
-        cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },
         signal: AbortSignal.timeout(PREVIEW_IMAGE_TIMEOUT_MS),
       });
       await res.body?.cancel();
-      if (res.ok && /^image\//i.test(res.headers.get('content-type') || '')) return url;
+      if (!provenNotAnImage(res.status, res.headers.get('content-type'))) return url;
     } catch (_) {
       return url;
     }
@@ -384,9 +405,33 @@ const NOT_HTML = Symbol('not-html');
  * other file; null when it could not be read in time. Neither non-string
  * answer is an error for the caller.
  */
-async function readPage(cid, timeoutMs) {
+async function readPage(cid, timeoutMs, retryTimeoutMs = 0) {
+  const first = await readPageRace(cid, timeoutMs);
+  // Retry only where waiting is free: a crawler waits, a visitor does not, and
+  // `null` (not NOT_HTML) is the only answer worth asking twice for.
+  if (first !== null || retryTimeoutMs <= 0) return first;
+  return readPageRace(cid, retryTimeoutMs);
+}
+
+/** Ask every source at once; resolve as soon as one returns HTML, otherwise
+ *  when they have all answered. readPageOnce never rejects. */
+function readPageRace(cid, timeoutMs) {
+  return new Promise((resolve) => {
+    let outstanding = PAGE_READ_BASES.length;
+    let sawNotHtml = false;
+    for (const base of PAGE_READ_BASES) {
+      readPageOnce(base, cid, timeoutMs).then((result) => {
+        if (typeof result === 'string') return resolve(result);
+        if (result === NOT_HTML) sawNotHtml = true;
+        if (--outstanding === 0) resolve(sawNotHtml ? NOT_HTML : null);
+      });
+    }
+  });
+}
+
+async function readPageOnce(base, cid, timeoutMs) {
   try {
-    const res = await fetch(`${PAGE_READ_BASE}${cid}`, {
+    const res = await fetch(`${base}${cid}`, {
       cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },
       signal: AbortSignal.timeout(timeoutMs),
     });
