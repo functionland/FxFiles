@@ -76,6 +76,19 @@ export function chooseGateway(html, requestedKey) {
   return requestedKey;
 }
 
+/**
+ * Whether a probe PROVES a candidate is not an image.
+ *
+ * Only a successful response with a non-image content type does. An upstream
+ * hiccup (429, 5xx, a timeout) proves nothing, and treating it as proof threw
+ * away the image of a live preview (measured 2026-09-23: Filebase answered the
+ * probe badly for a moment and the card lost its picture).
+ */
+export function provenNotAnImage(status, contentType) {
+  if (status !== 200 && status !== 206) return false;
+  return !/^image\//i.test(contentType || '');
+}
+
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
 function decodeEntities(text) {

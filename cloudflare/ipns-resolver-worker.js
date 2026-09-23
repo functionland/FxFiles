@@ -48,7 +48,13 @@
  * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
 
-import { buildPreviewHtml, chooseGateway, extractPreview, PATH_GATEWAY_BASE } from './site-page.js';
+import {
+  buildPreviewHtml,
+  chooseGateway,
+  extractPreview,
+  PATH_GATEWAY_BASE,
+  provenNotAnImage,
+} from './site-page.js';
 
 const W3NAME_ENDPOINT = 'https://name.web3.storage';
 const REDIRECT_CACHE_SECONDS = 30; // keep short so regenerations propagate fast
@@ -282,7 +288,9 @@ export default {
             // pipeline markers and the preview metadata. A subpath is served
             // as asked.
             if (PREVIEW_BOT_RE.test(userAgent)) {
-              const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS) : null;
+              const page = path === '/'
+                ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS, PAGE_READ_TIMEOUT_MS)
+                : null;
               return typeof page === 'string'
                 ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
                 : redirect(pathTarget);
@@ -356,19 +364,22 @@ const PREVIEW_IMAGE_TIMEOUT_MS = 3000;
  * The first candidate that is not PROVEN to be something other than an image.
  * A page can point an <img> at a CID that is really an HTML page (measured on
  * a live site 2026-09-16) and a crawler then shows no picture at all. One
- * byte is enough to read the content type, and the answer is cached like the
- * page. A timeout proves nothing, so that candidate is kept.
+ * byte is enough to read the content type.
+ *
+ * Anything short of proof — a timeout, a 429, a 5xx — keeps the candidate:
+ * dropping the image because the gateway hiccuped costs every preview its
+ * picture (measured 2026-09-23). Not cached either, for the same reason: a
+ * bad minute must not be remembered.
  */
 async function pickPreviewImage(candidates) {
   for (const url of candidates.slice(0, PREVIEW_IMAGE_CANDIDATES)) {
     try {
       const res = await fetch(url, {
         headers: { Range: 'bytes=0-0' },
-        cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },
         signal: AbortSignal.timeout(PREVIEW_IMAGE_TIMEOUT_MS),
       });
       await res.body?.cancel();
-      if (res.ok && /^image\//i.test(res.headers.get('content-type') || '')) return url;
+      if (!provenNotAnImage(res.status, res.headers.get('content-type'))) return url;
     } catch (_) {
       return url;
     }
@@ -384,7 +395,15 @@ const NOT_HTML = Symbol('not-html');
  * other file; null when it could not be read in time. Neither non-string
  * answer is an error for the caller.
  */
-async function readPage(cid, timeoutMs) {
+async function readPage(cid, timeoutMs, retryTimeoutMs = 0) {
+  const first = await readPageOnce(cid, timeoutMs);
+  // Retry only where waiting is free: a crawler waits, a visitor does not, and
+  // `null` (not NOT_HTML) is the only answer worth asking twice for.
+  if (first !== null || retryTimeoutMs <= 0) return first;
+  return readPageOnce(cid, retryTimeoutMs);
+}
+
+async function readPageOnce(cid, timeoutMs) {
   try {
     const res = await fetch(`${PAGE_READ_BASE}${cid}`, {
       cf: { cacheTtl: PAGE_CACHE_SECONDS, cacheEverything: true },

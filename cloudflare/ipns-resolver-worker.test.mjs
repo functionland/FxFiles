@@ -20,6 +20,7 @@ import {
   hasNonImageRelativeRefs,
   pipelineVersion,
   previewImageUrl,
+  provenNotAnImage,
 } from './site-page.js';
 
 const NAME = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
@@ -43,7 +44,7 @@ const V2_PAGE = `<!doctype html><html><head><script data-fx data-fx-v="2">/* dat
  * `page` is what reading the record's CID returns (null => the read fails).
  * Any other CID is an image, unless listed in `htmlCids`.
  */
-function stubNetwork(value, page, htmlCids = []) {
+function stubNetwork(value, page, htmlCids = [], unhappyCids = []) {
   const original = globalThis.fetch;
   const pageCid = typeof value === 'string' ? value.match(/^\/ipfs\/([^/]+)/)?.[1] : null;
   globalThis.fetch = async (input) => {
@@ -61,9 +62,13 @@ function stubNetwork(value, page, htmlCids = []) {
         if (page === null) throw new Error('gateway unreachable');
         return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
       }
-      return htmlCids.includes(cid)
-        ? new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
-        : new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
+      if (htmlCids.includes(cid)) {
+        return new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      if (unhappyCids.includes(cid)) {
+        return new Response('slow down', { status: 429, headers: { 'content-type': 'text/plain' } });
+      }
+      return new Response('x', { status: 206, headers: { 'content-type': 'image/jpeg' } });
     }
     if (url.startsWith('https://example.com/')) {
       return new Response('x', { status: 206, headers: { 'content-type': 'image/png' } });
@@ -75,9 +80,9 @@ function stubNetwork(value, page, htmlCids = []) {
 
 async function get(
   path,
-  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE, htmlCids = [] } = {},
+  { value = `/ipfs/${CID}`, method = 'GET', ua = BROWSER, page = V2_PAGE, htmlCids = [], unhappyCids = [] } = {},
 ) {
-  const restore = stubNetwork(value, page, htmlCids);
+  const restore = stubNetwork(value, page, htmlCids, unhappyCids);
   try {
     const headers = ua === null ? {} : { 'user-agent': ua };
     return await worker.fetch(
@@ -321,6 +326,22 @@ test('a preview skips an image candidate that is not an image', async () => {
   const plain = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: only, htmlCids: [NOT_AN_IMAGE] })).text();
   assert.ok(!plain.includes('og:image'), plain);
   assert.match(plain, /twitter:card" content="summary"/);
+});
+
+// A gateway hiccup is not proof. Dropping the image whenever a probe fails
+// cost a live preview its picture (2026-09-23).
+test('a candidate is kept unless it is PROVEN not to be an image', async () => {
+  const page = `<title>Event</title><img src="https://${ASSET}.ipfs.dweb.link/">`;
+  const body = await (await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page, unhappyCids: [ASSET] })).text();
+  assert.match(body, new RegExp(`og:image" content="https://ipfs\\.filebase\\.io/ipfs/${ASSET}"`));
+  assert.match(body, /summary_large_image/);
+
+  assert.equal(provenNotAnImage(200, 'text/html'), true);
+  assert.equal(provenNotAnImage(206, 'image/jpeg'), false);
+  assert.equal(provenNotAnImage(429, 'text/plain'), false);
+  assert.equal(provenNotAnImage(500, ''), false);
+  assert.equal(provenNotAnImage(404, 'text/plain'), false);
+  assert.equal(provenNotAnImage(200, null), true);
 });
 
 test('extractPreview prefers declared tags and falls back sensibly', () => {
