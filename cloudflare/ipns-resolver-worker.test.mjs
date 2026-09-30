@@ -790,7 +790,9 @@ test('launcher: a browser that stalls instead of answering is capped like the ne
 test('launcher: the watchdog sends the visitor on even if a wait is somehow not capped', async () => {
   // Every wait is capped at timeoutMs; make that cap useless and let only the
   // watchdog stand between the visitor and a page that never moves.
-  const r = await runLauncher({ timeoutMs: 60_000, watchdogMs: 30, net: () => 'hang' });
+  // (a cap ten times the watchdog is useless enough, and does not leave
+  // minutes of timers behind for the test runner to wait out)
+  const r = await runLauncher({ timeoutMs: 300, watchdogMs: 30, net: () => 'hang' });
   assert.equal(r.url, 'FB');
 });
 
