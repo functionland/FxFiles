@@ -30,17 +30,32 @@ filters a gateway, nor that a browser cannot run a service worker.
   1. *This browser can run it:* inbrowser's own entry checks
      (`Promise.withResolvers`, non-special-scheme URL parsing, `serviceWorker`
      in `navigator`), plus `navigator.serviceWorker.getRegistrations()`
-     resolving. Settings that block site data leave the API present but
+     resolving within 2.5 s. Settings that block site data leave the API present but
      refusing ("The user denied permission to use Service Worker"), and
      `navigator.cookieEnabled` still says `true` then, so it is not used
      (measured in Chrome, 2026-09-30). iOS in-app browsers (WKWebView) have no
      service workers and fail here, with no special case.
   2. *Its service worker can fetch the site from this network:* the site's own
      address `https://<cid>.ipfs.inbrowser.link/` only hands over the worker.
-     The worker then fetches content from `trustless-gateway.net` and finds
-     providers through `delegated-ipfs.dev`. All three are probed at once
-     (`no-cors`, 2.5 s cap). The service hosts are probed at API paths that
-     answer directly (`/ipfs/bafkqaaa?format=raw` gives 403, still an answer;
+     The worker then fetches content from `trustless-gateway.net` and asks
+     `delegated-ipfs.dev` for providers. All three are probed at once
+     (`no-cors`, 2.5 s cap), but they are not equally needed. Opening a
+     site's inbrowser address with one host made unreachable showed this
+     (Chrome, 2026-09-30):
+
+     | Host made unreachable | inbrowser |
+     |---|---|
+     | `trustless-gateway.net` doesn't resolve | its own 504 after 70 s |
+     | `delegated-ipfs.dev` doesn't resolve | **the site renders** (4.3 s) |
+     | `delegated-ipfs.dev` silently dropped | its own 504 after 70 s |
+
+     So the site's address and `trustless-gateway.net` must **answer**, while
+     the router only has to **not stall**: failing fast is fine. That matters
+     now, because its operator (IPFS Shipyard) stops running it on 2026-09-30.
+     Demanding an answer would send every visitor past a working inbrowser
+     once it goes.
+     The service hosts are probed at API paths that answer directly
+     (`/ipfs/bafkqaaa?format=raw` gives 403, still an answer;
      `/routing/v1/providers/bafkqaaa` gives 200). Their roots redirect to
      docs.ipfs.tech, which the launcher's CSP refuses, and a `no-cors` fetch
      must follow redirects, so probing a root failed on every visit.
@@ -52,6 +67,10 @@ filters a gateway, nor that a browser cannot run a service worker.
 - **Filebase** is the last resort and is not checked. Its CSP blocks inline
   scripts and embeds, so it is never first. Without JavaScript the launcher's
   `<noscript>` refresh goes straight there.
+
+Every wait is capped, and a watchdog sends the visitor to the last resort
+after 10 s whatever the browser does. The slowest legitimate path is three
+capped waits, 7.5 s. The visitor is sent exactly once.
 
 The network answer for inbrowser is remembered on fxfiles.top: "reachable" for
 5 minutes, "blocked" for 30. A stale "reachable" after moving to a filtered
@@ -65,6 +84,7 @@ Measured in real Chrome against real gateways (2026-09-30):
 | Everything reachable | inbrowser | 0.55 s; 0.06 s once remembered |
 | trustless-gateway.net blocked | orbitor, else Filebase | 2.9 s (orbitor filtered on the test network) |
 | delegated-ipfs.dev silently dropped | orbitor, else Filebase | 5.4 s (both caps) |
+| delegated-ipfs.dev doesn't resolve | inbrowser, site rendered | 0.4 s |
 | inbrowser and orbitor blocked | Filebase | 0.4 s; 0.06 s once remembered |
 | Site data blocked (no service workers) | orbitor, else Filebase | 2.9 s |
 | JavaScript off | Filebase | 0.5 s |

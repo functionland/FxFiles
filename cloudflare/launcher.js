@@ -21,13 +21,14 @@
  *  2. its service worker can fetch the site from this network. The site's own
  *     inbrowser address (<cid>.ipfs.inbrowser.link — its wildcard DNS and
  *     certificate) only hands the browser that worker; the worker then fetches
- *     the content from trustless-gateway.net (HTTPS) and finds providers
- *     through delegated-ipfs.dev (src/config, src/sw/lib/verified-fetch.ts).
- *     All three must be reachable. (A 403 still proves a host is reachable —
- *     trustless-gateway.net refuses anyone but that worker. See
- *     INBROWSER_PROBE_URLS for why each is probed where it is.) The site's
- *     address is probed at its root: no path or query leaves the page, and a
- *     worker already installed there does not answer for another page's fetch.
+ *     the content from trustless-gateway.net (HTTPS) and asks delegated-ipfs.dev
+ *     for providers (src/config, src/sw/lib/verified-fetch.ts). The first two
+ *     must answer (a 403 still proves a host is reachable —
+ *     trustless-gateway.net refuses anyone but that worker); the router must
+ *     only not stall. See INBROWSER_PROBE_URLS for the measurements behind
+ *     that and for why each is probed where it is. The site's address is
+ *     probed at its root: no path or query leaves the page, and a worker
+ *     already installed there does not answer for another page's fetch.
  * orbitor is chosen when the site's page itself loads there: its status is
  * read (orbitor allows cross-origin reads), not merely the host's reachability.
  * Filebase is the last resort and is not checked.
@@ -47,18 +48,32 @@
 import { escapeHtml } from './site-page.js';
 
 /**
- * The services inbrowser's service worker needs, probed together with the
- * site's own inbrowser address — each at an address that answers DIRECTLY.
- * Both hosts redirect their root to docs.ipfs.tech, which this page's CSP
- * rightly refuses, and a no-cors fetch must follow redirects (Chrome: "Request
- * mode is 'no-cors' but the redirect mode is not 'follow'"), so probing a root
- * failed on every visit (measured 2026-09-30). These are the very requests the
- * worker makes: the routing API, and a raw-block fetch (403 for anyone but
- * that worker — still an answer). `bafkqaaa` is the identity CID of empty
- * content: it carries nothing about the visitor or the site.
+ * What inbrowser's service worker needs from the network, measured in Chrome
+ * by opening a site's inbrowser address with one host made unreachable
+ * (2026-09-30):
+ *
+ *   trustless-gateway.net unresolvable   -> 504 after 70 s: it must ANSWER
+ *   delegated-ipfs.dev unresolvable      -> the site renders (4.3 s)
+ *   delegated-ipfs.dev silently dropped  -> 504 after 70 s: it must not STALL
+ *
+ * The router only has to fail fast, not answer — which matters now: its
+ * operator (IPFS Shipyard) stops running it on 2026-09-30, and demanding an
+ * answer would have sent every visitor past a working inbrowser once it goes.
+ *
+ * Each is probed at an address that answers DIRECTLY. Both hosts redirect
+ * their root to docs.ipfs.tech, which this page's CSP rightly refuses, and a
+ * no-cors fetch must follow redirects (Chrome: "Request mode is 'no-cors' but
+ * the redirect mode is not 'follow'"), so probing a root failed on every visit.
+ * These are the very requests the worker makes: a raw-block fetch (403 for
+ * anyone but that worker — still an answer) and the routing API. `bafkqaaa`
+ * is the identity CID of empty content: it names neither visitor nor site.
  */
 export const INBROWSER_PROBE_URLS = [
   'https://trustless-gateway.net/ipfs/bafkqaaa?format=raw',
+];
+
+/** Must settle — answer OR fail — within the cap; only a stall is fatal. */
+export const INBROWSER_ROUTER_URLS = [
   'https://delegated-ipfs.dev/routing/v1/providers/bafkqaaa',
 ];
 
@@ -71,6 +86,12 @@ export const ORBITOR_ORIGIN = 'https://eu.orbitor.dev';
  *  caps the one that silently drops or stalls the connection instead
  *  (measured on this network: orbitor.dev connections reset ~19 s in). */
 export const CHECK_TIMEOUT_MS = 2500;
+
+/** The longest a visitor can stay on the launcher, whatever the browser does.
+ *  The slowest legitimate path is three capped waits (inbrowser capability,
+ *  inbrowser probes, orbitor) = 7.5 s; this only fires if something that was
+ *  supposed to be capped was not. */
+export const WATCHDOG_MS = 4 * CHECK_TIMEOUT_MS;
 
 /** How long inbrowser's NETWORK answer is remembered. "Reachable" is kept for
  *  less time: acting on a stale "reachable" after moving to a filtered network
@@ -90,7 +111,12 @@ export const LAUNCHER_SCRIPT = `(function () {
   var KEY = 'fx_inbrowser_reachable';
   var now = Date.now();
 
-  function go(url) { location.replace(url); }
+  var gone = false;
+  function go(url) {
+    if (gone) return;
+    gone = true;
+    location.replace(url);
+  }
 
   function within(promise, ms) {
     return new Promise(function (resolve) {
@@ -119,15 +145,20 @@ export const LAUNCHER_SCRIPT = `(function () {
     try { localStorage.setItem(KEY, JSON.stringify({ ok: ok, at: now })); } catch (e) {}
   }
 
+  function yes() { return true; }
+
+  function probe(url) {
+    return fetch(url, { mode: 'no-cors', cache: 'no-store', credentials: 'omit' });
+  }
+
   function canRunInbrowser() {
     try {
       if (!('withResolvers' in Promise)) return Promise.resolve(false);
       if (new URL('ipfs://host').hostname !== 'host') return Promise.resolve(false);
       if (!('serviceWorker' in navigator) || !navigator.serviceWorker) return Promise.resolve(false);
-      return navigator.serviceWorker.getRegistrations().then(
-        function () { return true; },
-        function () { return false; }
-      );
+      // Capped like every other wait: a browser that stalls here instead of
+      // answering must not keep the visitor on this page.
+      return within(navigator.serviceWorker.getRegistrations(), data.timeoutMs);
     } catch (e) {
       return Promise.resolve(false);
     }
@@ -138,10 +169,11 @@ export const LAUNCHER_SCRIPT = `(function () {
       if (!capable) return false;
       var seen = recall();
       if (seen !== null) return seen;
-      var probes = [new URL(url).origin + '/'].concat(data.inbrowserProbes);
-      return within(Promise.all(probes.map(function (probe) {
-        return fetch(probe, { mode: 'no-cors', cache: 'no-store', credentials: 'omit' });
-      })), data.timeoutMs).then(function (ok) {
+      var answered = [new URL(url).origin + '/'].concat(data.inbrowserProbes).map(probe);
+      var settled = data.inbrowserRouters.map(function (url) {
+        return probe(url).then(yes, yes);
+      });
+      return within(Promise.all(answered.concat(settled)), data.timeoutMs).then(function (ok) {
         remember(ok);
         return ok;
       });
@@ -172,10 +204,14 @@ export const LAUNCHER_SCRIPT = `(function () {
     }, next);
   }
 
+  var last = data.candidates[data.candidates.length - 1].url;
+  // Every wait above is capped, so this never fires in a working browser. It
+  // is the promise that the visitor leaves this page whatever a browser does.
+  setTimeout(function () { go(last); }, data.watchdogMs);
   try {
     next();
   } catch (e) {
-    go(data.candidates[data.candidates.length - 1].url);
+    go(last);
   }
 })();`;
 
@@ -210,7 +246,9 @@ export function buildLauncherHtml(candidates) {
   const data = {
     candidates,
     inbrowserProbes: INBROWSER_PROBE_URLS,
+    inbrowserRouters: INBROWSER_ROUTER_URLS,
     timeoutMs: CHECK_TIMEOUT_MS,
+    watchdogMs: WATCHDOG_MS,
     reachableTtlMs: REACHABLE_TTL_MS,
     blockedTtlMs: BLOCKED_TTL_MS,
   };
@@ -248,7 +286,11 @@ let policyPromise = null;
  * style (by hash) and the hosts it checks. Computed once.
  */
 export function launcherCsp() {
-  const hosts = [INBROWSER_SITE_SOURCE, ...INBROWSER_PROBE_URLS.map((u) => new URL(u).origin), ORBITOR_ORIGIN];
+  const hosts = [
+    INBROWSER_SITE_SOURCE,
+    ...[...INBROWSER_PROBE_URLS, ...INBROWSER_ROUTER_URLS].map((u) => new URL(u).origin),
+    ORBITOR_ORIGIN,
+  ];
   policyPromise ??= Promise.all([sha256Base64(LAUNCHER_SCRIPT), sha256Base64(LAUNCHER_STYLE)]).then(
     ([scriptHash, styleHash]) =>
       [

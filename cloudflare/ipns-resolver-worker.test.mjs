@@ -19,6 +19,7 @@ import {
   BLOCKED_TTL_MS,
   CHECK,
   INBROWSER_PROBE_URLS,
+  INBROWSER_ROUTER_URLS,
   INBROWSER_SITE_SOURCE,
   jsonForScriptBlock,
   LAUNCHER_SCRIPT,
@@ -571,7 +572,7 @@ test('the launcher is locked down: only its own script, style and the hosts it c
   assert.ok(csp.includes(`script-src ${sha(LAUNCHER_SCRIPT)}`), csp);
   assert.ok(csp.includes(`style-src ${sha(LAUNCHER_STYLE)}`), csp);
   const connect = csp.match(/connect-src ([^;]+)/)[1].split(' ').sort();
-  const expected = [INBROWSER_SITE_SOURCE, ...INBROWSER_PROBE_URLS.map((u) => new URL(u).origin), ORBITOR_ORIGIN].sort();
+  const expected = [INBROWSER_SITE_SOURCE, ...[...INBROWSER_PROBE_URLS, ...INBROWSER_ROUTER_URLS].map((u) => new URL(u).origin), ORBITOR_ORIGIN].sort();
   assert.deepEqual(connect, expected);
   // the site's own inbrowser address, which the launcher probes, is covered
   // by that wildcard — and nothing else of inbrowser's is
@@ -625,13 +626,14 @@ PromiseWithoutResolvers.all = (a) => Promise.all(a);
  *  probes: the origin's root — no path, no query. */
 const IB_URL = `${IB(CID, '/about/')}?ref=abc`;
 const SITE_PROBE = `https://${CID}.ipfs.inbrowser.link/`;
-const PROBES = [SITE_PROBE, ...INBROWSER_PROBE_URLS];
+const PROBES = [SITE_PROBE, ...INBROWSER_PROBE_URLS, ...INBROWSER_ROUTER_URLS];
 
 /**
  * Run the launcher's real script against a stand-in browser.
  *   net(url)   how the network answers a request: 'resolve' | 'reject' | 'hang'
  *   pageOk     whether orbitor answers the page with a success status
  *   sw         'ok' | 'none' (no service workers, e.g. iOS in-app) | 'denied'
+ *              | 'stall' (getRegistrations never settles)
  * Resolves with where it went — 'IB' for the inbrowser destination.
  */
 function runLauncher({
@@ -642,6 +644,7 @@ function runLauncher({
   stored,
   storageThrows = false,
   timeoutMs = 30,
+  watchdogMs = 1000,
   now = 1_000_000_000,
   candidates = [
     { url: IB_URL, check: CHECK.INBROWSER },
@@ -651,16 +654,19 @@ function runLauncher({
 } = {}) {
   return new Promise((resolve) => {
     const data = {
-      candidates, inbrowserProbes: INBROWSER_PROBE_URLS, timeoutMs,
+      candidates, inbrowserProbes: INBROWSER_PROBE_URLS, inbrowserRouters: INBROWSER_ROUTER_URLS, timeoutMs, watchdogMs,
       reachableTtlMs: REACHABLE_TTL_MS, blockedTtlMs: BLOCKED_TTL_MS,
     };
     const store = new Map(stored === undefined ? [] : [['fx_inbrowser_reachable', stored]]);
     const calls = [];
+    const navigations = [];
     const navigator = sw === 'none' ? {} : {
       serviceWorker: {
-        getRegistrations: () => (sw === 'denied'
-          ? Promise.reject(new Error('SecurityError: service workers are disabled'))
-          : Promise.resolve([])),
+        getRegistrations: () => {
+          if (sw === 'denied') return Promise.reject(new Error('SecurityError: service workers are disabled'));
+          if (sw === 'stall') return new Promise(() => {});
+          return Promise.resolve([]);
+        },
       },
     };
     const env = {
@@ -670,7 +676,10 @@ function runLauncher({
         setItem: (k, v) => { if (storageThrows) throw new Error('denied'); store.set(k, v); },
       },
       location: {
-        replace: (url) => resolve({ url: url === IB_URL ? 'IB' : url, calls, remembered: store.get('fx_inbrowser_reachable') }),
+        replace: (url) => {
+          navigations.push(url);
+          resolve({ url: url === IB_URL ? 'IB' : url, calls, navigations, remembered: store.get('fx_inbrowser_reachable') });
+        },
       },
       fetch: (url, opts = {}) => {
         calls.push({ url, method: opts.method ?? 'GET', mode: opts.mode, redirect: opts.redirect });
@@ -706,7 +715,7 @@ test('launcher: all good -> inbrowser; orbitor is never contacted', async () => 
     assert.equal(call.mode, 'no-cors', call.url);
     assert.ok(call.redirect === undefined || call.redirect === 'follow', `${call.url} redirect=${call.redirect}`);
   }
-  for (const url of INBROWSER_PROBE_URLS) {
+  for (const url of [...INBROWSER_PROBE_URLS, ...INBROWSER_ROUTER_URLS]) {
     assert.notEqual(new URL(url).pathname, '/', `${url}: a service host's root redirects off-policy`);
   }
   assert.equal(askedOrbitor(r), false, 'privacy: orbitor only when inbrowser is ruled out');
@@ -717,16 +726,35 @@ test('launcher: all good -> inbrowser; orbitor is never contacted', async () => 
 // then fetches the site from other hosts, and THAT is what a filtered network
 // blocks. Reaching the address alone must not be enough — nor the services
 // alone: the visitor is sent to that exact address.
-test('launcher: any host inbrowser needs blocked or dropped -> orbitor', async () => {
-  const hosts = [`${CID}.ipfs.inbrowser.link`, 'trustless-gateway.net', 'delegated-ipfs.dev'];
-  for (const host of hosts) {
+test('launcher: the site address or the content host blocked or dropped -> orbitor', async () => {
+  for (const host of [`${CID}.ipfs.inbrowser.link`, 'trustless-gateway.net']) {
     for (const how of ['reject', 'hang']) {
       const r = await runLauncher({ timeoutMs: 20, net: (url) => (new URL(url, 'https://x.invalid').host === host ? how : 'resolve') });
       assert.equal(r.url, 'ORB', `${host} ${how}`);
       assert.equal(JSON.parse(r.remembered).ok, false);
     }
   }
-  assert.deepEqual(PROBES.map((u) => new URL(u).host).sort(), [...hosts].sort());
+});
+
+// Measured in Chrome (2026-09-30), opening a site's inbrowser address directly:
+// delegated-ipfs.dev UNRESOLVABLE -> the site still renders (4.3 s); silently
+// DROPPED -> inbrowser's own 504 after 70 s. Its operator stops running it on
+// 2026-09-30, so demanding an answer would skip a working inbrowser for all.
+test('launcher: the router may fail, but not stall', async () => {
+  const router = (how) => (url) => (new URL(url, 'https://x.invalid').host === 'delegated-ipfs.dev' ? how : 'resolve');
+  const failed = await runLauncher({ timeoutMs: 20, net: router('reject') });
+  assert.equal(failed.url, 'IB', 'a router that fails fast leaves inbrowser working');
+  assert.equal(JSON.parse(failed.remembered).ok, true);
+  const stalled = await runLauncher({ timeoutMs: 20, net: router('hang') });
+  assert.equal(stalled.url, 'ORB', 'a router that stalls breaks inbrowser');
+  assert.equal(JSON.parse(stalled.remembered).ok, false);
+});
+
+test('launcher: every host inbrowser needs is probed', () => {
+  assert.deepEqual(
+    PROBES.map((u) => new URL(u).host).sort(),
+    [`${CID}.ipfs.inbrowser.link`, 'delegated-ipfs.dev', 'trustless-gateway.net'].sort(),
+  );
 });
 
 test('launcher: the Worker-built destination is the address it probes', async () => {
@@ -749,6 +777,28 @@ test("launcher: a browser that cannot run inbrowser skips it without probing", a
     assert.equal(probed(r), 0, `${label}: no network probe needed`);
     // a property of the browser, not the network: nothing remembered
     assert.equal(r.remembered, undefined, label);
+  }
+});
+
+test('launcher: a browser that stalls instead of answering is capped like the network', async () => {
+  const r = await runLauncher({ sw: 'stall', timeoutMs: 20 });
+  assert.equal(r.url, 'ORB');
+  assert.equal(probed(r), 0);
+  assert.equal(r.remembered, undefined, 'a property of the browser, not the network');
+});
+
+test('launcher: the watchdog sends the visitor on even if a wait is somehow not capped', async () => {
+  // Every wait is capped at timeoutMs; make that cap useless and let only the
+  // watchdog stand between the visitor and a page that never moves.
+  const r = await runLauncher({ timeoutMs: 60_000, watchdogMs: 30, net: () => 'hang' });
+  assert.equal(r.url, 'FB');
+});
+
+test('launcher: the visitor is sent exactly once, whatever finishes first', async () => {
+  for (const opts of [{}, { sw: 'none' }, { net: () => 'reject' }, { timeoutMs: 20, net: () => 'hang' }]) {
+    const r = await runLauncher({ ...opts, watchdogMs: 40 });
+    await new Promise((done) => setTimeout(done, 120));
+    assert.equal(r.navigations.length, 1, JSON.stringify(r.navigations));
   }
 });
 
