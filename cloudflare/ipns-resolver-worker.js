@@ -2,17 +2,19 @@
  * FxFiles stable-link resolver — a STATELESS Cloudflare Worker that is the
  * fast, pretty front door over each website group's IPNS name.
  *
- *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>][?gw=inbrowser|filebase|fx]
+ *   GET https://fxfiles.top/w/<ipnsName>[/<subpath>]
  *      -> resolve <ipnsName> to its current CID via w3name's plain HTTP API
- *      -> for a BROWSER, 302 to the gateway that can render that page:
- *         https://<cid>.ipfs.inbrowser.link/<subpath>         (default)
- *         https://ipfs.filebase.io/ipfs/<cid>/<subpath>       (gw=filebase)
- *         https://ipfs.cloud.fx.land/gateway/<cid>/<subpath>  (gw=fx)
- *         — overridden when the page itself cannot render on the one asked
- *         for (see chooseGateway in site-page.js)
+ *      -> for a BROWSER, 200 with a small launcher page (launcher.js) that
+ *         tries, IN THE VISITOR'S BROWSER, in order:
+ *           https://<cid>.ipfs.inbrowser.link/<subpath>
+ *           https://eu.orbitor.dev/ipfs/<cid>/<subpath>
+ *           https://ipfs.filebase.io/ipfs/<cid>/<subpath>
+ *         and goes to the first that works there. inbrowser is skipped when
+ *         the page cannot render on it (browserChain in site-page.js) or the
+ *         CID cannot be a hostname. `?gw=` is accepted and ignored.
  *      -> for a LINK-PREVIEW CRAWLER, 200 with Open Graph tags built from the
  *         page (a crawler cannot run inbrowser's service worker)
- *      -> for any OTHER client, 302 to the path-style Filebase URL
+ *      -> for any OTHER client (and HEAD), 302 to the path-style Filebase URL
  *
  * Why this design:
  *  - The app never talks to Cloudflare and holds NO credential here. The IPNS
@@ -32,8 +34,8 @@
  *
  * Abuse posture (it MUST stay publicly reachable so links + previews work):
  *  - Not an open redirector: the destination host comes from a FIXED allowlist
- *    (see GATEWAYS) keyed by `?gw=`, never from caller-supplied text, and the
- *    path is a CID this Worker resolved itself. A user's custom gateway
+ *    (see GATEWAYS), never from caller-supplied text, and the path is a CID
+ *    this Worker resolved itself. A user's custom gateway
  *    template is honoured for their own asset URLs in the app, but is
  *    deliberately NOT accepted here. Anything that isn't a plausible `k51…`
  *    IPNS name is rejected outright.
@@ -48,9 +50,10 @@
  * gateway in Aug 2024, and the IPFS Foundation retires dweb.link on 2026-09-21.
  */
 
+import { buildLauncherHtml, CHECK, launcherCsp, ORBITOR_ORIGIN } from './launcher.js';
 import {
+  browserChain,
   buildPreviewHtml,
-  chooseGateway,
   extractPreview,
   PATH_GATEWAY_BASE,
   provenNotAnImage,
@@ -66,41 +69,41 @@ const CID_RE = /^[A-Za-z0-9]{40,120}$/;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 /**
- * Gateways this Worker may redirect to, selected with `?gw=<key>`.
+ * The only places a visitor is ever sent. A FIXED ALLOWLIST, deliberately: a
+ * link anyone can share must not become an open redirector, so no destination
+ * host ever comes from the request. (`?gw=` is accepted and dropped: browsers
+ * all follow the same chain, see browserChain in site-page.js, and a user's
+ * custom gateway template is never honoured here.)
  *
- * A FIXED ALLOWLIST, deliberately — the app lets a user set any IPFS gateway
- * template they like for their own asset URLs, but that value must never reach
- * here. Honouring arbitrary input would turn a link anyone can share into an
- * open redirector, which is exactly the property the checks below exist to
- * protect. Unknown or missing `gw` falls back to the default.
- *
- * `dweb` is gone: the IPFS Foundation retires dweb.link on 2026-09-21, and it
- * already redirects to its successor `inbrowser`, which is listed instead.
- *
- * Note `inbrowser` is SUBDOMAIN-style, which is why SUBDOMAIN_SAFE_CID exists
- * again — a case-sensitive CIDv0 (`Qm…`) or a CID past the 63-character DNS
- * label limit corrupts silently as a hostname. Such a CID falls back to the
- * default rather than being served a mangled one.
+ * `inbrowser` is SUBDOMAIN-style, which is why SUBDOMAIN_SAFE_CID exists — a
+ * case-sensitive CIDv0 (`Qm…`) or a CID past the 63-character DNS label limit
+ * corrupts silently as a hostname. Such a CID skips inbrowser.
  */
 const SUBDOMAIN_SAFE_CID = /^[a-z0-9]{1,63}$/;
 
 const GATEWAYS = {
-  filebase: {
-    // Served the same CID fine at the moment dweb.link was 429ing it
-    // (measured 2026-09-12).
-    cid: (cid, path) => `https://ipfs.filebase.io/ipfs/${cid}${path}`,
-  },
-  fx: {
-    // Ours. Verified 2026-09-12 to serve these CIDs with correct content types.
-    cid: (cid, path) => `https://ipfs.cloud.fx.land/gateway/${cid}${path}`,
-  },
   inbrowser: {
-    // dweb.link's successor: a service-worker gateway, and BROWSER-ONLY — a
-    // request without a browser User-Agent is refused with 403 (measured
-    // 2026-09-12), so a link sent here renders for a person but gets no
-    // preview card from a crawler.
+    // A service-worker gateway (dweb.link's successor), BROWSER-ONLY: without
+    // a browser it answers 403 or its bootstrap page, and it needs service
+    // workers the browser permits plus network access to the hosts its worker
+    // fetches from. The launcher checks all of that before sending anyone.
     subdomain: true,
+    check: CHECK.INBROWSER,
     cid: (cid, path) => `https://${cid}.ipfs.inbrowser.link${path}`,
+  },
+  orbitor: {
+    // ChainSafe's public gateway (Rainbow behind Cloudflare). No CSP, so a
+    // site's inline scripts and Google Forms embeds work; CORS-open, so the
+    // launcher can read whether this site's page actually loads. Filtered on
+    // some networks (measured 2026-09-30: DNS rewritten, connections reset).
+    check: CHECK.PAGE,
+    cid: (cid, path) => `${ORBITOR_ORIGIN}/ipfs/${cid}${path}`,
+  },
+  filebase: {
+    // The last resort, reachable almost everywhere. Its CSP (`default-src
+    // 'self'`) blocks inline scripts and embeds, so it is never first.
+    check: CHECK.NONE,
+    cid: (cid, path) => `https://ipfs.filebase.io/ipfs/${cid}${path}`,
   },
 };
 
@@ -121,20 +124,8 @@ function joinPath(inner, subpath) {
 }
 
 /**
- * Default when `?gw=` is absent or unknown.
- *
- * inbrowser, not filebase (changed 2026-09-16): Filebase answers every page
- * with `Content-Security-Policy: default-src 'self'`, which blocks a site's
- * inline scripts and its Google Forms contact embed, and the sites published
- * before relative assets name dweb.link for every image — which only
- * inbrowser's service worker still serves. inbrowser sends no CSP.
- */
-const DEFAULT_GATEWAY = 'inbrowser';
-
-/**
- * Path-style gateway for everything a service-worker gateway cannot serve: a
- * CID that is not a valid DNS label, and any client that is not a browser
- * (inbrowser answers those with 403 or its bootstrap page).
+ * Where a client that is not a browser goes (search engines, curl, fetch
+ * libraries): a path gateway that serves anyone, no checks possible.
  */
 const PATH_GATEWAY = 'filebase';
 
@@ -173,19 +164,6 @@ const PAGE_CACHE_SECONDS = 31536000;
 // names do not belong here. Pinned by tests with real in-app user agents.
 const PREVIEW_BOT_RE =
   /facebookexternalhit|facebookcatalog|facebot|twitterbot|linkedinbot|slackbot|discordbot|whatsapp\/|telegrambot|pinterestbot|redditbot|applebot|skypeuripreview|vkshare|embedly|iframely|mastodon\/|cardyb|snap url preview|kakaotalk-scrap/i;
-
-/**
- * In-app browsers of social apps. On iOS they are WKWebView, which has no
- * service workers (Apple, and MDN compat data), so inbrowser.link shows its
- * "Service Worker Required" page instead of the site. They are sent to the
- * path gateway, where every page at least renders. Applied on Android too:
- * whether each app leaves service workers enabled in its WebView is not
- * something we can verify from here, and a page without some images is a
- * better failure than no page. Telegram's in-app browser sends a plain Safari
- * user agent, so it cannot be recognised.
- */
-const IN_APP_BROWSER_RE =
-  /instagram|fban|fbav|fb_iab|fb4a|fbios|barcelona|musical_ly|bytedancewebview|tiktok|snapchat|linkedinapp|\bline\/|micromessenger|\[pinterest/i;
 
 /** Any other non-browser client (search engines, fetch libraries, curl):
  *  redirected to the path gateway, which serves them. */
@@ -240,23 +218,12 @@ export default {
     const subpath = match[2] || '/';
 
     // `gw` is ours, not the gateway's — strip it before forwarding so the
-    // upstream never sees a stray query param it does not understand.
+    // upstream never sees a stray query param it does not understand. Its
+    // value no longer steers anything (browsers all follow the same chain),
+    // so links the app decorated with it keep working unchanged.
     const forwarded = new URLSearchParams(url.search);
-    const gwKey = forwarded.get('gw');
     forwarded.delete('gw');
     const query = forwarded.toString() ? `?${forwarded}` : '';
-
-    // Unknown keys fall back rather than erroring: a link with a typo — or a
-    // retired key like `gw=dweb` — should still resolve, just on the default.
-    //
-    // hasOwn, NOT a bare `GATEWAYS[gwKey] ||` — gwKey is caller-controlled and
-    // a plain object literal inherits from Object.prototype, so `?gw=toString`
-    // and `?gw=__proto__` would hand back a TRUTHY inherited value whose `.cid`
-    // is undefined. That throws inside the try below and the request ends as a
-    // 502, so the typo would break the link instead of using the default.
-    const requestedKey = Object.hasOwn(GATEWAYS, gwKey ?? '')
-      ? gwKey
-      : DEFAULT_GATEWAY;
     const userAgent = request.headers.get('user-agent') || '';
 
     // NOTE: there is no IPNS-gateway fallback any more. It pointed at
@@ -305,30 +272,31 @@ export default {
                 ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
                 : redirect(pathTarget);
             }
-            // Clients that cannot run a service-worker gateway go to the path
-            // gateway whatever the page — no need to read it first.
+            // Clients that are not browsers — and HEAD, which is not a page
+            // load — go to the path gateway: nothing can be checked for them.
             if (
               !/mozilla\//i.test(userAgent) ||
               NON_BROWSER_RE.test(userAgent) ||
-              IN_APP_BROWSER_RE.test(userAgent)
+              request.method === 'HEAD'
             ) {
               return redirect(pathTarget);
             }
 
+            // A browser gets the launcher: it tries the chain in the
+            // visitor's own browser and goes to the first gateway that works
+            // there (see launcher.js). Which gateways are in the chain depends
+            // on what the page can render on (browserChain) and on the CID.
             const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_MS) : null;
-            // A file that is not a page has no pipeline to account for.
-            const gateway = GATEWAYS[
-              page === NOT_HTML ? requestedKey : chooseGateway(page, requestedKey)
-            ];
-            // A subdomain gateway puts the CID in the HOSTNAME, where a
-            // case-sensitive CIDv0 or an over-long CID is silently mangled
-            // into a different (wrong) CID. Serve those from the path-style
-            // gateway rather than a URL that cannot work.
-            const usable =
-              gateway.subdomain && !SUBDOMAIN_SAFE_CID.test(cid)
-                ? GATEWAYS[PATH_GATEWAY]
-                : gateway;
-            return redirect(`${usable.cid(cid, path)}${query}`);
+            const candidates = browserChain(typeof page === 'string' ? page : null)
+              // A subdomain gateway puts the CID in the HOSTNAME, where a
+              // case-sensitive CIDv0 or an over-long CID is silently mangled
+              // into a different (wrong) CID.
+              .filter((key) => !(GATEWAYS[key].subdomain && !SUBDOMAIN_SAFE_CID.test(cid)))
+              .map((key) => ({
+                url: `${GATEWAYS[key].cid(cid, path)}${query}`,
+                check: GATEWAYS[key].check,
+              }));
+            return launcherResponse(candidates);
           }
         }
       }
@@ -363,6 +331,26 @@ function redirect(location) {
       'Referrer-Policy': 'no-referrer',
       // the target depends on the client (browser, crawler, other)
       Vary: 'User-Agent',
+    },
+  });
+}
+
+/**
+ * The launcher page (see launcher.js): tries [candidates] in order in the
+ * visitor's own browser and goes to the first that works. Cached and varied
+ * exactly like a redirect — its destinations depend only on the link.
+ */
+async function launcherResponse(candidates) {
+  return new Response(buildLauncherHtml(candidates), {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': await launcherCsp(),
+      'x-content-type-options': 'nosniff',
+      'x-robots-tag': 'noindex',
+      'cache-control': `public, max-age=${REDIRECT_CACHE_SECONDS}`,
+      'referrer-policy': 'no-referrer',
+      vary: 'User-Agent',
     },
   });
 }

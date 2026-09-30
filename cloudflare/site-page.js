@@ -53,27 +53,28 @@ export function hasNonImageRelativeRefs(html) {
 }
 
 /**
- * The gateway key that can actually render this page, given the visitor's.
+ * The gateways to try for a browser, in order — the launcher page (see
+ * launcher.js) checks each in the visitor's browser and goes to the first that
+ * works. Owner's order: inbrowser, orbitor, Filebase.
  *
- *  - version 0: only inbrowser still serves its absolute dweb.link assets —
- *    its service worker intercepts them (measured 2026-09-16: images, video
- *    and documents all load), while dweb.link itself answers 429 and is
- *    switched off on 2026-09-21. inbrowser also runs the inline scripts and
- *    Google Forms embeds that Filebase's `default-src 'self'` CSP blocks.
- *  - version 1: relative references resolve on a path gateway, while on
- *    inbrowser only images are rescued — so inbrowser only when images are
- *    all the page references.
- *  - newer: exactly what was asked for.
- *  - unreadable (null): what was asked for — except Filebase, which has just
- *    failed to serve this very page in time, and which cannot render the
- *    pre-relative-assets sites that are most of what exists. inbrowser can.
+ * The one exception is correctness, not preference: a version-1 page that
+ * references anything but plain images relatively (a video, a download, a
+ * subpage, a CSS background) cannot render on inbrowser — on a subdomain
+ * gateway those references resolve INSIDE the page's own CID and 404, and that
+ * pipeline's fallback only rescues <img>. Such a page starts at orbitor, a
+ * path gateway where they resolve.
+ *
+ * Every other page starts at inbrowser, including the sites published before
+ * relative assets: only inbrowser's service worker still serves their
+ * absolute dweb.link images (measured 2026-09-16).
+ *
+ * [html] is the entry page, or null when it could not be read.
  */
-export function chooseGateway(html, requestedKey) {
-  if (html === null) return requestedKey === 'filebase' ? 'inbrowser' : requestedKey;
-  const version = pipelineVersion(html);
-  if (version === 0) return 'inbrowser';
-  if (version === 1) return hasNonImageRelativeRefs(html) ? 'filebase' : 'inbrowser';
-  return requestedKey;
+export function browserChain(html) {
+  if (html !== null && pipelineVersion(html) === 1 && hasNonImageRelativeRefs(html)) {
+    return ['orbitor', 'filebase'];
+  }
+  return ['inbrowser', 'orbitor', 'filebase'];
 }
 
 /**
