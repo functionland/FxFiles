@@ -98,6 +98,44 @@ Measured in real Chrome against real gateways (2026-09-30):
 | Site data blocked (no service workers) | orbitor, else Filebase | 2.9 s |
 | JavaScript off | Filebase | 0.5 s |
 
+### Where inbrowser gets a site's bytes (server-side dependency)
+
+The launcher can only check that inbrowser's hosts are reachable. Whether a
+**particular site** then loads there depends on where inbrowser's service worker
+can fetch it from, and that is decided outside this Worker:
+
+- `trustless-gateway.net` serves only inbrowser, and as of 2026-10-14 its
+  backend answers browser requests with Cloudflare 521/522, even for the IPFS
+  hello-world CID. (A request without inbrowser's Origin still gets a fast 403,
+  which is all the launcher's probe can see.)
+- So inbrowser fetches over libp2p (bitswap) from the providers that
+  `delegated-ipfs.dev` returns, but only those with a **direct browser
+  transport**: WebTransport with certhash, WebRTC-direct, or secure WebSockets.
+  Relay-circuit addresses through `relay.fula.network` did not work.
+- Our pinning server (`1.pools.functionyard.fula.network`, kubo peer
+  `12D3KooWCHyz…`) pins every site. Its kubo config sets `Addresses.Announce` by
+  hand, and until 2026-10-14 that list held only TCP and QUIC, so browsers never
+  learned its WebTransport listener. 4 of 6 recently visited sites then had no
+  browser-reachable provider and showed inbrowser's "502 Unable to stream
+  content". The fix added
+  `/dns4/1.pools.functionyard.fula.network/udp/4001/quic-v1/webtransport` and
+  `/ip4/5.252.53.186/udp/4001/quic-v1/webtransport` to `Addresses.Announce`.
+  go-libp2p appends the current certhashes. After that, all four sites rendered
+  in Chrome.
+- **If that list is ever rewritten, keep the WebTransport entries.** The `/ip4`
+  entry hard-codes the server's address. Check with
+  `curl https://delegated-ipfs.dev/routing/v1/peers/12D3KooWCHyzESdF9yzy4a7yWFVs4wYaDdLuXf6NGCvBThZvjkAR`:
+  it must list a `/webtransport/certhash/…` address.
+- A site also needs a current provider record on the DHT. The server's kubo
+  re-announces all of its keys every 22 h (sweep provider). After an outage, a
+  site can be missing until its region comes round again;
+  `ipfs routing provide <cid>` announces it at once.
+
+Still open: the server's AutoTLS certificate (`*.libp2p.direct`, the secure
+WebSocket path Safari needs) expired on 2026-05-19 and renewal fails. The
+launcher also treats a failing `delegated-ipfs.dev` as harmless, which is no
+longer true while `trustless-gateway.net` serves nothing.
+
 **Security.** The script is a constant; per-link destinations travel in a
 non-executable `<script type="application/json">` block, so the page is served
 under `default-src 'none'` with the script and style pinned by hash and
