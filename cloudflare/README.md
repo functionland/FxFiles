@@ -143,9 +143,15 @@ can fetch it from, and that is decided outside this Worker:
   `Addresses.Announce`: `/ip4/5.252.53.186/tcp/4001` and
   `/dns4/5-252-53-186.k51qzi5uqu5dh3lmhvesbg0uniavlp7q76i3x34gggli66aqvdf183gzsoxcem.libp2p.direct/tcp/4001/tls/ws`.
   A new certificate was issued within minutes of the restart, valid until
-  2027-01-12, and a WebSocket from Chrome to that address now connects. It
-  should renew on its own about a month before expiry. The same `curl` check
-  must list a `/tls/ws` address. Both new entries hard-code the server's IP.
+  2027-01-12, and a WebSocket from Chrome to that address now connects. The
+  same `curl` check must list a `/tls/ws` address. Both new entries hard-code
+  the server's IP.
+- **Renewal is unproven.** It should happen on its own about a month before
+  expiry, but why the old certificate failed to renew *before* it expired is
+  unknown. Around 2026-12-15, check that the served certificate has moved past
+  2027-01-12:
+  `openssl s_client -connect 5.252.53.186:4001 -servername 5-252-53-186.k51qzi5uqu5dh3lmhvesbg0uniavlp7q76i3x34gggli66aqvdf183gzsoxcem.libp2p.direct </dev/null | openssl x509 -noout -enddate`.
+  If it hasn't, look for `autotls` errors in the kubo log (`docker logs ipfs_host`).
 
 Still open: the launcher treats a failing `delegated-ipfs.dev` as harmless,
 which is no longer true while `trustless-gateway.net` serves nothing.
