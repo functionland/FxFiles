@@ -12,6 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 import worker from './ipns-resolver-worker.js';
@@ -62,11 +63,12 @@ const FULL_CHAIN = (cid = CID, path = '/') => [IB(cid, path), ORB(cid, path), FB
 const FB_BASE = 'https://ipfs.filebase.io/ipfs/';
 const FX_BASE = 'https://ipfs.cloud.fx.land/gateway/';
 
-function stubNetwork(value, page, htmlCids = [], unhappyCids = [], pageSources = ['filebase', 'fx']) {
+function stubNetwork(value, page, htmlCids = [], unhappyCids = [], pageSources = ['filebase', 'fx'], fetches = []) {
   const original = globalThis.fetch;
   const pageCid = typeof value === 'string' ? value.match(/^\/ipfs\/([^/]+)/)?.[1] : null;
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
+    fetches.push({ url, range: init?.headers?.Range ?? null });
     if (url.startsWith('https://name.web3.storage/')) {
       if (value === null) throw new Error('w3name unreachable');
       return new Response(JSON.stringify({ value }), {
@@ -110,19 +112,27 @@ async function get(
     htmlCids = [],
     unhappyCids = [],
     pageSources = ['filebase', 'fx'],
+    headers: extra = {},
   } = {},
 ) {
-  const restore = stubNetwork(value, page, htmlCids, unhappyCids, pageSources);
+  const fetches = [];
+  const restore = stubNetwork(value, page, htmlCids, unhappyCids, pageSources, fetches);
   try {
-    const headers = ua === null ? {} : { 'user-agent': ua };
-    return await withLaunch(await worker.fetch(
+    const headers = { ...(ua === null ? {} : { 'user-agent': ua }), ...extra };
+    const res = await withLaunch(await worker.fetch(
       new Request(`https://fxfiles.top${path}`, { method, headers }),
       {},
     ));
+    res.fetches = fetches;
+    return res;
   } finally {
     restore();
   }
 }
+
+/** How many times the Worker read a published page, and probed an image. */
+const pageReads = (res) => res.fetches.filter((f) => (f.url.startsWith(FB_BASE) || f.url.startsWith(FX_BASE)) && f.range === null).length;
+const imageProbes = (res) => res.fetches.filter((f) => f.range !== null).length;
 
 /**
  * A browser gets the launcher page (see launcher.js), not a redirect. Its
@@ -230,10 +240,12 @@ test('non-browser clients and HEAD are sent to Filebase', async () => {
   assert.equal(location(head), FB());
 });
 
-// Real in-app browser user agents. They get the launcher like any browser:
-// on iOS they are WKWebView with no service workers, and the launcher's own
-// capability check (inbrowser's entry checks) rules inbrowser out there. None
-// may be mistaken for a crawler and handed the preview page instead.
+// Real in-app browser user agents. They get the launcher like any browser, and
+// none may be mistaken for a crawler and handed the preview page instead. On
+// iOS they are WKWebView, with no service workers for a site the app does not
+// own: inbrowser can never run there, so the Worker leaves it out and does not
+// make them wait for the page read that only decides about inbrowser. On
+// Android they can run service workers: the full chain, as for any browser.
 const IN_APP = {
   instagramIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 339.0.3.12.91 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 624456287)',
   facebookIOS: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/470.0.0.40.109;FBBV/630553372;FBDV/iPhone15,2;FBMD/iPhone;FBSN/iOS;FBSV/17.5;FBSS/3;FBID/phone;FBLC/en_US;FBOP/5;FBRV/0]',
@@ -252,9 +264,45 @@ for (const [label, ua] of Object.entries(IN_APP)) {
   test(`in-app browser ${label} gets the launcher, never the preview page`, async () => {
     const res = await get(`/w/${NAME}`, { ua, page: LEGACY_PAGE });
     assert.equal(res.status, 200, `${label} got ${res.status}`);
-    assert.deepEqual(chain(res), FULL_CHAIN(), label);
+    if (label.endsWith('IOS')) {
+      assert.deepEqual(chain(res), [ORB(), FB()], label);
+      assert.equal(pageReads(res), 0, `${label}: no page read to wait for`);
+    } else {
+      assert.deepEqual(chain(res), FULL_CHAIN(), label);
+    }
   });
 }
+
+test('an iOS in-app browser keeps the subpath and query, and Safari on iOS keeps inbrowser', async () => {
+  assert.deepEqual(
+    chain(await get(`/w/${NAME}/about/?ref=abc`, { ua: IN_APP.instagramIOS })),
+    [ORB(CID, '/about/?ref=abc'), FB(CID, '/about/?ref=abc')],
+  );
+  const safari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+  assert.deepEqual(chain(await get(`/w/${NAME}`, { ua: safari })), FULL_CHAIN());
+});
+
+// The launcher is a page that navigates; it is no answer to an <img>, a
+// fetch() or a download. Measured before this rule: an <img> pointing at a
+// link got 200 text/html. Those get the file itself from the path gateway.
+test('a browser request that is not a page load gets Filebase, not the launcher', async () => {
+  for (const dest of ['image', 'video', 'audio', 'script', 'style', 'font', 'empty', 'embed', 'object', 'IMAGE']) {
+    const res = await get(`/w/${NAME}/logo.png`, { headers: { 'sec-fetch-dest': dest } });
+    assert.equal(res.status, 302, dest);
+    assert.equal(location(res), FB(CID, '/logo.png'), dest);
+    const root = await get(`/w/${NAME}`, { headers: { 'sec-fetch-dest': dest } });
+    assert.equal(location(root), FB(), dest);
+    assert.equal(pageReads(root), 0, `${dest}: no page read`);
+  }
+});
+
+test('a page load gets the launcher, framed or not, and so does a browser that names no destination', async () => {
+  for (const dest of ['document', 'iframe', 'frame', 'Document', null]) {
+    const res = await get(`/w/${NAME}`, { headers: dest === null ? {} : { 'sec-fetch-dest': dest } });
+    assert.equal(res.status, 200, String(dest));
+    assert.deepEqual(chain(res), FULL_CHAIN(), String(dest));
+  }
+});
 
 test('clients that go straight to Filebase do not wait for a page read', async () => {
   let reads = 0;
@@ -306,6 +354,26 @@ for (const ua of ['Twitterbot/1.0', 'LinkedInBot/1.0 (compatible; Mozilla/5.0)',
 test('a preview crawler whose page cannot be read is redirected to Filebase', async () => {
   const res = await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: null });
   assert.equal(location(res), FB());
+});
+
+// An unfurler may HEAD first and follow a redirect, so a crawler's HEAD must
+// answer exactly like its GET. It only skips the image probes, which choose
+// the picture in a body that is never sent and, unlike the page read, are not
+// cached.
+test("a crawler's HEAD answers like its GET, without probing images", async () => {
+  const page = `<title>Event</title><img src="https://${ASSET}.ipfs.dweb.link/">`;
+  const got = await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page });
+  const head = await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page, method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(location(head), null);
+  for (const h of ['content-type', 'content-security-policy', 'cache-control', 'vary', 'referrer-policy']) {
+    assert.equal(head.headers.get(h), got.headers.get(h), h);
+  }
+  assert.ok(imageProbes(got) > 0, 'GET still picks its image');
+  assert.equal(imageProbes(head), 0);
+  // and an unreadable page redirects both alike
+  const headMiss = await get(`/w/${NAME}`, { ua: 'Twitterbot/1.0', page: null, method: 'HEAD' });
+  assert.equal(location(headMiss), FB());
 });
 
 test('a hostile page cannot inject markup into the preview', async () => {
@@ -525,12 +593,19 @@ test('keeps the trailing slash — relative asset refs depend on it', async () =
   assert.ok(location(await get(`/w/${NAME}`, { ua: 'curl/8.4.0' })).endsWith('/'));
 });
 
-test('redirects and the launcher are short-cached and vary by client', async () => {
-  for (const res of [await get(`/w/${NAME}`, { ua: 'curl/8.4.0' }), await get(`/w/${NAME}`)]) {
+// They vary by request destination too: otherwise a browser that just fetched
+// a link for an <img> could replay that cached redirect when it then navigates
+// to the same link, and skip the launcher.
+test('redirects and the launcher are short-cached and vary by client and destination', async () => {
+  for (const res of [
+    await get(`/w/${NAME}`, { ua: 'curl/8.4.0' }),
+    await get(`/w/${NAME}`),
+    await get(`/w/${NAME}`, { headers: { 'sec-fetch-dest': 'image' } }),
+  ]) {
     assert.ok(res.status === 302 || res.launch, `unexpected ${res.status}`);
     assert.match(res.headers.get('cache-control'), /max-age=30/);
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
-    assert.equal(res.headers.get('vary'), 'User-Agent');
+    assert.equal(res.headers.get('vary'), 'User-Agent, Sec-Fetch-Dest');
   }
 });
 
@@ -578,7 +653,9 @@ test('the launcher is locked down: only its own script, style and the hosts it c
   // by that wildcard — and nothing else of inbrowser's is
   const siteHost = new URL(chain(res)[0]).host;
   assert.equal(`https://*.${siteHost.split('.').slice(1).join('.')}`, INBROWSER_SITE_SOURCE);
-  for (const d of ["base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]) assert.ok(csp.includes(d), d);
+  for (const d of ["base-uri 'none'", "form-action 'none'"]) assert.ok(csp.includes(d), d);
+  // it may be framed: a link embedded in an iframe must still open the site
+  assert.ok(!csp.includes('frame-ancestors'), csp);
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
 
   // the hashes pin the EXACT text the page carries
@@ -604,6 +681,36 @@ test('link input cannot break out of the launcher page', async () => {
   const encoded = jsonForScriptBlock({ v: '</script><!-- & \u2028' });
   assert.ok(!/[<>&\u2028]/.test(encoded), encoded);
   assert.deepEqual(JSON.parse(encoded), { v: '</script><!-- & \u2028' });
+});
+
+// Building the launcher's CSP hashes the script once per isolate. If that ever
+// fails, the visitor must still reach the site (not an uncaught exception, which
+// Cloudflare shows as error 1101), and the failure must not be remembered for
+// every later visitor. Run in a fresh process: the CSP is module state.
+test('a failure building the launcher sends the visitor to Filebase, and is not remembered', () => {
+  const code = `
+    const real = crypto.subtle.digest.bind(crypto.subtle);
+    let fail = true;
+    Object.defineProperty(crypto.subtle, 'digest', {
+      configurable: true,
+      value: (...args) => (fail ? Promise.reject(new Error('digest unavailable')) : real(...args)),
+    });
+    globalThis.fetch = async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith('https://name.web3.storage/')) {
+        return new Response(JSON.stringify({ value: '/ipfs/${CID}' }), { status: 200 });
+      }
+      return new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    };
+    const { default: worker } = await import(${JSON.stringify(new URL('./ipns-resolver-worker.js', import.meta.url).href)});
+    const visit = () => worker.fetch(new Request('https://fxfiles.top/w/${NAME}', { headers: { 'user-agent': ${JSON.stringify(BROWSER)} } }), {});
+    const first = await visit();
+    fail = false;
+    const second = await visit();
+    console.log(JSON.stringify([first.status, first.headers.get('location'), second.status]));
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(out), [302, FB(), 200]);
 });
 
 test('without JavaScript the launcher goes straight to Filebase', async () => {
@@ -646,6 +753,8 @@ function runLauncher({
   timeoutMs = 30,
   watchdogMs = 1000,
   now = 1_000_000_000,
+  hash = '',
+  links = [],
   candidates = [
     { url: IB_URL, check: CHECK.INBROWSER },
     { url: 'ORB', check: CHECK.PAGE },
@@ -670,12 +779,16 @@ function runLauncher({
       },
     };
     const env = {
-      document: { getElementById: (id) => (id === 'fx-launch' ? { textContent: JSON.stringify(data) } : null) },
+      document: {
+        getElementById: (id) => (id === 'fx-launch' ? { textContent: JSON.stringify(data) } : null),
+        getElementsByTagName: (tag) => (tag === 'a' ? links : []),
+      },
       localStorage: {
         getItem: (k) => { if (storageThrows) throw new Error('denied'); return store.get(k) ?? null; },
         setItem: (k, v) => { if (storageThrows) throw new Error('denied'); store.set(k, v); },
       },
       location: {
+        hash,
         replace: (url) => {
           navigations.push(url);
           resolve({ url: url === IB_URL ? 'IB' : url, calls, navigations, remembered: store.get('fx_inbrowser_reachable') });
@@ -845,6 +958,33 @@ test('launcher: "reachable" expires sooner than "blocked"', async () => {
   assert.deepEqual([staleOk.url, probed(staleOk)], ['ORB', PROBES.length], 'a stale "reachable" must be re-checked');
   const staleBlocked = await runLauncher({ now, stored: JSON.stringify({ ok: false, at: now - 31 * 60_000 }) });
   assert.deepEqual([staleBlocked.url, probed(staleBlocked)], ['IB', PROBES.length]);
+});
+
+// The fragment never reaches the Worker, and a navigation the page starts
+// does not inherit it the way a fragment-less redirect does: a shared
+// `…/w/<name>#contact` must still land on #contact, whichever gateway wins.
+test("launcher: the visitor's #fragment is carried to wherever they are sent", async () => {
+  const sent = async (opts) => (await runLauncher({ hash: '#contact', ...opts })).navigations[0];
+  assert.equal(await sent({}), `${IB_URL}#contact`);
+  assert.equal(await sent({ sw: 'none' }), 'ORB#contact');
+  assert.equal(await sent({ sw: 'none', pageOk: false }), 'FB#contact');
+  assert.equal(await sent({ timeoutMs: 300, watchdogMs: 30, net: () => 'hang' }), 'FB#contact', 'the watchdog too');
+  // a destination that names its own fragment keeps it
+  assert.equal(
+    await sent({ sw: 'none', pageOk: false, candidates: [{ url: 'ORB', check: CHECK.PAGE }, { url: 'FB#top', check: CHECK.NONE }] }),
+    'FB#top',
+  );
+  // and with no fragment, destinations are untouched
+  assert.equal((await runLauncher()).navigations[0], IB_URL);
+});
+
+test('launcher: the manual links carry the #fragment too', async () => {
+  const links = [{ href: IB_URL }, { href: 'FB' }, { href: 'FB#top' }];
+  await runLauncher({ hash: '#contact', links });
+  assert.deepEqual(links.map((l) => l.href), [`${IB_URL}#contact`, 'FB#contact', 'FB#top']);
+  const untouched = [{ href: IB_URL }];
+  await runLauncher({ links: untouched });
+  assert.equal(untouched[0].href, IB_URL);
 });
 
 test('launcher: garbage, future-dated or unreadable storage never breaks it', async () => {
