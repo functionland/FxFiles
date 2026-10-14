@@ -7,9 +7,17 @@ the visitor to an immutable IPFS gateway URL.
 ```
 GET https://fxfiles.top/w/<ipnsName>            browser  -> 200 launcher page (below)
 GET https://fxfiles.top/w/<ipnsName>/page.html  browser  -> 200 launcher page, same chain for page.html
-GET https://fxfiles.top/w/<ipnsName>            crawler  -> 200 Open Graph preview page
-GET https://fxfiles.top/w/<ipnsName>            anything else, or HEAD -> 302 https://ipfs.filebase.io/ipfs/<cid>/
+GET https://fxfiles.top/w/<ipnsName>            crawler  -> 200 Open Graph preview page (HEAD answers the same)
+GET https://fxfiles.top/w/<ipnsName>            anything else, any other HEAD, or a
+                                                browser request that is not a page load
+                                                -> 302 https://ipfs.filebase.io/ipfs/<cid>/
 ```
+
+A "page load" is a request whose `Sec-Fetch-Dest` is `document`, `iframe` or
+`frame`, or a browser that sends no `Sec-Fetch-Dest`. An `<img>`, a `<video>`,
+a `fetch()` or a download of a link gets the file itself from Filebase rather
+than the launcher page. Redirects and the launcher carry
+`Vary: User-Agent, Sec-Fetch-Dest`.
 
 ## Browsers: the launcher chain
 
@@ -34,7 +42,8 @@ filters a gateway, nor that a browser cannot run a service worker.
      refusing ("The user denied permission to use Service Worker"), and
      `navigator.cookieEnabled` still says `true` then, so it is not used
      (measured in Chrome, 2026-09-30). iOS in-app browsers (WKWebView) have no
-     service workers and fail here, with no special case.
+     service workers; the Worker leaves inbrowser out of their chain up front
+     (see "Crawlers and other clients").
   2. *Its service worker can fetch the site from this network:* the site's own
      address `https://<cid>.ipfs.inbrowser.link/` only hands over the worker.
      The worker then fetches content from `trustless-gateway.net` and asks
@@ -98,6 +107,15 @@ never builds a URL from input. The site's inbrowser address is probed at its
 root, so no path or query leaves the page. Orbitor is only contacted once
 inbrowser is ruled out.
 
+The visitor's `#fragment` (for example `#contact`) never reaches the Worker,
+so the launcher appends it to wherever it sends them, and to its manual links.
+Two cases cannot carry it: a text fragment (`#:~:text=`), which browsers hide
+from scripts, and the `<noscript>` refresh.
+
+The launcher may be framed (no `frame-ancestors`): a link embedded in another
+page's iframe gets the launcher, which then sends the frame on. Framing it gives
+nothing away; it holds no data and its links go to the same site.
+
 ### `?gw=` is ignored
 
 Links the app minted carry `?gw=` (for example `?gw=filebase`). The Worker
@@ -132,21 +150,28 @@ gateway the visitor lands on, so there is **no runtime dependency on fx**.
 ### Crawlers and other clients
 
 - **Link-preview crawlers** (Facebook, X, LinkedIn, WhatsApp, Slack, Telegram,
-  Discord, …) get a 200 page of Open Graph tags built from the site. The page
+  Discord, …) get a 200 page of Open Graph tags built from the site. A
+  crawler's `HEAD` gets the same answer as its `GET` (an unfurler may `HEAD`
+  first and follow a redirect), but without probing images. The page
   uses its declared `og:` tags; otherwise its `<title>`, the meta description
   or first real paragraph, and the first image. The image is re-pointed at
   Filebase, since the host a legacy page names may be dead. Every value is
   decoded, capped and escaped, and the page is served under
   `Content-Security-Policy: default-src 'none'`.
 - **In-app browsers** (Instagram, Facebook, WhatsApp, …) are browsers and get
-  the launcher. Where they have no service workers (iOS WKWebView), the
-  capability check skips inbrowser. The crawler list holds crawler tokens only:
+  the launcher. On iOS they are WKWebView, where a site the app does not own
+  gets no service workers, so the Worker recognises them (an app token plus
+  `iPhone`/`iPad`/`iPod`) and sends a chain without inbrowser, without reading
+  the page first. That read only decides whether inbrowser stays in the chain,
+  and it kept them waiting up to 6 s. On Android, in-app browsers can run
+  service workers and the launcher's own check decides. The crawler list holds crawler tokens only:
   an in-app browser often carries its app's name (`Snapchat/…`, `Line/…`,
   `[Pinterest/iOS]`), and matching those once handed people the preview page
   instead of the site.
-- **Every other non-browser client** (search engines, curl, libraries), and
-  any `HEAD`, is redirected to the path-style Filebase URL. Nothing can be
-  checked for them, and inbrowser answers non-browsers with 403.
+- **Every other non-browser client** (search engines, curl, libraries), any
+  other `HEAD`, and a browser request that is not a page load are redirected to
+  the path-style Filebase URL. Nothing can be checked for them, and inbrowser
+  answers non-browsers with 403.
 
 ### dweb.link is retired — do not re-add it
 
@@ -226,7 +251,9 @@ If you deploy to a different host, set the secure-storage key
 - inbrowser is **subdomain-style**, so the CID lands in a hostname: a CIDv0
   (`Qm…`, base58 and case-sensitive) or a CID over the 63-character DNS label
   limit would silently corrupt there, and skips inbrowser (orbitor, then Filebase).
-- Responses carry `Vary: User-Agent` — the answer depends on the client.
+- Responses carry `Vary: User-Agent` (redirects and the launcher also
+  `Sec-Fetch-Dest`): the answer depends on the client and on whether the
+  request is a page load.
 - The Worker rejects paths whose name isn't a plausible `k51…` IPNS name, and
   charset-checks the CID before interpolating it, so it can't be abused as an
   open redirector.

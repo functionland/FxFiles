@@ -17,7 +17,8 @@
  *     src/index.tsx: Promise.withResolvers, non-special-scheme URL parsing,
  *     `serviceWorker` in navigator), plus service workers actually being
  *     permitted: settings that block site data leave the API present but
- *     refusing. iOS in-app browsers (WKWebView) fail here — no special case.
+ *     refusing. iOS in-app browsers (WKWebView) would fail here, so the
+ *     Worker leaves inbrowser out of their chain before they even arrive.
  *  2. its service worker can fetch the site from this network. The site's own
  *     inbrowser address (<cid>.ipfs.inbrowser.link — its wildcard DNS and
  *     certificate) only hands the browser that worker; the worker then fetches
@@ -40,6 +41,7 @@
  *  - Every destination is computed by the Worker (fixed gateways + a
  *    charset-checked CID); the page never builds a URL from input.
  *  - Storage: one yes/no and a timestamp on fxfiles.top. No identifiers.
+ *  - It may be framed (see launcherCsp): an embedded link must still open.
  *  - Privacy: orbitor is only contacted when inbrowser is ruled out, and the
  *    inbrowser probe names only the site's CID (as the destination does).
  *
@@ -111,12 +113,28 @@ export const LAUNCHER_SCRIPT = `(function () {
   var KEY = 'fx_inbrowser_reachable';
   var now = Date.now();
 
+  // The visitor's #fragment never reaches the Worker, and a navigation this
+  // page starts does not inherit it the way a fragment-less redirect does, so
+  // it is carried over here — unless the destination already names one. (A
+  // text fragment, #:~:text=, is hidden from scripts by the browser and cannot
+  // be carried; neither can the <noscript> refresh carry anything.)
+  var hash = location.hash || '';
+  function withHash(url) {
+    return hash && url.indexOf('#') === -1 ? url + hash : url;
+  }
+
   var gone = false;
   function go(url) {
     if (gone) return;
     gone = true;
-    location.replace(url);
+    location.replace(withHash(url));
   }
+
+  // The manual links too: they are the visitor's way out if this page stalls.
+  try {
+    var links = document.getElementsByTagName('a');
+    for (var i = 0; i < links.length; i++) links[i].href = withHash(links[i].href);
+  } catch (e) {}
 
   function within(promise, ms) {
     return new Promise(function (resolve) {
@@ -283,15 +301,22 @@ let policyPromise = null;
 
 /**
  * The launcher's Content-Security-Policy: nothing but its own script and
- * style (by hash) and the hosts it checks. Computed once.
+ * style (by hash) and the hosts it checks. Computed once — but a failure is
+ * not kept, or one bad moment would break every launcher this isolate serves.
+ *
+ * No `frame-ancestors`: a site embedded in another page (an iframe pointing at
+ * its link) gets this page too, and it must render there to send the frame on.
+ * Framing it gives nothing away — it holds no data and its links go to the
+ * same site.
  */
 export function launcherCsp() {
+  if (policyPromise) return policyPromise;
   const hosts = [
     INBROWSER_SITE_SOURCE,
     ...[...INBROWSER_PROBE_URLS, ...INBROWSER_ROUTER_URLS].map((u) => new URL(u).origin),
     ORBITOR_ORIGIN,
   ];
-  policyPromise ??= Promise.all([sha256Base64(LAUNCHER_SCRIPT), sha256Base64(LAUNCHER_STYLE)]).then(
+  const policy = Promise.all([sha256Base64(LAUNCHER_SCRIPT), sha256Base64(LAUNCHER_STYLE)]).then(
     ([scriptHash, styleHash]) =>
       [
         "default-src 'none'",
@@ -300,8 +325,11 @@ export function launcherCsp() {
         `connect-src ${hosts.join(' ')}`,
         "base-uri 'none'",
         "form-action 'none'",
-        "frame-ancestors 'none'",
       ].join('; '),
   );
-  return policyPromise;
+  policyPromise = policy;
+  policy.catch(() => {
+    if (policyPromise === policy) policyPromise = null;
+  });
+  return policy;
 }

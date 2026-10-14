@@ -10,11 +10,15 @@
  *           https://eu.orbitor.dev/ipfs/<cid>/<subpath>
  *           https://ipfs.filebase.io/ipfs/<cid>/<subpath>
  *         and goes to the first that works there. inbrowser is skipped when
- *         the page cannot render on it (browserChain in site-page.js) or the
- *         CID cannot be a hostname. `?gw=` is accepted and ignored.
+ *         the page cannot render on it (browserChain in site-page.js), the
+ *         CID cannot be a hostname, or the browser is an iOS in-app browser.
+ *         `?gw=` is accepted and ignored.
  *      -> for a LINK-PREVIEW CRAWLER, 200 with Open Graph tags built from the
- *         page (a crawler cannot run inbrowser's service worker)
- *      -> for any OTHER client (and HEAD), 302 to the path-style Filebase URL
+ *         page (a crawler cannot run inbrowser's service worker); its HEAD
+ *         answers the same, without probing images
+ *      -> for any OTHER client, any other HEAD, and a browser request that is
+ *         not a page load (`Sec-Fetch-Dest` other than document/iframe/frame:
+ *         an <img>, a fetch, a download), 302 to the path-style Filebase URL
  *
  * Why this design:
  *  - The app never talks to Cloudflare and holds NO credential here. The IPNS
@@ -170,6 +174,29 @@ const PREVIEW_BOT_RE =
 const NON_BROWSER_RE =
   /bot\b|bot\/|crawl|spider|slurp|curl\/|wget\/|python|java\/|go-http|node-fetch|axios|okhttp|http-client|libwww|headless/i;
 
+/**
+ * An app's in-app browser ON iOS: a WKWebView, where a site the app does not
+ * own gets no service workers — so inbrowser can never run there. They still
+ * get the launcher (orbitor, then Filebase), but without inbrowser and without
+ * reading the page first: that read only decides whether inbrowser stays in
+ * the chain, and it made the biggest share of social traffic wait up to 6 s
+ * for nothing. In-app browsers on Android can run service workers and are left
+ * to the launcher's own check. Telegram's in-app browser sends a plain Safari
+ * user agent and cannot be recognised — the launcher's check catches it.
+ */
+const IN_APP_BROWSER_RE =
+  /instagram|fban|fbav|fb_iab|fb4a|fbios|barcelona|musical_ly|bytedancewebview|tiktok|snapchat|linkedinapp|\bline\/|micromessenger|\[pinterest/i;
+const IOS_RE = /\b(?:iPhone|iPad|iPod)\b/;
+
+/**
+ * The request destinations (`Sec-Fetch-Dest`) that are a page load — the only
+ * requests the launcher, an HTML page that navigates, can answer. An <img>, a
+ * <video>, a fetch() or a download of a link gets the path gateway instead,
+ * which serves the file itself. A browser that sends no `Sec-Fetch-Dest` (older
+ * ones) is treated as a page load, as before.
+ */
+const PAGE_LOAD_DESTS = new Set(['document', 'iframe', 'frame']);
+
 export default {
   async fetch(request, env) {
     // Read-only endpoint — only GET/HEAD make sense.
@@ -264,20 +291,29 @@ export default {
             // Only the site's entry page is read: it is what carries the
             // pipeline markers and the preview metadata. A subpath is served
             // as asked.
+            // A crawler's HEAD answers exactly like its GET (an unfurler may
+            // HEAD first and follow a redirect), only without probing images
+            // for a body that is never sent.
             if (PREVIEW_BOT_RE.test(userAgent)) {
               const page = path === '/'
                 ? await readPage(cid, PAGE_READ_TIMEOUT_CRAWLER_MS, PAGE_READ_TIMEOUT_MS)
                 : null;
               return typeof page === 'string'
-                ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget)
+                ? await previewResponse(page, `https://${url.host}/w/${name}`, pathTarget, {
+                    probeImages: request.method !== 'HEAD',
+                  })
                 : redirect(pathTarget);
             }
-            // Clients that are not browsers — and HEAD, which is not a page
-            // load — go to the path gateway: nothing can be checked for them.
+            // Clients that are not browsers, any other HEAD, and a browser
+            // request that is not a page load (an <img>, a fetch, a download)
+            // go to the path gateway: nothing can be checked for them, and
+            // the launcher page is no answer to them.
+            const dest = (request.headers.get('sec-fetch-dest') || '').toLowerCase();
             if (
               !/mozilla\//i.test(userAgent) ||
               NON_BROWSER_RE.test(userAgent) ||
-              request.method === 'HEAD'
+              request.method === 'HEAD' ||
+              (dest !== '' && !PAGE_LOAD_DESTS.has(dest))
             ) {
               return redirect(pathTarget);
             }
@@ -285,9 +321,14 @@ export default {
             // A browser gets the launcher: it tries the chain in the
             // visitor's own browser and goes to the first gateway that works
             // there (see launcher.js). Which gateways are in the chain depends
-            // on what the page can render on (browserChain) and on the CID.
-            const page = path === '/' ? await readPage(cid, PAGE_READ_TIMEOUT_MS) : null;
+            // on what the page can render on (browserChain), on the CID, and
+            // on whether the browser can run a service worker at all.
+            const noServiceWorkers = IOS_RE.test(userAgent) && IN_APP_BROWSER_RE.test(userAgent);
+            const page = path === '/' && !noServiceWorkers
+              ? await readPage(cid, PAGE_READ_TIMEOUT_MS)
+              : null;
             const candidates = browserChain(typeof page === 'string' ? page : null)
+              .filter((key) => !(noServiceWorkers && GATEWAYS[key].check === CHECK.INBROWSER))
               // A subdomain gateway puts the CID in the HOSTNAME, where a
               // case-sensitive CIDv0 or an over-long CID is silently mangled
               // into a different (wrong) CID.
@@ -296,7 +337,10 @@ export default {
                 url: `${GATEWAYS[key].cid(cid, path)}${query}`,
                 check: GATEWAYS[key].check,
               }));
-            return launcherResponse(candidates);
+            // A failure building the launcher must not escape as an uncaught
+            // exception, nor cost the visitor the link: they go to the path
+            // gateway, like any browser that cannot be checked.
+            return await launcherResponse(candidates).catch(() => redirect(pathTarget));
           }
         }
       }
@@ -322,6 +366,14 @@ export default {
   },
 };
 
+/**
+ * What a redirect or the launcher depends on besides the link: the client
+ * (browser, crawler, other) and whether the request is a page load. Without
+ * the second, a browser could replay a cached answer to an <img> request when
+ * it then navigates to the same link.
+ */
+const VARY = 'User-Agent, Sec-Fetch-Dest';
+
 function redirect(location) {
   return new Response(null, {
     status: 302, // 302, NOT 301 — the target changes on every regeneration
@@ -329,8 +381,7 @@ function redirect(location) {
       Location: location,
       'Cache-Control': `public, max-age=${REDIRECT_CACHE_SECONDS}`,
       'Referrer-Policy': 'no-referrer',
-      // the target depends on the client (browser, crawler, other)
-      Vary: 'User-Agent',
+      Vary: VARY,
     },
   });
 }
@@ -350,7 +401,7 @@ async function launcherResponse(candidates) {
       'x-robots-tag': 'noindex',
       'cache-control': `public, max-age=${REDIRECT_CACHE_SECONDS}`,
       'referrer-policy': 'no-referrer',
-      vary: 'User-Agent',
+      vary: VARY,
     },
   });
 }
@@ -461,10 +512,12 @@ async function readPageOnce(base, cid, timeoutMs) {
 /**
  * The page a link-preview crawler gets (see buildPreviewHtml). Served under
  * `default-src 'none'`: it needs no subresource, so nothing taken from the
- * site can load or run anything.
+ * site can load or run anything. [probeImages] is off for a HEAD: the probes
+ * only choose the image in a body that is never sent, and unlike the page read
+ * they are not cached.
  */
-async function previewResponse(html, link, target) {
-  const image = await pickPreviewImage(extractPreview(html).images);
+async function previewResponse(html, link, target, { probeImages = true } = {}) {
+  const image = probeImages ? await pickPreviewImage(extractPreview(html).images) : null;
   return new Response(buildPreviewHtml(html, link, target, image), {
     status: 200,
     headers: {
